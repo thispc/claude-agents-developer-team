@@ -35,9 +35,7 @@ class WorkerReport(BaseModel):
 
 @router.get("/api/health")
 def health() -> dict:
-    auth = "api-key" if config.ANTHROPIC_API_KEY else (
-        "subscription" if config.CLAUDE_CODE_OAUTH_TOKEN else "none")
-    return {"ok": True, "launcher": config.LAUNCHER, "auth": auth,
+    return {"ok": True, "launcher": config.LAUNCHER, "auth": config.auth_mode(),
             "github": bool(config.GITHUB_TOKEN)}
 
 
@@ -46,6 +44,10 @@ async def create_project(body: NewProject) -> dict:
     if not config.AUTH_CONFIGURED:
         raise HTTPException(400, "Set ANTHROPIC_API_KEY (API billing) or "
                                  "CLAUDE_CODE_OAUTH_TOKEN (Pro/Max subscription) on the conductor")
+    if config.LAUNCHER == "k8s" and config.CLI_LOGIN:
+        raise HTTPException(400, "k8s workers cannot inherit local CLI credentials — "
+                                 "set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) "
+                                 "or ANTHROPIC_API_KEY")
     repo = body.repo or config.GITHUB_REPO
     project_id = db.create_project(
         body.name, body.brief, repo,

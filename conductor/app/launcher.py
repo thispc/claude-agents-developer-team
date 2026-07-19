@@ -15,9 +15,12 @@ from . import config, db, bus
 
 
 def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
-    auth = ({"ANTHROPIC_API_KEY": config.ANTHROPIC_API_KEY}
-            if config.ANTHROPIC_API_KEY
-            else {"CLAUDE_CODE_OAUTH_TOKEN": config.CLAUDE_CODE_OAUTH_TOKEN})
+    auth: dict[str, str] = {}
+    if config.ANTHROPIC_API_KEY:
+        auth["ANTHROPIC_API_KEY"] = config.ANTHROPIC_API_KEY
+    elif config.CLAUDE_CODE_OAUTH_TOKEN:
+        auth["CLAUDE_CODE_OAUTH_TOKEN"] = config.CLAUDE_CODE_OAUTH_TOKEN
+    # else: local CLI login — subprocess workers inherit the stored credentials.
     return {
         **auth,
         "CONDUCTOR_URL": config.CONDUCTOR_URL,

@@ -15,6 +15,31 @@ async function api(path, opts) {
   return res.json();
 }
 
+let authMode = "none";
+
+async function loadHealth() {
+  try {
+    const h = await api("/api/health");
+    authMode = h.auth || (h.anthropic_key ? "api-key" : "none");
+    const b = $("#authBadge");
+    if (authMode === "subscription") {
+      b.textContent = "auth: Max subscription";
+      b.className = "badge ok";
+      b.title = "Agents run on your Claude subscription. Dollar figures are ESTIMATES for " +
+        "budgeting only — nothing is billed. Usage counts toward your plan's rate limits.";
+    } else if (authMode === "api-key") {
+      b.textContent = "auth: API key";
+      b.className = "badge warn";
+      b.title = "Agents bill pay-per-token API credit. Figures shown are the SDK's per-project " +
+        "estimate; your authoritative balance is at console.anthropic.com (no API exposes it).";
+    } else {
+      b.textContent = "auth: none";
+      b.className = "badge bad";
+      b.title = "Set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in .env";
+    }
+  } catch { /* server starting */ }
+}
+
 async function loadProjects() {
   const projects = await api("/api/projects");
   const sel = $("#projectSelect");
@@ -47,7 +72,8 @@ async function refreshBoard() {
   try { p = await api(`/api/projects/${currentProject}`); } catch { return; }
   lastTasks = p.tasks;
   if (!$("#dag").hidden) renderDag(p.tasks);
-  $("#costBadge").textContent = `$${p.cost_usd.toFixed(2)} / $${p.budget_usd.toFixed(2)}`;
+  const est = authMode === "subscription" ? " est. (not billed)" : "";
+  $("#costBadge").textContent = `$${p.cost_usd.toFixed(2)} / $${p.budget_usd.toFixed(2)}${est}`;
   const badge = $("#statusBadge");
   badge.textContent = p.status;
   badge.className = "badge " +
@@ -264,6 +290,7 @@ $("#newProjectForm").addEventListener("submit", async (ev) => {
   }
 });
 
+loadHealth();
 loadProjects();
 connectWs();
 setInterval(refreshBoard, 10000);
