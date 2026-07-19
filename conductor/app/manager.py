@@ -306,12 +306,25 @@ async def run_manager(project_id: int) -> None:
         return
     bus.emit(project_id, None, "manager", "agent_status", {"status": "starting"})
 
+    roster = json.loads(project.get("team") or "[]")
+    roster_text = ""
+    if roster:
+        lines = ", ".join(f"{m['count']}× {m['role']}" for m in roster)
+        roster_text = (
+            f"\nThe boss recruited this starting team: {lines}.\n"
+            "Plan around this headcount: create tasks for these roles, and when a role has a "
+            "count > 1 and the work genuinely splits into independent parallel pieces, create "
+            "that many tasks for it (wired with no mutual dependency so they run in parallel). "
+            "If the work doesn't split cleanly, you may use fewer; if it clearly needs a role "
+            "the boss didn't recruit, you may still add it, but respect the boss's intent.\n"
+        )
     prompt = (
         f"Project: {project['name']}\n"
         f"Repository: {project['repo'] or '(none configured)'}\n"
         f"Max parallel workers: {project['max_workers']} | "
         f"Agent-run cap: {project['max_runs']}\n\n"
-        f"{role_catalog_text()}\n\n"
+        f"{role_catalog_text()}\n"
+        f"{roster_text}\n"
         f"Brief from the user:\n{project['brief']}\n\n"
         "Plan the work, run your team, and ship it. This may be a restarted session: "
         "call status first, and only create_tasks if none exist yet."

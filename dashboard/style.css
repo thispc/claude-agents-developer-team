@@ -80,6 +80,18 @@ pre.dim { color: var(--dim); }
 #feed[data-filter="manager"] .ev.worker, #feed[data-filter="manager"] .ev.system { display: none; }
 #feed[data-filter="worker"] .ev.manager, #feed[data-filter="worker"] .ev.system { display: none; }
 .ev.think { opacity: .55; font-style: italic; border-color: #4a5670; }
+.ev.mgrmsg { border-left-width: 3px; border-color: var(--accent); background: rgba(94,234,212,.06); font-size: 13px; }
+.ev.mgrmsg .src { color: var(--accent); }
+.ev.question { border-color: var(--warn); background: rgba(251,191,36,.1); }
+.ev.question .src { color: var(--warn); }
+.ev.bossmsg { border-color: #f0abfc; background: rgba(240,171,252,.06); }
+.ev.bossmsg .src { color: #f0abfc; }
+.vspacer { flex: 1; }
+#editTaskBtn { background: var(--panel2); }
+#addTaskDialog { width: min(640px, 94vw); }
+#addTaskForm label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--dim); }
+#addTaskForm input, #addTaskForm textarea, #addTaskForm select { padding: 8px 10px; border-radius: 8px; font-size: 13px; }
+#addTaskForm h2 { font-size: 15px; }
 #events { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 #directiveForm { display: flex; gap: 6px; margin-top: 8px; }
 #directiveForm input { flex: 1; padding: 8px 10px; border-radius: 8px; }
@@ -117,4 +129,13 @@ button.primary { background: var(--accent); color: #0b0f14; border-color: var(--
 button.primary:hover { filter: brightness(1.1); }
 button.primary:disabled { opacity: .55; cursor: wait; }
 .form-error { color: var(--bad); font-size: 12.5px; background: rgba(248,113,113,.08); border: 1px solid rgba(248,113,113,.35); border-radius: 8px; padding: 8px 10px; }
+.step-tag { font-size: 11px; color: var(--dim); font-weight: 400; letter-spacing: .5px; }
+.recruit-note { font-size: 12px; color: var(--dim); }
+#roster { display: flex; flex-direction: column; gap: 8px; }
+.roster-row { display: grid; grid-template-columns: 1fr 70px 130px 34px; gap: 8px; align-items: center; }
+.roster-row select, .roster-row input { padding: 8px 10px; border-radius: 7px; }
+.roster-row .r-fire { background: var(--panel2); color: var(--bad); border-radius: 7px; padding: 8px; }
+.roster-row .r-fire:hover { border-color: var(--bad); }
+.add-role { align-self: flex-start; background: var(--panel2); border-style: dashed; padding: 7px 14px; border-radius: 8px; }
+.add-role:hover { border-color: var(--accent); color: var(--accent); }
 @media (max-width: 1000px) { main { grid-template-columns: 1fr; } #board { grid-template-columns: repeat(2, 1fr); } }

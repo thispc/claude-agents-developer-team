@@ -117,7 +117,22 @@ async def run() -> None:
         return
 
     role_file = AGENTS_DIR / f"{ROLE}.md"
-    system_prompt = role_file.read_text() if role_file.exists() else f"You are a {ROLE} developer."
+    if role_file.exists():
+        system_prompt = role_file.read_text()
+    else:
+        # Custom role recruited by the boss with no dedicated prompt file — build a
+        # capable generic one so ad-hoc roles (designer, devops, "phd researcher") work.
+        system_prompt = (
+            f"You are a senior {ROLE} on an autonomous software team. You work alone on one "
+            f"task in a fresh clone of the repository; a manager reviews your branch afterwards.\n"
+            "- Do exactly what the task describes, to a professional standard. The file paths and "
+            "contracts in the task are binding — other team members build against your output.\n"
+            "- Actually make it work: run, test, or verify what you produce before finishing.\n"
+            "- Commit is handled for you after you finish; leave the working tree in its final state.\n"
+            "- End with a short summary of what you did, files touched, how to verify, and anything "
+            "you could not do. If you hit work outside your scope, add an `ESCALATION:` section "
+            "listing recommended follow-up tasks (role, what, why) for the manager to consider."
+        )
 
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,

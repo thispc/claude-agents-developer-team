@@ -39,17 +39,23 @@ def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
     }
 
 
-def pick_model(task: dict) -> str:
-    """Base model comes from the task's role config; escalate after repeated failures."""
+def pick_model(task: dict, project: dict | None = None) -> str:
+    """Model precedence: escalation (after repeated failures) > the boss's recruited
+    per-role choice for this project > the role's roles.json default > WORKER_MODEL."""
     if task["attempts"] >= 2:
         return config.ESCALATION_MODEL
+    if project:
+        import json
+        for member in json.loads(project.get("team") or "[]"):
+            if member.get("role") == task["role"] and member.get("model"):
+                return config._resolve_model(member["model"])
     role = config.roles_by_name().get(task["role"])
     return role["model"] if role else config.WORKER_MODEL
 
 
 class LocalLauncher:
     async def launch(self, task: dict, project: dict) -> None:
-        env = _worker_env(task, project, pick_model(task))
+        env = _worker_env(task, project, pick_model(task, project))
         workdir = config.WORKSPACES_DIR / f"task-{task['id']}-a{task['attempts']}"
         workdir.mkdir(parents=True, exist_ok=True)
         import os
@@ -85,7 +91,7 @@ class K8sLauncher:
         self.client = client
 
     async def launch(self, task: dict, project: dict) -> None:
-        env = _worker_env(task, project, pick_model(task))
+        env = _worker_env(task, project, pick_model(task, project))
         k = self.client
         name = f"devteam-worker-{task['id']}-a{task['attempts']}"
         job = k.V1Job(
@@ -163,7 +169,7 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
     db.inc_runs(task["project_id"])
     db.update_task(task_id, status="queued", attempts=task["attempts"] + 1)
     task = db.get_task(task_id)
-    model = pick_model(task)
+    model = pick_model(task, project)
     await get_launcher().launch(task, project)
     bus.emit(task["project_id"], task_id, source, "dispatched",
              {"role": task["role"], "title": task["title"], "model": model,

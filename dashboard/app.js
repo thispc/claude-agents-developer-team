@@ -197,6 +197,9 @@ function renderEvent(e) {
   if (e.source === "lead") cls = "manager"; // events from before the rename
   if (e.kind === "tool_use") cls += " tool";
   if (e.kind === "thinking") cls += " think";
+  if (e.source === "manager" && e.kind === "message") cls += " mgrmsg";
+  if (e.kind === "boss_question") cls += " question";
+  if (e.source === "boss") cls += " bossmsg";
   if (e.kind === "error" || e.kind === "worker_died" || e.kind === "dag_blocked") cls += " error";
   div.className = `ev ${cls}`;
   let text = e.payload;
@@ -209,7 +212,9 @@ function renderEvent(e) {
     }
   } catch { /* plain text payload */ }
   const when = e.ts ? new Date(e.ts * 1000).toLocaleTimeString() : "";
-  div.innerHTML = `<div class="src">${escapeHtml(e.source)} · ${escapeHtml(e.kind)} · ${when}</div>${escapeHtml(text)}`;
+  const who = e.source === "manager" ? "👔 Manager" : e.source === "boss" ? "🫵 You"
+    : e.source.startsWith("worker") ? "🛠 " + e.source.replace("worker:", "") : e.source;
+  div.innerHTML = `<div class="src">${escapeHtml(who)} · ${escapeHtml(e.kind)} · ${when}</div>${escapeHtml(text)}`;
   const box = $("#events");
   box.appendChild(div);
   while (box.children.length > 400) box.removeChild(box.firstChild);
@@ -263,9 +268,12 @@ async function answerQuestion(qid, answer) {
 }
 
 // --- task detail panel ------------------------------------------------------
+let editTaskTarget = null;
 async function showTask(id) {
   const t = lastTasks.find((x) => x.id === id);
   if (!t) return;
+  editTaskTarget = id;
+  $("#editTaskBtn").hidden = ["done", "running", "queued"].includes(t.status);
   let deps = [];
   try { deps = JSON.parse(t.deps || "[]"); } catch { /* noop */ }
   const repo = currentRepo;
@@ -423,6 +431,75 @@ $("#taskDialog").addEventListener("click", (ev) => {
   if (ev.target === $("#taskDialog")) $("#taskDialog").close();
 });
 
+// --- editable DAG: add + edit tasks -----------------------------------------
+let editingTaskId = null;
+
+function openAddTask(prefill) {
+  const sel = $("#addTaskRole");
+  sel.innerHTML = knownRoles.map((r) => `<option>${r}</option>`).join("") +
+    `<option value="__c">+ custom…</option>`;
+  const form = $("#addTaskForm");
+  form.reset();
+  $("#addTaskError").hidden = true;
+  editingTaskId = prefill ? prefill.id : null;
+  $("#addTaskTitle").textContent = prefill ? `Edit task #${prefill.id}` : "Add a task to the DAG";
+  $("#addTaskSubmit").textContent = prefill ? "Save changes" : "Add to DAG";
+  if (prefill) {
+    if (!knownRoles.includes(prefill.role)) sel.insertAdjacentHTML("afterbegin", `<option>${prefill.role}</option>`);
+    sel.value = prefill.role;
+    sel.disabled = true;
+    form.title.value = prefill.title;
+    form.description.value = prefill.description;
+    let deps = []; try { deps = JSON.parse(prefill.deps || "[]"); } catch { /* */ }
+    form.depends_on.value = deps.join(", ");
+  } else {
+    sel.disabled = false;
+  }
+  $("#addTaskDialog").showModal();
+}
+
+$("#addTaskRole").addEventListener("change", (e) => {
+  if (e.target.value === "__c") {
+    const name = prompt("Custom role name:");
+    const clean = (name || "").trim().toLowerCase().replace(/\s+/g, "-");
+    if (clean) {
+      if (!knownRoles.includes(clean)) knownRoles.push(clean);
+      e.target.insertAdjacentHTML("afterbegin", `<option>${clean}</option>`);
+      e.target.value = clean;
+    } else e.target.selectedIndex = 0;
+  }
+});
+$("#addTaskBtn").addEventListener("click", () => openAddTask(null));
+$("#closeAddTaskBtn").addEventListener("click", () => $("#addTaskDialog").close());
+$("#editTaskBtn").addEventListener("click", () => {
+  const t = lastTasks.find((x) => x.id === editTaskTarget);
+  if (t) { $("#taskDialog").close(); openAddTask(t); }
+});
+
+$("#addTaskForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const deps = String(f.get("depends_on") || "").split(",").map((s) => Number(s.trim())).filter(Boolean);
+  const err = $("#addTaskError");
+  err.hidden = true;
+  try {
+    if (editingTaskId) {
+      await api(`/api/tasks/${editingTaskId}/edit`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: f.get("title"), description: f.get("description"), depends_on: deps }),
+      });
+    } else {
+      await api(`/api/projects/${currentProject}/tasks`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: f.get("role"), title: f.get("title"),
+          description: f.get("description"), depends_on: deps }),
+      });
+    }
+    $("#addTaskDialog").close();
+    refreshBoard();
+  } catch (e) { err.textContent = e.message; err.hidden = false; }
+});
+
 document.querySelectorAll(".vchip").forEach((chip) =>
   chip.addEventListener("click", () => {
     document.querySelectorAll(".vchip").forEach((c) => c.classList.remove("active"));
@@ -442,13 +519,100 @@ document.querySelectorAll(".chips .chip").forEach((chip) =>
   }),
 );
 
+// --- recruiting wizard ------------------------------------------------------
+let knownRoles = ["backend", "frontend", "tester"];
+
+function rosterRow(member) {
+  const row = document.createElement("div");
+  row.className = "roster-row";
+  const opts = [...new Set([...knownRoles, member.role])]
+    .map((r) => `<option ${r === member.role ? "selected" : ""}>${r}</option>`).join("");
+  row.innerHTML = `
+    <select class="r-role">${opts}<option value="__custom">+ custom…</option></select>
+    <input class="r-count" type="number" min="1" max="6" value="${member.count || 1}" title="how many">
+    <select class="r-model" title="model tier">
+      <option value="worker" ${member.model !== "lead" ? "selected" : ""}>cheap (Haiku)</option>
+      <option value="lead" ${member.model === "lead" ? "selected" : ""}>pro (Sonnet)</option>
+    </select>
+    <button type="button" class="r-fire" title="remove">✕</button>`;
+  const idx = () => [...row.parentNode.children].indexOf(row);
+  row.querySelector(".r-role").addEventListener("change", (e) => {
+    const cur = readRoster();
+    if (e.target.value === "__custom") {
+      const name = prompt("New role name (e.g. designer, devops, security-researcher):");
+      const clean = (name || "").trim().toLowerCase().replace(/\s+/g, "-");
+      if (!clean) { renderRoster(cur); return; }        // cancelled → restore
+      if (!knownRoles.includes(clean)) knownRoles.push(clean);
+      cur[idx()].role = clean;
+    } else {
+      cur[idx()].role = e.target.value;
+    }
+    renderRoster(cur);
+  });
+  row.querySelector(".r-fire").addEventListener("click", () => {
+    const cur = readRoster();
+    cur.splice(idx(), 1);
+    renderRoster(cur.length ? cur : [{ role: "tester", count: 1, model: "worker" }]);
+  });
+  return row;
+}
+
+function readRoster() {
+  return [...document.querySelectorAll("#roster .roster-row")].map((row) => ({
+    role: row.querySelector(".r-role").value,
+    count: Number(row.querySelector(".r-count").value) || 1,
+    model: row.querySelector(".r-model").value,
+  })).filter((m) => m.role && m.role !== "__custom");
+}
+
+function renderRoster(members) {
+  const box = $("#roster");
+  box.innerHTML = "";
+  for (const m of members) box.appendChild(rosterRow(m));
+}
+
 const dialog = $("#newProjectDialog");
-const openDialog = () => { $("#formError").hidden = true; dialog.showModal(); };
+function showStep(n) {
+  $("#step1").hidden = n !== 1;
+  $("#step2").hidden = n !== 2;
+}
+const openDialog = () => { $("#formError").hidden = true; showStep(1); dialog.showModal(); };
 $("#projectSelect").addEventListener("change", (e) => selectProject(e.target.value));
 $("#homeLink").addEventListener("click", showHome);
 $("#homeLink").style.cursor = "pointer";
 $("#newProjectBtn").addEventListener("click", openDialog);
 $("#homeNewBtn").addEventListener("click", openDialog);
+$("#backToBriefBtn").addEventListener("click", () => showStep(1));
+$("#addRoleBtn").addEventListener("click", () =>
+  renderRoster(readRoster().concat([{ role: knownRoles[0] || "backend", count: 1, model: "worker" }])));
+
+$("#toRecruitBtn").addEventListener("click", async () => {
+  const form = $("#newProjectForm");
+  const err = $("#formError");
+  err.hidden = true;
+  if (!form.name.value.trim() || !form.brief.value.trim()) {
+    err.textContent = "Project name and brief are required."; err.hidden = false; return;
+  }
+  const btn = $("#toRecruitBtn");
+  btn.disabled = true; btn.textContent = "Sizing up the work…";
+  $("#recruitNote").textContent = "Sizing up your brief…";
+  showStep(2);
+  renderRoster([]);
+  try {
+    const res = await api("/api/suggest-team", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brief: form.brief.value }),
+    });
+    knownRoles = [...new Set([...(res.known_roles || knownRoles), ...res.team.map((m) => m.role)])];
+    renderRoster(res.team.length ? res.team : [{ role: "backend", count: 1, model: "worker" }]);
+    $("#recruitNote").textContent = "Suggested from your brief — hire, fire, bump the count, or add whoever you want.";
+  } catch (e) {
+    renderRoster([{ role: "backend", count: 1, model: "worker" }, { role: "tester", count: 1, model: "worker" }]);
+    $("#recruitNote").textContent = "Couldn't auto-suggest — here's a default team to edit.";
+  } finally {
+    btn.disabled = false; btn.textContent = "Recruit team →";
+  }
+});
 $("#closeDialogBtn").addEventListener("click", () => dialog.close());
 dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
 $("#cancelBtn").addEventListener("click", async () => {
@@ -465,13 +629,12 @@ $("#restartBtn").addEventListener("click", async () => {
 $("#newProjectForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const form = ev.target;
-  const errBox = $("#formError");
+  const errBox = $("#formError2");
   errBox.hidden = true;
-  if (!form.reportValidity()) return;
   const f = new FormData(form);
   const btn = $("#createBtn");
   btn.disabled = true;
-  btn.textContent = "Starting…";
+  btn.textContent = "Hiring…";
   try {
     const res = await api("/api/projects", {
       method: "POST",
@@ -479,17 +642,18 @@ $("#newProjectForm").addEventListener("submit", async (ev) => {
       body: JSON.stringify({
         name: f.get("name"), brief: f.get("brief"), repo: f.get("repo"),
         max_workers: Number(f.get("max_workers")), max_runs: Number(f.get("max_runs")),
+        team: readRoster(),
       }),
     });
     dialog.close();
     form.reset();
     openProject(res.id);
   } catch (e) {
-    errBox.textContent = e.message;   // keep the dialog open, keep the typed values
+    errBox.textContent = e.message;
     errBox.hidden = false;
   } finally {
     btn.disabled = false;
-    btn.textContent = "Start team";
+    btn.textContent = "Hire team & start ▶";
   }
 });
 

@@ -3,10 +3,16 @@ import asyncio
 from fastapi import APIRouter, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from . import bus, config, db, github_client, manager, scheduler
+from . import bus, config, db, github_client, manager, planner, scheduler
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
+
+
+class TeamMember(BaseModel):
+    role: str
+    count: int = 1
+    model: str = "worker"
 
 
 class NewProject(BaseModel):
@@ -16,6 +22,24 @@ class NewProject(BaseModel):
     budget_usd: float = 0
     max_workers: int = 0
     max_runs: int = 0
+    team: list[TeamMember] = []
+
+
+class BriefOnly(BaseModel):
+    brief: str
+
+
+class NewTask(BaseModel):
+    role: str
+    title: str
+    description: str
+    depends_on: list[int] = []
+
+
+class EditTask(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    depends_on: list[int] | None = None
 
 
 class Directive(BaseModel):
@@ -52,6 +76,13 @@ def health() -> dict:
             "github": bool(config.GITHUB_TOKEN)}
 
 
+@router.post("/api/suggest-team")
+async def suggest_team(body: BriefOnly) -> dict:
+    """Recruiting: propose a starting team from the brief for the boss to tweak."""
+    return {"team": await planner.suggest_team(body.brief),
+            "known_roles": [r["name"] for r in config.load_roles()]}
+
+
 @router.post("/api/projects")
 async def create_project(body: NewProject) -> dict:
     if not config.AUTH_CONFIGURED:
@@ -62,11 +93,13 @@ async def create_project(body: NewProject) -> dict:
                                  "set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) "
                                  "or ANTHROPIC_API_KEY")
     repo = body.repo or config.GITHUB_REPO
+    team = [m.model_dump() for m in body.team]
     project_id = db.create_project(
         body.name, body.brief, repo,
         body.budget_usd or config.PROJECT_BUDGET_USD,
         body.max_workers or config.MAX_CONCURRENT_WORKERS,
         body.max_runs or config.MAX_AGENT_RUNS,
+        team=team,
     )
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
     # Make sure the target repo exists before the team tries to clone it. This is
@@ -184,6 +217,49 @@ def set_budget(project_id: int, body: Budget) -> dict:
         raise HTTPException(404, "no such project")
     db._execute("UPDATE projects SET budget_usd=? WHERE id=?", (body.budget_usd, project_id))
     bus.emit(project_id, None, "boss", "budget_changed", {"budget_usd": body.budget_usd})
+    return {"ok": True}
+
+
+@router.post("/api/projects/{project_id}/tasks")
+async def add_task(project_id: int, body: NewTask) -> dict:
+    """Boss adds a task to the DAG directly (no manager needed)."""
+    project = db.get_project(project_id)
+    if not project:
+        raise HTTPException(404, "no such project")
+    valid = {t["id"] for t in db.list_tasks(project_id)}
+    deps = [d for d in body.depends_on if d in valid]
+    task_id = db.create_task(project_id, body.role, body.title, body.description,
+                             deps=deps, origin="runtime")
+    if github_client.enabled(project["repo"]):
+        try:
+            n = await github_client.create_issue(
+                project["repo"], f"[{body.role}] {body.title}",
+                body.description + f"\n\n_devteam task {task_id} (added by boss)_")
+            db.update_task(task_id, issue_number=n)
+        except Exception:
+            pass
+    scheduler.ensure(project_id)
+    bus.emit(project_id, task_id, "boss", "task_added", {"role": body.role, "title": body.title})
+    return {"id": task_id}
+
+
+@router.post("/api/tasks/{task_id}/edit")
+def edit_task(task_id: int, body: EditTask) -> dict:
+    """Boss edits a task's title/spec/dependencies live."""
+    t = db.get_task(task_id)
+    if not t:
+        raise HTTPException(404, "no such task")
+    fields: dict = {}
+    if body.title is not None:
+        fields["title"] = body.title
+    if body.description is not None:
+        fields["description"] = body.description
+    if body.depends_on is not None:
+        valid = {x["id"] for x in db.list_tasks(t["project_id"]) if x["id"] != task_id}
+        fields["deps"] = db.json.dumps([d for d in body.depends_on if d in valid])
+    if fields:
+        db.update_task(task_id, **fields)
+    bus.emit(t["project_id"], task_id, "boss", "task_edited", {"fields": list(fields)})
     return {"ok": True}
 
 

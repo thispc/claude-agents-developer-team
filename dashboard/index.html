@@ -36,6 +36,8 @@
     <div class="view-toggle">
       <button class="chip vchip active" data-v="board">Board</button>
       <button class="chip vchip" data-v="dag">DAG</button>
+      <div class="vspacer"></div>
+      <button id="addTaskBtn" class="chip" title="Add a task to the DAG yourself">+ Add task</button>
     </div>
     <section id="dag" hidden><svg id="dagSvg" xmlns="http://www.w3.org/2000/svg"></svg></section>
     <section id="board">
@@ -69,30 +71,66 @@
 <dialog id="taskDialog">
   <div class="task-detail-wrap">
     <div id="taskDetail"></div>
-    <div class="actions"><button type="button" id="closeTaskBtn">Close</button></div>
+    <div class="actions">
+      <button type="button" id="editTaskBtn" hidden>✎ Edit spec / deps</button>
+      <button type="button" id="closeTaskBtn">Close</button>
+    </div>
   </div>
+</dialog>
+
+<dialog id="addTaskDialog">
+  <form id="addTaskForm" class="task-detail-wrap">
+    <h2 id="addTaskTitle">Add a task</h2>
+    <label>Role <select name="role" id="addTaskRole"></select></label>
+    <label>Title <input name="title" required placeholder="Add rate limiting to the API"></label>
+    <label>Description / spec <span class="hint">file paths, contracts, acceptance criteria</span>
+      <textarea name="description" rows="6" required></textarea></label>
+    <label>Depends on <span class="hint">task ids that must merge first, comma-separated (optional)</span>
+      <input name="depends_on" placeholder="e.g. 3, 4"></label>
+    <p id="addTaskError" class="form-error" hidden></p>
+    <div class="actions">
+      <button type="button" id="closeAddTaskBtn">Cancel</button>
+      <button type="submit" class="primary" id="addTaskSubmit">Add to DAG</button>
+    </div>
+  </form>
 </dialog>
 
 <dialog id="newProjectDialog">
   <form id="newProjectForm" novalidate>
-    <h2>New project</h2>
-    <label>Project name
-      <input name="name" required placeholder="todo-app" autocomplete="off"></label>
-    <label>GitHub repo <span class="hint">owner/repo — created automatically (private) if it doesn't exist; blank uses the server default</span>
-      <input name="repo" placeholder="owner/repo" autocomplete="off"></label>
-    <label>Brief <span class="hint">what to build, the stack, and what “done” means</span>
-      <textarea name="brief" rows="7" required
-        placeholder="Build a URL shortener. FastAPI backend in api/ with POST /shorten and GET /{code}. Static frontend in web/. Done = tester verifies the round-trip."></textarea></label>
-    <div class="nums">
-      <label>Max agents per team <span class="hint">parallel workers</span>
-        <input name="max_workers" type="number" min="1" max="8" value="3"></label>
-      <label>Agent-run cap <span class="hint">runaway guard</span>
-        <input name="max_runs" type="number" min="5" max="200" value="40"></label>
+    <!-- Step 1: the brief -->
+    <div id="step1" class="wizard-step">
+      <h2>New project <span class="step-tag">Step 1 of 2 · The brief</span></h2>
+      <label>Project name
+        <input name="name" required placeholder="todo-app" autocomplete="off"></label>
+      <label>GitHub repo <span class="hint">owner/repo — created automatically (private) if it doesn't exist; blank uses the server default</span>
+        <input name="repo" placeholder="owner/repo" autocomplete="off"></label>
+      <label>Brief <span class="hint">what to build, the stack, and what “done” means</span>
+        <textarea name="brief" rows="7" required
+          placeholder="Build a URL shortener. FastAPI backend in api/ with POST /shorten and GET /{code}. Static frontend in web/. Done = tester verifies the round-trip."></textarea></label>
+      <div class="nums">
+        <label>Max agents working at once <span class="hint">parallelism</span>
+          <input name="max_workers" type="number" min="1" max="8" value="3"></label>
+        <label>Agent-run cap <span class="hint">runaway guard</span>
+          <input name="max_runs" type="number" min="5" max="200" value="40"></label>
+      </div>
+      <p id="formError" class="form-error" hidden></p>
+      <div class="actions">
+        <button type="button" id="closeDialogBtn">Cancel</button>
+        <button type="button" id="toRecruitBtn" class="primary">Recruit team →</button>
+      </div>
     </div>
-    <p id="formError" class="form-error" hidden></p>
-    <div class="actions">
-      <button type="button" id="closeDialogBtn">Cancel</button>
-      <button type="submit" id="createBtn" class="primary">Start team</button>
+
+    <!-- Step 2: recruit the team -->
+    <div id="step2" class="wizard-step" hidden>
+      <h2>Recruit your team <span class="step-tag">Step 2 of 2 · Hiring</span></h2>
+      <p class="recruit-note" id="recruitNote">Suggested from your brief — hire, fire, or add whoever you want.</p>
+      <div id="roster"></div>
+      <button type="button" id="addRoleBtn" class="add-role">+ Add a role</button>
+      <p id="formError2" class="form-error" hidden></p>
+      <div class="actions">
+        <button type="button" id="backToBriefBtn">← Back</button>
+        <button type="submit" id="createBtn" class="primary">Hire team &amp; start ▶</button>
+      </div>
     </div>
   </form>
 </dialog>
