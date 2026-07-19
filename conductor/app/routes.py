@@ -140,6 +140,12 @@ def get_events(project_id: int, after: int = 0) -> list[dict]:
     return db.list_events(project_id, after_id=after)
 
 
+@router.get("/api/tasks/{task_id}/events")
+def get_task_events(task_id: int) -> list[dict]:
+    """Full start-to-end transcript for one task's agent (messages + tool calls)."""
+    return db.list_task_events(task_id)
+
+
 # --- boss controls -----------------------------------------------------------
 
 @router.post("/api/projects/{project_id}/directive")

@@ -263,7 +263,7 @@ async function answerQuestion(qid, answer) {
 }
 
 // --- task detail panel ------------------------------------------------------
-function showTask(id) {
+async function showTask(id) {
   const t = lastTasks.find((x) => x.id === id);
   if (!t) return;
   let deps = [];
@@ -288,7 +288,24 @@ function showTask(id) {
     <h3>Specification (written by the manager)</h3>
     <pre>${escapeHtml(t.description)}</pre>
     ${t.feedback ? `<h3>Latest review feedback</h3><pre>${escapeHtml(t.feedback)}</pre>` : ""}
-    ${t.report ? `<h3>Worker report</h3><pre>${escapeHtml(t.report)}</pre>` : ""}`;
+    ${t.report ? `<h3>Final report</h3><pre>${escapeHtml(t.report)}</pre>` : ""}
+    <h3>Agent log — full transcript (start to end)</h3>
+    <div id="taskLog"><pre class="dim">loading…</pre></div>`;
+  // Fetch the complete per-agent event stream for this task.
+  api(`/api/tasks/${t.id}/events`).then((evs) => {
+    const log = $("#taskLog");
+    if (!evs.length) { log.innerHTML = `<pre class="dim">No activity recorded (task hasn't run yet).</pre>`; return; }
+    log.innerHTML = evs.map((e) => {
+      let text = e.payload;
+      try {
+        const o = JSON.parse(e.payload);
+        if (typeof o === "object" && o !== null)
+          text = e.kind === "tool_use" ? `$ ${o.tool || o.name || ""} ${JSON.stringify(o.input || o).slice(0, 500)}` : JSON.stringify(o);
+      } catch { /* plain text */ }
+      const when = e.ts ? new Date(e.ts * 1000).toLocaleTimeString() : "";
+      return `<div class="logline log-${e.kind}"><span class="lt">${when} · ${escapeHtml(e.kind)}</span>${escapeHtml(text)}</div>`;
+    }).join("");
+  }).catch(() => { $("#taskLog").innerHTML = `<pre class="dim">could not load log</pre>`; });
   $("#taskDetail").querySelectorAll(".task-actions button").forEach((b) =>
     b.addEventListener("click", async () => {
       await api(`/api/tasks/${b.dataset.id}/${b.dataset.act}`, { method: "POST" });

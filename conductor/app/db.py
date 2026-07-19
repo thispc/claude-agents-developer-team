@@ -213,6 +213,10 @@ def list_events(project_id: int, after_id: int = 0, limit: int = 500) -> list[di
     )
 
 
+def list_task_events(task_id: int) -> list[dict]:
+    return _rows("SELECT * FROM events WHERE task_id=? ORDER BY id", (task_id,))
+
+
 # --- boss <-> manager inbox ---
 
 def add_directive(project_id: int, text: str) -> int:

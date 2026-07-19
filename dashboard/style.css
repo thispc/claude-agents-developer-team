@@ -1,4 +1,5 @@
 * { box-sizing: border-box; margin: 0; }
+[hidden] { display: none !important; }  /* beats display:grid/flex on #home, main, #board, #dag */
 :root {
   --bg: #0f1218; --panel: #171c26; --panel2: #1e2532; --line: #2a3245;
   --text: #dbe2ef; --dim: #7d8aa5; --accent: #5eead4; --warn: #fbbf24;
@@ -59,6 +60,13 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 420px; gap: 12px; padd
 #taskDetail h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--accent); margin: 14px 0 4px; }
 #taskDetail pre { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 12px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
 #taskDetail .meta a { color: var(--accent); }
+#taskLog { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px; max-height: 340px; overflow-y: auto; }
+.logline { font-size: 12px; padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,.04); white-space: pre-wrap; word-break: break-word; }
+.logline .lt { display: block; font-size: 9.5px; text-transform: uppercase; letter-spacing: .5px; color: var(--dim); margin-bottom: 2px; }
+.logline.log-tool_use { color: var(--dim); }
+.logline.log-report { color: var(--good); }
+.logline.log-agent_status { color: var(--accent); }
+pre.dim { color: var(--dim); }
 .card .meta a { color: var(--accent); text-decoration: none; }
 .card.running { border-color: var(--accent); animation: pulse 2s infinite; }
 .card.failed { border-color: var(--bad); }
