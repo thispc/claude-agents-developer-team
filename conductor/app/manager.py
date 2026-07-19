@@ -183,18 +183,22 @@ def build_team_server(project_id: int):
         except Exception:
             opts = []
         qid = db.ask_question(project_id, args["question"], [str(o) for o in opts][:4])
+        prev_status = project().get("status", "running")
+        db.set_project_status(project_id, "hold")  # surfaces as "on hold" in the UI
         bus.emit(project_id, None, "manager", "boss_question",
                  {"id": qid, "question": args["question"], "options": opts})
-        deadline = time.time() + 1800
+        deadline = time.time() + 3600
         while time.time() < deadline:
             if project().get("status") == "cancelled":
                 return _text("project cancelled while awaiting your answer; call finish.")
             q = db.get_question(qid)
             if q and q["status"] == "answered":
+                db.set_project_status(project_id, "running" if prev_status == "hold" else prev_status)
                 bus.emit(project_id, None, "boss", "answer", q["answer"])
                 return _text(f"The boss answered: {q['answer']}")
             await asyncio.sleep(4)
-        return _text("No answer within 30 minutes; use your best judgment and proceed.")
+        db.set_project_status(project_id, "running")
+        return _text("No answer within 60 minutes; use your best judgment and proceed.")
 
     @tool("get_report", "Read the final report a team member produced for a task. Check "
           "the end for an ESCALATION: section — that is a request for extra tasks.",

@@ -58,3 +58,36 @@ async def merge_pr(repo: str, number: int) -> bool:
 async def default_branch(repo: str) -> str:
     data = await _request("GET", f"/repos/{repo}")
     return data.get("default_branch", "main")
+
+
+async def repo_exists(repo: str) -> bool:
+    try:
+        await _request("GET", f"/repos/{repo}")
+        return True
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return False
+        raise
+
+
+async def ensure_repo(repo: str) -> tuple[bool, str]:
+    """Create the repo (private, initialized) if it doesn't exist.
+    Returns (ok, note). `repo` is 'owner/name'; the token's user must be the owner
+    (or the org must allow it). Personal repos are created for the token's own user."""
+    if not enabled(repo):
+        return False, "GitHub not configured"
+    if await repo_exists(repo):
+        return True, "repo already exists"
+    owner, _, name = repo.partition("/")
+    me = await _request("GET", "/user")
+    body = {"name": name, "private": True, "auto_init": True,
+            "description": "Created automatically by devteam"}
+    try:
+        if owner and owner.lower() != me.get("login", "").lower():
+            # owner is an org the token can create in
+            await _request("POST", f"/orgs/{owner}/repos", json=body)
+        else:
+            await _request("POST", "/user/repos", json=body)
+        return True, f"created private repo {repo}"
+    except httpx.HTTPStatusError as e:
+        return False, f"could not create {repo}: {e.response.status_code} {e.response.text[:200]}"

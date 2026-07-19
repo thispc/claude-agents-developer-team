@@ -8,18 +8,30 @@
 </head>
 <body>
 <header>
-  <h1>dev<span>team</span></h1>
-  <select id="projectSelect" title="Select project"></select>
+  <h1 id="homeLink">dev<span>team</span></h1>
+  <select id="projectSelect" title="Select project" hidden></select>
   <button id="newProjectBtn">+ New project</button>
   <div class="spacer"></div>
   <div id="authBadge" class="badge">auth: …</div>
-  <div id="costBadge" class="badge" title="spent / budget">$0.00</div>
-  <div id="statusBadge" class="badge">—</div>
-  <button id="restartBtn" hidden title="Re-run the lead agent on this project">↻ Restart lead</button>
+  <div id="costBadge" class="badge" hidden>—</div>
+  <div id="statusBadge" class="badge" hidden>—</div>
+  <button id="restartBtn" hidden title="Re-run the manager on this project">↻ Restart manager</button>
   <button id="cancelBtn" class="danger" hidden>Cancel</button>
 </header>
 
-<main>
+<section id="home">
+  <div class="home-head">
+    <h2>Projects</h2>
+    <button id="homeNewBtn" class="primary">+ New project</button>
+  </div>
+  <table id="projectsTable">
+    <thead><tr><th>#</th><th>Name</th><th>Repo</th><th>Status</th><th>Tasks</th><th>Usage</th><th>Actions</th></tr></thead>
+    <tbody id="projectsBody"></tbody>
+  </table>
+  <p id="homeEmpty" class="empty" hidden>No projects yet. Create one to put your AI team to work.</p>
+</section>
+
+<main hidden>
   <div id="left">
     <div class="view-toggle">
       <button class="chip vchip active" data-v="board">Board</button>
@@ -66,16 +78,16 @@
     <h2>New project</h2>
     <label>Project name
       <input name="name" required placeholder="todo-app" autocomplete="off"></label>
-    <label>GitHub repo <span class="hint">optional — blank uses the server default</span>
+    <label>GitHub repo <span class="hint">owner/repo — created automatically (private) if it doesn't exist; blank uses the server default</span>
       <input name="repo" placeholder="owner/repo" autocomplete="off"></label>
     <label>Brief <span class="hint">what to build, the stack, and what “done” means</span>
       <textarea name="brief" rows="7" required
         placeholder="Build a URL shortener. FastAPI backend in api/ with POST /shorten and GET /{code}. Static frontend in web/. Done = tester verifies the round-trip."></textarea></label>
     <div class="nums">
-      <label>Budget (USD)
-        <input name="budget_usd" type="number" step="0.5" min="0.5" value="5"></label>
-      <label>Max parallel workers
+      <label>Max agents per team <span class="hint">parallel workers</span>
         <input name="max_workers" type="number" min="1" max="8" value="3"></label>
+      <label>Agent-run cap <span class="hint">runaway guard</span>
+        <input name="max_runs" type="number" min="5" max="200" value="40"></label>
     </div>
     <p id="formError" class="form-error" hidden></p>
     <div class="actions">

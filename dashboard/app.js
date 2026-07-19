@@ -41,6 +41,9 @@ async function loadHealth() {
   } catch { /* server starting */ }
 }
 
+const STATUS_CLASS = { done: "ok", failed: "bad", cancelled: "bad", review: "warn", hold: "warn", planning: "run", running: "run" };
+const STATUS_LABEL = { hold: "on hold — needs you", review: "in review" };
+
 async function loadProjects() {
   const projects = await api("/api/projects");
   const sel = $("#projectSelect");
@@ -48,11 +51,75 @@ async function loadProjects() {
   for (const p of projects) {
     const opt = document.createElement("option");
     opt.value = p.id;
+    opt.dataset.repo = p.repo || "";
     opt.textContent = `#${p.id} ${p.name} [${p.status}]`;
     sel.appendChild(opt);
   }
-  if (projects.length && !currentProject) selectProject(projects[0].id);
-  else if (currentProject) sel.value = currentProject;
+  if (currentProject) sel.value = currentProject;
+  renderHome(projects);
+}
+
+function renderHome(projects) {
+  const body = $("#projectsBody");
+  body.innerHTML = "";
+  $("#homeEmpty").hidden = projects.length > 0;
+  for (const p of projects) {
+    const tr = document.createElement("tr");
+    const cls = STATUS_CLASS[p.status] || "";
+    const label = STATUS_LABEL[p.status] || p.status;
+    const usage = authMode === "subscription"
+      ? `${p.runs_used ?? 0}/${p.max_runs ?? 40} runs`
+      : `$${(p.cost_usd || 0).toFixed(2)}`;
+    const repoCell = p.repo
+      ? `<a href="https://github.com/${p.repo}" target="_blank" onclick="event.stopPropagation()">${p.repo}</a>`
+      : "—";
+    const active = !["done", "failed", "cancelled"].includes(p.status);
+    const canRestart = ["failed", "review", "cancelled"].includes(p.status);
+    tr.innerHTML = `
+      <td>${p.id}</td>
+      <td class="pname">${escapeHtml(p.name)}</td>
+      <td>${repoCell}</td>
+      <td><span class="pill ${cls}">${label}</span></td>
+      <td>${p.task_count ?? "—"}</td>
+      <td>${usage}</td>
+      <td class="row-actions">
+        <button data-act="open" data-id="${p.id}">Open</button>
+        ${active ? `<button data-act="cancel" data-id="${p.id}" class="danger">Cancel</button>` : ""}
+        ${canRestart ? `<button data-act="restart" data-id="${p.id}">↻</button>` : ""}
+      </td>`;
+    tr.addEventListener("click", () => openProject(p.id));
+    body.appendChild(tr);
+  }
+  body.querySelectorAll(".row-actions button").forEach((b) =>
+    b.addEventListener("click", async (ev) => {
+      ev.stopPropagation();
+      const id = b.dataset.id;
+      if (b.dataset.act === "open") return openProject(id);
+      if (b.dataset.act === "cancel" && confirm("Cancel this project?"))
+        await api(`/api/projects/${id}/cancel`, { method: "POST" });
+      if (b.dataset.act === "restart")
+        await api(`/api/projects/${id}/restart`, { method: "POST" });
+      loadProjects();
+    }));
+}
+
+function showHome() {
+  currentProject = null;
+  $("#home").hidden = false;
+  $("main").hidden = true;
+  $("#projectSelect").hidden = true;
+  $("#costBadge").hidden = true;
+  $("#statusBadge").hidden = true;
+  $("#restartBtn").hidden = true;
+  $("#cancelBtn").hidden = true;
+  loadProjects();
+}
+
+function openProject(id) {
+  $("#home").hidden = true;
+  $("main").hidden = false;
+  $("#projectSelect").hidden = false;
+  selectProject(id);
 }
 
 async function selectProject(id) {
@@ -75,6 +142,7 @@ async function refreshBoard() {
   currentRepo = p.repo || "";
   if (!$("#dag").hidden) renderDag(p.tasks);
   const runs = p.runs_used ?? 0, maxRuns = p.max_runs ?? 40;
+  $("#costBadge").hidden = false;
   if (authMode === "subscription") {
     // No per-token billing — show the meaningful metric (agent runs), not dollars.
     $("#costBadge").textContent = `${runs} / ${maxRuns} agent runs`;
@@ -85,9 +153,9 @@ async function refreshBoard() {
     $("#costBadge").title = "Estimated API spend / budget cap. Authoritative balance is at console.anthropic.com.";
   }
   const badge = $("#statusBadge");
-  badge.textContent = p.status;
-  badge.className = "badge " +
-    ({ done: "ok", failed: "bad", cancelled: "bad", review: "warn" }[p.status] || "run");
+  badge.hidden = false;
+  badge.textContent = STATUS_LABEL[p.status] || p.status;
+  badge.className = "badge " + (STATUS_CLASS[p.status] || "run");
   badge.title = p.summary || "";
   $("#cancelBtn").hidden = ["done", "failed", "cancelled"].includes(p.status);
   $("#restartBtn").hidden = !["failed", "review", "cancelled"].includes(p.status);
@@ -153,10 +221,10 @@ function connectWs() {
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onmessage = (m) => {
     const e = JSON.parse(m.data);
-    renderEvent(e);
-    refreshBoard();
+    if (currentProject) { renderEvent(e); refreshBoard(); }
+    else loadProjects();  // on the home page, keep the table live
     if (e.kind === "boss_question" || e.kind === "answered") refreshQuestion();
-    if (["project_created", "project_finished", "project_cancelled"].includes(e.kind)) loadProjects();
+    if (["project_created", "project_finished", "project_cancelled", "boss_question"].includes(e.kind)) loadProjects();
   };
   ws.onclose = () => setTimeout(connectWs, 2000);
 }
@@ -358,11 +426,12 @@ document.querySelectorAll(".chips .chip").forEach((chip) =>
 );
 
 const dialog = $("#newProjectDialog");
+const openDialog = () => { $("#formError").hidden = true; dialog.showModal(); };
 $("#projectSelect").addEventListener("change", (e) => selectProject(e.target.value));
-$("#newProjectBtn").addEventListener("click", () => {
-  $("#formError").hidden = true;
-  dialog.showModal();
-});
+$("#homeLink").addEventListener("click", showHome);
+$("#homeLink").style.cursor = "pointer";
+$("#newProjectBtn").addEventListener("click", openDialog);
+$("#homeNewBtn").addEventListener("click", openDialog);
 $("#closeDialogBtn").addEventListener("click", () => dialog.close());
 dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
 $("#cancelBtn").addEventListener("click", async () => {
@@ -392,13 +461,12 @@ $("#newProjectForm").addEventListener("submit", async (ev) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: f.get("name"), brief: f.get("brief"), repo: f.get("repo"),
-        budget_usd: Number(f.get("budget_usd")), max_workers: Number(f.get("max_workers")),
+        max_workers: Number(f.get("max_workers")), max_runs: Number(f.get("max_runs")),
       }),
     });
     dialog.close();
     form.reset();
-    await loadProjects();
-    selectProject(res.id);
+    openProject(res.id);
   } catch (e) {
     errBox.textContent = e.message;   // keep the dialog open, keep the typed values
     errBox.hidden = false;
@@ -408,7 +476,9 @@ $("#newProjectForm").addEventListener("submit", async (ev) => {
   }
 });
 
-loadHealth();
-loadProjects();
-connectWs();
-setInterval(refreshBoard, 10000);
+(async () => {
+  await loadHealth();
+  showHome();
+  connectWs();
+})();
+setInterval(() => { if (currentProject) refreshBoard(); else loadProjects(); }, 10000);

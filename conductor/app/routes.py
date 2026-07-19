@@ -69,13 +69,21 @@ async def create_project(body: NewProject) -> dict:
         body.max_runs or config.MAX_AGENT_RUNS,
     )
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
+    # Make sure the target repo exists before the team tries to clone it. This is
+    # why manual repo creation is unnecessary — the token creates a private repo.
+    if repo and github_client.enabled(repo):
+        ok, note = await github_client.ensure_repo(repo)
+        bus.emit(project_id, None, "system", "repo_ready" if ok else "repo_error", note)
     _manager_tasks[project_id] = asyncio.get_event_loop().create_task(manager.run_manager(project_id))
     return {"id": project_id}
 
 
 @router.get("/api/projects")
 def list_projects() -> list[dict]:
-    return db.list_projects()
+    projects = db.list_projects()
+    for p in projects:
+        p["task_count"] = len(db.list_tasks(p["id"]))
+    return projects
 
 
 @router.get("/api/projects/{project_id}")

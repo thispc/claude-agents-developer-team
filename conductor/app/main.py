@@ -17,7 +17,7 @@ async def lifespan(app: FastAPI):
     # Resume any project that was mid-flight when the conductor last stopped, so a
     # restart (deploy, crash) doesn't strand a running project without its manager.
     for p in db.list_projects():
-        if p["status"] in ("planning", "running") and config.AUTH_CONFIGURED:
+        if p["status"] in ("planning", "running", "hold") and config.AUTH_CONFIGURED:
             scheduler.ensure(p["id"])
             _manager_tasks[p["id"]] = loop.create_task(manager.run_manager(p["id"]))
             bus.emit(p["id"], None, "system", "resumed_after_restart", {})
