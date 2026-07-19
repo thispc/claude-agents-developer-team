@@ -17,8 +17,14 @@ finish the project.
 
 import asyncio
 import json
+import time
 
-from . import bus, db, github_client, launcher
+from . import bus, config, db, github_client, launcher
+
+# A task 'running' longer than this with no update is treated as a dead worker
+# (k8s Job evicted, subprocess killed, SDK hang). Its Job has its own hard
+# activeDeadlineSeconds; this is the conductor-side backstop.
+STUCK_SECONDS = int(config._env("WORKER_STUCK_SECONDS", "1800"))
 
 _schedulers: dict[int, asyncio.Task] = {}
 
@@ -66,9 +72,15 @@ async def _run(project_id: int) -> None:
         done_ids = {t["id"] for t in tasks if t["status"] == "done"}
         failed_ids = {t["id"] for t in tasks if t["status"] == "failed"}
 
+        now = time.time()
         for t in tasks:
             if t["status"] == "pushed":
                 await _auto_open_pr(project, t)
+            elif t["status"] == "running" and now - t["updated_at"] > STUCK_SECONDS:
+                db.update_task(t["id"], status="failed",
+                               report="worker stalled with no activity; marked failed by watchdog")
+                bus.emit(project_id, t["id"], "scheduler", "worker_stalled",
+                         {"idle_seconds": int(now - t["updated_at"])})
 
         ready, blocked = [], []
         for t in tasks:

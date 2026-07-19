@@ -82,6 +82,7 @@ async function refreshBoard() {
   badge.title = p.summary || "";
   $("#cancelBtn").hidden = ["done", "failed", "cancelled"].includes(p.status);
   $("#restartBtn").hidden = !["failed", "review", "cancelled"].includes(p.status);
+  refreshQuestion();
   for (const [col, statuses] of Object.entries(COLS)) {
     const box = document.querySelector(`.col[data-col="${col}"] .cards`);
     box.innerHTML = "";
@@ -145,9 +146,43 @@ function connectWs() {
     const e = JSON.parse(m.data);
     renderEvent(e);
     refreshBoard();
+    if (e.kind === "boss_question" || e.kind === "answered") refreshQuestion();
     if (["project_created", "project_finished", "project_cancelled"].includes(e.kind)) loadProjects();
   };
   ws.onclose = () => setTimeout(connectWs, 2000);
+}
+
+// --- boss controls ----------------------------------------------------------
+async function refreshQuestion() {
+  if (!currentProject) return;
+  let q;
+  try { q = await api(`/api/projects/${currentProject}/question`); } catch { return; }
+  const banner = $("#askBanner");
+  if (!q.question) { banner.hidden = true; return; }
+  banner.hidden = false;
+  $("#askText").textContent = "⏸ Manager needs your call: " + q.question;
+  const box = $("#askOpts");
+  box.innerHTML = "";
+  for (const opt of q.options || []) {
+    const b = document.createElement("button");
+    b.textContent = opt;
+    b.addEventListener("click", () => answerQuestion(q.id, opt));
+    box.appendChild(b);
+  }
+  const custom = document.createElement("input");
+  custom.placeholder = "or type your own answer + Enter";
+  custom.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && custom.value.trim()) answerQuestion(q.id, custom.value.trim());
+  });
+  box.appendChild(custom);
+}
+
+async function answerQuestion(qid, answer) {
+  await api(`/api/questions/${qid}/answer`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ answer }),
+  });
+  $("#askBanner").hidden = true;
 }
 
 // --- task detail panel ------------------------------------------------------
@@ -161,15 +196,27 @@ function showTask(id) {
   if (t.issue_number && repo) links.push(`<a target="_blank" href="https://github.com/${repo}/issues/${t.issue_number}">issue #${t.issue_number}</a>`);
   if (t.pr_number && repo) links.push(`<a target="_blank" href="https://github.com/${repo}/pull/${t.pr_number}">PR #${t.pr_number}</a>`);
   if (t.branch && repo) links.push(`<a target="_blank" href="https://github.com/${repo}/tree/${t.branch}">${t.branch}</a>`);
+  const canRetry = ["failed", "review", "done"].includes(t.status);
+  const canSkip = !["done"].includes(t.status);
   $("#taskDetail").innerHTML = `
     <div class="role ${t.role}">${t.role}</div>
     <h2>#${t.id} ${escapeHtml(t.title)}</h2>
     <div class="meta">${t.status} · attempt ${t.attempts} · $${t.cost_usd.toFixed(2)}
       ${deps.length ? "· depends on " + deps.map((d) => "#" + d).join(", ") : ""} ${links.join(" · ")}</div>
+    <div class="task-actions">
+      ${canRetry ? `<button data-act="retry" data-id="${t.id}">↻ Re-run this task</button>` : ""}
+      ${canSkip ? `<button data-act="skip" data-id="${t.id}">✓ Mark done / skip</button>` : ""}
+    </div>
     <h3>Specification (written by the manager)</h3>
     <pre>${escapeHtml(t.description)}</pre>
     ${t.feedback ? `<h3>Latest review feedback</h3><pre>${escapeHtml(t.feedback)}</pre>` : ""}
     ${t.report ? `<h3>Worker report</h3><pre>${escapeHtml(t.report)}</pre>` : ""}`;
+  $("#taskDetail").querySelectorAll(".task-actions button").forEach((b) =>
+    b.addEventListener("click", async () => {
+      await api(`/api/tasks/${b.dataset.id}/${b.dataset.act}`, { method: "POST" });
+      $("#taskDialog").close();
+      refreshBoard();
+    }));
   $("#taskDialog").showModal();
 }
 
@@ -252,6 +299,19 @@ function renderDag(tasks) {
 $("#dagSvg").addEventListener("click", (ev) => {
   const g = ev.target.closest("[data-task]");
   if (g) showTask(Number(g.dataset.task));
+});
+$("#directiveForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const input = $("#directiveInput");
+  const text = input.value.trim();
+  if (!text || !currentProject) return;
+  input.value = "";
+  try {
+    await api(`/api/projects/${currentProject}/directive`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+  } catch (e) { alert(e.message); }
 });
 $("#closeTaskBtn").addEventListener("click", () => $("#taskDialog").close());
 $("#taskDialog").addEventListener("click", (ev) => {

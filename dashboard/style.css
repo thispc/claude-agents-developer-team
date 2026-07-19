@@ -55,6 +55,19 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 420px; gap: 12px; padd
 #feed[data-filter="worker"] .ev.manager, #feed[data-filter="worker"] .ev.system { display: none; }
 .ev.think { opacity: .55; font-style: italic; border-color: #4a5670; }
 #events { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+#directiveForm { display: flex; gap: 6px; margin-top: 8px; }
+#directiveForm input { flex: 1; padding: 8px 10px; border-radius: 8px; }
+#directiveForm input:focus { outline: none; border-color: var(--accent); }
+#directiveForm button { padding: 8px 14px; border-radius: 8px; }
+#askBanner { background: rgba(251,191,36,.1); border: 1px solid var(--warn); border-radius: 8px; padding: 10px; margin-bottom: 8px; }
+.ask-q { color: var(--warn); font-size: 13px; margin-bottom: 8px; }
+.ask-opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.ask-opts button { padding: 6px 12px; border-radius: 7px; background: var(--panel2); }
+.ask-opts button:hover { border-color: var(--warn); color: var(--warn); }
+.ask-opts input { flex: 1; min-width: 180px; padding: 6px 10px; border-radius: 7px; }
+.task-actions { display: flex; gap: 8px; margin: 6px 0; }
+.task-actions button { padding: 7px 12px; border-radius: 7px; }
+.ev.boss { border-color: #f0abfc; }
 .ev { border-left: 3px solid var(--line); padding: 4px 8px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
 .ev .src { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); }
 .ev.manager { border-color: var(--accent); }

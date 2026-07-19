@@ -52,6 +52,20 @@ CREATE TABLE IF NOT EXISTS events (
     ts REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id, id);
+-- Boss <-> Manager channel.
+-- directive: boss -> manager, consumed at the manager's next decision point.
+-- question:  manager -> boss, answered from the dashboard; manager blocks until answered.
+CREATE TABLE IF NOT EXISTS inbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,          -- 'directive' | 'question'
+    text TEXT NOT NULL,
+    options TEXT NOT NULL DEFAULT '[]',
+    answer TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending | delivered | answered
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_inbox_project ON inbox(project_id, status);
 """
 
 
@@ -142,6 +156,10 @@ def update_task(task_id: int, **fields: Any) -> None:
     _execute(f"UPDATE tasks SET {cols} WHERE id=?", (*fields.values(), task_id))
 
 
+def touch_task(task_id: int) -> None:
+    _execute("UPDATE tasks SET updated_at=? WHERE id=?", (time.time(), task_id))
+
+
 def count_running(project_id: int) -> int:
     rows = _rows(
         "SELECT COUNT(*) AS n FROM tasks WHERE project_id=? AND status IN ('queued','running')",
@@ -175,3 +193,49 @@ def list_events(project_id: int, after_id: int = 0, limit: int = 500) -> list[di
         "SELECT * FROM events WHERE project_id=? AND id>? ORDER BY id LIMIT ?",
         (project_id, after_id, limit),
     )
+
+
+# --- boss <-> manager inbox ---
+
+def add_directive(project_id: int, text: str) -> int:
+    cur = _execute(
+        "INSERT INTO inbox (project_id, kind, text, created_at) VALUES (?,?,?,?)",
+        (project_id, "directive", text, time.time()),
+    )
+    return cur.lastrowid
+
+
+def take_directives(project_id: int) -> list[str]:
+    """Return undelivered boss directives and mark them delivered (consume once)."""
+    rows = _rows(
+        "SELECT * FROM inbox WHERE project_id=? AND kind='directive' AND status='pending' ORDER BY id",
+        (project_id,),
+    )
+    for r in rows:
+        _execute("UPDATE inbox SET status='delivered' WHERE id=?", (r["id"],))
+    return [r["text"] for r in rows]
+
+
+def ask_question(project_id: int, text: str, options: list[str]) -> int:
+    cur = _execute(
+        "INSERT INTO inbox (project_id, kind, text, options, created_at) VALUES (?,?,?,?,?)",
+        (project_id, "question", text, json.dumps(options), time.time()),
+    )
+    return cur.lastrowid
+
+
+def get_question(qid: int) -> dict | None:
+    rows = _rows("SELECT * FROM inbox WHERE id=?", (qid,))
+    return rows[0] if rows else None
+
+
+def answer_question(qid: int, answer: str) -> None:
+    _execute("UPDATE inbox SET answer=?, status='answered' WHERE id=?", (answer, qid))
+
+
+def pending_question(project_id: int) -> dict | None:
+    rows = _rows(
+        "SELECT * FROM inbox WHERE project_id=? AND kind='question' AND status='pending' ORDER BY id DESC LIMIT 1",
+        (project_id,),
+    )
+    return rows[0] if rows else None

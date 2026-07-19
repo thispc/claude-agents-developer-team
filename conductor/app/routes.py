@@ -3,7 +3,7 @@ import asyncio
 from fastapi import APIRouter, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from . import bus, config, db, manager, scheduler
+from . import bus, config, db, github_client, manager, scheduler
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -15,6 +15,18 @@ class NewProject(BaseModel):
     repo: str = ""
     budget_usd: float = 0
     max_workers: int = 0
+
+
+class Directive(BaseModel):
+    text: str
+
+
+class Answer(BaseModel):
+    answer: str
+
+
+class Budget(BaseModel):
+    budget_usd: float
 
 
 class WorkerEvent(BaseModel):
@@ -91,7 +103,7 @@ async def restart_project(project_id: int) -> dict:
 
 
 @router.post("/api/projects/{project_id}/cancel")
-def cancel_project(project_id: int) -> dict:
+async def cancel_project(project_id: int) -> dict:
     project = db.get_project(project_id)
     if not project:
         raise HTTPException(404, "no such project")
@@ -99,7 +111,16 @@ def cancel_project(project_id: int) -> dict:
     scheduler.stop(project_id)
     t = _manager_tasks.get(project_id)
     if t and not t.done():
-        t.cancel()  # aborts the lead session immediately instead of at its next wait
+        t.cancel()  # aborts the manager session immediately instead of at its next wait
+    # Close this project's still-open GitHub issues so they don't linger as orphans.
+    repo = project["repo"]
+    if github_client.enabled(repo):
+        for task in db.list_tasks(project_id):
+            if task["issue_number"] and task["status"] not in ("done",):
+                try:
+                    await github_client.close_issue(repo, task["issue_number"])
+                except Exception:
+                    pass
     bus.emit(project_id, None, "system", "project_cancelled", {})
     return {"ok": True}
 
@@ -107,6 +128,70 @@ def cancel_project(project_id: int) -> dict:
 @router.get("/api/projects/{project_id}/events")
 def get_events(project_id: int, after: int = 0) -> list[dict]:
     return db.list_events(project_id, after_id=after)
+
+
+# --- boss controls -----------------------------------------------------------
+
+@router.post("/api/projects/{project_id}/directive")
+def send_directive(project_id: int, body: Directive) -> dict:
+    """Boss -> manager message. Delivered at the manager's next decision point."""
+    if not db.get_project(project_id):
+        raise HTTPException(404, "no such project")
+    db.add_directive(project_id, body.text)
+    bus.emit(project_id, None, "boss", "directive", body.text)
+    return {"ok": True}
+
+
+@router.get("/api/projects/{project_id}/question")
+def get_pending_question(project_id: int) -> dict:
+    """The manager's open question for the boss, if any."""
+    q = db.pending_question(project_id)
+    if not q:
+        return {"question": None}
+    return {"id": q["id"], "text": q["text"], "options": db.json.loads(q["options"])}
+
+
+@router.post("/api/questions/{qid}/answer")
+def answer(qid: int, body: Answer) -> dict:
+    q = db.get_question(qid)
+    if not q:
+        raise HTTPException(404, "no such question")
+    db.answer_question(qid, body.answer)
+    bus.emit(q["project_id"], None, "boss", "answered",
+             {"question": q["text"], "answer": body.answer})
+    return {"ok": True}
+
+
+@router.post("/api/projects/{project_id}/budget")
+def set_budget(project_id: int, body: Budget) -> dict:
+    if not db.get_project(project_id):
+        raise HTTPException(404, "no such project")
+    db._execute("UPDATE projects SET budget_usd=? WHERE id=?", (body.budget_usd, project_id))
+    bus.emit(project_id, None, "boss", "budget_changed", {"budget_usd": body.budget_usd})
+    return {"ok": True}
+
+
+@router.post("/api/tasks/{task_id}/retry")
+def retry_task(task_id: int) -> dict:
+    t = db.get_task(task_id)
+    if not t:
+        raise HTTPException(404, "no such task")
+    db.update_task(task_id, status="planned")
+    scheduler.ensure(t["project_id"])
+    bus.emit(t["project_id"], task_id, "boss", "retry_requested", {})
+    return {"ok": True}
+
+
+@router.post("/api/tasks/{task_id}/skip")
+def skip_task(task_id: int) -> dict:
+    """Boss marks a task done/skipped so dependents can proceed."""
+    t = db.get_task(task_id)
+    if not t:
+        raise HTTPException(404, "no such task")
+    db.update_task(task_id, status="done")
+    scheduler.ensure(t["project_id"])
+    bus.emit(t["project_id"], task_id, "boss", "task_skipped", {})
+    return {"ok": True}
 
 
 # --- internal endpoints used by workers ---
@@ -122,6 +207,8 @@ def worker_event(body: WorkerEvent, x_worker_token: str | None = Header(None)) -
     bus.emit(body.project_id, body.task_id, body.source, body.kind, body.payload)
     if body.kind == "agent_status" and body.payload == "running":
         db.update_task(body.task_id, status="running")
+    else:
+        db.touch_task(body.task_id)  # keep the stall watchdog from firing on busy tasks
     return {"ok": True}
 
 

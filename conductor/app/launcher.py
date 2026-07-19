@@ -59,11 +59,14 @@ class LocalLauncher:
 
     async def _reap(self, proc, task: dict) -> None:
         code = await proc.wait()
-        # If the worker died before reporting, mark the task failed so the lead isn't stuck.
+        # The worker's /internal/report is the source of truth. If the process
+        # exited but the task is still queued/running, no report arrived — treat
+        # it as failed regardless of exit code (the scheduler will retry; a
+        # branch it already pushed is reused on the next attempt).
         fresh = db.get_task(task["id"])
-        if fresh and fresh["status"] in ("queued", "running") and code != 0:
+        if fresh and fresh["status"] in ("queued", "running"):
             db.update_task(task["id"], status="failed",
-                           report=f"worker process exited with code {code} before reporting")
+                           report=f"worker process exited (code {code}) without posting a report")
             bus.emit(task["project_id"], task["id"], "system", "worker_died",
                      {"exit_code": code})
 

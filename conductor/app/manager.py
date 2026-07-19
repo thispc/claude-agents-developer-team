@@ -148,6 +148,11 @@ def build_team_server(project_id: int):
                 note = ("BUDGET EXHAUSTED - do not add more tasks; "
                         "wrap up and call finish.")
                 break
+            directives = db.take_directives(project_id)
+            if directives:
+                note = "MESSAGE(S) FROM THE BOSS (the user) — treat as high priority:\n" + \
+                    "\n".join(f"- {d}" for d in directives)
+                break
             now = {t["id"]: t["status"] for t in db.list_tasks(project_id)}
             changed = [tid for tid, s in now.items() if before.get(tid) != s]
             terminal = [tid for tid in changed if now[tid] in ("review", "failed", "done")]
@@ -160,6 +165,30 @@ def build_team_server(project_id: int):
         tasks = db.list_tasks(project_id)
         body = "\n".join(_task_line(t) for t in tasks)
         return _text((note + "\n" if note else "") + body)
+
+    @tool("ask_boss", "Ask the user (your boss) to make a decision when the choice is "
+          "genuinely theirs — a product tradeoff, scope question, or spending call you "
+          "shouldn't make alone. Blocks until they answer. Provide 2-4 concrete options; "
+          "the boss may also type their own answer.", {"question": str, "options_json": str})
+    async def ask_boss(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            opts = json.loads(args.get("options_json", "[]"))
+            assert isinstance(opts, list)
+        except Exception:
+            opts = []
+        qid = db.ask_question(project_id, args["question"], [str(o) for o in opts][:4])
+        bus.emit(project_id, None, "manager", "boss_question",
+                 {"id": qid, "question": args["question"], "options": opts})
+        deadline = time.time() + 1800
+        while time.time() < deadline:
+            if project().get("status") == "cancelled":
+                return _text("project cancelled while awaiting your answer; call finish.")
+            q = db.get_question(qid)
+            if q and q["status"] == "answered":
+                bus.emit(project_id, None, "boss", "answer", q["answer"])
+                return _text(f"The boss answered: {q['answer']}")
+            await asyncio.sleep(4)
+        return _text("No answer within 30 minutes; use your best judgment and proceed.")
 
     @tool("get_report", "Read the final report a team member produced for a task. Check "
           "the end for an ESCALATION: section — that is a request for extra tasks.",
@@ -223,14 +252,14 @@ def build_team_server(project_id: int):
 
     return create_sdk_mcp_server(
         name="team", version="1.0.0",
-        tools=[create_tasks, add_tasks, status, wait, get_report,
+        tools=[create_tasks, add_tasks, status, wait, ask_boss, get_report,
                request_changes, merge_pr, finish],
     )
 
 
 MANAGER_TOOLS = [f"mcp__team__{n}" for n in
-                 ("create_tasks", "add_tasks", "status", "wait", "get_report",
-                  "request_changes", "merge_pr", "finish")]
+                 ("create_tasks", "add_tasks", "status", "wait", "ask_boss",
+                  "get_report", "request_changes", "merge_pr", "finish")]
 
 BUILTIN_TOOLS_OFF = ["Bash", "Read", "Write", "Edit", "Glob", "Grep",
                      "WebSearch", "WebFetch", "Task", "NotebookEdit", "TodoWrite"]

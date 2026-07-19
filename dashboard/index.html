@@ -42,7 +42,15 @@
         <button class="chip" data-f="worker">Team</button>
       </div>
     </div>
+    <div id="askBanner" hidden>
+      <div class="ask-q" id="askText"></div>
+      <div class="ask-opts" id="askOpts"></div>
+    </div>
     <div id="events"></div>
+    <form id="directiveForm" title="Message your manager — delivered at their next decision point">
+      <input id="directiveInput" placeholder="Message the manager (e.g. 'add dark mode', 'skip tests, ship it')…" autocomplete="off">
+      <button type="submit">Send</button>
+    </form>
   </section>
 </main>
 
