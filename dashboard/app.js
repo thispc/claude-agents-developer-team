@@ -71,6 +71,7 @@ async function refreshBoard() {
   let p;
   try { p = await api(`/api/projects/${currentProject}`); } catch { return; }
   lastTasks = p.tasks;
+  currentRepo = p.repo || "";
   if (!$("#dag").hidden) renderDag(p.tasks);
   const est = authMode === "subscription" ? " est. (not billed)" : "";
   $("#costBadge").textContent = `$${p.cost_usd.toFixed(2)} / $${p.budget_usd.toFixed(2)}${est}`;
@@ -96,8 +97,11 @@ async function refreshBoard() {
       card.innerHTML = `
         <div class="role ${t.role}">${t.role}</div>
         <div class="title">${escapeHtml(t.title)}</div>
+        <div class="desc">${escapeHtml(t.description.slice(0, 160))}</div>
         <div class="meta">${t.status} · try ${t.attempts} · $${t.cost_usd.toFixed(2)} ${links.join(" ")}</div>`;
-      card.title = t.description;
+      card.addEventListener("click", (ev) => {
+        if (ev.target.tagName !== "A") showTask(t.id);
+      });
       box.appendChild(card);
     }
   }
@@ -145,6 +149,31 @@ function connectWs() {
   };
   ws.onclose = () => setTimeout(connectWs, 2000);
 }
+
+// --- task detail panel ------------------------------------------------------
+function showTask(id) {
+  const t = lastTasks.find((x) => x.id === id);
+  if (!t) return;
+  let deps = [];
+  try { deps = JSON.parse(t.deps || "[]"); } catch { /* noop */ }
+  const repo = currentRepo;
+  const links = [];
+  if (t.issue_number && repo) links.push(`<a target="_blank" href="https://github.com/${repo}/issues/${t.issue_number}">issue #${t.issue_number}</a>`);
+  if (t.pr_number && repo) links.push(`<a target="_blank" href="https://github.com/${repo}/pull/${t.pr_number}">PR #${t.pr_number}</a>`);
+  if (t.branch && repo) links.push(`<a target="_blank" href="https://github.com/${repo}/tree/${t.branch}">${t.branch}</a>`);
+  $("#taskDetail").innerHTML = `
+    <div class="role ${t.role}">${t.role}</div>
+    <h2>#${t.id} ${escapeHtml(t.title)}</h2>
+    <div class="meta">${t.status} · attempt ${t.attempts} · $${t.cost_usd.toFixed(2)}
+      ${deps.length ? "· depends on " + deps.map((d) => "#" + d).join(", ") : ""} ${links.join(" · ")}</div>
+    <h3>Specification (written by the manager)</h3>
+    <pre>${escapeHtml(t.description)}</pre>
+    ${t.feedback ? `<h3>Latest review feedback</h3><pre>${escapeHtml(t.feedback)}</pre>` : ""}
+    ${t.report ? `<h3>Worker report</h3><pre>${escapeHtml(t.report)}</pre>` : ""}`;
+  $("#taskDialog").showModal();
+}
+
+let currentRepo = "";
 
 // --- DAG view ---------------------------------------------------------------
 const DAG_COLORS = {
@@ -201,7 +230,7 @@ function renderDag(tasks) {
     const c = DAG_COLORS[t.status] || "#7d8aa5";
     const active = ["queued", "running"].includes(t.status);
     const title = t.title.length > 26 ? t.title.slice(0, 25) + "…" : t.title;
-    nodes += `<g class="dag-node${active ? " active" : ""}">
+    nodes += `<g class="dag-node${active ? " active" : ""}" data-task="${t.id}">
       <rect x="${x}" y="${y}" width="${NODE_W}" height="${NODE_H}" rx="10"
         fill="#1e2532" stroke="${c}" stroke-width="1.6"/>
       <text x="${x + 12}" y="${y + 19}" font-size="9.5" letter-spacing="1"
@@ -219,6 +248,15 @@ function renderDag(tasks) {
       <path d="M0,0 L10,5 L0,10 z" fill="#3d485f"/></marker></defs>
     ${edges}${nodes}`;
 }
+
+$("#dagSvg").addEventListener("click", (ev) => {
+  const g = ev.target.closest("[data-task]");
+  if (g) showTask(Number(g.dataset.task));
+});
+$("#closeTaskBtn").addEventListener("click", () => $("#taskDialog").close());
+$("#taskDialog").addEventListener("click", (ev) => {
+  if (ev.target === $("#taskDialog")) $("#taskDialog").close();
+});
 
 document.querySelectorAll(".vchip").forEach((chip) =>
   chip.addEventListener("click", () => {

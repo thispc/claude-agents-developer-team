@@ -31,7 +31,16 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 420px; gap: 12px; padd
 .card .role { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
 .card .role.backend { color: #93c5fd; } .card .role.frontend { color: #f0abfc; } .card .role.tester { color: var(--warn); }
 .card .title { margin: 2px 0 4px; }
+.card .desc { font-size: 11px; color: var(--dim); margin: 2px 0 5px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card { cursor: pointer; }
+.card:hover { border-color: var(--accent); }
 .card .meta { font-size: 11px; color: var(--dim); }
+#taskDialog { width: min(760px, 94vw); max-height: 86vh; }
+.task-detail-wrap { padding: 24px; overflow-y: auto; max-height: calc(86vh - 2px); display: flex; flex-direction: column; gap: 8px; }
+#taskDetail h2 { font-size: 16px; margin: 2px 0 4px; }
+#taskDetail h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--accent); margin: 14px 0 4px; }
+#taskDetail pre { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 12px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
+#taskDetail .meta a { color: var(--accent); }
 .card .meta a { color: var(--accent); text-decoration: none; }
 .card.running { border-color: var(--accent); animation: pulse 2s infinite; }
 .card.failed { border-color: var(--bad); }
