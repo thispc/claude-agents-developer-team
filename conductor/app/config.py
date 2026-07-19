@@ -73,3 +73,35 @@ def load_role_prompt(role: str) -> str:
     if not path.exists():
         raise FileNotFoundError(f"No role prompt for '{role}' at {path}")
     return path.read_text()
+
+
+def _resolve_model(spec: str) -> str:
+    """Map a role's 'model' field to a concrete model id."""
+    return {"worker": WORKER_MODEL, "lead": LEAD_MODEL, "escalation": ESCALATION_MODEL}.get(
+        spec, spec or WORKER_MODEL)
+
+
+def load_roles() -> list[dict]:
+    """Declarative team roles from agents/roles.json. Each: name, model (resolved to an
+    id), max_parallel, summary, fan_out. Adding a role = one entry here + a <name>.md prompt."""
+    import json
+    path = AGENTS_DIR / "roles.json"
+    if not path.exists():
+        # Sensible default matching the shipped prompts.
+        return [{"name": r, "model": WORKER_MODEL, "max_parallel": 3, "summary": "", "fan_out": ""}
+                for r in ("backend", "frontend", "tester")]
+    data = json.loads(path.read_text())
+    roles = []
+    for r in data.get("roles", []):
+        roles.append({
+            "name": r["name"],
+            "model": _resolve_model(r.get("model", "worker")),
+            "max_parallel": int(r.get("max_parallel", 3)),
+            "summary": r.get("summary", ""),
+            "fan_out": r.get("fan_out", ""),
+        })
+    return roles
+
+
+def roles_by_name() -> dict[str, dict]:
+    return {r["name"]: r for r in load_roles()}

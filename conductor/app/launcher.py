@@ -40,8 +40,11 @@ def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
 
 
 def pick_model(task: dict) -> str:
-    """Escalate to the stronger model after repeated failures."""
-    return config.ESCALATION_MODEL if task["attempts"] >= 2 else config.WORKER_MODEL
+    """Base model comes from the task's role config; escalate after repeated failures."""
+    if task["attempts"] >= 2:
+        return config.ESCALATION_MODEL
+    role = config.roles_by_name().get(task["role"])
+    return role["model"] if role else config.WORKER_MODEL
 
 
 class LocalLauncher:
@@ -141,6 +144,14 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
     running = db.count_running(task["project_id"])
     if running >= project["max_workers"]:
         return f"error: {running} workers already running (max {project['max_workers']}); call wait first"
+    # Per-role parallelism cap: don't run more than the role allows at once.
+    role_cfg = config.roles_by_name().get(task["role"])
+    if role_cfg:
+        role_running = sum(1 for t in db.list_tasks(task["project_id"])
+                           if t["role"] == task["role"] and t["status"] in ("queued", "running"))
+        if role_running >= role_cfg["max_parallel"]:
+            return (f"error: {role_running} {task['role']} workers already running "
+                    f"(role cap {role_cfg['max_parallel']}); call wait first")
     # Agent-run cap is the primary safety rail (meaningful on subscription, where
     # there is no dollar cost). The dollar cap still applies on API billing.
     if project["runs_used"] >= project["max_runs"]:

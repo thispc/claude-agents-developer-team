@@ -24,7 +24,18 @@ from claude_agent_sdk import (
 
 from . import bus, config, db, github_client, scheduler
 
-VALID_ROLES = {"backend", "frontend", "tester"}
+
+def valid_roles() -> set[str]:
+    return {r["name"] for r in config.load_roles()}
+
+
+def role_catalog_text() -> str:
+    lines = ["Your team roles (assign each task a role from this list):"]
+    for r in config.load_roles():
+        lines.append(f"- {r['name']}: {r['summary']}")
+        if r.get("fan_out"):
+            lines.append(f"    fan-out: {r['fan_out']} (up to {r['max_parallel']} in parallel)")
+    return "\n".join(lines)
 
 
 def _text(msg: str) -> dict[str, Any]:
@@ -48,13 +59,14 @@ def build_team_server(project_id: int):
         """Create a batch of tasks. depends_on = 0-based indices within this batch;
         depends_on_existing (if allowed) = ids of tasks that already exist."""
         origin = "runtime" if existing_dep_ids_ok else "initial"
+        roles = valid_roles()
         lines: list[str] = []
         repo = project().get("repo", "")
         existing_ids = {t["id"] for t in db.list_tasks(project_id)}
         created_ids: list[int | None] = []
         for item in items:
             role = item.get("role", "")
-            if role not in VALID_ROLES:
+            if role not in roles:
                 created_ids.append(None)
                 lines.append(f"skipped '{item.get('title')}': invalid role '{role}'")
                 continue
@@ -297,7 +309,9 @@ async def run_manager(project_id: int) -> None:
     prompt = (
         f"Project: {project['name']}\n"
         f"Repository: {project['repo'] or '(none configured)'}\n"
-        f"Budget: ${project['budget_usd']:.2f} | Max parallel workers: {project['max_workers']}\n\n"
+        f"Max parallel workers: {project['max_workers']} | "
+        f"Agent-run cap: {project['max_runs']}\n\n"
+        f"{role_catalog_text()}\n\n"
         f"Brief from the user:\n{project['brief']}\n\n"
         "Plan the work, run your team, and ship it. This may be a restarted session: "
         "call status first, and only create_tasks if none exist yet."

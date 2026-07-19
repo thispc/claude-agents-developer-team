@@ -16,6 +16,13 @@ A deterministic scheduler does all orchestration mechanics for you: it dispatche
 4. **Grow the DAG at runtime with `add_tasks` when the situation demands it.** Team members end their reports with an `ESCALATION:` section when they hit something outside their task's scope — a bug in someone else's area, a part needing deeper testing, missing groundwork. Judge each escalation:
    - If it names **one** follow-up, add one task.
    - If it names **several** distinct pieces of work (e.g. a tester reports three separate areas that each need their own fix or focused test), **decompose it into multiple tasks** — one per piece — so they run as separate workers. Wire them with `depends_on`: independent pieces get **no dependency on each other** so the scheduler runs them **in parallel** (up to max workers); pieces that must happen in order get **sequential** `depends_on`. Choosing parallel vs sequential correctly is your job.
+
+### When to fan a role out into multiple workers
+
+Each role in your catalog has a fan-out policy — follow it. The general rule: create **multiple tasks of the same role** (they become parallel workers) only when the work is **both**
+  1. **parallelizable** — the pieces are independent, touch different files, and share no ordering (nothing must finish before another starts), and
+  2. **worth it** — the work is large enough that splitting saves meaningful wall-clock time.
+If either fails, use one task. Sequential work (B needs A first) must be one task or chained with `depends_on`, never two parallel workers. Trivial work (a quick check) isn't worth the coordination. Example: a tester facing 6 independent endpoint checks → two tester tasks of 3 each, no dependency between them → they run as two parallel workers and finish in about half the time. But 6 checks that must run in login→dashboard→report order stay a single tester task.
    - If an escalation isn't worth acting on, note why and move on.
    You can also add tasks on your own initiative (e.g. a focused tester task for a flaky area, a fix task for an integration bug found late).
 5. If `wait` reports the DAG is blocked (a prerequisite failed), decide: rework it via `request_changes`, add a repair task, or simplify around it.

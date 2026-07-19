@@ -119,6 +119,29 @@ Anthropic tokens bill separately to your API key: a small project run
 (lead Sonnet 5 + 3–6 Haiku worker runs) typically lands around **$0.50–$3**; the
 per-project budget cap is the hard stop.
 
+## Adding a team role (and how roles multiply)
+
+Roles are declarative. To add one — say a `designer` or `devops` or `security` lead:
+
+1. Add an entry to [agents/roles.json](agents/roles.json):
+   ```json
+   { "name": "designer", "model": "worker", "max_parallel": 2,
+     "summary": "Visual design, CSS, UX polish.",
+     "fan_out": "Split when there are several independent screens to design." }
+   ```
+   `model` is `worker` (Haiku, cheap), `lead` (Sonnet, strong), or a literal model id.
+   `max_parallel` caps how many of this role run at once.
+2. Create `agents/designer.md` — its system prompt (copy an existing one as a template).
+
+That's it. The manager reads the catalog, assigns tasks to the role, and **fans it out into
+multiple parallel workers when `fan_out` applies** — i.e. when the work is *both* parallelizable
+(independent, no shared ordering) *and* big enough that splitting saves wall-clock time. A tester
+facing 6 independent endpoint checks becomes two tester workers of 3; 6 checks that must run in
+order stay one worker. Each parallel task is a separate process locally and a **separate
+Kubernetes Job (pod)** in the cloud — so "two testers instead of one" literally means two pods
+running side by side, which is exactly the autoscaling the DOKS setup provides (bounded by the
+role's `max_parallel` and the project's max-workers / agent-run caps).
+
 ## Config reference
 
 See `.env.example`. Key ones: `LEAD_MODEL` / `WORKER_MODEL` / `ESCALATION_MODEL`,
