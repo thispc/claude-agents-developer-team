@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS projects (
     status TEXT NOT NULL DEFAULT 'planning',
     budget_usd REAL NOT NULL,
     max_workers INTEGER NOT NULL,
+    max_runs INTEGER NOT NULL DEFAULT 40,
+    runs_used INTEGER NOT NULL DEFAULT 0,
     cost_usd REAL NOT NULL DEFAULT 0,
     summary TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL
@@ -32,6 +34,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     description TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'planned',
     deps TEXT NOT NULL DEFAULT '[]',
+    origin TEXT NOT NULL DEFAULT 'initial',   -- initial | runtime (added mid-project)
     branch TEXT NOT NULL DEFAULT '',
     issue_number INTEGER,
     pr_number INTEGER,
@@ -74,10 +77,16 @@ def init() -> None:
     _conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
     _conn.row_factory = sqlite3.Row
     _conn.executescript(SCHEMA)
-    try:  # migration for DBs created before the deps column existed
-        _conn.execute("ALTER TABLE tasks ADD COLUMN deps TEXT NOT NULL DEFAULT '[]'")
-    except sqlite3.OperationalError:
-        pass
+    for stmt in (  # migrations for pre-existing DBs (ignore "duplicate column")
+        "ALTER TABLE tasks ADD COLUMN deps TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE projects ADD COLUMN max_runs INTEGER NOT NULL DEFAULT 40",
+        "ALTER TABLE projects ADD COLUMN runs_used INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tasks ADD COLUMN origin TEXT NOT NULL DEFAULT 'initial'",
+    ):
+        try:
+            _conn.execute(stmt)
+        except sqlite3.OperationalError:
+            pass
     _conn.commit()
 
 
@@ -97,12 +106,20 @@ def _rows(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
 
 # --- projects ---
 
-def create_project(name: str, brief: str, repo: str, budget_usd: float, max_workers: int) -> int:
+def create_project(name: str, brief: str, repo: str, budget_usd: float,
+                   max_workers: int, max_runs: int = 40) -> int:
     cur = _execute(
-        "INSERT INTO projects (name, brief, repo, budget_usd, max_workers, created_at) VALUES (?,?,?,?,?,?)",
-        (name, brief, repo, budget_usd, max_workers, time.time()),
+        "INSERT INTO projects (name, brief, repo, budget_usd, max_workers, max_runs, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (name, brief, repo, budget_usd, max_workers, max_runs, time.time()),
     )
     return cur.lastrowid
+
+
+def inc_runs(project_id: int) -> int:
+    _execute("UPDATE projects SET runs_used = runs_used + 1 WHERE id=?", (project_id,))
+    row = get_project(project_id)
+    return row["runs_used"] if row else 0
 
 
 def get_project(project_id: int) -> dict | None:
@@ -130,11 +147,12 @@ def add_project_cost(project_id: int, usd: float) -> float:
 # --- tasks ---
 
 def create_task(project_id: int, role: str, title: str, description: str,
-                deps: list[int] | None = None) -> int:
+                deps: list[int] | None = None, origin: str = "initial") -> int:
     now = time.time()
     cur = _execute(
-        "INSERT INTO tasks (project_id, role, title, description, deps, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
-        (project_id, role, title, description, json.dumps(deps or []), now, now),
+        "INSERT INTO tasks (project_id, role, title, description, deps, origin, created_at, updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (project_id, role, title, description, json.dumps(deps or []), origin, now, now),
     )
     task_id = cur.lastrowid
     _execute("UPDATE tasks SET branch=? WHERE id=?", (f"task/{task_id}", task_id))

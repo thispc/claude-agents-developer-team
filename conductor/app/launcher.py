@@ -141,9 +141,15 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
     running = db.count_running(task["project_id"])
     if running >= project["max_workers"]:
         return f"error: {running} workers already running (max {project['max_workers']}); call wait first"
-    if project["cost_usd"] >= project["budget_usd"]:
+    # Agent-run cap is the primary safety rail (meaningful on subscription, where
+    # there is no dollar cost). The dollar cap still applies on API billing.
+    if project["runs_used"] >= project["max_runs"]:
+        return (f"error: agent-run cap reached ({project['runs_used']} of {project['max_runs']} "
+                "runs); wrap up and finish.")
+    if config.ANTHROPIC_API_KEY and project["cost_usd"] >= project["budget_usd"]:
         return f"error: budget exhausted (${project['cost_usd']:.2f} of ${project['budget_usd']:.2f})"
 
+    db.inc_runs(task["project_id"])
     db.update_task(task_id, status="queued", attempts=task["attempts"] + 1)
     task = db.get_task(task_id)
     model = pick_model(task)

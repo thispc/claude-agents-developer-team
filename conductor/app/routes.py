@@ -15,6 +15,7 @@ class NewProject(BaseModel):
     repo: str = ""
     budget_usd: float = 0
     max_workers: int = 0
+    max_runs: int = 0
 
 
 class Directive(BaseModel):
@@ -65,6 +66,7 @@ async def create_project(body: NewProject) -> dict:
         body.name, body.brief, repo,
         body.budget_usd or config.PROJECT_BUDGET_USD,
         body.max_workers or config.MAX_CONCURRENT_WORKERS,
+        body.max_runs or config.MAX_AGENT_RUNS,
     )
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
     _manager_tasks[project_id] = asyncio.get_event_loop().create_task(manager.run_manager(project_id))

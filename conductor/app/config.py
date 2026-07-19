@@ -58,6 +58,9 @@ MAX_CONCURRENT_WORKERS = int(_env("MAX_CONCURRENT_WORKERS", "3"))
 WORKER_MAX_TURNS = int(_env("WORKER_MAX_TURNS", "40"))
 LEAD_MAX_TURNS = int(_env("LEAD_MAX_TURNS", "120"))
 PROJECT_BUDGET_USD = float(_env("PROJECT_BUDGET_USD", "5.0"))
+# Primary safety rail: max total agent runs (worker dispatches) per project.
+# This is the meaningful cap on a subscription, where dollar cost is not billed.
+MAX_AGENT_RUNS = int(_env("MAX_AGENT_RUNS", "40"))
 
 AGENTS_DIR = Path(_env("AGENTS_DIR", str(ROOT / "agents")))
 DASHBOARD_DIR = Path(_env("DASHBOARD_DIR", str(ROOT / "dashboard")))

@@ -16,6 +16,7 @@ async function api(path, opts) {
 }
 
 let authMode = "none";
+const taskCost = (t) => (authMode === "subscription" ? "" : ` · $${t.cost_usd.toFixed(2)}`);
 
 async function loadHealth() {
   try {
@@ -73,8 +74,16 @@ async function refreshBoard() {
   lastTasks = p.tasks;
   currentRepo = p.repo || "";
   if (!$("#dag").hidden) renderDag(p.tasks);
-  const est = authMode === "subscription" ? " est. (not billed)" : "";
-  $("#costBadge").textContent = `$${p.cost_usd.toFixed(2)} / $${p.budget_usd.toFixed(2)}${est}`;
+  const runs = p.runs_used ?? 0, maxRuns = p.max_runs ?? 40;
+  if (authMode === "subscription") {
+    // No per-token billing — show the meaningful metric (agent runs), not dollars.
+    $("#costBadge").textContent = `${runs} / ${maxRuns} agent runs`;
+    $("#costBadge").title = "Running on your Claude subscription — no per-token charge. " +
+      "The cap counts total worker dispatches; it's the runaway-loop guard.";
+  } else {
+    $("#costBadge").textContent = `$${p.cost_usd.toFixed(2)} / $${p.budget_usd.toFixed(2)} · ${runs} runs`;
+    $("#costBadge").title = "Estimated API spend / budget cap. Authoritative balance is at console.anthropic.com.";
+  }
   const badge = $("#statusBadge");
   badge.textContent = p.status;
   badge.className = "badge " +
@@ -99,7 +108,7 @@ async function refreshBoard() {
         <div class="role ${t.role}">${t.role}</div>
         <div class="title">${escapeHtml(t.title)}</div>
         <div class="desc">${escapeHtml(t.description.slice(0, 160))}</div>
-        <div class="meta">${t.status} · try ${t.attempts} · $${t.cost_usd.toFixed(2)} ${links.join(" ")}</div>`;
+        <div class="meta">${t.status} · try ${t.attempts}${taskCost(t)} ${links.join(" ")}</div>`;
       card.addEventListener("click", (ev) => {
         if (ev.target.tagName !== "A") showTask(t.id);
       });
@@ -201,7 +210,8 @@ function showTask(id) {
   $("#taskDetail").innerHTML = `
     <div class="role ${t.role}">${t.role}</div>
     <h2>#${t.id} ${escapeHtml(t.title)}</h2>
-    <div class="meta">${t.status} · attempt ${t.attempts} · $${t.cost_usd.toFixed(2)}
+    <div class="meta">${t.status} · attempt ${t.attempts}${t.attempts >= 2 ? " (escalated to Sonnet)" : ""}${taskCost(t)}
+      ${t.origin === "runtime" ? "· added at runtime" : ""}
       ${deps.length ? "· depends on " + deps.map((d) => "#" + d).join(", ") : ""} ${links.join(" · ")}</div>
     <div class="task-actions">
       ${canRetry ? `<button data-act="retry" data-id="${t.id}">↻ Re-run this task</button>` : ""}
@@ -276,15 +286,25 @@ function renderDag(tasks) {
     const { x, y } = pos[t.id];
     const c = DAG_COLORS[t.status] || "#7d8aa5";
     const active = ["queued", "running"].includes(t.status);
-    const title = t.title.length > 26 ? t.title.slice(0, 25) + "…" : t.title;
+    const title = t.title.length > 24 ? t.title.slice(0, 23) + "…" : t.title;
+    const runtime = t.origin === "runtime";
+    // History on the node: retries and model escalation are visible at a glance.
+    const escalated = t.attempts >= 2;
+    const line3 = `${t.status} · try ${t.attempts}${escalated ? " ⬆sonnet" : ""}`;
+    const badge = runtime
+      ? `<g><rect x="${x + NODE_W - 74}" y="${y - 9}" width="70" height="18" rx="9" fill="#f0abfc"/>
+         <text x="${x + NODE_W - 39}" y="${y + 3}" font-size="9" fill="#0b0f14" text-anchor="middle"
+           style="text-transform:uppercase;letter-spacing:.5px">added</text></g>` : "";
     nodes += `<g class="dag-node${active ? " active" : ""}" data-task="${t.id}">
       <rect x="${x}" y="${y}" width="${NODE_W}" height="${NODE_H}" rx="10"
-        fill="#1e2532" stroke="${c}" stroke-width="1.6"/>
+        fill="#1e2532" stroke="${c}" stroke-width="${runtime ? 2 : 1.6}"
+        ${runtime ? 'stroke-dasharray="2 0"' : ""}/>
       <text x="${x + 12}" y="${y + 19}" font-size="9.5" letter-spacing="1"
         fill="${c}" style="text-transform:uppercase">#${t.id} ${t.role.toUpperCase()}</text>
       <text x="${x + 12}" y="${y + 37}" font-size="12" fill="#dbe2ef">${escapeHtml(title)}</text>
-      <text x="${x + 12}" y="${y + 54}" font-size="10" fill="#7d8aa5">${t.status} · try ${t.attempts} · $${t.cost_usd.toFixed(2)}</text>
-      <title>${escapeHtml(t.title)}\n\n${escapeHtml(t.description.slice(0, 600))}</title>
+      <text x="${x + 12}" y="${y + 54}" font-size="10" fill="#7d8aa5">${line3}</text>
+      ${badge}
+      <title>${escapeHtml(t.title)}${runtime ? " (added at runtime)" : ""}\n\n${escapeHtml(t.description.slice(0, 600))}</title>
     </g>`;
   }
   svg.setAttribute("width", Math.max(width, 400));

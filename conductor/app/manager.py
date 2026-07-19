@@ -47,6 +47,7 @@ def build_team_server(project_id: int):
     async def _create_batch(items: list[dict], existing_dep_ids_ok: bool) -> str:
         """Create a batch of tasks. depends_on = 0-based indices within this batch;
         depends_on_existing (if allowed) = ids of tasks that already exist."""
+        origin = "runtime" if existing_dep_ids_ok else "initial"
         lines: list[str] = []
         repo = project().get("repo", "")
         existing_ids = {t["id"] for t in db.list_tasks(project_id)}
@@ -57,7 +58,8 @@ def build_team_server(project_id: int):
                 created_ids.append(None)
                 lines.append(f"skipped '{item.get('title')}': invalid role '{role}'")
                 continue
-            task_id = db.create_task(project_id, role, item["title"], item["description"])
+            task_id = db.create_task(project_id, role, item["title"], item["description"],
+                                     origin=origin)
             created_ids.append(task_id)
         for item, task_id in zip(items, created_ids):
             if task_id is None:
@@ -144,7 +146,11 @@ def build_team_server(project_id: int):
             if p.get("status") == "cancelled":
                 note = "PROJECT CANCELLED by the user - stop all work and call finish now."
                 break
-            if p.get("cost_usd", 0) >= p.get("budget_usd", 1e9):
+            if p.get("runs_used", 0) >= p.get("max_runs", 1e9):
+                note = ("AGENT-RUN CAP REACHED - do not add or retry more tasks; "
+                        "wrap up and call finish.")
+                break
+            if config.ANTHROPIC_API_KEY and p.get("cost_usd", 0) >= p.get("budget_usd", 1e9):
                 note = ("BUDGET EXHAUSTED - do not add more tasks; "
                         "wrap up and call finish.")
                 break
@@ -220,6 +226,19 @@ def build_team_server(project_id: int):
         return _text(f"task {task_id} queued for rework; the scheduler will re-dispatch it. "
                      "Call wait for the result.")
 
+    @tool("accept_task", "Mark a task done after judging its report, when there is no PR to "
+          "merge — e.g. a tester task that only verified and made no code changes. Use this "
+          "to close verification tasks so dependents unblock and the board stays clean. Pass "
+          "a one-line verdict.", {"task_id": int, "verdict": str})
+    async def accept_task(args: dict[str, Any]) -> dict[str, Any]:
+        t = db.get_task(int(args["task_id"]))
+        if not t:
+            return _text("error: no such task")
+        db.update_task(t["id"], status="done")
+        bus.emit(project_id, t["id"], "manager", "task_accepted",
+                 {"verdict": args.get("verdict", "")})
+        return _text(f"task {t['id']} accepted and marked done.")
+
     @tool("merge_pr", "Squash-merge a task's pull request. Merging unblocks dependent tasks.",
           {"task_id": int})
     async def merge_pr(args: dict[str, Any]) -> dict[str, Any]:
@@ -253,13 +272,13 @@ def build_team_server(project_id: int):
     return create_sdk_mcp_server(
         name="team", version="1.0.0",
         tools=[create_tasks, add_tasks, status, wait, ask_boss, get_report,
-               request_changes, merge_pr, finish],
+               request_changes, accept_task, merge_pr, finish],
     )
 
 
 MANAGER_TOOLS = [f"mcp__team__{n}" for n in
                  ("create_tasks", "add_tasks", "status", "wait", "ask_boss",
-                  "get_report", "request_changes", "merge_pr", "finish")]
+                  "get_report", "request_changes", "accept_task", "merge_pr", "finish")]
 
 BUILTIN_TOOLS_OFF = ["Bash", "Read", "Write", "Edit", "Glob", "Grep",
                      "WebSearch", "WebFetch", "Task", "NotebookEdit", "TodoWrite"]
