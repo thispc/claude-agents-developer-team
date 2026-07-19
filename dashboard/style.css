@@ -92,6 +92,15 @@ pre.dim { color: var(--dim); }
 #addTaskForm label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--dim); }
 #addTaskForm input, #addTaskForm textarea, #addTaskForm select { padding: 8px 10px; border-radius: 8px; font-size: 13px; }
 #addTaskForm h2 { font-size: 15px; }
+#artifactsDialog { width: min(680px, 94vw); }
+#artifactsBody h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--accent); margin: 14px 0 6px; }
+.art-repo { font-size: 14px; margin-bottom: 10px; }
+.art-repo a, #artifactsBody a { color: var(--accent); text-decoration: none; }
+.public-link { background: rgba(94,234,212,.08); border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; font-size: 13px; margin-bottom: 8px; }
+.art-list { list-style: none; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.art-branches { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; font-size: 11px; }
+.dim { color: var(--dim); }
 #events { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 #directiveForm { display: flex; gap: 6px; margin-top: 8px; }
 #directiveForm input { flex: 1; padding: 8px 10px; border-radius: 8px; }
@@ -132,8 +141,9 @@ button.primary:disabled { opacity: .55; cursor: wait; }
 .step-tag { font-size: 11px; color: var(--dim); font-weight: 400; letter-spacing: .5px; }
 .recruit-note { font-size: 12px; color: var(--dim); }
 #roster { display: flex; flex-direction: column; gap: 8px; }
-.roster-row { display: grid; grid-template-columns: 1fr 70px 130px 34px; gap: 8px; align-items: center; }
-.roster-row select, .roster-row input { padding: 8px 10px; border-radius: 7px; }
+.roster-row { display: grid; grid-template-columns: 1fr 66px 130px 34px; gap: 8px; align-items: center; }
+.roster-row select, .roster-row input { padding: 8px 10px; border-radius: 7px; width: 100%; }
+.roster-row .r-role:focus { outline: none; border-color: var(--accent); }
 .roster-row .r-fire { background: var(--panel2); color: var(--bad); border-radius: 7px; padding: 8px; }
 .roster-row .r-fire:hover { border-color: var(--bad); }
 .add-role { align-self: flex-start; background: var(--panel2); border-style: dashed; padding: 7px 14px; border-radius: 8px; }

@@ -5,8 +5,8 @@ let ws = null;
 const COLS = {
   planned: ["planned"],
   working: ["queued", "running"],
-  review: ["pushed", "review", "changes_requested"],
-  done: ["done", "failed"],
+  review: ["pushed", "review", "changes_requested", "failed"],  // failed needs attention, not "done"
+  done: ["done"],
 };
 
 async function api(path, opts) {
@@ -159,6 +159,7 @@ async function refreshBoard() {
   badge.title = p.summary || "";
   $("#cancelBtn").hidden = ["done", "failed", "cancelled"].includes(p.status);
   $("#restartBtn").hidden = !["failed", "review", "cancelled"].includes(p.status);
+  $("#artifactsBtn").hidden = !p.repo;
   refreshQuestion();
   for (const [col, statuses] of Object.entries(COLS)) {
     const box = document.querySelector(`.col[data-col="${col}"] .cards`);
@@ -431,6 +432,39 @@ $("#taskDialog").addEventListener("click", (ev) => {
   if (ev.target === $("#taskDialog")) $("#taskDialog").close();
 });
 
+// --- artifacts / public link ------------------------------------------------
+async function showArtifacts() {
+  if (!currentProject) return;
+  $("#artifactsBody").innerHTML = `<pre class="dim">loading…</pre>`;
+  $("#artifactsDialog").showModal();
+  let a;
+  try { a = await api(`/api/projects/${currentProject}/artifacts`); }
+  catch (e) { $("#artifactsBody").innerHTML = `<pre class="dim">${escapeHtml(e.message)}</pre>`; return; }
+  const prs = (a.prs || []).map((p) =>
+    `<li><a href="${p.url}" target="_blank">PR #${p.number}</a> ${p.merged ? "✓ merged" : p.state} — ${escapeHtml(p.title)}</li>`).join("");
+  const publicLink = a.pages_url
+    ? `<div class="public-link">🌐 Public site: <a href="${a.pages_url}" target="_blank">${a.pages_url}</a>
+        <span class="hint">(may take a minute to go live after first publish)</span></div>`
+    : `<button id="publishBtn" class="primary">🌐 Publish to a public link</button>
+       <p class="hint">Enables GitHub Pages. Works when the built site's index.html is at the repo root or /docs.</p>`;
+  $("#artifactsBody").innerHTML = `
+    <div class="art-repo">📁 <a href="${a.repo_url}" target="_blank">${escapeHtml(a.repo || "no repo")}</a></div>
+    ${publicLink}
+    <h3>Pull requests</h3><ul class="art-list">${prs || "<li class='dim'>none yet</li>"}</ul>
+    <h3>Branches</h3><div class="art-branches">${(a.branches || []).map((b) => `<span class="tag">${escapeHtml(b)}</span>`).join("") || "<span class='dim'>none</span>"}</div>`;
+  const pub = $("#publishBtn");
+  if (pub) pub.addEventListener("click", async () => {
+    pub.disabled = true; pub.textContent = "Publishing…";
+    try {
+      const r = await api(`/api/projects/${currentProject}/publish`, { method: "POST" });
+      showArtifacts();  // reload to show the live link
+      window.open(r.url, "_blank");
+    } catch (e) { pub.disabled = false; pub.textContent = "🌐 Publish to a public link"; alert(e.message); }
+  });
+}
+$("#artifactsBtn").addEventListener("click", showArtifacts);
+$("#closeArtifactsBtn").addEventListener("click", () => $("#artifactsDialog").close());
+
 // --- editable DAG: add + edit tasks -----------------------------------------
 let editingTaskId = null;
 
@@ -525,50 +559,37 @@ let knownRoles = ["backend", "frontend", "tester"];
 function rosterRow(member) {
   const row = document.createElement("div");
   row.className = "roster-row";
-  const opts = [...new Set([...knownRoles, member.role])]
-    .map((r) => `<option ${r === member.role ? "selected" : ""}>${r}</option>`).join("");
+  // Role is a free-text field with suggestions — type any custom role directly.
   row.innerHTML = `
-    <select class="r-role">${opts}<option value="__custom">+ custom…</option></select>
-    <input class="r-count" type="number" min="1" max="6" value="${member.count || 1}" title="how many">
+    <input class="r-role" list="rolesList" placeholder="role (e.g. designer)"
+      value="${(member.role || "").replace(/"/g, "&quot;")}" title="role — type anything">
+    <input class="r-count" type="number" min="1" max="6" value="${member.count || 1}" title="how many to hire">
     <select class="r-model" title="model tier">
       <option value="worker" ${member.model !== "lead" ? "selected" : ""}>cheap (Haiku)</option>
       <option value="lead" ${member.model === "lead" ? "selected" : ""}>pro (Sonnet)</option>
     </select>
     <button type="button" class="r-fire" title="remove">✕</button>`;
-  const idx = () => [...row.parentNode.children].indexOf(row);
-  row.querySelector(".r-role").addEventListener("change", (e) => {
-    const cur = readRoster();
-    if (e.target.value === "__custom") {
-      const name = prompt("New role name (e.g. designer, devops, security-researcher):");
-      const clean = (name || "").trim().toLowerCase().replace(/\s+/g, "-");
-      if (!clean) { renderRoster(cur); return; }        // cancelled → restore
-      if (!knownRoles.includes(clean)) knownRoles.push(clean);
-      cur[idx()].role = clean;
-    } else {
-      cur[idx()].role = e.target.value;
-    }
-    renderRoster(cur);
-  });
   row.querySelector(".r-fire").addEventListener("click", () => {
-    const cur = readRoster();
-    cur.splice(idx(), 1);
-    renderRoster(cur.length ? cur : [{ role: "tester", count: 1, model: "worker" }]);
+    const rows = [...row.parentNode.children];
+    if (rows.length > 1) row.remove();
   });
   return row;
 }
 
 function readRoster() {
   return [...document.querySelectorAll("#roster .roster-row")].map((row) => ({
-    role: row.querySelector(".r-role").value,
+    role: row.querySelector(".r-role").value.trim().toLowerCase().replace(/\s+/g, "-"),
     count: Number(row.querySelector(".r-count").value) || 1,
     model: row.querySelector(".r-model").value,
-  })).filter((m) => m.role && m.role !== "__custom");
+  })).filter((m) => m.role);
 }
 
 function renderRoster(members) {
   const box = $("#roster");
   box.innerHTML = "";
   for (const m of members) box.appendChild(rosterRow(m));
+  const dl = $("#rolesList");
+  if (dl) dl.innerHTML = knownRoles.map((r) => `<option value="${r}">`).join("");
 }
 
 const dialog = $("#newProjectDialog");

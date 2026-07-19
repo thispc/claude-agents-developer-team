@@ -173,6 +173,40 @@ def get_events(project_id: int, after: int = 0) -> list[dict]:
     return db.list_events(project_id, after_id=after)
 
 
+@router.get("/api/projects/{project_id}/artifacts")
+async def get_artifacts(project_id: int) -> dict:
+    """Everything the project produced: repo, branches, PRs, and the public site URL."""
+    project = db.get_project(project_id)
+    if not project:
+        raise HTTPException(404, "no such project")
+    repo = project["repo"]
+    out = {"repo": repo, "repo_url": f"https://github.com/{repo}" if repo else None,
+           "prs": [], "branches": [], "pages_url": None}
+    if github_client.enabled(repo):
+        try:
+            out["prs"] = await github_client.list_prs(repo)
+            out["branches"] = await github_client.list_branches(repo)
+            out["pages_url"] = await github_client.get_pages_url(repo)
+        except Exception as e:
+            out["error"] = str(e)[:200]
+    return out
+
+
+@router.post("/api/projects/{project_id}/publish")
+async def publish_artifacts(project_id: int) -> dict:
+    """Enable GitHub Pages → a public link named after the repo/project."""
+    project = db.get_project(project_id)
+    if not project:
+        raise HTTPException(404, "no such project")
+    if not github_client.enabled(project["repo"]):
+        raise HTTPException(400, "GitHub not configured for this project")
+    ok, result = await github_client.enable_pages(project["repo"])
+    if not ok:
+        raise HTTPException(400, result)
+    bus.emit(project_id, None, "boss", "published", {"url": result})
+    return {"url": result}
+
+
 @router.get("/api/tasks/{task_id}/events")
 def get_task_events(task_id: int) -> list[dict]:
     """Full start-to-end transcript for one task's agent (messages + tool calls)."""

@@ -70,6 +70,49 @@ async def repo_exists(repo: str) -> bool:
         raise
 
 
+async def list_prs(repo: str) -> list[dict]:
+    data = await _request("GET", f"/repos/{repo}/pulls?state=all&per_page=30")
+    return [{"number": p["number"], "title": p["title"], "state": p["state"],
+             "merged": bool(p.get("merged_at")), "url": p["html_url"]} for p in data]
+
+
+async def list_branches(repo: str) -> list[str]:
+    data = await _request("GET", f"/repos/{repo}/branches?per_page=50")
+    return [b["name"] for b in data]
+
+
+async def get_pages_url(repo: str) -> str | None:
+    try:
+        data = await _request("GET", f"/repos/{repo}/pages")
+        return data.get("html_url")
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            return None
+        raise
+
+
+async def enable_pages(repo: str) -> tuple[bool, str]:
+    """Enable GitHub Pages so the project has a public URL. Serves the default branch;
+    prefers a /docs folder, else root (works for a static site with index.html there)."""
+    existing = await get_pages_url(repo)
+    if existing:
+        return True, existing
+    base = await default_branch(repo)
+    # Serve from /docs if it exists, otherwise repo root.
+    path = "/"
+    try:
+        await _request("GET", f"/repos/{repo}/contents/docs")
+        path = "/docs"
+    except httpx.HTTPStatusError:
+        pass
+    try:
+        data = await _request("POST", f"/repos/{repo}/pages",
+                              json={"source": {"branch": base, "path": path}})
+        return True, data.get("html_url") or f"https://{repo.split('/')[0]}.github.io/{repo.split('/')[1]}/"
+    except httpx.HTTPStatusError as e:
+        return False, f"could not enable Pages: {e.response.status_code} {e.response.text[:160]}"
+
+
 async def ensure_repo(repo: str) -> tuple[bool, str]:
     """Create the repo (private, initialized) if it doesn't exist.
     Returns (ok, note). `repo` is 'owner/name'; the token's user must be the owner

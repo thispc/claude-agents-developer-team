@@ -15,6 +15,7 @@
   <div id="authBadge" class="badge">auth: …</div>
   <div id="costBadge" class="badge" hidden>—</div>
   <div id="statusBadge" class="badge" hidden>—</div>
+  <button id="artifactsBtn" hidden title="Repo, PRs, and the public link">📦 Artifacts</button>
   <button id="restartBtn" hidden title="Re-run the manager on this project">↻ Restart manager</button>
   <button id="cancelBtn" class="danger" hidden>Cancel</button>
 </header>
@@ -43,7 +44,7 @@
     <section id="board">
     <div class="col" data-col="planned"><h2>Planned</h2><div class="cards"></div></div>
     <div class="col" data-col="working"><h2>In progress</h2><div class="cards"></div></div>
-    <div class="col" data-col="review"><h2>Review</h2><div class="cards"></div></div>
+    <div class="col" data-col="review"><h2>Review / Needs attention</h2><div class="cards"></div></div>
     <div class="col" data-col="done"><h2>Done</h2><div class="cards"></div></div>
     </section>
   </div>
@@ -75,6 +76,14 @@
       <button type="button" id="editTaskBtn" hidden>✎ Edit spec / deps</button>
       <button type="button" id="closeTaskBtn">Close</button>
     </div>
+  </div>
+</dialog>
+
+<dialog id="artifactsDialog">
+  <div class="task-detail-wrap">
+    <h2>📦 Artifacts</h2>
+    <div id="artifactsBody">loading…</div>
+    <div class="actions"><button type="button" id="closeArtifactsBtn">Close</button></div>
   </div>
 </dialog>
 
@@ -125,6 +134,7 @@
       <h2>Recruit your team <span class="step-tag">Step 2 of 2 · Hiring</span></h2>
       <p class="recruit-note" id="recruitNote">Suggested from your brief — hire, fire, or add whoever you want.</p>
       <div id="roster"></div>
+      <datalist id="rolesList"></datalist>
       <button type="button" id="addRoleBtn" class="add-role">+ Add a role</button>
       <p id="formError2" class="form-error" hidden></p>
       <div class="actions">
