@@ -19,19 +19,26 @@
 </header>
 
 <main>
-  <section id="board">
+  <div id="left">
+    <div class="view-toggle">
+      <button class="chip vchip active" data-v="board">Board</button>
+      <button class="chip vchip" data-v="dag">DAG</button>
+    </div>
+    <section id="dag" hidden><svg id="dagSvg" xmlns="http://www.w3.org/2000/svg"></svg></section>
+    <section id="board">
     <div class="col" data-col="planned"><h2>Planned</h2><div class="cards"></div></div>
     <div class="col" data-col="working"><h2>In progress</h2><div class="cards"></div></div>
     <div class="col" data-col="review"><h2>Review</h2><div class="cards"></div></div>
     <div class="col" data-col="done"><h2>Done</h2><div class="cards"></div></div>
-  </section>
+    </section>
+  </div>
   <section id="feed" data-filter="all">
     <div class="feed-head">
       <h2 id="feedTitle">Live activity</h2>
       <div class="chips">
         <button class="chip active" data-f="all">All</button>
-        <button class="chip" data-f="lead">Lead</button>
-        <button class="chip" data-f="worker">Workers</button>
+        <button class="chip" data-f="manager">Manager</button>
+        <button class="chip" data-f="worker">Team</button>
       </div>
     </div>
     <div id="events"></div>

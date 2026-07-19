@@ -3,10 +3,10 @@ import asyncio
 from fastapi import APIRouter, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from . import bus, config, db, lead, scheduler
+from . import bus, config, db, manager, scheduler
 
 router = APIRouter()
-_lead_tasks: dict[int, asyncio.Task] = {}
+_manager_tasks: dict[int, asyncio.Task] = {}
 
 
 class NewProject(BaseModel):
@@ -51,7 +51,7 @@ async def create_project(body: NewProject) -> dict:
         body.max_workers or config.MAX_CONCURRENT_WORKERS,
     )
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
-    _lead_tasks[project_id] = asyncio.get_event_loop().create_task(lead.run_lead(project_id))
+    _manager_tasks[project_id] = asyncio.get_event_loop().create_task(manager.run_manager(project_id))
     return {"id": project_id}
 
 
@@ -77,12 +77,12 @@ async def restart_project(project_id: int) -> dict:
         raise HTTPException(404, "no such project")
     if project["status"] not in ("failed", "review", "cancelled"):
         raise HTTPException(400, f"cannot restart a project in status '{project['status']}'")
-    existing = _lead_tasks.get(project_id)
+    existing = _manager_tasks.get(project_id)
     if existing and not existing.done():
-        raise HTTPException(400, "lead session is still running")
+        raise HTTPException(400, "manager session is still running")
     db.set_project_status(project_id, "planning")
     bus.emit(project_id, None, "system", "project_restarted", {})
-    _lead_tasks[project_id] = asyncio.get_event_loop().create_task(lead.run_lead(project_id))
+    _manager_tasks[project_id] = asyncio.get_event_loop().create_task(manager.run_manager(project_id))
     return {"ok": True}
 
 
@@ -93,7 +93,7 @@ def cancel_project(project_id: int) -> dict:
         raise HTTPException(404, "no such project")
     db.set_project_status(project_id, "cancelled")
     scheduler.stop(project_id)
-    t = _lead_tasks.get(project_id)
+    t = _manager_tasks.get(project_id)
     if t and not t.done():
         t.cancel()  # aborts the lead session immediately instead of at its next wait
     bus.emit(project_id, None, "system", "project_cancelled", {})

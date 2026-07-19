@@ -39,10 +39,14 @@ async function selectProject(id) {
   for (const e of events.slice(-200)) renderEvent(e);
 }
 
+let lastTasks = [];
+
 async function refreshBoard() {
   if (!currentProject) return;
   let p;
   try { p = await api(`/api/projects/${currentProject}`); } catch { return; }
+  lastTasks = p.tasks;
+  if (!$("#dag").hidden) renderDag(p.tasks);
   $("#costBadge").textContent = `$${p.cost_usd.toFixed(2)} / $${p.budget_usd.toFixed(2)}`;
   const badge = $("#statusBadge");
   badge.textContent = p.status;
@@ -82,6 +86,7 @@ function renderEvent(e) {
   const div = document.createElement("div");
   let cls = e.source.startsWith("worker") ? "worker" : e.source;
   if (e.source === "scheduler") cls = "system";
+  if (e.source === "lead") cls = "manager"; // events from before the rename
   if (e.kind === "tool_use") cls += " tool";
   if (e.kind === "thinking") cls += " think";
   if (e.kind === "error" || e.kind === "worker_died" || e.kind === "dag_blocked") cls += " error";
@@ -115,9 +120,94 @@ function connectWs() {
   ws.onclose = () => setTimeout(connectWs, 2000);
 }
 
-document.querySelectorAll(".chip").forEach((chip) =>
+// --- DAG view ---------------------------------------------------------------
+const DAG_COLORS = {
+  planned: "#7d8aa5", queued: "#5eead4", running: "#5eead4",
+  pushed: "#fbbf24", review: "#fbbf24", done: "#4ade80", failed: "#f87171",
+};
+const NODE_W = 200, NODE_H = 66, GAP_X = 90, GAP_Y = 26, PAD = 30;
+
+function renderDag(tasks) {
+  const svg = $("#dagSvg");
+  if (!tasks.length) {
+    svg.innerHTML = `<text x="20" y="40" fill="#7d8aa5" font-size="13">No tasks yet — the manager is planning.</text>`;
+    svg.setAttribute("width", 400); svg.setAttribute("height", 80);
+    return;
+  }
+  const byId = Object.fromEntries(tasks.map((t) => [t.id, t]));
+  const depsOf = (t) => { try { return JSON.parse(t.deps || "[]").filter((d) => byId[d]); } catch { return []; } };
+  const levels = {};
+  const level = (t, seen = new Set()) => {
+    if (levels[t.id] !== undefined) return levels[t.id];
+    if (seen.has(t.id)) return 0; // cycle guard — shouldn't happen
+    seen.add(t.id);
+    const d = depsOf(t);
+    return (levels[t.id] = d.length ? 1 + Math.max(...d.map((x) => level(byId[x], seen))) : 0);
+  };
+  tasks.forEach((t) => level(t));
+  const columns = {};
+  tasks.forEach((t) => (columns[levels[t.id]] ||= []).push(t));
+  const pos = {};
+  const maxRows = Math.max(...Object.values(columns).map((c) => c.length));
+  for (const [lvl, col] of Object.entries(columns)) {
+    col.forEach((t, row) => {
+      const offset = ((maxRows - col.length) * (NODE_H + GAP_Y)) / 2;
+      pos[t.id] = { x: PAD + lvl * (NODE_W + GAP_X), y: PAD + offset + row * (NODE_H + GAP_Y) };
+    });
+  }
+  const width = PAD * 2 + (Object.keys(columns).length) * (NODE_W + GAP_X) - GAP_X;
+  const height = PAD * 2 + maxRows * (NODE_H + GAP_Y) - GAP_Y;
+
+  let edges = "", nodes = "";
+  for (const t of tasks) {
+    for (const d of depsOf(t)) {
+      const a = pos[d], b = pos[t.id];
+      const x1 = a.x + NODE_W, y1 = a.y + NODE_H / 2, x2 = b.x, y2 = b.y + NODE_H / 2;
+      const mid = (x1 + x2) / 2;
+      const done = byId[d].status === "done";
+      edges += `<path d="M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}"
+        fill="none" stroke="${done ? "#4ade80" : "#2a3245"}" stroke-width="1.6"
+        marker-end="url(#arrow)" ${done ? "" : 'stroke-dasharray="5 4"'}/>`;
+    }
+  }
+  for (const t of tasks) {
+    const { x, y } = pos[t.id];
+    const c = DAG_COLORS[t.status] || "#7d8aa5";
+    const active = ["queued", "running"].includes(t.status);
+    const title = t.title.length > 26 ? t.title.slice(0, 25) + "…" : t.title;
+    nodes += `<g class="dag-node${active ? " active" : ""}">
+      <rect x="${x}" y="${y}" width="${NODE_W}" height="${NODE_H}" rx="10"
+        fill="#1e2532" stroke="${c}" stroke-width="1.6"/>
+      <text x="${x + 12}" y="${y + 19}" font-size="9.5" letter-spacing="1"
+        fill="${c}" style="text-transform:uppercase">#${t.id} ${t.role.toUpperCase()}</text>
+      <text x="${x + 12}" y="${y + 37}" font-size="12" fill="#dbe2ef">${escapeHtml(title)}</text>
+      <text x="${x + 12}" y="${y + 54}" font-size="10" fill="#7d8aa5">${t.status} · try ${t.attempts} · $${t.cost_usd.toFixed(2)}</text>
+      <title>${escapeHtml(t.title)}\n\n${escapeHtml(t.description.slice(0, 600))}</title>
+    </g>`;
+  }
+  svg.setAttribute("width", Math.max(width, 400));
+  svg.setAttribute("height", Math.max(height, 120));
+  svg.innerHTML = `
+    <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+      markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#3d485f"/></marker></defs>
+    ${edges}${nodes}`;
+}
+
+document.querySelectorAll(".vchip").forEach((chip) =>
   chip.addEventListener("click", () => {
-    document.querySelectorAll(".chip").forEach((c) => c.classList.remove("active"));
+    document.querySelectorAll(".vchip").forEach((c) => c.classList.remove("active"));
+    chip.classList.add("active");
+    const dagMode = chip.dataset.v === "dag";
+    $("#dag").hidden = !dagMode;
+    $("#board").hidden = dagMode;
+    if (dagMode) renderDag(lastTasks);
+  }),
+);
+
+document.querySelectorAll(".chips .chip").forEach((chip) =>
+  chip.addEventListener("click", () => {
+    document.querySelectorAll(".chips .chip").forEach((c) => c.classList.remove("active"));
     chip.classList.add("active");
     $("#feed").dataset.filter = chip.dataset.f;
   }),

@@ -17,7 +17,14 @@ select, input, textarea, button { background: var(--panel2); color: var(--text);
 button { cursor: pointer; } button:hover { border-color: var(--accent); }
 button.danger { color: var(--bad); }
 main { flex: 1; display: grid; grid-template-columns: 1fr 420px; gap: 12px; padding: 12px 16px; min-height: 0; }
-#board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; min-height: 0; }
+#left { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.view-toggle { display: flex; gap: 4px; }
+.vchip { border-radius: 6px; }
+#board { flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; min-height: 0; }
+#dag { flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: auto; padding: 6px; }
+#dag svg { display: block; }
+.dag-node { cursor: default; }
+.dag-node.active rect { animation: pulse 2s infinite; }
 .col { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; overflow-y: auto; }
 .col h2, #feed h2 { font-size: 11px; text-transform: uppercase; color: var(--dim); margin-bottom: 8px; letter-spacing: 1px; }
 .card { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
@@ -35,13 +42,13 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 420px; gap: 12px; padd
 .chips { display: flex; gap: 4px; }
 .chip { font-size: 10px; padding: 3px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: .5px; color: var(--dim); }
 .chip.active { color: var(--accent); border-color: var(--accent); }
-#feed[data-filter="lead"] .ev.worker, #feed[data-filter="lead"] .ev.system { display: none; }
-#feed[data-filter="worker"] .ev.lead, #feed[data-filter="worker"] .ev.system { display: none; }
+#feed[data-filter="manager"] .ev.worker, #feed[data-filter="manager"] .ev.system { display: none; }
+#feed[data-filter="worker"] .ev.manager, #feed[data-filter="worker"] .ev.system { display: none; }
 .ev.think { opacity: .55; font-style: italic; border-color: #4a5670; }
 #events { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 .ev { border-left: 3px solid var(--line); padding: 4px 8px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
 .ev .src { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); }
-.ev.lead { border-color: var(--accent); }
+.ev.manager { border-color: var(--accent); }
 .ev.worker { border-color: #93c5fd; }
 .ev.system { border-color: var(--warn); }
 .ev.error { border-color: var(--bad); }
