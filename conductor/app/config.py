@@ -9,6 +9,10 @@ def _env(name: str, default: str = "") -> str:
 
 
 ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY")
+# Subscription auth (Claude Pro/Max): long-lived OAuth token from `claude setup-token`.
+# If both are set, the API key wins and BILLS API CREDIT — set only one.
+CLAUDE_CODE_OAUTH_TOKEN = _env("CLAUDE_CODE_OAUTH_TOKEN")
+AUTH_CONFIGURED = bool(ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN)
 LEAD_MODEL = _env("LEAD_MODEL", "claude-sonnet-5")
 WORKER_MODEL = _env("WORKER_MODEL", "claude-haiku-4-5")
 ESCALATION_MODEL = _env("ESCALATION_MODEL", "claude-sonnet-5")

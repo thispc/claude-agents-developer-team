@@ -35,15 +35,17 @@ class WorkerReport(BaseModel):
 
 @router.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "launcher": config.LAUNCHER,
-            "anthropic_key": bool(config.ANTHROPIC_API_KEY),
+    auth = "api-key" if config.ANTHROPIC_API_KEY else (
+        "subscription" if config.CLAUDE_CODE_OAUTH_TOKEN else "none")
+    return {"ok": True, "launcher": config.LAUNCHER, "auth": auth,
             "github": bool(config.GITHUB_TOKEN)}
 
 
 @router.post("/api/projects")
 async def create_project(body: NewProject) -> dict:
-    if not config.ANTHROPIC_API_KEY:
-        raise HTTPException(400, "ANTHROPIC_API_KEY is not set on the conductor")
+    if not config.AUTH_CONFIGURED:
+        raise HTTPException(400, "Set ANTHROPIC_API_KEY (API billing) or "
+                                 "CLAUDE_CODE_OAUTH_TOKEN (Pro/Max subscription) on the conductor")
     repo = body.repo or config.GITHUB_REPO
     project_id = db.create_project(
         body.name, body.brief, repo,
