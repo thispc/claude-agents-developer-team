@@ -69,6 +69,23 @@ def get_project(project_id: int) -> dict:
     return project
 
 
+@router.post("/api/projects/{project_id}/restart")
+async def restart_project(project_id: int) -> dict:
+    """Re-run the lead session on a failed/review/cancelled project (tasks are kept)."""
+    project = db.get_project(project_id)
+    if not project:
+        raise HTTPException(404, "no such project")
+    if project["status"] not in ("failed", "review", "cancelled"):
+        raise HTTPException(400, f"cannot restart a project in status '{project['status']}'")
+    existing = _lead_tasks.get(project_id)
+    if existing and not existing.done():
+        raise HTTPException(400, "lead session is still running")
+    db.set_project_status(project_id, "planning")
+    bus.emit(project_id, None, "system", "project_restarted", {})
+    _lead_tasks[project_id] = asyncio.get_event_loop().create_task(lead.run_lead(project_id))
+    return {"ok": True}
+
+
 @router.post("/api/projects/{project_id}/cancel")
 def cancel_project(project_id: int) -> dict:
     project = db.get_project(project_id)

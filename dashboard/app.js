@@ -33,6 +33,7 @@ async function selectProject(id) {
   currentProject = Number(id);
   $("#projectSelect").value = id;
   $("#events").innerHTML = "";
+  $("#feedTitle").textContent = `Live activity — project #${id}`;
   await refreshBoard();
   const events = await api(`/api/projects/${id}/events`);
   for (const e of events.slice(-200)) renderEvent(e);
@@ -43,8 +44,13 @@ async function refreshBoard() {
   let p;
   try { p = await api(`/api/projects/${currentProject}`); } catch { return; }
   $("#costBadge").textContent = `$${p.cost_usd.toFixed(2)} / $${p.budget_usd.toFixed(2)}`;
-  $("#statusBadge").textContent = p.status;
+  const badge = $("#statusBadge");
+  badge.textContent = p.status;
+  badge.className = "badge " +
+    ({ done: "ok", failed: "bad", cancelled: "bad", review: "warn" }[p.status] || "run");
+  badge.title = p.summary || "";
   $("#cancelBtn").hidden = ["done", "failed", "cancelled"].includes(p.status);
+  $("#restartBtn").hidden = !["failed", "review", "cancelled"].includes(p.status);
   for (const [col, statuses] of Object.entries(COLS)) {
     const box = document.querySelector(`.col[data-col="${col}"] .cards`);
     box.innerHTML = "";
@@ -104,15 +110,35 @@ function connectWs() {
   ws.onclose = () => setTimeout(connectWs, 2000);
 }
 
+const dialog = $("#newProjectDialog");
 $("#projectSelect").addEventListener("change", (e) => selectProject(e.target.value));
-$("#newProjectBtn").addEventListener("click", () => $("#newProjectDialog").showModal());
+$("#newProjectBtn").addEventListener("click", () => {
+  $("#formError").hidden = true;
+  dialog.showModal();
+});
+$("#closeDialogBtn").addEventListener("click", () => dialog.close());
+dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
 $("#cancelBtn").addEventListener("click", async () => {
   if (currentProject && confirm("Cancel this project?"))
     await api(`/api/projects/${currentProject}/cancel`, { method: "POST" });
 });
+$("#restartBtn").addEventListener("click", async () => {
+  if (!currentProject) return;
+  try {
+    await api(`/api/projects/${currentProject}/restart`, { method: "POST" });
+    refreshBoard();
+  } catch (e) { alert(e.message); }
+});
 $("#newProjectForm").addEventListener("submit", async (ev) => {
-  if (ev.submitter && ev.submitter.value === "cancel") return;
-  const f = new FormData(ev.target);
+  ev.preventDefault();
+  const form = ev.target;
+  const errBox = $("#formError");
+  errBox.hidden = true;
+  if (!form.reportValidity()) return;
+  const f = new FormData(form);
+  const btn = $("#createBtn");
+  btn.disabled = true;
+  btn.textContent = "Starting…";
   try {
     const res = await api("/api/projects", {
       method: "POST",
@@ -122,9 +148,17 @@ $("#newProjectForm").addEventListener("submit", async (ev) => {
         budget_usd: Number(f.get("budget_usd")), max_workers: Number(f.get("max_workers")),
       }),
     });
+    dialog.close();
+    form.reset();
     await loadProjects();
     selectProject(res.id);
-  } catch (e) { alert(e.message); }
+  } catch (e) {
+    errBox.textContent = e.message;   // keep the dialog open, keep the typed values
+    errBox.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Start team";
+  }
 });
 
 loadProjects();

@@ -9,6 +9,10 @@ header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; bord
 h1 { font-size: 18px; letter-spacing: 1px; } h1 span { color: var(--accent); }
 .spacer { flex: 1; }
 .badge { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; font-size: 12px; }
+.badge.ok { color: var(--good); border-color: var(--good); }
+.badge.bad { color: var(--bad); border-color: var(--bad); }
+.badge.warn { color: var(--warn); border-color: var(--warn); }
+.badge.run { color: var(--accent); }
 select, input, textarea, button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font: inherit; }
 button { cursor: pointer; } button:hover { border-color: var(--accent); }
 button.danger { color: var(--bad); }
@@ -34,10 +38,20 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 420px; gap: 12px; padd
 .ev.system { border-color: var(--warn); }
 .ev.error { border-color: var(--bad); }
 .ev.tool { opacity: .75; }
-dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 12px; padding: 20px; width: min(560px, 92vw); }
-dialog::backdrop { background: rgba(0,0,0,.6); }
-dialog form { display: flex; flex-direction: column; gap: 10px; }
-dialog label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--dim); }
-dialog .row { display: flex; gap: 10px; justify-content: flex-end; align-items: end; }
-dialog .row label { flex: 0 0 auto; }
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 14px; padding: 0; width: min(620px, 94vw); box-shadow: 0 24px 60px rgba(0,0,0,.55); }
+dialog::backdrop { background: rgba(5,8,14,.72); backdrop-filter: blur(2px); }
+dialog form { display: flex; flex-direction: column; gap: 14px; padding: 24px; }
+dialog h2 { font-size: 15px; letter-spacing: .5px; color: var(--text); }
+dialog label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--dim); }
+dialog .hint { font-size: 11px; color: var(--dim); opacity: .8; font-style: italic; }
+dialog input, dialog textarea { width: 100%; padding: 9px 11px; border-radius: 8px; font-size: 13px; }
+dialog input:focus, dialog textarea:focus { outline: none; border-color: var(--accent); }
+dialog textarea { resize: vertical; min-height: 110px; line-height: 1.5; }
+dialog .nums { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+dialog .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
+dialog .actions button { padding: 9px 18px; border-radius: 8px; }
+button.primary { background: var(--accent); color: #0b0f14; border-color: var(--accent); font-weight: 600; }
+button.primary:hover { filter: brightness(1.1); }
+button.primary:disabled { opacity: .55; cursor: wait; }
+.form-error { color: var(--bad); font-size: 12.5px; background: rgba(248,113,113,.08); border: 1px solid rgba(248,113,113,.35); border-radius: 8px; padding: 8px 10px; }
 @media (max-width: 1000px) { main { grid-template-columns: 1fr; } #board { grid-template-columns: repeat(2, 1fr); } }

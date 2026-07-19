@@ -218,7 +218,8 @@ async def run_lead(project_id: int) -> None:
         f"Repository: {project['repo'] or '(none configured)'}\n"
         f"Budget: ${project['budget_usd']:.2f} | Max parallel workers: {project['max_workers']}\n\n"
         f"Brief from the user:\n{project['brief']}\n\n"
-        "Plan the work, run your team, and ship it. Start with create_tasks."
+        "Plan the work, run your team, and ship it. This may be a restarted session: "
+        "call status first, and only create_tasks if none exist yet."
     )
     options = ClaudeAgentOptions(
         system_prompt=config.load_role_prompt("lead"),
@@ -230,11 +231,13 @@ async def run_lead(project_id: int) -> None:
         permission_mode="bypassPermissions",
     )
 
+    last_text = ""
     try:
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock) and block.text.strip():
+                        last_text = block.text.strip()
                         bus.emit(project_id, None, "lead", "message", block.text)
                     elif isinstance(block, ToolUseBlock):
                         bus.emit(project_id, None, "lead", "tool_use",
@@ -245,8 +248,11 @@ async def run_lead(project_id: int) -> None:
                 db.add_project_cost(project_id, cost)
                 bus.emit(project_id, None, "lead", "result", {"cost_usd": cost})
     except Exception as e:
-        bus.emit(project_id, None, "lead", "error", str(e))
-        db.set_project_status(project_id, "failed", f"lead agent crashed: {e}")
+        # Surface the model/API's own words (e.g. "Credit balance is too low")
+        # instead of the SDK's generic wrapper message.
+        detail = last_text or str(e)
+        bus.emit(project_id, None, "lead", "error", detail)
+        db.set_project_status(project_id, "failed", f"lead session failed: {detail[:400]}")
         return
 
     # If the lead ended without calling finish, flag for human review.
