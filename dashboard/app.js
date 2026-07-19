@@ -57,7 +57,10 @@ async function refreshBoard() {
     for (const t of p.tasks.filter((t) => statuses.includes(t.status))) {
       const card = document.createElement("div");
       card.className = `card ${t.status}`;
+      let deps = [];
+      try { deps = JSON.parse(t.deps || "[]"); } catch { /* old rows */ }
       const links = [];
+      if (deps.length) links.push(`after ${deps.map((d) => "#" + d).join(",")}`);
       if (t.issue_number && p.repo) links.push(`<a target="_blank" href="https://github.com/${p.repo}/issues/${t.issue_number}">#${t.issue_number}</a>`);
       if (t.pr_number && p.repo) links.push(`<a target="_blank" href="https://github.com/${p.repo}/pull/${t.pr_number}">PR ${t.pr_number}</a>`);
       card.innerHTML = `
@@ -78,8 +81,10 @@ function renderEvent(e) {
   if (e.project_id !== currentProject) return;
   const div = document.createElement("div");
   let cls = e.source.startsWith("worker") ? "worker" : e.source;
+  if (e.source === "scheduler") cls = "system";
   if (e.kind === "tool_use") cls += " tool";
-  if (e.kind === "error" || e.kind === "worker_died") cls += " error";
+  if (e.kind === "thinking") cls += " think";
+  if (e.kind === "error" || e.kind === "worker_died" || e.kind === "dag_blocked") cls += " error";
   div.className = `ev ${cls}`;
   let text = e.payload;
   try {
@@ -109,6 +114,14 @@ function connectWs() {
   };
   ws.onclose = () => setTimeout(connectWs, 2000);
 }
+
+document.querySelectorAll(".chip").forEach((chip) =>
+  chip.addEventListener("click", () => {
+    document.querySelectorAll(".chip").forEach((c) => c.classList.remove("active"));
+    chip.classList.add("active");
+    $("#feed").dataset.filter = chip.dataset.f;
+  }),
+);
 
 const dialog = $("#newProjectDialog");
 $("#projectSelect").addEventListener("change", (e) => selectProject(e.target.value));

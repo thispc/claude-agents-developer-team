@@ -30,6 +30,14 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 420px; gap: 12px; padd
 .card.failed { border-color: var(--bad); }
 @keyframes pulse { 50% { box-shadow: 0 0 8px rgba(94,234,212,.35); } }
 #feed { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; min-height: 0; }
+.feed-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.feed-head h2 { margin-bottom: 0; }
+.chips { display: flex; gap: 4px; }
+.chip { font-size: 10px; padding: 3px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: .5px; color: var(--dim); }
+.chip.active { color: var(--accent); border-color: var(--accent); }
+#feed[data-filter="lead"] .ev.worker, #feed[data-filter="lead"] .ev.system { display: none; }
+#feed[data-filter="worker"] .ev.lead, #feed[data-filter="worker"] .ev.system { display: none; }
+.ev.think { opacity: .55; font-style: italic; border-color: #4a5670; }
 #events { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
 .ev { border-left: 3px solid var(--line); padding: 4px 8px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; }
 .ev .src { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); }

@@ -3,7 +3,7 @@ import asyncio
 from fastapi import APIRouter, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from . import bus, config, db, lead
+from . import bus, config, db, lead, scheduler
 
 router = APIRouter()
 _lead_tasks: dict[int, asyncio.Task] = {}
@@ -92,6 +92,10 @@ def cancel_project(project_id: int) -> dict:
     if not project:
         raise HTTPException(404, "no such project")
     db.set_project_status(project_id, "cancelled")
+    scheduler.stop(project_id)
+    t = _lead_tasks.get(project_id)
+    if t and not t.done():
+        t.cancel()  # aborts the lead session immediately instead of at its next wait
     bus.emit(project_id, None, "system", "project_cancelled", {})
     return {"ok": True}
 

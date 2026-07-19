@@ -119,8 +119,8 @@ def get_launcher():
     return _launcher
 
 
-async def dispatch_task(task_id: int) -> str:
-    """Shared dispatch path used by the lead agent's tool."""
+async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
+    """Shared dispatch path (used by the DAG scheduler)."""
     task = db.get_task(task_id)
     if not task:
         return f"error: task {task_id} not found"
@@ -139,7 +139,7 @@ async def dispatch_task(task_id: int) -> str:
     task = db.get_task(task_id)
     model = pick_model(task)
     await get_launcher().launch(task, project)
-    bus.emit(task["project_id"], task_id, "lead", "dispatched",
+    bus.emit(task["project_id"], task_id, source, "dispatched",
              {"role": task["role"], "title": task["title"], "model": model,
               "attempt": task["attempts"]})
     return f"dispatched task {task_id} ({task['role']}: {task['title']}) on {model}, attempt {task['attempts']}"

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     title TEXT NOT NULL,
     description TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'planned',
+    deps TEXT NOT NULL DEFAULT '[]',
     branch TEXT NOT NULL DEFAULT '',
     issue_number INTEGER,
     pr_number INTEGER,
@@ -59,6 +60,10 @@ def init() -> None:
     _conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
     _conn.row_factory = sqlite3.Row
     _conn.executescript(SCHEMA)
+    try:  # migration for DBs created before the deps column existed
+        _conn.execute("ALTER TABLE tasks ADD COLUMN deps TEXT NOT NULL DEFAULT '[]'")
+    except sqlite3.OperationalError:
+        pass
     _conn.commit()
 
 
@@ -110,11 +115,12 @@ def add_project_cost(project_id: int, usd: float) -> float:
 
 # --- tasks ---
 
-def create_task(project_id: int, role: str, title: str, description: str) -> int:
+def create_task(project_id: int, role: str, title: str, description: str,
+                deps: list[int] | None = None) -> int:
     now = time.time()
     cur = _execute(
-        "INSERT INTO tasks (project_id, role, title, description, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-        (project_id, role, title, description, now, now),
+        "INSERT INTO tasks (project_id, role, title, description, deps, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+        (project_id, role, title, description, json.dumps(deps or []), now, now),
     )
     task_id = cur.lastrowid
     _execute("UPDATE tasks SET branch=? WHERE id=?", (f"task/{task_id}", task_id))

@@ -25,8 +25,15 @@
     <div class="col" data-col="review"><h2>Review</h2><div class="cards"></div></div>
     <div class="col" data-col="done"><h2>Done</h2><div class="cards"></div></div>
   </section>
-  <section id="feed">
-    <h2 id="feedTitle">Live activity</h2>
+  <section id="feed" data-filter="all">
+    <div class="feed-head">
+      <h2 id="feedTitle">Live activity</h2>
+      <div class="chips">
+        <button class="chip active" data-f="all">All</button>
+        <button class="chip" data-f="lead">Lead</button>
+        <button class="chip" data-f="worker">Workers</button>
+      </div>
+    </div>
     <div id="events"></div>
   </section>
 </main>
