@@ -1,0 +1,18 @@
+# Local end-to-end run: conductor + dashboard, workers as subprocesses in-container.
+# Usage: cp .env.example .env  (fill keys)  ->  docker compose -f deploy/docker-compose.yml up --build
+services:
+  conductor:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.conductor
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../.env
+    environment:
+      LAUNCHER: local
+      CONDUCTOR_URL: http://localhost:8000
+    volumes:
+      - devteam-data:/data
+volumes:
+  devteam-data:

@@ -1,0 +1,80 @@
+# Conductor: single replica (SQLite on a PVC), dashboard exposed via LoadBalancer.
+# Replace image with your DO registry path after `docker push`.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: devteam-data
+  namespace: devteam
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: devteam-conductor
+  namespace: devteam
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # PVC is RWO; never run two conductors
+  selector:
+    matchLabels: { app: devteam-conductor }
+  template:
+    metadata:
+      labels: { app: devteam-conductor }
+    spec:
+      serviceAccountName: devteam-conductor
+      containers:
+        - name: conductor
+          image: registry.digitalocean.com/YOUR_REGISTRY/devteam-conductor:latest
+          ports: [{ containerPort: 8000 }]
+          envFrom:
+            - secretRef: { name: devteam-secrets }
+          env:
+            - name: LAUNCHER
+              value: "k8s"
+            - name: K8S_NAMESPACE
+              value: "devteam"
+            - name: WORKER_IMAGE
+              value: "registry.digitalocean.com/YOUR_REGISTRY/devteam-worker:latest"
+            - name: CONDUCTOR_URL
+              value: "http://devteam-conductor.devteam.svc.cluster.local:8000"
+            - name: GITHUB_REPO
+              value: ""   # optional default owner/repo
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { cpu: "1", memory: 1Gi }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: devteam-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: devteam-conductor
+  namespace: devteam
+spec:
+  selector: { app: devteam-conductor }
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+# Public entry for the dashboard (~$12/mo DO load balancer).
+# Cheaper alternative: delete this and use `kubectl port-forward svc/devteam-conductor 8000:8000 -n devteam`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: devteam-dashboard
+  namespace: devteam
+spec:
+  type: LoadBalancer
+  selector: { app: devteam-conductor }
+  ports:
+    - port: 80
+      targetPort: 8000

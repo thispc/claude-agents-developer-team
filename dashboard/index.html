@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>devteam — AI dev team console</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>dev<span>team</span></h1>
+  <select id="projectSelect" title="Select project"></select>
+  <button id="newProjectBtn">+ New project</button>
+  <div class="spacer"></div>
+  <div id="costBadge" class="badge">$0.00</div>
+  <div id="statusBadge" class="badge">—</div>
+  <button id="cancelBtn" class="danger" hidden>Cancel</button>
+</header>
+
+<main>
+  <section id="board">
+    <div class="col" data-col="planned"><h2>Planned</h2><div class="cards"></div></div>
+    <div class="col" data-col="working"><h2>In progress</h2><div class="cards"></div></div>
+    <div class="col" data-col="review"><h2>Review</h2><div class="cards"></div></div>
+    <div class="col" data-col="done"><h2>Done</h2><div class="cards"></div></div>
+  </section>
+  <section id="feed">
+    <h2>Live activity</h2>
+    <div id="events"></div>
+  </section>
+</main>
+
+<dialog id="newProjectDialog">
+  <form method="dialog" id="newProjectForm">
+    <h2>New project</h2>
+    <label>Name <input name="name" required placeholder="todo-app"></label>
+    <label>GitHub repo <input name="repo" placeholder="owner/repo (optional, uses default)"></label>
+    <label>Brief <textarea name="brief" rows="8" required
+      placeholder="Describe what to build, the stack, and what 'done' means..."></textarea></label>
+    <div class="row">
+      <label>Budget $ <input name="budget_usd" type="number" step="0.5" value="5"></label>
+      <label>Max workers <input name="max_workers" type="number" value="3" min="1" max="8"></label>
+    </div>
+    <div class="row">
+      <button value="cancel" formnovalidate>Cancel</button>
+      <button id="createBtn" value="default">Start team</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

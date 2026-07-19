@@ -1,0 +1,42 @@
+import os
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent.parent  # repo root
+
+
+def _env(name: str, default: str = "") -> str:
+    return os.environ.get(name, default)
+
+
+ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY")
+LEAD_MODEL = _env("LEAD_MODEL", "claude-sonnet-5")
+WORKER_MODEL = _env("WORKER_MODEL", "claude-haiku-4-5")
+ESCALATION_MODEL = _env("ESCALATION_MODEL", "claude-sonnet-5")
+
+GITHUB_TOKEN = _env("GITHUB_TOKEN")
+GITHUB_REPO = _env("GITHUB_REPO")
+
+CONDUCTOR_URL = _env("CONDUCTOR_URL", "http://localhost:8000")
+WORKER_TOKEN = _env("WORKER_TOKEN", "dev-token")
+DB_PATH = _env("DB_PATH", "devteam.db")
+
+LAUNCHER = _env("LAUNCHER", "local")  # local | k8s
+WORKER_IMAGE = _env("WORKER_IMAGE", "devteam-worker:latest")
+K8S_NAMESPACE = _env("K8S_NAMESPACE", "devteam")
+
+MAX_CONCURRENT_WORKERS = int(_env("MAX_CONCURRENT_WORKERS", "3"))
+WORKER_MAX_TURNS = int(_env("WORKER_MAX_TURNS", "40"))
+LEAD_MAX_TURNS = int(_env("LEAD_MAX_TURNS", "120"))
+PROJECT_BUDGET_USD = float(_env("PROJECT_BUDGET_USD", "5.0"))
+
+AGENTS_DIR = Path(_env("AGENTS_DIR", str(ROOT / "agents")))
+DASHBOARD_DIR = Path(_env("DASHBOARD_DIR", str(ROOT / "dashboard")))
+WORKSPACES_DIR = Path(_env("WORKSPACES_DIR", str(ROOT / "workspaces")))
+WORKER_SCRIPT = Path(_env("WORKER_SCRIPT", str(ROOT / "worker" / "worker.py")))
+
+
+def load_role_prompt(role: str) -> str:
+    path = AGENTS_DIR / f"{role}.md"
+    if not path.exists():
+        raise FileNotFoundError(f"No role prompt for '{role}' at {path}")
+    return path.read_text()

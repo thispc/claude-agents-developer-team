@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: devteam-conductor
+  namespace: devteam
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: devteam-job-manager
+  namespace: devteam
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: devteam-conductor-jobs
+  namespace: devteam
+subjects:
+  - kind: ServiceAccount
+    name: devteam-conductor
+    namespace: devteam
+roleRef:
+  kind: Role
+  name: devteam-job-manager
+  apiGroup: rbac.authorization.k8s.io
