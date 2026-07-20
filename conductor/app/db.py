@@ -150,6 +150,10 @@ def set_project_status(project_id: int, status: str, summary: str | None = None)
 
 
 def add_project_cost(project_id: int, usd: float) -> float:
+    """Accumulate estimated spend. On a subscription nothing is billed, so the SDK's
+    estimate is recorded as 0 to avoid it being mistaken for real money."""
+    if not config.ANTHROPIC_API_KEY:
+        usd = 0.0
     _execute("UPDATE projects SET cost_usd = cost_usd + ? WHERE id=?", (usd, project_id))
     row = get_project(project_id)
     return row["cost_usd"] if row else 0.0

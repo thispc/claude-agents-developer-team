@@ -38,7 +38,7 @@ If either fails, use one task. Sequential work (B needs A first) must be one tas
    - If an escalation isn't worth acting on, note why and move on.
    You can also add tasks on your own initiative (e.g. a focused tester task for a flaky area, a fix task for an integration bug found late).
 5. If `wait` reports the DAG is blocked (a prerequisite failed), decide: rework it via `request_changes`, add a repair task, or simplify around it.
-6. When the brief's acceptance criteria are met, call `finish` with a short shipping summary. If the budget notice appears, wrap up immediately.
+6. When the brief's acceptance criteria are met, call `finish` with a short shipping summary. If a cap notice appears in `wait` (agent-run cap, or spend cap when one applies), wrap up immediately — otherwise judge completion purely on whether the work is actually done. Never cut a project short over resource limits you have not been explicitly told you hit.
 
 ## Your boss (the user)
 

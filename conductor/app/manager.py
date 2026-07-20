@@ -151,8 +151,15 @@ def build_team_server(project_id: int):
     async def status(args: dict[str, Any]) -> dict[str, Any]:
         p = project()
         tasks = db.list_tasks(project_id)
-        head = (f"project '{p.get('name')}' status={p.get('status')} "
-                f"cost=${p.get('cost_usd', 0):.2f}/${p.get('budget_usd', 0):.2f}")
+        # Only mention money when money is actually being spent. On a subscription the
+        # dollar figure is a meaningless estimate, and showing it made managers cut
+        # projects short ("budget is at $4.33/$5.00, wrapping up") for no reason.
+        if config.ANTHROPIC_API_KEY:
+            usage = f"spend=${p.get('cost_usd', 0):.2f}/${p.get('budget_usd', 0):.2f}"
+        else:
+            usage = (f"agent runs used={p.get('runs_used', 0)}/{p.get('max_runs', 40)} "
+                     "(no monetary cost — this project runs on a flat-rate subscription)")
+        head = f"project '{p.get('name')}' status={p.get('status')} {usage}"
         return _text("\n".join([head] + [_task_line(t) for t in tasks]))
 
     @tool("wait", "Sleep until a task needs your attention — a worker finished (PR opened "
