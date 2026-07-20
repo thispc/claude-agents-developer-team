@@ -152,3 +152,27 @@ def test_signup_user_has_no_credentials_and_cannot_inherit(client, make_user):
     # and it must actively blank the inherited vars, not just omit them
     assert "ANTHROPIC_API_KEY" in creds
     assert "CLAUDE_CODE_OAUTH_TOKEN" in creds
+
+
+def test_suggest_team_requires_login(client):
+    """Spends tokens — must never be anonymous (cost-amplification guard)."""
+    r = client.post("/api/suggest-team", json={"brief": "build a thing"})
+    assert r.status_code == 401
+
+
+def test_model_health_requires_login(client):
+    r = client.get("/api/model-health")
+    assert r.status_code == 401
+
+
+def test_model_health_scoped_to_owner(make_user):
+    """A non-root user's model-health must not aggregate other tenants' tasks."""
+    from conftest import make_project, make_task
+    make_project(owner_id=1, name="root-proj")
+    rt = make_task(1, role="backend", status="done")
+    db.update_task(rt, model="claude-opus-4-8")
+    uid, u_client = make_user("healthprobe")
+    r = u_client.get("/api/model-health")
+    assert r.status_code == 200
+    models = [m["model"] for m in r.json().get("models", [])]
+    assert "claude-opus-4-8" not in models   # that task belongs to root, not this user

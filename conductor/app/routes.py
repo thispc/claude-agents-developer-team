@@ -313,9 +313,11 @@ def model_health(request: Request) -> dict:
     rate-limit/overload hits. Anthropic exposes no remaining-quota API, so this
     reports what we can actually measure, never a fabricated 'percent left'."""
     import time as _t
+    user = current_user(request)
     window = _t.time() - 6 * 3600
     stats: dict[str, dict] = {}
-    for p in db.list_projects()[:12]:
+    visible = [p for p in db.list_projects() if can_see(p, user)][:12]
+    for p in visible:
         for t in db.list_tasks(p["id"]):
             m = t.get("model")
             if not m or t["updated_at"] < window:
@@ -495,8 +497,9 @@ def health() -> dict:
 
 
 @router.post("/api/suggest-team")
-async def suggest_team(body: BriefOnly) -> dict:
+async def suggest_team(body: BriefOnly, request: Request) -> dict:
     """Recruiting: propose a starting team from the brief for the boss to tweak."""
+    current_user(request)   # spends tokens — never anonymous
     return {"team": await planner.suggest_team(body.brief),
             "known_roles": [r["name"] for r in config.load_roles()]}
 
