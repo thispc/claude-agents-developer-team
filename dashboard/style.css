@@ -378,3 +378,6 @@ pre.dim, .dim { color: var(--dim); }
 .agents-table tr.sep td { background: var(--card-2); font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--faint); font-weight: 650; padding: 8px 10px; }
 .agents-table tr.past { opacity: .78; }
 .agents-table tr.live code { background: var(--accent-soft); color: var(--accent); }
+
+/* Log pane: fixed height so opening/closing it never shifts the table above it. */
+#machineLogs { height: 340px; max-height: 340px; overflow-y: auto; overscroll-behavior: contain; }

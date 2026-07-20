@@ -255,9 +255,12 @@ async function refreshBoard() {
   $("#costBadge").hidden = false;
   if (authMode === "subscription") {
     // No per-token billing — show the meaningful metric (agent runs), not dollars.
-    $("#costBadge").textContent = `${runs} / ${maxRuns} agent runs`;
-    $("#costBadge").title = "Running on your Claude subscription — no per-token charge. " +
-      "The cap counts total worker dispatches; it's the runaway-loop guard.";
+    $("#costBadge").textContent = `${runs}/${maxRuns} agent runs used`;
+    $("#costBadge").title =
+      `This project has dispatched ${runs} agent runs out of a ${maxRuns} cap.\n` +
+      "One run = one teammate working one task once (a retry counts again).\n" +
+      "It is a runaway-loop guard, NOT a limit on how many agents work at the same time " +
+      "— that's the max-parallel setting. Nothing is billed on a subscription.";
   } else {
     $("#costBadge").textContent = `$${p.cost_usd.toFixed(2)} / $${p.budget_usd.toFixed(2)} · ${runs} runs`;
     $("#costBadge").title = "Estimated API spend / budget cap. Authoritative balance is at console.anthropic.com.";
@@ -773,67 +776,91 @@ let openLogText = "";
 async function loadMachineLogs(taskId) {
   openLogTask = Number(taskId);
   const box = $("#machineLogs");
-  if (box) { box.hidden = false; box.textContent = openLogText || "loading…"; }
+  if (box && !box.textContent) box.textContent = openLogText || "loading…";
+  let next;
   try {
     const r = await api(`/api/tasks/${taskId}/machine-logs`);
-    openLogText = `— ${r.source} · task #${taskId} —\n\n${r.logs}`;
-  } catch (e) { openLogText = String(e.message); }
+    next = `— ${r.source} · task #${taskId} —\n\n${r.logs}`;
+  } catch (e) { next = String(e.message); }
   const b = $("#machineLogs");
-  if (b && openLogTask === Number(taskId)) {
-    const atBottom = b.scrollHeight - b.scrollTop - b.clientHeight < 40;
-    b.textContent = openLogText;
-    if (atBottom) b.scrollTop = b.scrollHeight;   // keep tailing if already at the end
-  }
+  if (!b || openLogTask !== Number(taskId)) return;
+  // Writing textContent resets scrollTop to 0, which is what kept yanking the view
+  // back to the top. Only touch the DOM when the text actually changed, and put the
+  // reader's scroll position back exactly where it was (unless they were tailing).
+  if (next === openLogText) return;
+  const prevTop = b.scrollTop;
+  const wasTailing = b.scrollHeight - b.scrollTop - b.clientHeight < 40;
+  openLogText = next;
+  b.textContent = next;
+  b.scrollTop = wasTailing ? b.scrollHeight : prevTop;
 }
 
+let agentsSig = "";
 async function renderAgents() {
   const el = $("#agents");
   if (el.hidden) return;
   let a;
   try { a = await api("/api/agents"); }
   catch (e) { el.innerHTML = `<div class="pane"><p class="dim">${escapeHtml(e.message)}</p></div>`; return; }
+
   const row = (g, live) => `
     <tr class="${live ? "live" : "past"}">
       <td><span class="role">${escapeHtml(g.role)}</span></td>
       <td>${escapeHtml(trim(g.title, 46))}<div class="hint">${escapeHtml(g.project || "")}</div></td>
       <td>${live ? `<code>${escapeHtml(g.ref)}</code>` : `<span class="pill">${escapeHtml(g.status)}</span>`}</td>
       <td>${escapeHtml(g.model)}</td>
-      <td>${live ? `${Math.floor(g.uptime_s / 60)}m ${g.uptime_s % 60}s` : "—"}</td>
+      <td>${live ? `${Math.floor(g.uptime_s / 60)}m ${g.uptime_s % 60}s` : "\u2014"}</td>
       <td><button data-logs="${g.task_id}">logs</button></td>
     </tr>`;
   const rows = (a.agents || []).map((g) => row(g, true)).join("")
     + ((a.finished || []).length
-      ? `<tr class="sep"><td colspan="6">Recently finished — logs still available</td></tr>`
+      ? `<tr class="sep"><td colspan="6">Recently finished \u2014 logs still available</td></tr>`
         + a.finished.map((g) => row(g, false)).join("")
       : "");
-  el.innerHTML = `
-    <div class="pane">
-      <h2>🖥 Machines</h2>
-      <p class="hint">Execution mode: <b>${a.mode === "k8s" ? `Kubernetes (namespace ${escapeHtml(a.namespace)})` : "local processes"}</b>
-        · running now: <b>${a.running}</b> · max at once: ${a.max_parallel}</p>
-      <table class="agents-table">
-        <thead><tr><th>Role</th><th>Task</th><th>${a.mode === "k8s" ? "Pod / Job" : "Process"}</th><th>Model</th><th>Uptime</th><th></th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="6" class="dim">No agents running right now.</td></tr>'}</tbody>
-      </table>
-      <div class="logs-head" ${openLogTask ? "" : "hidden"}>
-        <span>Machine logs — task #${openLogTask || ""}</span>
-        <button id="closeLogsBtn">close</button>
-      </div>
-      <pre id="machineLogs" ${openLogTask ? "" : "hidden"}>${escapeHtml(openLogText)}</pre>
-    </div>`;
-  el.querySelectorAll("[data-logs]").forEach((b) =>
-    b.addEventListener("click", () => {
-      openLogText = "";                       // switching agents: start fresh
-      openLogTask = Number(b.dataset.logs);
-      renderAgents();                         // re-render, which fetches the logs
-    }));
-  const closeBtn = $("#closeLogsBtn");
-  if (closeBtn) closeBtn.addEventListener("click", () => {
-    openLogTask = null; openLogText = "";
-    renderAgents();
-  });
-  // Keep the open log tailing live rather than freezing at first fetch.
-  if (openLogTask) loadMachineLogs(openLogTask);
+
+  // Build the shell ONCE. Rebuilding it on every refresh recreated the <pre> and
+  // threw away the reader's scroll position.
+  if (!$("#agentsShell")) {
+    el.innerHTML = `
+      <div class="pane" id="agentsShell">
+        <h2>\ud83d\udda5 Machines</h2>
+        <p class="hint" id="agentsMode"></p>
+        <table class="agents-table">
+          <thead><tr><th>Role</th><th>Task</th><th id="refCol">Process</th><th>Model</th><th>Uptime</th><th></th></tr></thead>
+          <tbody id="agentsBody"></tbody>
+        </table>
+        <div class="logs-head" id="logsHead" hidden>
+          <span id="logsTitle"></span><button id="closeLogsBtn">close</button>
+        </div>
+        <pre id="machineLogs" hidden></pre>
+      </div>`;
+    $("#closeLogsBtn").addEventListener("click", () => {
+      openLogTask = null; openLogText = "";
+      $("#machineLogs").hidden = true; $("#machineLogs").textContent = "";
+      $("#logsHead").hidden = true;
+    });
+  }
+
+  const sig = JSON.stringify({ rows, mode: a.mode, running: a.running });
+  if (sig !== agentsSig) {                 // only repaint the table when it changed
+    agentsSig = sig;
+    $("#agentsMode").innerHTML = `Execution mode: <b>${a.mode === "k8s"
+      ? `Kubernetes (namespace ${escapeHtml(a.namespace)})` : "local processes"}</b>
+      \u00b7 running now: <b>${a.running}</b> \u00b7 max at once: ${a.max_parallel}`;
+    $("#refCol").textContent = a.mode === "k8s" ? "Pod / Job" : "Process";
+    $("#agentsBody").innerHTML = rows ||
+      '<tr><td colspan="6" class="dim">No agents running right now.</td></tr>';
+    $("#agentsBody").querySelectorAll("[data-logs]").forEach((b) =>
+      b.addEventListener("click", () => {
+        openLogText = ""; openLogTask = Number(b.dataset.logs);
+        $("#machineLogs").textContent = "loading\u2026";
+        $("#machineLogs").hidden = false;
+        $("#logsHead").hidden = false;
+        $("#logsTitle").textContent = `Machine logs \u2014 task #${openLogTask}`;
+        loadMachineLogs(openLogTask);
+      }));
+  }
+  if (openLogTask) loadMachineLogs(openLogTask);   // keep tailing, scroll preserved
 }
 
 // --- artifacts / public link ------------------------------------------------

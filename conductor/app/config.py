@@ -55,7 +55,11 @@ WORKER_IMAGE = _env("WORKER_IMAGE", "devteam-worker:latest")
 K8S_NAMESPACE = _env("K8S_NAMESPACE", "devteam")
 
 MAX_CONCURRENT_WORKERS = int(_env("MAX_CONCURRENT_WORKERS", "3"))
-WORKER_MAX_TURNS = int(_env("WORKER_MAX_TURNS", "70"))
+# Turns inside ONE agent session (tool-call round trips). Hitting this kills work
+# mid-flight, so keep it generous — a full-stack build legitimately needs many turns.
+WORKER_MAX_TURNS = int(_env("WORKER_MAX_TURNS", "120"))
+# A retry after a turn-limit death gets more room than the attempt that ran out.
+WORKER_MAX_TURNS_RETRY = int(_env("WORKER_MAX_TURNS_RETRY", "180"))
 LEAD_MAX_TURNS = int(_env("LEAD_MAX_TURNS", "120"))
 PROJECT_BUDGET_USD = float(_env("PROJECT_BUDGET_USD", "5.0"))
 # Primary safety rail: max total agent runs (worker dispatches) per project.
