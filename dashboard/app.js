@@ -871,6 +871,12 @@ function updateChatUnread() {
   b.textContent = unread;
 }
 
+// snake_case role names are long. Offer the browser a break point after each
+// underscore so they wrap as WORDS rather than mid-syllable.
+function wrapRole(role) {
+  return escapeHtml(String(role || "")).replace(/_/g, "_<wbr>");
+}
+
 function ago(ts) {
   const m = Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
   if (m < 1) return "just now";
@@ -1306,7 +1312,7 @@ function renderCommand(p) {
     }
     return `<div class="agent ${t.status}" data-task="${t.id}">
       <div class="top">
-        <span class="role">${escapeHtml(t.role)}</span>
+        <span class="role" title="${escapeHtml(t.role)}">${wrapRole(t.role)}</span>
         <span class="st">${STATUS_WORD[t.status] || t.status}</span>
       </div>
       <div class="title">${escapeHtml(t.title)}</div>
@@ -1337,7 +1343,13 @@ function renderCommand(p) {
         const dep = tasks.find((x) => x.id === id);
         return dep ? dep.role : "#" + id;
       });
-      return names.length ? `waiting for ${names.join(" & ")}` : "";
+      if (!names.length) return "";
+      // Three long snake_case names in a 268px card is a wall of text. Show two,
+      // count the rest, and keep the full list in the tooltip.
+      const shown = names.slice(0, 2).join(", ");
+      const extra = names.length - 2;
+      return { text: extra > 0 ? `waiting for ${shown} +${extra} more` : `waiting for ${shown}`,
+               full: "waiting for " + names.join(", ") };
     };
     return `<div class="group">
       <div class="group-head"><span class="glabel">${label}</span>
@@ -1346,7 +1358,8 @@ function renderCommand(p) {
       <div class="agents">${inGroup.map((t) => {
         const bn = key === "blocked" ? blockedNote(t) : "";
         return card(t).replace('<div class="deps">',
-          bn ? `<div class="blocked-note">${escapeHtml(bn)}</div><div class="deps">` : '<div class="deps">');
+          bn ? `<div class="blocked-note" title="${escapeHtml(bn.full)}">⏳ ${
+            escapeHtml(bn.text)}</div><div class="deps">` : '<div class="deps">');
       }).join("")}</div>
     </div>`;
   }).join("");

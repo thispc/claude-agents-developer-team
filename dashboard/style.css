@@ -169,16 +169,26 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 380px; gap: 16px; padd
 .ask-card .qreply input { flex: 1; background: #fff; }
 
 /* agents grid */
-.agents { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; width: 100%; }
+.agents { display: grid; gap: 14px; width: 100%; justify-content: center;
+  grid-template-columns: repeat(auto-fit, 268px); align-items: stretch; }
+.agents .agent { width: auto; display: flex; flex-direction: column; }
+/* push the model/deps footer to the bottom so every card lines up */
+.agents .agent .deps { margin-top: auto; padding-top: 8px; }
 .agent {
   background: var(--card); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: var(--shadow); width: 268px; padding: 14px 16px; cursor: pointer;
   transition: transform .12s, box-shadow .12s, border-color .12s;
 }
 .agent:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); border-color: #cfd4dd; }
-.agent .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.agent .role { font-size: 10.5px; text-transform: uppercase; letter-spacing: .9px; font-weight: 700; color: var(--accent); }
-.agent .st { font-size: 11px; padding: 3px 9px; border-radius: 999px; font-weight: 600; }
+.agent .top { display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 8px; min-height: 20px; }
+.agent .role { font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px;
+  font-weight: 700; color: var(--accent); line-height: 1.35;
+  /* without min-width:0 a flex item refuses to shrink and overruns its neighbour */
+  min-width: 0; flex: 1; word-break: normal; overflow-wrap: break-word;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.agent .st { font-size: 11px; padding: 3px 9px; border-radius: 999px; font-weight: 600;
+  flex: none; white-space: nowrap; }
 .agent .title { font-size: 13.5px; font-weight: 600; margin: 7px 0 6px; line-height: 1.4; }
 .agent .doing { font-size: 12px; color: var(--dim); line-height: 1.5; background: var(--card-2); border-radius: 9px; padding: 8px 10px; border: 1px solid var(--line-soft); }
 .agent .deps { font-size: 11px; color: var(--faint); margin-top: 8px; }
@@ -385,7 +395,10 @@ pre.dim, .dim { color: var(--dim); }
 .glabel { font-size: 12px; font-weight: 650; color: var(--text); }
 .gcount { font-size: 11px; background: var(--card-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--dim); }
 .gnote { font-size: 11px; color: var(--faint); }
-.blocked-note { font-size: 11px; color: var(--warn); background: var(--warn-soft); border-radius: 7px; padding: 5px 8px; margin-top: 7px; }
+.blocked-note { font-size: 11px; color: var(--warn); background: var(--warn-soft);
+  border-radius: 7px; padding: 5px 8px; margin-top: 7px; line-height: 1.45;
+  overflow-wrap: anywhere; }
+.blocked-note b { font-weight: 650; }
 
 /* ---------- model health ---------- */
 #modelHealth { margin: 14px 0 6px; }
