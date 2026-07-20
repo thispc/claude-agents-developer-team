@@ -119,6 +119,14 @@ def get_settings(user: dict) -> dict:
     if user["is_root"]:
         s.setdefault("github_token", config.GITHUB_TOKEN)
         s.setdefault("anthropic_api_key", config.ANTHROPIC_API_KEY)
+        # The rest of the operator's .env, on the same root-only rule. Without
+        # these, a key sitting in .env was invisible to everything that reads
+        # settings — the round table, the planner and the Settings dialog all
+        # reported "not set" for a key the operator had definitely configured.
+        s.setdefault("claude_oauth_token", config.CLAUDE_CODE_OAUTH_TOKEN)
+        s.setdefault("gemini_api_key", config.GEMINI_API_KEY)
+        s.setdefault("openai_api_key", config.OPENAI_API_KEY)
+        return {k: v for k, v in s.items() if v}   # drop the blanks setdefault added
     return s
 
 

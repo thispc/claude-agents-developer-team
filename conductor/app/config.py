@@ -39,6 +39,13 @@ def auth_mode() -> str:
     if CLAUDE_CODE_OAUTH_TOKEN or CLI_LOGIN:
         return "subscription"
     return "none"
+# Other providers, for planning and the round table. Both are API-key only —
+# there is no subscription equivalent, so every call on these bills real money.
+# GEMINI_KEY is accepted as an alias because that is what people actually write
+# in a .env, and a variable the app never reads looks exactly like a broken key.
+GEMINI_API_KEY = _env("GEMINI_API_KEY") or _env("GEMINI_KEY")
+OPENAI_API_KEY = _env("OPENAI_API_KEY")
+
 LEAD_MODEL = _env("LEAD_MODEL", "claude-sonnet-5")
 WORKER_MODEL = _env("WORKER_MODEL", "claude-haiku-4-5")
 ESCALATION_MODEL = _env("ESCALATION_MODEL", "claude-sonnet-5")
@@ -47,6 +54,14 @@ GITHUB_TOKEN = _env("GITHUB_TOKEN")
 GITHUB_REPO = _env("GITHUB_REPO")
 # The repo holding this platform's own code. Blank = derive from the git remote.
 SELF_REPO = _env("SELF_REPO")
+# Non-root usernames allowed to run self-repair, comma-separated. Granted here and
+# not in the app on purpose: self-repair writes to the repo this server runs from,
+# so a compromised account must not be able to grant it to itself.
+SELFREPAIR_USERS = [u.strip().lower() for u in _env("SELFREPAIR_USERS").split(",") if u.strip()]
+
+
+def may_self_repair(username: str, is_root: bool) -> bool:
+    return bool(is_root or (username or "").lower() in SELFREPAIR_USERS)
 # Wildcard domain for deployed apps (e.g. apps.example.com -> app-11.apps.example.com).
 # Blank = fall back to a per-app LoadBalancer, which the cloud bills for per app.
 APPS_DOMAIN = _env("APPS_DOMAIN")
