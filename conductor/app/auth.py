@@ -149,5 +149,7 @@ def redacted(settings: dict) -> dict:
         "github_token_set": bool(settings.get("github_token")),
         "anthropic_api_key_set": bool(settings.get("anthropic_api_key")),
         "claude_oauth_token_set": bool(settings.get("claude_oauth_token")),
+        "openai_api_key_set": bool(settings.get("openai_api_key")),
+        "gemini_api_key_set": bool(settings.get("gemini_api_key")),
         "github_login": settings.get("github_login", ""),
     }

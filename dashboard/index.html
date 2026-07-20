@@ -42,6 +42,7 @@
 <section id="home">
   <div class="home-head">
     <h2>Projects</h2>
+    <button id="homePlanBtn">🧠 Plan it first</button>
     <button id="homeNewBtn" class="primary">+ New project</button>
   </div>
   <table id="projectsTable">
@@ -49,6 +50,51 @@
     <tbody id="projectsBody"></tbody>
   </table>
   <p id="homeEmpty" class="empty" hidden>No projects yet. Create one to put your AI team to work.</p>
+</section>
+
+<section id="plan" hidden>
+  <div class="plan-head">
+    <div>
+      <h2>🧠 Plan mode — the round table</h2>
+      <p class="plan-sub">A circle of <b>different</b> models argues your idea into a
+        blueprint before anyone writes code.
+        <a href="#" id="whyCircle">Why a circle of different models?</a></p>
+    </div>
+    <button id="planBackBtn">← Back to projects</button>
+  </div>
+
+  <div id="planSetup">
+    <label class="plan-idea">Your idea — rough is fine
+      <textarea id="planBrief" rows="4" placeholder="e.g. a tool that watches my competitors' pricing pages and tells me when to change mine"></textarea>
+    </label>
+
+    <div class="seats-head">
+      <h3>Who is at the table?</h3>
+      <div class="seats-actions">
+        <span id="seatWarn" class="seat-warn" hidden></span>
+        <button id="addSeatBtn">+ Add a seat</button>
+      </div>
+    </div>
+    <div id="seatList"></div>
+
+    <div class="mod-row">
+      <label>Moderator in the centre <span class="hint">weighs the arguments and writes the blueprint</span>
+        <select id="modSelect"></select></label>
+      <button id="startTableBtn" class="primary">▶ Convene the table</button>
+    </div>
+    <p id="planError" class="form-error" hidden></p>
+  </div>
+
+  <div id="planStage" hidden>
+    <div class="stage-head">
+      <span id="phasePill" class="pill">…</span>
+      <span id="phaseNote" class="hint"></span>
+    </div>
+    <div id="circleWrap"><div id="circle"></div></div>
+    <div id="turnFeed"></div>
+  </div>
+
+  <div id="blueprintPanel" hidden></div>
 </section>
 
 <main hidden>
@@ -106,6 +152,13 @@
       <input name="claude_oauth_token" type="password" placeholder="run `claude setup-token` and paste it here"></label>
     <p class="hint">Use <b>one</b> of the two. The subscription token runs agents on your own
       Claude Pro/Max plan at no per-token cost; the API key bills your Anthropic account.</p>
+    <h3 class="set-h">Other providers <span class="hint">— for Plan mode's round table</span></h3>
+    <p class="hint">Mixing providers is what makes a round table outperform asking one
+      model once, so a key here buys real quality, not just variety.</p>
+    <label>OpenAI API key <span class="hint" id="oaState"></span>
+      <input name="openai_api_key" type="password" placeholder="sk-… (GPT-5, o3)"></label>
+    <label>Google Gemini API key <span class="hint" id="gmState"></span>
+      <input name="gemini_api_key" type="password" placeholder="AIza… (Gemini 2.5)"></label>
     <p class="hint">Your credentials are stored per user on the server and never sent back to the browser.
       Full GitHub OAuth ("Authorize once") is the next step — for now paste a fine-grained token
       with Contents, Issues and Pull requests read/write.</p>

@@ -55,6 +55,43 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
+-- A planning round table: a circle of heterogeneous agents that deliberate a
+-- rough idea into a blueprint before any engineer is hired.
+CREATE TABLE IF NOT EXISTS roundtables (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL,
+    project_id INTEGER,                       -- set once the blueprint is built into a project
+    title TEXT NOT NULL DEFAULT '',
+    brief TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'draft',     -- draft | running | done | failed
+    mod_provider TEXT NOT NULL DEFAULT '',    -- the moderator in the centre
+    mod_model TEXT NOT NULL DEFAULT '',
+    blueprint TEXT NOT NULL DEFAULT '',       -- JSON, once synthesised
+    created_at REAL NOT NULL,
+    started_at REAL,
+    finished_at REAL
+);
+CREATE TABLE IF NOT EXISTS seats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_id INTEGER NOT NULL,
+    seat_index INTEGER NOT NULL,              -- position around the circle
+    name TEXT NOT NULL,
+    provider TEXT NOT NULL,                   -- anthropic | openai | google
+    model TEXT NOT NULL,
+    persona TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_seats_table ON seats(table_id);
+CREATE TABLE IF NOT EXISTS turns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    table_id INTEGER NOT NULL,
+    seat_id INTEGER,                          -- NULL = the moderator
+    phase TEXT NOT NULL,                      -- propose | critique | revise | synthesis
+    round INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    ok INTEGER NOT NULL DEFAULT 1,
+    ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_turns_table ON turns(table_id, id);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL,
@@ -115,6 +152,8 @@ def init() -> None:
         "ALTER TABLE tasks ADD COLUMN compete INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE tasks ADD COLUMN seq INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE projects ADD COLUMN is_self INTEGER NOT NULL DEFAULT 0",
+        # roundtables/seats/turns are created by SCHEMA above (CREATE TABLE IF NOT
+        # EXISTS), so existing databases pick them up without a migration here.
     ):
         try:
             _conn.execute(stmt)
@@ -159,6 +198,70 @@ def create_project(name: str, brief: str, repo: str, budget_usd: float,
          autonomy, manager_model, manager_persona, owner_id, time.time()),
     )
     return cur.lastrowid
+
+
+# --- round tables ---------------------------------------------------------
+
+def create_table(owner_id: int, brief: str, title: str = "",
+                 mod_provider: str = "", mod_model: str = "") -> int:
+    cur = _execute(
+        "INSERT INTO roundtables (owner_id, brief, title, mod_provider, mod_model, created_at) "
+        "VALUES (?,?,?,?,?,?)",
+        (owner_id, brief, title, mod_provider, mod_model, time.time()))
+    return cur.lastrowid
+
+
+def get_table(table_id: int) -> dict | None:
+    rows = _rows("SELECT * FROM roundtables WHERE id=?", (table_id,))
+    return rows[0] if rows else None
+
+
+def list_tables(owner_id: int | None = None) -> list[dict]:
+    if owner_id is None:
+        return _rows("SELECT * FROM roundtables ORDER BY id DESC")
+    return _rows("SELECT * FROM roundtables WHERE owner_id=? ORDER BY id DESC", (owner_id,))
+
+
+def update_table(table_id: int, **fields: Any) -> None:
+    if not fields:
+        return
+    allowed = {"project_id", "title", "brief", "status", "mod_provider",
+               "mod_model", "blueprint", "started_at", "finished_at"}
+    bad = set(fields) - allowed
+    assert not bad, f"update_table got unknown field(s): {bad}"
+    sets = ", ".join(f"{k}=?" for k in fields)
+    _execute(f"UPDATE roundtables SET {sets} WHERE id=?",
+             (*fields.values(), table_id))
+
+
+def add_seat(table_id: int, seat_index: int, name: str, provider: str,
+             model: str, persona: str = "") -> int:
+    cur = _execute(
+        "INSERT INTO seats (table_id, seat_index, name, provider, model, persona) "
+        "VALUES (?,?,?,?,?,?)",
+        (table_id, seat_index, name, provider, model, persona))
+    return cur.lastrowid
+
+
+def list_seats(table_id: int) -> list[dict]:
+    return _rows("SELECT * FROM seats WHERE table_id=? ORDER BY seat_index, id", (table_id,))
+
+
+def clear_seats(table_id: int) -> None:
+    _execute("DELETE FROM seats WHERE table_id=?", (table_id,))
+
+
+def add_turn(table_id: int, seat_id: int | None, phase: str, rnd: int,
+             text: str, ok: bool = True) -> int:
+    cur = _execute(
+        "INSERT INTO turns (table_id, seat_id, phase, round, text, ok, ts) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (table_id, seat_id, phase, rnd, text, 1 if ok else 0, time.time()))
+    return cur.lastrowid
+
+
+def list_turns(table_id: int) -> list[dict]:
+    return _rows("SELECT * FROM turns WHERE table_id=? ORDER BY id", (table_id,))
 
 
 def set_project_budget(project_id: int, budget_usd: float) -> None:

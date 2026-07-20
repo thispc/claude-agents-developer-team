@@ -46,11 +46,18 @@ back to the operator's credentials.
 | [docs/UI_ACTIONS.md](docs/UI_ACTIONS.md) | What every button actually triggers — including which ones spend money, start an agent, or kill one |
 | [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) | Confirmed bugs that are **not** fixed, each with the fix |
 | [deploy/README.md](deploy/README.md) | Local kind rehearsal cluster, the DigitalOcean differences, and what it costs |
+| [docs/ROUNDTABLE_DESIGN.md](docs/ROUNDTABLE_DESIGN.md) | Plan mode: why the circle is arranged the way it is, with citations |
 
 ---
 
 ## What it does
 
+- **Deliberates first (optional)** — Plan mode seats 3–6 *different* models
+  (Claude, GPT, Gemini) around a circle with a moderator in the middle. They
+  propose independently, then argue, then revise, and the moderator writes a
+  blueprint — including the strongest objection nobody answered. See
+  [docs/ROUNDTABLE_DESIGN.md](docs/ROUNDTABLE_DESIGN.md) for the research behind
+  the seating rules; mixing providers is the part that measurably matters.
 - **Plans** — the manager turns your brief into a task DAG with real dependencies.
 - **Hires** — a roster suggested from the brief, which you edit before starting.
 - **Dispatches** — a deterministic scheduler runs every task whose dependencies

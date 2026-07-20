@@ -31,6 +31,8 @@ Legend: 💸 spends tokens · 🤖 starts an agent · 🛑 stops an agent ·
 
 | Control | Calls | What happens |
 |---|---|---|
+| **🧠 Plan it first** | — | Opens Plan mode — the round table. Nothing is created until you convene. |
+|---|---|---|
 | Project row | — | Opens it. |
 | **Open** | — | Same. |
 | **Cancel** ⚠️🛑 | `POST /projects/{id}/cancel` | Identical to the header Cancel. |

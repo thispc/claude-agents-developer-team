@@ -78,6 +78,9 @@ $("#settingsBtn").addEventListener("click", async () => {
   const s = me.settings || {};
   $("#settingsWho").textContent = `Signed in as ${me.username}${me.is_root ? " (root)" : ""}`;
   $("#ghState").textContent = s.github_token_set ? "— currently set ✓" : "— not set";
+  const oa = $("#oaState"), gm = $("#gmState");
+  if (oa) oa.textContent = s.openai_api_key_set ? "— currently set ✓" : "— not set";
+  if (gm) gm.textContent = s.gemini_api_key_set ? "— currently set ✓" : "— not set";
   $("#keyState").textContent = s.anthropic_api_key_set ? "— currently set ✓" : "— not set";
   $("#subState").textContent = s.claude_oauth_token_set ? "— currently set ✓" : "— not set";
   $("#settingsError").hidden = true;
@@ -208,6 +211,7 @@ function renderHome(projects) {
 }
 
 function showHome(skipHash) {
+  const pl = $("#plan"); if (pl) pl.hidden = true;
   if (!skipHash) setHash("#/");
   currentProject = null;
   $("#home").hidden = false;
@@ -261,6 +265,15 @@ function switchView(view, skipHash) {
 
 function route() {
   if (suppressHash) return;
+  const plan = location.hash.match(/^#\/plan(?:\/(\d+))?/);
+  if (plan) {
+    openPlan();
+    if (plan[1]) {
+      $("#planSetup").hidden = true; $("#planStage").hidden = false;
+      pollTable(Number(plan[1]));
+    }
+    return;
+  }
   const m = location.hash.match(/^#\/p\/(\d+)(?:\/(\w+))?/);
   if (m) openProject(Number(m[1]), m[2] || "command", true);
   else showHome(true);
@@ -442,6 +455,296 @@ function toast(msg) {
   el.classList.add("show");
   clearTimeout(toast._t);
   toast._t = setTimeout(() => el.classList.remove("show"), 4000);
+}
+
+// ===== PLAN MODE: the round table ==========================================
+// A circle of heterogeneous models argues an idea into a blueprint. The seating
+// rules are evidence-led — see docs/ROUNDTABLE_DESIGN.md. The one that matters:
+// mixing PROVIDERS is what makes deliberation beat just asking one model.
+
+let providerCatalog = { providers: [], available: [] };
+let seats = [];
+let currentTable = null;
+let seatSeq = 0;
+
+const PERSONA_PRESETS = [
+  ["Systems architect", "You think in structure: boundaries, data flow, failure modes. You care about what this looks like at 100x the initial scale."],
+  ["Pragmatic shipper", "You optimise for the shortest path to something real in a user's hands. You are suspicious of architecture that outruns the problem."],
+  ["Domain skeptic", "You interrogate whether the problem is even the right problem, and whether anyone actually wants this. You look for the unstated assumption."],
+  ["User advocate", "You speak for the person who has to use this. Confusing flows and unexplained states are defects to you."],
+  ["Risk & security", "You look for what breaks, leaks, or gets abused — data, cost, privacy, dependencies."],
+  ["Researcher", "You look for prior art and evidence. You would rather cite how this has been solved than reinvent it."],
+];
+
+async function openPlan() {
+  $("#home").hidden = true; $("main").hidden = true; $("#plan").hidden = false;
+  $("#planSetup").hidden = false; $("#planStage").hidden = true;
+  $("#blueprintPanel").hidden = true;
+  setHash("#/plan");
+  try { providerCatalog = await api("/api/providers"); } catch { /* shown below */ }
+  if (!seats.length) seedSeats();
+  renderSeats();
+  renderModSelect();
+}
+
+// Default table: deliberately spread across whatever providers you have keys for,
+// because homogeneous tables are the case the research says does not work.
+function seedSeats() {
+  const avail = providerCatalog.available || [];
+  const pick = (i) => avail.length ? avail[i % avail.length] : "anthropic";
+  const defaults = [
+    { persona: PERSONA_PRESETS[0], },
+    { persona: PERSONA_PRESETS[1], },
+    { persona: PERSONA_PRESETS[2], },
+    { persona: PERSONA_PRESETS[4], },
+  ];
+  seats = defaults.map((d, i) => {
+    const prov = pick(i);
+    const ms = modelsFor(prov);
+    // Spread across providers first; when only one provider has a key, spread
+    // across ITS models instead. Identical seats are the configuration the
+    // research says does not work, so never seed one by default.
+    const model = avail.length > 1
+      ? (ms[0]?.id || "")
+      : (ms[i % Math.max(ms.length, 1)]?.id || ms[0]?.id || "");
+    return { uid: ++seatSeq, name: d.persona[0], provider: prov,
+             model, persona: d.persona[1] };
+  });
+}
+
+function modelsFor(provider) {
+  const p = (providerCatalog.providers || []).find((x) => x.id === provider);
+  return p ? p.models : [];
+}
+function providerLabel(id) {
+  const p = (providerCatalog.providers || []).find((x) => x.id === id);
+  return p ? p.label : id;
+}
+
+function renderSeats() {
+  const el = $("#seatList");
+  const avail = providerCatalog.available || [];
+  el.innerHTML = seats.map((s, i) => `
+    <div class="seat-row" data-uid="${s.uid}">
+      <span class="seat-dot prov-${s.provider}">${i + 1}</span>
+      <input class="seat-name" value="${escapeHtml(s.name)}" placeholder="Name" data-f="name">
+      <select class="seat-prov" data-f="provider">
+        ${(providerCatalog.providers || []).map((p) => `
+          <option value="${p.id}" ${p.id === s.provider ? "selected" : ""}
+            ${avail.includes(p.id) ? "" : "disabled"}>
+            ${escapeHtml(p.label)}${avail.includes(p.id) ? "" : " — no key"}
+          </option>`).join("")}
+      </select>
+      <select class="seat-model" data-f="model">
+        ${modelsFor(s.provider).map((m) => `
+          <option value="${m.id}" ${m.id === s.model ? "selected" : ""}>${escapeHtml(m.label)}</option>`).join("")}
+      </select>
+      <input class="seat-persona" value="${escapeHtml(s.persona)}" placeholder="How this seat thinks…" data-f="persona">
+      <button class="seat-del" data-del="${s.uid}" title="Remove this seat">✕</button>
+    </div>`).join("");
+
+  el.querySelectorAll(".seat-row").forEach((row) => {
+    const uid = Number(row.dataset.uid);
+    row.querySelectorAll("[data-f]").forEach((inp) =>
+      inp.addEventListener("change", () => {
+        const s = seats.find((x) => x.uid === uid);
+        s[inp.dataset.f] = inp.value;
+        if (inp.dataset.f === "provider") s.model = modelsFor(s.provider)[0]?.id || "";
+        renderSeats();
+      }));
+    row.querySelector("[data-del]").addEventListener("click", () => {
+      if (seats.length <= 3) { flashSeatWarn("A round table needs at least 3 seats."); return; }
+      seats = seats.filter((x) => x.uid !== uid);
+      renderSeats();
+    });
+  });
+  updateSeatWarning();
+}
+
+function flashSeatWarn(msg) {
+  const w = $("#seatWarn"); w.hidden = false; w.textContent = msg;
+  setTimeout(() => { w.hidden = true; }, 4000);
+}
+
+// The honest warning: identical seats are the case that does NOT work.
+function updateSeatWarning() {
+  const w = $("#seatWarn");
+  const provs = new Set(seats.map((s) => s.provider));
+  const combos = new Set(seats.map((s) => s.provider + "/" + s.model));
+  let msg = "";
+  if (seats.length > 6) msg = `${seats.length} seats — deliberation degrades past about 6.`;
+  else if (combos.size === 1) msg = "Every seat is the same model. That is the case research found does NOT beat asking one model once.";
+  else if (provs.size === 1) msg = "All seats share one provider. Mixing providers is what measurably improves this.";
+  w.hidden = !msg; w.textContent = msg;
+}
+
+function renderModSelect() {
+  const sel = $("#modSelect");
+  const opts = [];
+  (providerCatalog.providers || []).forEach((p) => {
+    if (!(providerCatalog.available || []).includes(p.id)) return;
+    p.models.forEach((m) => opts.push(
+      `<option value="${p.id}|${m.id}">${escapeHtml(p.label)} · ${escapeHtml(m.label)}</option>`));
+  });
+  sel.innerHTML = opts.join("") || `<option value="">no providers configured</option>`;
+}
+
+// ---- the circle ----------------------------------------------------------
+
+function renderCircle(seatInfo, activeIds, phase) {
+  const el = $("#circle");
+  const n = seatInfo.length;
+  const R = 40;   // % radius inside the square wrapper
+  el.innerHTML = seatInfo.map((s, i) => {
+    const ang = (i / n) * 2 * Math.PI - Math.PI / 2;
+    const x = 50 + R * Math.cos(ang), y = 50 + R * Math.sin(ang);
+    const state = activeIds.includes(s.id) ? "speaking" : (s.done ? "done" : "");
+    return `<div class="seat-node ${state} prov-${s.provider}"
+        style="left:${x}%; top:${y}%" data-seat="${s.id}" title="${escapeHtml(s.model)}">
+      <div class="sn-name">${escapeHtml(s.name)}</div>
+      <div class="sn-model">${escapeHtml(providerLabel(s.provider))}</div>
+      ${s.skeptic ? `<span class="sn-badge" title="Holds the standing skeptic brief">skeptic</span>` : ""}
+    </div>`;
+  }).join("") + `
+    <div class="mod-node ${phase === "synthesis" ? "speaking" : ""}">
+      <div class="sn-name">Moderator</div>
+      <div class="sn-model">${phase === "synthesis" ? "writing the blueprint…" : "listening"}</div>
+    </div>`;
+}
+
+const PHASE_NOTE = {
+  propose: "Round 1 — everyone writes independently. Nobody can see anyone else yet, so nobody anchors the group.",
+  critique: "Round 2 — structured dissent. Each seat must name a concrete flaw, not summarise.",
+  revise: "Round 3 — each seat revises, saying what changed their mind and what did not.",
+  synthesis: "The moderator weighs the arguments — not the head-count — and writes the blueprint.",
+};
+
+async function startTable() {
+  const brief = $("#planBrief").value.trim();
+  const err = $("#planError");
+  err.hidden = true;
+  if (!brief) { err.hidden = false; err.textContent = "Describe the idea first."; return; }
+  const mod = ($("#modSelect").value || "").split("|");
+  const btn = $("#startTableBtn");
+  btn.disabled = true; btn.textContent = "convening…";
+  try {
+    const r = await api("/api/tables", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        brief, title: brief.slice(0, 60),
+        mod_provider: mod[0] || "", mod_model: mod[1] || "",
+        seats: seats.map((s) => ({ name: s.name, provider: s.provider,
+                                   model: s.model, persona: s.persona })),
+      }),
+    });
+    currentTable = r.id;
+    $("#planSetup").hidden = true; $("#planStage").hidden = false;
+    setHash(`#/plan/${r.id}`);
+    await api(`/api/tables/${r.id}/run`, { method: "POST" });
+    pollTable(r.id);
+  } catch (e) {
+    err.hidden = false; err.textContent = e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = "▶ Convene the table";
+  }
+}
+
+let tablePoll = null;
+async function pollTable(id) {
+  clearInterval(tablePoll);
+  const tick = async () => {
+    let t;
+    try { t = await api(`/api/tables/${id}`); } catch { return; }
+    currentTable = id;
+    const spoken = {};
+    (t.turns || []).forEach((x) => { if (x.seat_id) spoken[x.seat_id] = x; });
+    const lastPhase = (t.turns || []).slice(-1)[0]?.phase || "propose";
+    const info = (t.seats || []).map((s, i) => ({
+      id: s.id, name: s.name, provider: s.provider, model: s.model,
+      skeptic: i === t.seats.length - 1,
+      done: !!spoken[s.id],
+    }));
+    renderCircle(info, [], t.status === "running" ? lastPhase : "");
+    $("#phasePill").textContent = t.status === "done" ? "blueprint ready"
+      : t.status === "failed" ? "failed" : `round ${({propose:1,critique:2,revise:3,synthesis:4})[lastPhase] || 1} · ${lastPhase}`;
+    $("#phaseNote").textContent = t.status === "running" ? (PHASE_NOTE[lastPhase] || "") : "";
+    renderTurns(t);
+    if (t.status === "done" || t.status === "failed") {
+      clearInterval(tablePoll);
+      if (t.blueprint) renderBlueprint(t);
+    }
+  };
+  await tick();
+  tablePoll = setInterval(tick, 3000);
+}
+
+function renderTurns(t) {
+  const byId = Object.fromEntries((t.seats || []).map((s) => [s.id, s]));
+  const el = $("#turnFeed");
+  const sig = (t.turns || []).map((x) => x.id).join(",");
+  if (el.dataset.sig === sig) return;      // don't repaint unchanged
+  el.dataset.sig = sig;
+  el.innerHTML = (t.turns || []).map((x) => {
+    const s = byId[x.seat_id];
+    const who = s ? s.name : "Moderator";
+    if (x.phase === "synthesis") return "";
+    return `<div class="turn ${x.ok ? "" : "turn-bad"} phase-${x.phase}">
+      <div class="turn-head"><b>${escapeHtml(who)}</b>
+        <span class="pill">${escapeHtml(x.phase)}</span>
+        ${s ? `<span class="hint">${escapeHtml(providerLabel(s.provider))} · ${escapeHtml(s.model)}</span>` : ""}</div>
+      <div class="turn-body">${escapeHtml(x.text)}</div>
+    </div>`;
+  }).join("");
+  el.scrollTop = el.scrollHeight;
+}
+
+function renderBlueprint(t) {
+  const b = t.blueprint || {};
+  const el = $("#blueprintPanel");
+  el.hidden = false;
+  const list = (arr, f) => (arr || []).map(f).join("") || "<li class='dim'>none</li>";
+  el.innerHTML = `
+    <div class="bp">
+      <h3>📐 Blueprint</h3>
+      ${b.unparsed ? `<p class="hint">The moderator answered in prose rather than JSON — shown raw below.</p>` : ""}
+      ${b.restated_problem ? `<p class="bp-lead">${escapeHtml(b.restated_problem)}</p>` : ""}
+      ${b.approach ? `<h4>Approach</h4><p>${escapeHtml(b.approach)}</p>` : ""}
+      ${b.why ? `<h4>Why this one</h4><p>${escapeHtml(b.why)}</p>` : ""}
+      ${(b.alternatives_rejected || []).length ? `<h4>Considered and rejected</h4><ul>${
+        list(b.alternatives_rejected, (a) => `<li><b>${escapeHtml(a.option || "")}</b> — ${escapeHtml(a.why_not || "")}</li>`)}</ul>` : ""}
+      ${(b.milestones || []).length ? `<h4>Milestones</h4><ol>${
+        list(b.milestones, (m) => `<li>${escapeHtml(m)}</li>`)}</ol>` : ""}
+      ${(b.risks || []).length ? `<h4>Risks</h4><ul>${
+        list(b.risks, (r) => `<li><b>${escapeHtml(r.risk || "")}</b> → ${escapeHtml(r.mitigation || "")}</li>`)}</ul>` : ""}
+      ${b.strongest_objection ? `<div class="bp-objection"><b>Strongest surviving objection</b>
+        <p>${escapeHtml(b.strongest_objection)}</p></div>` : ""}
+      ${(b.open_questions || []).length ? `<h4>For you to decide</h4><ul>${
+        list(b.open_questions, (q) => `<li>${escapeHtml(q)}</li>`)}</ul>` : ""}
+      ${(b.team || []).length ? `<h4>Proposed team</h4><div class="bp-team">${
+        (b.team || []).map((m) => `<span class="bp-role">${escapeHtml(m.role)} ×${m.count || 1}
+          <span class="hint">${escapeHtml(m.why || "")}</span></span>`).join("")}</div>` : ""}
+      <div class="bp-build">
+        <input id="bpName" placeholder="Project name" value="${escapeHtml((t.title || "").slice(0, 40))}">
+        <input id="bpRepo" placeholder="owner/repo (optional)">
+        <button id="bpBuildBtn" class="primary">🚀 Build this with a team</button>
+      </div>
+      <p id="bpErr" class="form-error" hidden></p>
+    </div>`;
+  $("#bpBuildBtn").addEventListener("click", async () => {
+    const btn = $("#bpBuildBtn");
+    btn.disabled = true; btn.textContent = "hiring…";
+    try {
+      const r = await api(`/api/tables/${t.id}/build`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: $("#bpName").value, repo: $("#bpRepo").value }),
+      });
+      $("#plan").hidden = true;
+      openProject(r.project_id, "command");
+    } catch (e) {
+      const er = $("#bpErr"); er.hidden = false; er.textContent = e.message;
+      btn.disabled = false; btn.textContent = "🚀 Build this with a team";
+    }
+  });
 }
 
 function ago(ts) {
@@ -1568,6 +1871,33 @@ $("#projectSelect").addEventListener("change", (e) => selectProject(e.target.val
 $("#homeLink").addEventListener("click", () => showHome());
 $("#homeLink").style.cursor = "pointer";
 $("#newProjectBtn").addEventListener("click", openDialog);
+$("#homePlanBtn").addEventListener("click", openPlan);
+$("#planBackBtn").addEventListener("click", () => {
+  clearInterval(tablePoll); $("#plan").hidden = true; showHome();
+});
+$("#addSeatBtn").addEventListener("click", () => {
+  if (seats.length >= 8) { flashSeatWarn("Eight seats is the hard ceiling."); return; }
+  const avail = providerCatalog.available || ["anthropic"];
+  const prov = avail[seats.length % avail.length];
+  const preset = PERSONA_PRESETS[seats.length % PERSONA_PRESETS.length];
+  const ms = modelsFor(prov);
+  const model = avail.length > 1 ? (ms[0]?.id || "")
+    : (ms[seats.length % Math.max(ms.length, 1)]?.id || ms[0]?.id || "");
+  seats.push({ uid: ++seatSeq, name: preset[0], provider: prov, model, persona: preset[1] });
+  renderSeats();
+});
+$("#startTableBtn").addEventListener("click", startTable);
+$("#whyCircle").addEventListener("click", (e) => {
+  e.preventDefault();
+  alert("The seating rules come from research, not taste:\n\n"
+    + "\u2022 Mixing PROVIDERS is the one intervention shown to reliably improve "
+    + "multi-agent debate. Identical models debating is no better than asking one model once.\n\n"
+    + "\u2022 Round 1 is independent so nobody anchors the group (first speakers win far above chance).\n\n"
+    + "\u2022 Round 2 forces dissent \u2014 structured conflict beats consensus on decision quality.\n\n"
+    + "\u2022 Equal turn-taking predicts group intelligence; every seat speaks exactly once per round.\n\n"
+    + "\u2022 3-6 seats. Past ~7, deliberation degrades.\n\n"
+    + "See docs/ROUNDTABLE_DESIGN.md for the papers.");
+});
 $("#homeNewBtn").addEventListener("click", openDialog);
 $("#backToBriefBtn").addEventListener("click", () => showStep(1));
 $("#backToTeamBtn").addEventListener("click", () => showStep(2));
