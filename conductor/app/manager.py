@@ -25,11 +25,20 @@ from claude_agent_sdk import (
 from . import bus, config, db, github_client, scheduler
 
 
-def valid_roles() -> set[str]:
-    return {r["name"] for r in config.load_roles()}
-
-
-def role_catalog_text() -> str:
+def role_catalog_text(project: dict) -> str:
+    """The roles the manager must assign tasks to. If the boss recruited a team, THOSE
+    are the roles (any domain). Otherwise fall back to the software default catalog."""
+    roster = json.loads(project.get("team") or "[]")
+    if roster:
+        lines = ["Your team (assign every task a role from EXACTLY this recruited list — "
+                 "use these exact role names, do not substitute software roles):"]
+        for m in roster:
+            tier = "stronger model" if m.get("model") == "lead" else "cheap model"
+            lines.append(f"- {m['role']} ({m.get('count', 1)} recruited, {tier})")
+        lines.append("Create one task per distinct piece of work, assigning the most fitting "
+                     "recruited role. When a role was recruited with count > 1 and the work "
+                     "splits into independent parallel pieces, create that many tasks for it.")
+        return "\n".join(lines)
     lines = ["Your team roles (assign each task a role from this list):"]
     for r in config.load_roles():
         lines.append(f"- {r['name']}: {r['summary']}")
@@ -59,16 +68,17 @@ def build_team_server(project_id: int):
         """Create a batch of tasks. depends_on = 0-based indices within this batch;
         depends_on_existing (if allowed) = ids of tasks that already exist."""
         origin = "runtime" if existing_dep_ids_ok else "initial"
-        roles = valid_roles()
         lines: list[str] = []
         repo = project().get("repo", "")
         existing_ids = {t["id"] for t in db.list_tasks(project_id)}
         created_ids: list[int | None] = []
         for item in items:
-            role = item.get("role", "")
-            if role not in roles:
+            # Accept ANY role name (recruited aerospace role, custom role, software role) —
+            # unknown roles run on a capable generic worker prompt. Only skip if empty.
+            role = str(item.get("role", "")).strip().lower().replace(" ", "-")
+            if not role:
                 created_ids.append(None)
-                lines.append(f"skipped '{item.get('title')}': invalid role '{role}'")
+                lines.append(f"skipped '{item.get('title')}': missing role")
                 continue
             task_id = db.create_task(project_id, role, item["title"], item["description"],
                                      origin=origin)
@@ -345,7 +355,7 @@ async def run_manager(project_id: int) -> None:
         f"Max parallel workers: {project['max_workers']} | "
         f"Agent-run cap: {project['max_runs']}\n"
         f"{autonomy_text}\n"
-        f"{role_catalog_text()}\n"
+        f"{role_catalog_text(project)}\n"
         f"{roster_text}\n"
         f"Brief from the user:\n{project['brief']}\n\n"
         "Plan the work, run your team, and ship it. This may be a restarted session: "
