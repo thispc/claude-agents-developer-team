@@ -52,10 +52,15 @@ def reconcile_status(project_id: int) -> bool:
     if not p or p["status"] not in ("done", "failed", "review"):
         return False
     o = outstanding(project_id)
-    if o["unfinished"]:
+    # Unfinished is not the same as resumable. Work frozen behind a failed
+    # dependency will never run, so reopening on it put the project back to
+    # 'running' with nothing to dispatch — a permanent lie on the status badge.
+    frozen = {t["id"] for t in unreachable(project_id)}
+    movable = [t for t in o["unfinished"] if t["id"] not in frozen]
+    if movable:
         db.set_project_status(project_id, "running")
         bus.emit(project_id, None, "system", "reopened",
-                 {"reason": f"{len(o['unfinished'])} task(s) still unfinished"})
+                 {"reason": f"{len(movable)} task(s) still unfinished"})
         ensure(project_id)
         return True
     if o["failed"] and p["status"] == "done":
@@ -68,6 +73,31 @@ def reconcile_status(project_id: int) -> bool:
                  {"reason": "failed tasks were never completed", "tasks": names})
         return True
     return False
+
+
+def unreachable(project_id: int, tasks: list[dict] | None = None) -> list[dict]:
+    """Planned tasks that can never start as things stand, because something they
+    stand on — directly or through a chain — failed.
+
+    The direct test (`deps & failed`) is not enough. A task whose dependency is
+    itself frozen is just as dead, and reporting only the first layer understates
+    the damage: on the mars-rover project #5 depended on failed work and #6
+    depended on #5, so the feed named one stuck task when two were.
+    """
+    tasks = tasks if tasks is not None else db.list_tasks(project_id)
+    known = {t["id"] for t in tasks}
+    dead = {t["id"] for t in tasks if t["status"] == "failed"}
+    changed = True
+    while changed:                      # grow the dead set until it stops moving
+        changed = False
+        for t in tasks:
+            if t["id"] in dead or t["status"] != "planned":
+                continue
+            deps = set(json.loads(t["deps"] or "[]")) & known
+            if deps & dead:
+                dead.add(t["id"])
+                changed = True
+    return [t for t in tasks if t["id"] in dead and t["status"] == "planned"]
 
 
 def has_cycle(project_id: int) -> list[int]:
@@ -120,6 +150,18 @@ def stop(project_id: int) -> None:
         t.cancel()
 
 
+def _restart_manager(project_id: int) -> None:
+    """Bring a manager session back up, reusing the routes' registry so we never end
+    up with two sessions on one project talking over each other."""
+    from . import manager as mgr
+    from .routes import _manager_tasks
+    live = _manager_tasks.get(project_id)
+    if live and not live.done():
+        return
+    _manager_tasks[project_id] = asyncio.get_event_loop().create_task(
+        mgr.run_manager(project_id))
+
+
 async def _auto_open_pr(project: dict, task: dict) -> None:
     repo = project["repo"]
     if not github_client.enabled(repo):
@@ -161,7 +203,18 @@ async def _run(project_id: int) -> None:
     blocked_notified = False
     while True:
         project = db.get_project(project_id)
-        if not project or project["status"] in ("done", "failed", "cancelled"):
+        if not project:
+            return
+        if project["status"] in ("done", "failed", "cancelled"):
+            # A sprint can finish while no manager session is alive — it hit its own
+            # limit, or the conductor restarted. Without this an unattended run that
+            # was asked for six cycles quietly stops after the first.
+            if project["status"] == "done" and project["sprint"] < project["sprints"]:
+                from . import manager as mgr
+                if mgr.sprint_gate(project_id):
+                    _restart_manager(project_id)
+                    await asyncio.sleep(8)
+                    continue
             return
         tasks = db.list_tasks(project_id)
         done_ids = {t["id"] for t in tasks if t["status"] == "done"}
@@ -216,13 +269,41 @@ async def _run(project_id: int) -> None:
             if result.startswith("error"):
                 bus.emit(project_id, t["id"], "scheduler", "dispatch_error", result)
 
-        if blocked and not ready and db.count_running(project_id) == 0 and not blocked_notified:
-            blocked_notified = True
+        # 'blocked' above is only the first layer; the whole frozen set is what the
+        # project is actually stuck behind.
+        stuck = unreachable(project_id, tasks)
+        live = db.count_running(project_id)
+
+        if stuck and not ready and live == 0:
             failed_seqs = sorted(t["seq"] for t in tasks if t["id"] in failed_ids)
-            bus.emit(project_id, None, "scheduler", "dag_blocked",
-                     {"blocked_tasks": [t["seq"] for t in blocked],
-                      "failed_deps": failed_seqs})
-        elif not blocked:
+            stuck_seqs = sorted(t["seq"] for t in stuck)
+            if not blocked_notified:
+                blocked_notified = True
+                bus.emit(project_id, None, "scheduler", "dag_blocked",
+                         {"blocked_tasks": stuck_seqs, "failed_deps": failed_seqs})
+            # Emitting an event was all this used to do, so the project went on
+            # reading 'running' forever while nothing could possibly move — the
+            # Blockers tab said "critical" and the status badge said "working".
+            # Blocked is not running: put it in review so every surface agrees.
+            if project["status"] == "running":
+                fs = ", ".join(f"#{s}" for s in failed_seqs)
+                ss = ", ".join(f"#{s}" for s in stuck_seqs)
+                db.set_project_status(
+                    project_id, "review",
+                    f"Blocked: {fs} failed, so {ss} can never start. Nothing is "
+                    f"running and nothing can be dispatched until the failed work "
+                    f"is retried or the plan is changed.")
+                bus.emit(project_id, None, "system", "needs_attention",
+                         {"reason": "the plan is blocked behind failed work",
+                          "failed": failed_seqs, "blocked": stuck_seqs})
+        else:
             blocked_notified = False
+            # The block cleared — a retry landed, or the deps were edited. Only
+            # resume a review we ourselves imposed; a review the manager set for
+            # its own reasons is not ours to overwrite.
+            if (project["status"] == "review" and (ready or live)
+                    and (project["summary"] or "").startswith("Blocked:")):
+                db.set_project_status(project_id, "running", "")
+                bus.emit(project_id, None, "scheduler", "unblocked", {})
 
         await asyncio.sleep(8)

@@ -10,8 +10,10 @@ import time
 
 import pytest
 
+from pathlib import Path
+
 from conftest import make_project, make_task
-from app import db, launcher, scheduler
+from app import bus, db, launcher, scheduler
 
 
 # ---- per-project task numbers (seq) ---------------------------------------
@@ -616,3 +618,165 @@ def test_structured_options_are_flattened_for_the_boss(fresh_db, monkeypatch):
     ev = [e for e in db.list_events(p) if e["kind"] == "boss_question"][-1]
     emitted = _json.loads(ev["payload"])["options"]
     assert emitted == stored, "the event and the stored row disagree again"
+
+
+# ---- a blocked plan must not read as "running" -----------------------------
+# The mars-rover project sat at status=running with #3 and #4 failed, #5 frozen
+# behind them and #6 frozen behind #5. Nothing could ever dispatch, but the
+# badge said the team was working and dag_blocked was only ever an event.
+
+def _blocked_project():
+    """done → done → (failed, failed) → #5 → #6, i.e. the real shape observed."""
+    p = make_project(status="running")
+    t1 = make_task(p, status="done")
+    t2 = make_task(p, deps=[t1], status="done")
+    t3 = make_task(p, deps=[t2], status="failed")
+    t4 = make_task(p, deps=[t2], status="failed")
+    t5 = make_task(p, deps=[t2, t3, t4])          # direct dep on failed work
+    t6 = make_task(p, deps=[t5])                  # frozen only via t5
+    return p, (t1, t2, t3, t4, t5, t6)
+
+
+def test_unreachable_includes_tasks_frozen_further_down_the_chain(fresh_db):
+    p, (_1, _2, _3, _4, t5, t6) = _blocked_project()
+    got = {t["id"] for t in scheduler.unreachable(p)}
+    assert got == {t5, t6}, "the transitive layer (#6 behind #5) was missed"
+
+
+def test_unreachable_is_empty_when_nothing_failed(fresh_db):
+    p = make_project(status="running")
+    a = make_task(p, status="done")
+    make_task(p, deps=[a])
+    assert scheduler.unreachable(p) == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_puts_a_blocked_project_into_review(fresh_db, monkeypatch):
+    import asyncio
+    p, (_1, _2, t3, _4, t5, _6) = _blocked_project()
+
+    async def _boom(*a, **k):
+        raise AssertionError("nothing is dispatchable; the scheduler must not try")
+    monkeypatch.setattr(launcher, "dispatch_task", _boom)
+
+    task = asyncio.get_running_loop().create_task(scheduler._run(p))
+    await asyncio.sleep(0.2)
+    task.cancel()
+
+    got = db.get_project(p)
+    assert got["status"] == "review", "a plan that can never move still said 'running'"
+    assert got["summary"].startswith("Blocked:")
+    # it must name BOTH the cause and everything stranded behind it
+    assert "#3" in got["summary"] and "#4" in got["summary"]
+    assert "#5" in got["summary"] and "#6" in got["summary"]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_resumes_once_the_block_clears(fresh_db, monkeypatch):
+    import asyncio
+    p, (_1, _2, t3, t4, _5, _6) = _blocked_project()
+    db.set_project_status(p, "review", "Blocked: #3, #4 failed, so #5, #6 can never start.")
+
+    dispatched = []
+
+    async def _ok(task_id, source="scheduler"):
+        dispatched.append(task_id)
+        db.update_task(task_id, status="running")
+        return "ok"
+    monkeypatch.setattr(launcher, "dispatch_task", _ok)
+
+    db.update_task(t3, status="done")     # the boss retried it and it landed
+    db.update_task(t4, status="done")
+
+    task = asyncio.get_running_loop().create_task(scheduler._run(p))
+    await asyncio.sleep(0.2)
+    task.cancel()
+
+    assert dispatched, "#5 became startable but was never dispatched"
+    assert db.get_project(p)["status"] == "running"
+
+
+def test_reconcile_does_not_reopen_a_project_that_cannot_move(fresh_db):
+    """'unfinished' is not 'resumable' — reopening on frozen work put the badge
+    back to running with nothing to dispatch, forever."""
+    p, _ = _blocked_project()
+    db.set_project_status(p, "review", "Blocked: #3, #4 failed.")
+    assert scheduler.reconcile_status(p) is False
+    assert db.get_project(p)["status"] == "review"
+
+
+def test_reconcile_still_reopens_when_real_work_remains(fresh_db):
+    p = make_project(status="done")
+    a = make_task(p, status="done")
+    make_task(p, deps=[a])               # startable
+    assert scheduler.reconcile_status(p) is True
+    assert db.get_project(p)["status"] == "running"
+
+
+def test_blockers_names_the_stranded_task_too(fresh_db):
+    from app import blockers
+    p, (_1, _2, _3, _4, t5, t6) = _blocked_project()
+    dep = [b for b in blockers.scan(p) if b["kind"] == "dep_blocked"]
+    seqs = {b["task_seq"] for b in dep}
+    assert seqs == {5, 6}, f"the Blockers tab still hides the deeper layer: {seqs}"
+    deeper = [b for b in dep if b["task_seq"] == 6][0]
+    assert "itself blocked" in deeper["detail"]
+
+
+# ---- the boss's own words must appear once ---------------------------------
+# Typing a reply produced BOTH a 'directive' event (from the route that took it)
+# and an 'answer' event (the manager echoing it back, prefixed "The boss
+# replied:"). Both carry source="boss", so the feed showed the message twice.
+
+@pytest.mark.asyncio
+async def test_a_typed_reply_is_not_echoed_back_into_the_feed(fresh_db, monkeypatch):
+    import asyncio
+    from app import config as cfg, manager
+    p = make_project(owner_id=1)
+    manager.build_team_server(p)
+    ask = manager.HANDLERS[p]["handlers"]["ask_boss"]
+
+    monkeypatch.setattr(cfg, "AUTONOMOUS_QUESTION_GRACE", 30)
+
+    async def answer_soon():
+        await asyncio.sleep(0.1)
+        # exactly what POST /projects/{id}/directive does when the boss types
+        db.add_directive(p, "use the optical link")
+        bus.emit(p, None, "boss", "directive", "use the optical link")
+
+    asyncio.get_running_loop().create_task(answer_soon())
+    out = await ask({"question": "which link budget?", "options": []})
+
+    assert "optical link" in str(out)        # the model still learns the answer
+    # …but the boss's words appear in the feed exactly once
+    echoes = [e for e in db.list_events(p)
+              if e["source"] == "boss" and "optical link" in (e["payload"] or "")]
+    assert len(echoes) == 1, f"the boss's message was shown {len(echoes)} times"
+    assert echoes[0]["kind"] == "directive"
+
+
+@pytest.mark.asyncio
+async def test_a_clicked_answer_is_not_echoed_either(fresh_db, monkeypatch):
+    import asyncio
+    from app import config as cfg, manager
+    p = make_project(owner_id=1)
+    manager.build_team_server(p)
+    ask = manager.HANDLERS[p]["handlers"]["ask_boss"]
+    monkeypatch.setattr(cfg, "AUTONOMOUS_QUESTION_GRACE", 30)
+
+    async def click_soon():
+        await asyncio.sleep(0.1)
+        q = db.pending_question(p)
+        db.answer_question(q["id"], "merge it")
+
+    asyncio.get_running_loop().create_task(click_soon())
+    out = await ask({"question": "merge PR 11?", "options": ["merge it", "send back"]})
+    assert "merge it" in str(out)
+    assert "answer" not in [e["kind"] for e in db.list_events(p)]
+
+
+def test_the_feed_hides_legacy_echo_events():
+    """Rows already written before the fix must not keep double-printing."""
+    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    body = js.split("function renderEvent(", 1)[1][:600]
+    assert 'e.kind === "answer"' in body and "return" in body

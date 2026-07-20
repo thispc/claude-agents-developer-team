@@ -6,8 +6,8 @@ from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSoc
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from . import (auth, blockers, bus, config, db, deploy, github_client, launcher, manager,
-               planner, preview, providers, roundtable, scheduler, selfops)
+from . import (auth, blockers, bus, config, credcheck, db, deploy, github_client, launcher,
+               manager, planner, preview, providers, roundtable, scheduler, selfops)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -30,6 +30,7 @@ class NewProject(BaseModel):
     autonomy: str = "supervised"
     manager_model: str = ""
     manager_persona: str = ""
+    sprints: int = 1
 
 
 class BriefOnly(BaseModel):
@@ -205,6 +206,7 @@ def me(request: Request) -> dict:
     s = auth.get_settings(u)
     return {"signed_in": True, "username": u["username"], "is_root": bool(u["is_root"]),
             "has_ai_credentials": auth.has_own_ai_credentials(u),
+            "may_self_repair": config.may_self_repair(u["username"], bool(u["is_root"])),
             "settings": auth.redacted(s)}
 
 
@@ -213,6 +215,25 @@ def save_settings(body: Settings, request: Request) -> dict:
     u = current_user(request)
     auth.save_settings(u["id"], body.model_dump(exclude_none=True))
     return auth.redacted(auth.get_settings(auth.get_user(u["id"])))
+
+
+class VerifyCred(BaseModel):
+    kind: str
+    value: str = ""      # blank = check the one already stored
+
+
+@router.post("/api/settings/verify")
+async def verify_credential(body: VerifyCred, request: Request) -> dict:
+    """Prove a credential works before the user finds out by losing a project.
+
+    Checks the value being typed if there is one, otherwise the stored value —
+    so 'Check' is useful both while entering a key and long afterwards.
+    """
+    u = current_user(request)
+    if body.kind not in credcheck.KINDS:
+        raise HTTPException(400, f"cannot verify {body.kind!r}")
+    value = body.value.strip() or auth.get_settings(u).get(body.kind, "")
+    return await credcheck.check(body.kind, value)
 
 
 @router.get("/api/github/repos")
@@ -578,9 +599,16 @@ def get_blockers(project_id: int, request: Request) -> dict:
 # --- the platform working on itself (root only) ---
 
 def _root(request: Request) -> dict:
+    """Who may point the team at this platform's own codebase.
+
+    Root always may. Beyond that it is an operator decision, not a user one —
+    self-repair writes to the repo this server runs from, so it is granted in the
+    server's own environment (SELFREPAIR_USERS) rather than from inside the app,
+    where a compromised account could grant it to itself.
+    """
     u = current_user(request)
-    if not u["is_root"]:
-        raise HTTPException(403, "only the root operator can work on the platform itself")
+    if not config.may_self_repair(u["username"], bool(u["is_root"])):
+        raise HTTPException(403, "you are not allowed to work on the platform itself")
     return u
 
 
@@ -672,8 +700,10 @@ def health() -> dict:
 @router.post("/api/suggest-team")
 async def suggest_team(body: BriefOnly, request: Request) -> dict:
     """Recruiting: propose a starting team from the brief for the boss to tweak."""
-    current_user(request)   # spends tokens — never anonymous
-    return {"team": await planner.suggest_team(body.brief),
+    u = current_user(request)   # spends tokens — never anonymous
+    # Their own credentials, on their own provider. Without this the planner had
+    # nothing to authenticate with and every user silently got the keyword heuristic.
+    return {"team": await planner.suggest_team(body.brief, auth.get_settings(u)),
             "known_roles": [r["name"] for r in config.load_roles()]}
 
 
@@ -709,6 +739,7 @@ async def create_project(body: NewProject, request: Request) -> dict:
         manager_model=body.manager_model.strip(),
         manager_persona=body.manager_persona.strip(),
         owner_id=(owner["id"] if owner else 0),
+        sprints=max(1, min(20, body.sprints or 1)),
     )
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
     # Make sure the target repo exists before the team tries to clone it. This is

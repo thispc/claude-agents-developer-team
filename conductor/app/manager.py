@@ -84,11 +84,56 @@ def _with_evidence(t: dict, body: str) -> str:
                 f"not by the worker, so this is evidence rather than a claim.\n"
                 f"--- output (tail) ---\n{(v.get('output') or '')[-1200:]}")
     else:
+        # Name what broke before showing raw log. A pass/fail bit makes the judge
+        # guess; the failing test names and assertions are the actual evidence, and
+        # they let request_changes cite specifics instead of "the tests failed".
+        failures = v.get("failures") or []
+        detail = ""
+        if v.get("headline"):
+            detail += f"\nCount: {v['headline']}"
+        if failures:
+            detail += "\nWhat failed:\n" + "\n".join(f"  - {f}" for f in failures)
+            detail += ("\nQuote these when sending the task back — a worker told "
+                       "which assertion broke fixes it far more often than one told "
+                       "'the tests failed'.")
         head = (f"VERIFICATION: FAILED. `{v.get('cmd')}` exited {v.get('exit_code')}. "
                 f"The worker's summary below may still claim success — believe the exit "
-                f"code, not the prose.\n--- output (tail) ---\n"
+                f"code, not the prose.{detail}\n--- output (tail) ---\n"
                 f"{(v.get('output') or '')[-1500:]}")
     return f"{head}\n\n=== the worker's own report ===\n{body}"
+
+
+def sprint_gate(project_id: int, summary: str = "") -> str:
+    """If cycles remain, roll into the next one and say what to do; else "" to finish.
+
+    The whole point of asking for N sprints up front is that the boss does not have
+    to come back N times. So a completed sprint hands the manager its own next brief
+    — decide what the product still needs, and build that — rather than stopping and
+    waiting for someone to type "now do more".
+    """
+    p = db.get_project(project_id)
+    if not p or p["sprint"] >= p["sprints"]:
+        return ""
+    shipped = [t for t in db.list_tasks(project_id)
+               if t["sprint"] == p["sprint"] and t["status"] == "done"]
+    n = db.advance_sprint(project_id)
+    db.set_project_status(project_id, "running", "")
+    bus.emit(project_id, None, "manager", "sprint_finished",
+             {"sprint": n - 1, "of": p["sprints"], "delivered": len(shipped),
+              "summary": summary[:400]})
+    delivered = "; ".join(f"#{t['seq']} {t['title']}" for t in shipped[:12]) or "nothing"
+    return (
+        f"SPRINT {n - 1} OF {p['sprints']} IS COMPLETE — do NOT finish the project.\n"
+        f"Delivered this sprint: {delivered}.\n\n"
+        f"You are now running SPRINT {n}. Plan it yourself; do not ask the boss what "
+        f"to build unless you are truly blocked.\n"
+        f"1. Look at what exists now and judge it as a demanding product owner would: "
+        f"what is missing, thin, unproven, slow, ugly, or fragile?\n"
+        f"2. Pick the {2 if p['sprints'] > 3 else 3}-4 highest-value improvements — real "
+        f"advances, not busywork, and not a restatement of what already shipped.\n"
+        f"3. Call add_tasks with them, with dependencies where the order matters.\n"
+        f"Prefer things a user would notice. If the last sprint left known gaps or "
+        f"escalations unresolved, those come first.")
 
 
 def _task_line(t: dict) -> str:
@@ -318,7 +363,12 @@ def build_team_server(project_id: int):
             q = db.get_question(qid)
             if q and q["status"] == "answered":
                 db.set_project_status(project_id, "running" if prev_status == "hold" else prev_status)
-                bus.emit(project_id, None, "boss", "answer", q["answer"])
+                # Deliberately no event here. The route that took the boss's answer
+                # already emitted one ('answered' when they click an option,
+                # 'directive' when they type). Emitting a second, differently-worded
+                # copy under source="boss" made the feed show the boss's own words
+                # twice — the echo reading "The boss replied: …" as though they had
+                # said it again. The return value below is for the model, not the UI.
                 return _text(f"The boss answered: {q['answer']}")
             # The boss may reply by typing a message instead of clicking an option —
             # treat any directive that arrives while we wait as the answer.
@@ -326,9 +376,7 @@ def build_team_server(project_id: int):
             if directives:
                 db.answer_question(qid, "; ".join(directives))
                 db.set_project_status(project_id, "running" if prev_status == "hold" else prev_status)
-                reply = "The boss replied: " + "; ".join(directives)
-                bus.emit(project_id, None, "boss", "answer", reply)
-                return _text(reply)
+                return _text("The boss replied: " + "; ".join(directives))
             await asyncio.sleep(4)
         db.set_project_status(project_id, "running")
         db.abandon_questions(project_id)      # don't leave a dead modal on the dashboard
@@ -630,6 +678,11 @@ def build_team_server(project_id: int):
                     f"REFUSED: you cannot finish as done while work is outstanding — {lines}. "
                     "Rework or reassign the failed ones, close the verified ones with "
                     "accept_task/merge_pr, or finish with status 'failed' and explain.")
+            # A finished sprint is not a finished product. If cycles remain, the boss
+            # asked for iteration, not for one pass — so keep going without them.
+            nxt = sprint_gate(project_id, args.get("summary", ""))
+            if nxt:
+                return _text(nxt)
         db.set_project_status(project_id, s, args.get("summary", ""))
         bus.emit(project_id, None, "manager", "project_finished", {"status": s})
         return _text(f"project marked {s}. You can stop now.")
@@ -696,11 +749,31 @@ async def run_manager(project_id: int) -> None:
             "before merging the FIRST substantial PR and before finish, and whenever there's a "
             "real product/scope decision — give 2-4 concrete options. Don't ask about routine "
             "mechanics; do ask before anything the boss would want to weigh in on.\n")
+    sprints, sprint = project.get("sprints", 1), project.get("sprint", 1)
+    if sprints > 1:
+        done_before = [t for t in db.list_tasks(project_id)
+                       if t["sprint"] < sprint and t["status"] == "done"]
+        sprint_text = (
+            f"\nDELIVERY MODEL: {sprints} sprints. You are running SPRINT {sprint}.\n"
+            "Each sprint is a full cycle: decide what to build, build it, verify it, ship it. "
+            "You own the requirements — work out what the product needs and commit to it "
+            "rather than asking the boss to specify it. When a sprint's work is all merged, "
+            "call finish; if cycles remain you will be told to plan the next one instead of "
+            "stopping. The boss asked for these cycles precisely so they do not have to come "
+            "back between them.\n")
+        if sprint > 1:
+            shipped = "; ".join(f"#{t['seq']} {t['title']}" for t in done_before[:15])
+            sprint_text += (
+                f"Already delivered in earlier sprints: {shipped or 'nothing'}.\n"
+                "Do NOT rebuild any of that. This sprint must move the product forward.\n")
+    else:
+        sprint_text = ""
     prompt = (
         f"Project: {project['name']}\n"
         f"Repository: {project['repo'] or '(none configured)'}\n"
         f"Max parallel workers: {project['max_workers']} | "
         f"Agent-run cap: {project['max_runs']}\n"
+        f"{sprint_text}"
         f"{autonomy_text}\n"
         f"{role_catalog_text(project)}\n"
         f"{roster_text}\n"
