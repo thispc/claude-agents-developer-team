@@ -244,6 +244,16 @@ def build_team_server(project_id: int):
                         "Leaving the boss unanswered is not acceptable; they cannot see "
                         "what you can.")
                 break
+            stuck = [t for t in db.list_tasks(project_id)
+                     if t["status"] == "failed" and t["attempts"] >= 3]
+            if stuck and project().get("autonomy") != "autonomous":
+                names = ", ".join(f"#{t['seq']} {t['role']}" for t in stuck[:3])
+                note = (f"STUCK — NEEDS YOUR BOSS'S JUDGEMENT: {names} has failed "
+                        f"{stuck[0]['attempts']}+ times. Repeated failure is rarely fixed "
+                        f"by another retry; something is wrong with the task, the tooling "
+                        f"or the plan. Use ask_boss with concrete options (re-scope it, "
+                        f"drop it, change approach) rather than retrying again.")
+                break
             now = {t["id"]: t["status"] for t in db.list_tasks(project_id)}
             changed = [tid for tid, s in now.items() if before.get(tid) != s]
             terminal = [tid for tid in changed if now[tid] in ("review", "failed", "done")]
@@ -310,6 +320,34 @@ def build_team_server(project_id: int):
                 f"next message which assumption you made so the boss can audit it later. "
                 f"An unattended run must keep moving.")
         return _text(f"No answer within {mins} minutes; use your best judgment and proceed.")
+
+    ask_impl: dict = {}      # filled once ask_boss exists; swappable in tests
+
+    async def _escalate(kind: str, question: str, options: list[str]) -> str | None:
+        """Stop and get a human on a decision that papers over a problem.
+
+        These are the moments where a confident manager does real damage: accepting
+        work that was never delivered, merging past failing tests, giving up on a
+        task after repeated failure. They are not product decisions, so the normal
+        "ask about scope" rule never caught them — in this project's own history the
+        manager silently substituted its own work for the team's on a WRONG premise.
+
+        Supervised: block until the boss answers. Autonomous: proceed (they asked for
+        that) but emit a loud, auditable event so it can be reviewed afterwards.
+        Returns the boss's answer, or None when it may proceed.
+        """
+        autonomous = (project().get("autonomy") == "autonomous")
+        bus.emit(project_id, None, "manager", "judgement_call",
+                 {"kind": kind, "question": question, "autonomous": autonomous})
+        if autonomous:
+            return None          # full autonomy: on the record, but not blocking
+        # @tool wraps the function in an SdkMcpTool, which is not directly callable —
+        # reach the underlying coroutine.
+        fn = ask_impl.get("fn")
+        if fn is None:
+            return None
+        res = await fn({"question": question, "options_json": json.dumps(options[:4])})
+        return res["content"][0]["text"]
 
     @tool("reply_to_boss",
           "Answer the boss directly. Use this the moment a MESSAGE FROM THE BOSS "
@@ -480,6 +518,22 @@ def build_team_server(project_id: int):
         t = db.resolve_task(project_id, int(args["task_id"]))
         if not t:
             return _text("error: no such task")
+        # Accepting a task that produced nothing is how a project silently ships a
+        # hole. It is also how this project once "completed" a research task the
+        # team never actually delivered.
+        delivered = bool((t["report"] or "").strip()) or t["pr_number"] or \
+            bool(db.list_contenders(t["id"]))
+        if not delivered:
+            ans = await _escalate(
+                "accepting undelivered work",
+                f"Task #{t['seq']} ({t['role']}: {t['title'][:60]}) produced no report, "
+                f"no PR and no rival output after {t['attempts']} attempt(s). I can close "
+                f"it as done anyway, or keep pushing. Closing it means the project ships "
+                f"without that work. How do you want to handle it?",
+                ["Close it as done anyway", "Retry it once more",
+                 "Reassign it to a stronger model", "Stop and let me look"])
+            if ans and "stop" in ans.lower():
+                return _text(f"Held at your request: {ans}. Task #{t['seq']} left as is.")
         db.update_task(t["id"], status="done")
         bus.emit(project_id, t["id"], "manager", "task_accepted",
                  {"verdict": args.get("verdict", "")})
@@ -500,6 +554,16 @@ def build_team_server(project_id: int):
         # the one judgement that does not depend on reading prose, so it is not left
         # to persuasion — an override needs the boss, not a convincing report.
         v = verification_of(t)
+        if v.get("ran") and not v.get("ok") and args.get("override_failed_tests"):
+            ans = await _escalate(
+                "merging past failing tests",
+                f"Task #{t['seq']}: `{v.get('cmd')}` exits {v.get('exit_code')} on this "
+                f"branch, and I want to merge anyway because I believe the check itself "
+                f"is at fault, not the code. Merging puts failing code on main. Agreed?",
+                ["Yes, merge it — the check is wrong", "No, send it back to be fixed",
+                 "Stop and let me look"])
+            if ans and ("no" in ans.lower() or "stop" in ans.lower()):
+                return _text(f"Not merged, at your request: {ans}")
         if v.get("ran") and not v.get("ok") and not args.get("override_failed_tests"):
             return _text(
                 f"REFUSED: `{v.get('cmd')}` exited {v.get('exit_code')} on this branch. "
@@ -548,12 +612,26 @@ def build_team_server(project_id: int):
         bus.emit(project_id, None, "manager", "project_finished", {"status": s})
         return _text(f"project marked {s}. You can stop now.")
 
-    return create_sdk_mcp_server(
+    ask_impl["fn"] = ask_boss.handler
+
+    srv = create_sdk_mcp_server(
         name="team", version="1.0.0",
         tools=[create_tasks, add_tasks, status, wait, ask_boss, reply_to_boss, get_report,
                request_changes, reassign_task, compare_work, pick_winner,
                accept_task, merge_pr, finish],
     )
+    # The SDK returns {type, name, instance} and keeps the handlers out of reach, so
+    # the tools cannot be exercised directly. Expose the raw coroutines under a
+    # private key purely as a testing seam — the SDK ignores extra keys.
+    if isinstance(srv, dict):
+        srv["_handlers"] = {
+            t.name: t.handler for t in
+            (create_tasks, add_tasks, status, wait, ask_boss, reply_to_boss, get_report,
+             request_changes, reassign_task, compare_work, pick_winner,
+             accept_task, merge_pr, finish)}
+        srv["_escalate"] = _escalate
+        srv["_ask_impl"] = ask_impl
+    return srv
 
 
 MANAGER_TOOLS = [f"mcp__team__{n}" for n in

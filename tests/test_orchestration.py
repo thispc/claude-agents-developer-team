@@ -403,3 +403,72 @@ def test_unverified_is_not_reported_as_passing(fresh_db):
                    verification=_json.dumps({"ran": False, "reason": "no test command"}))
     text = manager._with_evidence(db.get_task(t), "done")
     assert "none available" in text and "unverified claim" in text
+
+
+# ---- a human is required for decisions that paper over a problem -----------
+
+def _tool(srv, name):
+    """The manager's tool handlers, via the testing seam build_team_server exposes."""
+    return srv["_handlers"][name]
+
+
+def test_supervised_asks_before_accepting_undelivered_work(fresh_db, monkeypatch):
+    """The exact weather-run failure: the manager closed a task the team never
+    delivered, on a wrong premise, without telling anyone."""
+    import asyncio
+    from app import manager
+    p = make_project(owner_id=1, autonomy="supervised")
+    t = make_task(p, status="review")          # no report, no PR, no rivals
+    srv = manager.build_team_server(p)
+    accept = _tool(srv, "accept_task")
+
+    asked = {}
+    async def fake_ask(args):
+        asked["q"] = args["question"]
+        return {"content": [{"type": "text", "text": "Stop and let me look"}]}
+    srv["_ask_impl"]["fn"] = fake_ask      # intercept before the real 60-min wait
+
+    out = asyncio.run(accept({"task_id": 1, "verdict": "looks fine"}))["content"][0]["text"]
+    assert "q" in asked, "supervised mode accepted undelivered work without asking"
+    assert "no report" in asked["q"]
+    assert "Held at your request" in out
+    assert db.get_task(t)["status"] != "done"
+
+
+def test_autonomous_proceeds_but_leaves_an_audit_trail(fresh_db, monkeypatch):
+    """Full autonomy must not start asking — that would break overnight runs —
+    but the judgement call has to be on the record."""
+    import asyncio
+    from app import manager
+    p = make_project(owner_id=1, autonomy="autonomous")
+    t = make_task(p, status="review")
+    srv = manager.build_team_server(p)
+    asked = {"n": 0}
+    async def fake_ask(args):
+        asked["n"] += 1
+        return {"content": [{"type": "text", "text": "x"}]}
+    srv["_ask_impl"]["fn"] = fake_ask      # intercept before the real 60-min wait
+
+    asyncio.run(_tool(srv, "accept_task")({"task_id": 1, "verdict": "ok"}))
+    assert asked["n"] == 0, "autonomous mode blocked on a question"
+    assert db.get_task(t)["status"] == "done"
+    kinds = [e["kind"] for e in db.list_events(p)]
+    assert "judgement_call" in kinds, "no audit trail for the unilateral decision"
+
+
+def test_delivered_work_is_accepted_without_pestering(fresh_db, monkeypatch):
+    """The gate must not fire on normal work, or it becomes noise."""
+    import asyncio
+    from app import manager
+    p = make_project(owner_id=1, autonomy="supervised")
+    t = make_task(p, status="review")
+    db.update_task(t, report="Here is what I built, with evidence.")
+    srv = manager.build_team_server(p)
+    asked = {"n": 0}
+    async def fake_ask(args):
+        asked["n"] += 1
+        return {"content": [{"type": "text", "text": "x"}]}
+    srv["_ask_impl"]["fn"] = fake_ask      # intercept before the real 60-min wait
+    asyncio.run(_tool(srv, "accept_task")({"task_id": 1, "verdict": "good"}))
+    assert asked["n"] == 0, "asked the boss about perfectly normal work"
+    assert db.get_task(t)["status"] == "done"
