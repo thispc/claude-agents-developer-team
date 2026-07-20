@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>devteam — AI dev team console</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="loginScreen" hidden>
+  <form id="loginForm">
+    <h1>dev<span>team</span></h1>
+    <p class="login-sub">Sign in to run your AI team</p>
+    <label>Username <input name="username" value="root" autocomplete="username"></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password"></label>
+    <p id="loginError" class="form-error" hidden></p>
+    <button type="submit" class="primary">Sign in</button>
+    <button type="button" id="signupBtn">Create an account</button>
+    <p class="hint">New accounts run on <b>your own</b> Anthropic key or Claude
+      subscription token — you'll add them after signing up.</p>
+  </form>
+</div>
+
+<header>
+  <h1 id="homeLink">dev<span>team</span></h1>
+  <select id="projectSelect" title="Select project" hidden></select>
+  <button id="newProjectBtn">+ New project</button>
+  <div class="spacer"></div>
+  <div id="authBadge" class="badge">auth: …</div>
+  <div id="costBadge" class="badge" hidden>—</div>
+  <div id="statusBadge" class="badge" hidden>—</div>
+  <div class="bell-wrap">
+    <button id="bellBtn" title="Requests waiting on you">🔔<span id="bellCount" hidden>0</span></button>
+    <div id="bellPanel" hidden></div>
+  </div>
+  <button id="settingsBtn" title="Your GitHub & API keys">⚙</button>
+  <button id="logoutBtn" title="Sign out">⏻</button>
+  <button id="artifactsBtn" hidden title="Repo, PRs, and the public link">📦 Artifacts</button>
+  <button id="restartBtn" hidden title="Re-run the manager on this project">↻ Restart manager</button>
+  <button id="cancelBtn" class="danger" hidden>Cancel</button>
+</header>
+
+<section id="home">
+  <div class="home-head">
+    <h2>Projects</h2>
+    <button id="homeNewBtn" class="primary">+ New project</button>
+  </div>
+  <table id="projectsTable">
+    <thead><tr><th>#</th><th>Name</th><th>Repo</th><th>Status</th><th>Tasks</th><th>Usage</th><th>Actions</th></tr></thead>
+    <tbody id="projectsBody"></tbody>
+  </table>
+  <p id="homeEmpty" class="empty" hidden>No projects yet. Create one to put your AI team to work.</p>
+</section>
+
+<main hidden>
+  <div id="left">
+    <div class="view-toggle">
+      <button class="chip vchip active" data-v="command">👑 Command</button>
+      <button class="chip vchip" data-v="board">Board</button>
+      <button class="chip vchip" data-v="dag">Dependencies</button>
+      <button class="chip vchip" data-v="artifacts">📦 Artifacts</button>
+      <button class="chip vchip" data-v="agents">🖥 Agents</button>
+      <button class="chip vchip" data-v="blockers">🚧 Blockers<span id="blockerCount" hidden>0</span></button>
+      <button class="chip vchip" data-v="self" id="selfTab" hidden>⟲ Self-repair</button>
+      <div class="vspacer"></div>
+      <button id="addTaskBtn" class="chip" title="Add a task yourself">+ Add task</button>
+    </div>
+    <section id="command"></section>
+    <section id="artifacts" hidden></section>
+    <section id="agents" hidden></section>
+    <section id="blockers" hidden></section>
+    <section id="self" hidden></section>
+    <section id="dag" hidden><svg id="dagSvg" xmlns="http://www.w3.org/2000/svg"></svg></section>
+    <section id="board" hidden>
+    <div class="col" data-col="planned"><h2>Planned</h2><div class="cards"></div></div>
+    <div class="col" data-col="working"><h2>In progress</h2><div class="cards"></div></div>
+    <div class="col" data-col="review"><h2>Review / Needs attention</h2><div class="cards"></div></div>
+    <div class="col" data-col="done"><h2>Done</h2><div class="cards"></div></div>
+    </section>
+  </div>
+  <section id="feed" data-verbosity="simple">
+    <div class="feed-head">
+      <h2 id="feedTitle">Live activity</h2>
+      <div class="chips">
+        <button class="chip vb active" data-verb="simple" title="Plain-language updates only">Simple</button>
+        <button class="chip vb" data-verb="detailed" title="Every tool call and thought">Detailed</button>
+        <button class="chip vb" data-verb="decisions" title="Model upscaling, reassignment, rate limits, contests">⚙ Decisions</button>
+      </div>
+    </div>
+    <div id="events"></div>
+    <form id="directiveForm" title="Message your manager — delivered at their next decision point">
+      <input id="directiveInput" placeholder="Message the manager (e.g. 'add dark mode', 'skip tests, ship it')…" autocomplete="off">
+      <button type="submit">Send</button>
+    </form>
+  </section>
+</main>
+
+<dialog id="settingsDialog">
+  <form id="settingsForm" class="task-detail-wrap">
+    <h2>⚙ Your settings</h2>
+    <p class="hint" id="settingsWho"></p>
+    <label>GitHub token <span class="hint" id="ghState"></span>
+      <input name="github_token" type="password" placeholder="github_pat_… (leave blank to keep current)"></label>
+    <label>Anthropic API key <span class="hint" id="keyState"></span>
+      <input name="anthropic_api_key" type="password" placeholder="sk-ant-… (pay-per-token API billing)"></label>
+    <label>…or Claude subscription token <span class="hint" id="subState"></span>
+      <input name="claude_oauth_token" type="password" placeholder="run `claude setup-token` and paste it here"></label>
+    <p class="hint">Use <b>one</b> of the two. The subscription token runs agents on your own
+      Claude Pro/Max plan at no per-token cost; the API key bills your Anthropic account.</p>
+    <p class="hint">Your credentials are stored per user on the server and never sent back to the browser.
+      Full GitHub OAuth ("Authorize once") is the next step — for now paste a fine-grained token
+      with Contents, Issues and Pull requests read/write.</p>
+    <p id="settingsError" class="form-error" hidden></p>
+    <div class="actions">
+      <button type="button" id="closeSettingsBtn">Close</button>
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="taskDialog">
+  <div class="task-detail-wrap">
+    <div id="taskDetail"></div>
+    <div class="actions">
+      <button type="button" id="editTaskBtn" hidden>✎ Edit spec / deps</button>
+      <button type="button" id="closeTaskBtn">Close</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="artifactsDialog">
+  <div class="task-detail-wrap">
+    <h2>📦 Artifacts</h2>
+    <div id="artifactsBody">loading…</div>
+    <div class="actions"><button type="button" id="closeArtifactsBtn">Close</button></div>
+  </div>
+</dialog>
+
+<dialog id="addTaskDialog">
+  <form id="addTaskForm" class="task-detail-wrap">
+    <h2 id="addTaskTitle">Add a task</h2>
+    <label>Role <select name="role" id="addTaskRole"></select></label>
+    <label>Title <input name="title" required placeholder="Add rate limiting to the API"></label>
+    <label>Description / spec <span class="hint">file paths, contracts, acceptance criteria</span>
+      <textarea name="description" rows="6" required></textarea></label>
+    <label>Depends on <span class="hint">task ids that must merge first, comma-separated (optional)</span>
+      <input name="depends_on" placeholder="e.g. 3, 4"></label>
+    <p id="addTaskError" class="form-error" hidden></p>
+    <div class="actions">
+      <button type="button" id="closeAddTaskBtn">Cancel</button>
+      <button type="submit" class="primary" id="addTaskSubmit">Add to DAG</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="newProjectDialog">
+  <form id="newProjectForm" novalidate>
+    <div class="wizard-steps">
+      <span class="wstep active" data-s="1">1 · Your idea</span>
+      <span class="wstep" data-s="2">2 · Your team</span>
+      <span class="wstep" data-s="3">3 · Go</span>
+    </div>
+
+    <!-- Step 1: the idea -->
+    <div id="step1" class="wizard-step">
+      <label>Project name
+        <input name="name" required placeholder="e.g. weather-app or mars-lander-blueprint" autocomplete="off"></label>
+      <label>Your idea <span class="hint">describe what you want and what “done” looks like — any domain</span>
+        <textarea name="brief" rows="7" required
+          placeholder="Describe your idea in plain words. e.g. 'Build a weather app that shows a 7-day forecast for my location' — or 'Design a blueprint for a two-stage reusable rocket'. The manager reads this and assembles the right team."></textarea></label>
+      <label>GitHub repo <span class="hint">pick one of yours, or type a new name — created privately if it doesn't exist</span>
+        <input name="repo" list="repoList" placeholder="owner/repo" autocomplete="off">
+        <datalist id="repoList"></datalist></label>
+      <p id="formError" class="form-error" hidden></p>
+      <div class="actions">
+        <button type="button" id="closeDialogBtn">Cancel</button>
+        <button type="button" id="toRecruitBtn" class="primary">Assemble my team →</button>
+      </div>
+    </div>
+
+    <!-- Step 2: the team -->
+    <div id="step2" class="wizard-step" hidden>
+      <div id="ingest" hidden>
+        <div class="ingest-msg" id="ingestMsg">Reading your idea…</div>
+        <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
+      </div>
+      <div id="rosterWrap" hidden>
+        <p class="recruit-note" id="recruitNote">Your manager sized up the idea and drafted this team. Hire, fire, change counts or models, add anyone.</p>
+        <div class="roster-head"><span>Role</span><span>How many</span><span>Model</span><span></span></div>
+        <div id="roster"></div>
+        <datalist id="rolesList"></datalist>
+        <button type="button" id="addRoleBtn" class="add-role">+ Add a role</button>
+      </div>
+      <p id="formError2" class="form-error" hidden></p>
+      <div class="actions">
+        <button type="button" id="backToBriefBtn">← Back</button>
+        <button type="button" id="toGoBtn" class="primary">Set control →</button>
+      </div>
+    </div>
+
+    <!-- Step 3: control level + go -->
+    <div id="step3" class="wizard-step" hidden>
+      <h3 class="ctl-h">How much control does your manager have?</h3>
+      <div class="autonomy-cards">
+        <label class="acard">
+          <input type="radio" name="autonomy" value="supervised" checked>
+          <div><b>🧑‍💼 Keep me in the loop</b><span>The manager asks you before merging important work and before finishing. You approve the big calls.</span></div>
+        </label>
+        <label class="acard danger-card">
+          <input type="radio" name="autonomy" value="autonomous">
+          <div><b>⚡ Full autonomy <em>(bypass — hands off)</em></b><span>The manager decides everything and only interrupts you if truly stuck. Fast, but you won't be asked to approve.</span></div>
+        </label>
+      </div>
+      <h3 class="ctl-h">Who is your manager?</h3>
+      <div class="nums">
+        <label>Manager's brain <span class="hint">stronger = better judgment</span>
+          <select name="manager_model">
+            <option value="">Sonnet 5 (default, balanced)</option>
+            <option value="claude-opus-4-8">Opus 4.8 (most capable)</option>
+            <option value="claude-fable-5">Fable 5 (deepest reasoning)</option>
+            <option value="claude-haiku-4-5">Haiku 4.5 (fast &amp; cheap)</option>
+          </select></label>
+        <label>Character <span class="hint">shapes who they hire &amp; how hard they review</span>
+          <select id="personaPreset">
+            <option value="">Skeptical &amp; evidence-driven (default)</option>
+            <option value="ruthless">Ruthless perfectionist</option>
+            <option value="shipper">Pragmatic shipper</option>
+            <option value="researcher">Deep researcher</option>
+            <option value="custom">Custom…</option>
+          </select></label>
+      </div>
+      <textarea name="manager_persona" id="personaText" rows="3" hidden
+        placeholder="Describe your manager's character, standards, and how they should hire and review…"></textarea>
+      <details class="advanced">
+        <summary>Advanced limits</summary>
+        <div class="nums">
+          <label>Max agents at once <input name="max_workers" type="number" min="1" max="8" value="3"></label>
+          <label>Agent-run cap <input name="max_runs" type="number" min="5" max="200" value="40"></label>
+        </div>
+      </details>
+      <p id="formError3" class="form-error" hidden></p>
+      <div class="actions">
+        <button type="button" id="backToTeamBtn">← Back</button>
+        <button type="submit" id="createBtn" class="primary">🚀 Hire team &amp; start</button>
+      </div>
+    </div>
+  </form>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+{
+  "_comment": "Team roles. To add a role: add an entry here and create agents/<name>.md (its system prompt). The manager reads this catalog and fans a role out into multiple parallel workers when 'fan_out' applies. 'model' is 'worker' (cheap, default), 'lead' (strong), or a literal model id. 'max_parallel' caps concurrent workers of this role.",
+  "roles": [
+    {
+      "name": "backend",
+      "model": "worker",
+      "max_parallel": 3,
+      "summary": "Server-side code: APIs, data, business logic.",
+      "fan_out": "Split into several backend tasks when the work has independent modules/endpoints that live in different files and share no state (e.g. an auth service and a reporting service). Keep as one task if the pieces touch the same files or must be built in order."
+    },
+    {
+      "name": "frontend",
+      "model": "worker",
+      "max_parallel": 2,
+      "summary": "Client-side UI built against backend contracts.",
+      "fan_out": "Split when there are separate, independent pages/components in different files. Keep as one task if they share layout, state, or a single entry file."
+    },
+    {
+      "name": "tester",
+      "model": "worker",
+      "max_parallel": 3,
+      "summary": "Runs the software and verifies acceptance criteria.",
+      "fan_out": "Split into multiple tester tasks when there are several independent areas to verify that need no shared ordering — e.g. one tester per service, or splitting a long suite of independent checks in half — so they run in parallel and finish sooner. Keep as one task if verification is quick or the steps must run in sequence (login must pass before testing the dashboard)."
+    }
+  ]
+}
