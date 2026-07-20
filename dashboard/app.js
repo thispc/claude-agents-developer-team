@@ -267,6 +267,18 @@ async function selectProject(id) {
   await refreshBoard();
 }
 
+// Tasks are stored under a globally-unique id but shown under a per-project
+// number (seq), so the boss's third project starts at #1 rather than #35.
+function seqOf(id) {
+  const t = lastTasks.find((x) => x.id === Number(id));
+  return t ? (t.seq || t.id) : id;
+}
+function idOfSeq(n) {
+  const t = lastTasks.find((x) => (x.seq || x.id) === Number(n));
+  return t ? t.id : Number(n);
+}
+function depLabels(deps) { return deps.map((d) => "#" + seqOf(d)); }
+
 let lastTasks = [];
 let lastProject = null;
 
@@ -321,7 +333,7 @@ async function refreshBoard() {
       let deps = [];
       try { deps = JSON.parse(t.deps || "[]"); } catch { /* old rows */ }
       const links = [];
-      if (deps.length) links.push(`after ${deps.map((d) => "#" + d).join(",")}`);
+      if (deps.length) links.push(`after ${depLabels(deps).join(",")}`);
       if (t.issue_number && p.repo) links.push(`<a target="_blank" href="https://github.com/${p.repo}/issues/${t.issue_number}">#${t.issue_number}</a>`);
       if (t.pr_number && p.repo) links.push(`<a target="_blank" href="https://github.com/${p.repo}/pull/${t.pr_number}">PR ${t.pr_number}</a>`);
       card.innerHTML = `
@@ -489,10 +501,10 @@ async function showTask(id) {
   const canSkip = !["done"].includes(t.status);
   $("#taskDetail").innerHTML = `
     <div class="role ${t.role}">${t.role}</div>
-    <h2>#${t.id} ${escapeHtml(t.title)}</h2>
+    <h2>#${t.seq || t.id} ${escapeHtml(t.title)}</h2>
     <div class="meta">${t.status} · attempt ${t.attempts}${t.attempts >= 2 ? " (escalated to Sonnet)" : ""}${taskCost(t)}
       ${t.origin === "runtime" ? "· added at runtime" : ""}
-      ${deps.length ? "· depends on " + deps.map((d) => "#" + d).join(", ") : ""} ${links.join(" · ")}</div>
+      ${deps.length ? "· depends on " + depLabels(deps).join(", ") : ""} ${links.join(" · ")}</div>
     <div class="task-actions">
       ${canRetry ? `<button data-act="retry" data-id="${t.id}">↻ Re-run this task</button>` : ""}
       ${canSkip ? `<button data-act="skip" data-id="${t.id}">✓ Mark done / skip</button>` : ""}
@@ -616,7 +628,7 @@ function renderCommand(p) {
           escapeHtml((r.model || "").replace("claude-", ""))} · ${r.status}</span>`).join("")
       }</div>` : ""}
       <div class="deps">🧠 ${escapeHtml(modelLabel)}${t.attempts > 1 ? ` · attempt ${t.attempts}` : ""}
-        ${deps.length ? ` · after ${deps.map((d) => "#" + d).join(", ")}` : ""}</div>
+        ${deps.length ? ` · after ${depLabels(deps).join(", ")}` : ""}</div>
     </div>`;
   };
 
@@ -794,7 +806,7 @@ function renderDag(tasks) {
         fill="#1e2532" stroke="${c}" stroke-width="${runtime ? 2 : 1.6}"
         ${runtime ? 'stroke-dasharray="2 0"' : ""}/>
       <text x="${x + 12}" y="${y + 19}" font-size="9.5" letter-spacing="1"
-        fill="${c}" style="text-transform:uppercase">#${t.id} ${t.role.toUpperCase()}</text>
+        fill="${c}" style="text-transform:uppercase">#${t.seq || t.id} ${t.role.toUpperCase()}</text>
       <text x="${x + 12}" y="${y + 37}" font-size="12" fill="#dbe2ef">${escapeHtml(title)}</text>
       <text x="${x + 12}" y="${y + 54}" font-size="10" fill="#7d8aa5">${line3}</text>
       ${badge}
@@ -1083,7 +1095,7 @@ function openAddTask(prefill) {
   form.reset();
   $("#addTaskError").hidden = true;
   editingTaskId = prefill ? prefill.id : null;
-  $("#addTaskTitle").textContent = prefill ? `Edit task #${prefill.id}` : "Add a task to the DAG";
+  $("#addTaskTitle").textContent = prefill ? `Edit task #${prefill.seq || prefill.id}` : "Add a task to the DAG";
   $("#addTaskSubmit").textContent = prefill ? "Save changes" : "Add to DAG";
   if (prefill) {
     if (!knownRoles.includes(prefill.role)) sel.insertAdjacentHTML("afterbegin", `<option>${prefill.role}</option>`);
@@ -1092,7 +1104,7 @@ function openAddTask(prefill) {
     form.title.value = prefill.title;
     form.description.value = prefill.description;
     let deps = []; try { deps = JSON.parse(prefill.deps || "[]"); } catch { /* */ }
-    form.depends_on.value = deps.join(", ");
+    form.depends_on.value = deps.map(seqOf).join(", ");
   } else {
     sel.disabled = false;
   }
@@ -1120,7 +1132,9 @@ $("#editTaskBtn").addEventListener("click", () => {
 $("#addTaskForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const f = new FormData(ev.target);
-  const deps = String(f.get("depends_on") || "").split(",").map((s) => Number(s.trim())).filter(Boolean);
+  // The boss types per-project numbers; the API stores real task ids.
+  const deps = String(f.get("depends_on") || "").split(",")
+    .map((s) => Number(s.trim())).filter(Boolean).map(idOfSeq);
   const err = $("#addTaskError");
   err.hidden = true;
   try {

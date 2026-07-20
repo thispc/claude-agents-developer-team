@@ -59,7 +59,7 @@ def reconcile_status(project_id: int) -> bool:
         ensure(project_id)
         return True
     if o["failed"] and p["status"] == "done":
-        names = ", ".join(f"#{t['id']} {t['role']} ({t['title'][:40]})" for t in o["failed"])
+        names = ", ".join(f"#{t['seq']} {t['role']} ({t['title'][:40]})" for t in o["failed"])
         db.set_project_status(project_id, "review",
                               f"Cannot be done: {len(o['failed'])} task(s) failed and were "
                               f"never completed — {names}. The delivered app is missing "
@@ -177,9 +177,10 @@ async def _run(project_id: int) -> None:
 
         if blocked and not ready and db.count_running(project_id) == 0 and not blocked_notified:
             blocked_notified = True
+            failed_seqs = sorted(t["seq"] for t in tasks if t["id"] in failed_ids)
             bus.emit(project_id, None, "scheduler", "dag_blocked",
-                     {"blocked_tasks": [t["id"] for t in blocked],
-                      "failed_deps": sorted(failed_ids)})
+                     {"blocked_tasks": [t["seq"] for t in blocked],
+                      "failed_deps": failed_seqs})
         elif not blocked:
             blocked_notified = False
 

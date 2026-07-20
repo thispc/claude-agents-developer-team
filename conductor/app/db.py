@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     model TEXT NOT NULL DEFAULT '',           -- model used for the LAST run (informational)
     pinned_model TEXT NOT NULL DEFAULT '',    -- explicit manager override; wins over auto-selection
     compete INTEGER NOT NULL DEFAULT 0,       -- >1 = run N rival attempts, manager picks the winner
+    seq INTEGER NOT NULL DEFAULT 0,           -- per-project task number (1,2,3…) shown to humans
     branch TEXT NOT NULL DEFAULT '',
     issue_number INTEGER,
     pr_number INTEGER,
@@ -111,11 +112,20 @@ def init() -> None:
         "ALTER TABLE tasks ADD COLUMN model TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE tasks ADD COLUMN pinned_model TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE tasks ADD COLUMN compete INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tasks ADD COLUMN seq INTEGER NOT NULL DEFAULT 0",
     ):
         try:
             _conn.execute(stmt)
         except sqlite3.OperationalError:
             pass
+    # Backfill per-project task numbers for tasks created before seq existed,
+    # numbering them 1..N in creation order within each project.
+    _conn.execute("""
+        UPDATE tasks SET seq = (
+            SELECT COUNT(*) FROM tasks AS t2
+            WHERE t2.project_id = tasks.project_id AND t2.id <= tasks.id
+        ) WHERE seq = 0
+    """)
     _conn.commit()
 
 
@@ -183,6 +193,26 @@ def add_project_cost(project_id: int, usd: float) -> float:
 
 # --- tasks ---
 
+def next_seq(project_id: int) -> int:
+    """Per-project task numbers. The primary key is global and keeps climbing
+    across projects, which makes '#38' meaningless to a boss looking at their
+    third project — they see task 1, 2, 3 within their own project instead."""
+    rows = _rows("SELECT COALESCE(MAX(seq), 0) AS m FROM tasks WHERE project_id=?", (project_id,))
+    return int(rows[0]["m"]) + 1
+
+
+def resolve_task(project_id: int, n: int) -> dict | None:
+    """Look up a task by the number a human (or the manager) used.
+
+    Prefers the per-project seq; falls back to the global id so older sessions
+    and internal callers that still hold a real id keep working."""
+    rows = _rows("SELECT * FROM tasks WHERE project_id=? AND seq=?", (project_id, int(n)))
+    if rows:
+        return rows[0]
+    rows = _rows("SELECT * FROM tasks WHERE project_id=? AND id=?", (project_id, int(n)))
+    return rows[0] if rows else None
+
+
 def create_task(project_id: int, role: str, title: str, description: str,
                 deps: list[int] | None = None, origin: str = "initial") -> int:
     now = time.time()
@@ -192,7 +222,9 @@ def create_task(project_id: int, role: str, title: str, description: str,
         (project_id, role, title, description, json.dumps(deps or []), origin, now, now),
     )
     task_id = cur.lastrowid
-    _execute("UPDATE tasks SET branch=? WHERE id=?", (f"task/{task_id}", task_id))
+    # branch stays keyed on the global id so branch names are unique across projects
+    _execute("UPDATE tasks SET branch=?, seq=? WHERE id=?",
+             (f"task/{task_id}", next_seq(project_id), task_id))
     return task_id
 
 

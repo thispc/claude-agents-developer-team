@@ -51,10 +51,19 @@ def _text(msg: str) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": msg}]}
 
 
+def _seq_of(deps: list[int]) -> list[int]:
+    """Translate internal task ids into the per-project numbers humans see."""
+    out = []
+    for d in deps:
+        t = db.get_task(d)
+        out.append(t["seq"] if t and t["seq"] else d)
+    return out
+
+
 def _task_line(t: dict) -> str:
     deps = json.loads(t["deps"] or "[]")
-    dep_note = f" deps={deps}" if deps else ""
-    return (f"task {t['id']} [{t['role']}] '{t['title']}' status={t['status']}{dep_note} "
+    dep_note = f" deps={_seq_of(deps)}" if deps else ""
+    return (f"task {t['seq']} [{t['role']}] '{t['title']}' status={t['status']}{dep_note} "
             f"attempts={t['attempts']} pr={t['pr_number'] or '-'}")
 
 
@@ -95,9 +104,12 @@ def build_team_server(project_id: int):
                         and created_ids[idx] and created_ids[idx] != task_id:
                     deps.append(created_ids[idx])
             if existing_dep_ids_ok:
-                for dep_id in item.get("depends_on_existing", []) or []:
-                    if isinstance(dep_id, int) and dep_id in existing_ids:
-                        deps.append(dep_id)
+                for dep_n in item.get("depends_on_existing", []) or []:
+                    if not isinstance(dep_n, int):
+                        continue
+                    prior = db.resolve_task(project_id, dep_n)
+                    if prior and prior["id"] in existing_ids:
+                        deps.append(prior["id"])
             db.update_task(task_id, deps=json.dumps(sorted(set(deps))))
             issue_line = ""
             if github_client.enabled(repo):
@@ -111,8 +123,9 @@ def build_team_server(project_id: int):
                     issue_line = f" (issue creation failed: {e})"
             bus.emit(project_id, task_id, "manager", "task_created",
                      {"role": item["role"], "title": item["title"], "deps": deps})
-            dep_note = f" after {deps}" if deps else ""
-            lines.append(f"created task {task_id} [{item['role']}] "
+            dep_note = f" after {_seq_of(deps)}" if deps else ""
+            created = db.get_task(task_id) or {}
+            lines.append(f"created task {created.get('seq', task_id)} [{item['role']}] "
                          f"'{item['title']}'{dep_note}{issue_line}")
         return "\n".join(lines)
 
@@ -249,7 +262,7 @@ def build_team_server(project_id: int):
           "the end for an ESCALATION: section — that is a request for extra tasks.",
           {"task_id": int})
     async def get_report(args: dict[str, Any]) -> dict[str, Any]:
-        t = db.get_task(int(args["task_id"]))
+        t = db.resolve_task(project_id, int(args["task_id"]))
         if not t:
             return _text("error: no such task")
         return _text(t["report"] or "(no report yet)")
@@ -259,8 +272,8 @@ def build_team_server(project_id: int):
           "rounds the task escalates to a stronger model.",
           {"task_id": int, "feedback": str})
     async def request_changes(args: dict[str, Any]) -> dict[str, Any]:
-        task_id = int(args["task_id"])
-        t = db.get_task(task_id)
+        t = db.resolve_task(project_id, int(args["task_id"]))
+        task_id = t["id"] if t else -1
         if not t:
             return _text("error: no such task")
         db.update_task(task_id, feedback=args["feedback"], status="planned")
@@ -272,7 +285,7 @@ def build_team_server(project_id: int):
                 await github_client.comment_issue(repo, t["pr_number"], args["feedback"])
             except Exception:
                 pass
-        return _text(f"task {task_id} queued for rework; the scheduler will re-dispatch it. "
+        return _text(f"task {t['seq']} queued for rework; the scheduler will re-dispatch it. "
                      "Call wait for the result.")
 
     @tool("compare_work", "For a task you ran as a contest (compete > 1), see every rival's "
@@ -280,12 +293,13 @@ def build_team_server(project_id: int):
           "which one actually delivered. Judge against the task's acceptance criteria, not "
           "which report reads nicer.", {"task_id": int})
     async def compare_work(args: dict[str, Any]) -> dict[str, Any]:
-        task_id = int(args["task_id"])
+        _t = db.resolve_task(project_id, int(args["task_id"]))
+        task_id = _t["id"] if _t else -1
         rivals = db.list_contenders(task_id)
         if not rivals:
             return _text("that task was not run as a contest; use get_report instead.")
         t = db.get_task(task_id)
-        parts = [f"Contest for task {task_id}: {t['title'] if t else ''}",
+        parts = [f"Contest for task {_t['seq'] if _t else task_id}: {_t['title'] if _t else ''}",
                  f"Acceptance criteria were:\n{(t or {}).get('description', '')[:1500]}", ""]
         for r in rivals:
             parts.append(
@@ -300,12 +314,14 @@ def build_team_server(project_id: int):
           "it (and anything from a loser worth folding in).",
           {"task_id": int, "rival_idx": int, "reason": str})
     async def pick_winner(args: dict[str, Any]) -> dict[str, Any]:
-        task_id = int(args["task_id"])
+        _t = db.resolve_task(project_id, int(args["task_id"]))
+        task_id = _t["id"] if _t else -1
+        num = _t["seq"] if _t else args["task_id"]
         idx = int(args["rival_idx"])
         rivals = db.list_contenders(task_id)
         winner = next((r for r in rivals if r["idx"] == idx), None)
         if not winner:
-            return _text(f"error: no rival #{idx} on task {task_id}")
+            return _text(f"error: no rival #{idx} on task {num}")
         if winner["status"] != "pushed":
             return _text(f"error: rival #{idx} did not finish successfully; pick one that did")
         for r in rivals:
@@ -316,7 +332,7 @@ def build_team_server(project_id: int):
         bus.emit(project_id, task_id, "manager", "winner_picked",
                  {"rival": idx, "model": winner["model"], "reason": args.get("reason", "")})
         scheduler.ensure(project_id)
-        return _text(f"rival #{idx} ({winner['model']}) wins task {task_id}; its branch "
+        return _text(f"rival #{idx} ({winner['model']}) wins task {num}; its branch "
                      f"{winner['branch']} goes to PR. Others discarded.")
 
     @tool("reassign_task", "Pull a task off its current agent and re-run it on a different "
@@ -326,8 +342,8 @@ def build_team_server(project_id: int):
           "claude-opus-4-8 (most capable). Give a short reason.",
           {"task_id": int, "model": str, "reason": str})
     async def reassign_task(args: dict[str, Any]) -> dict[str, Any]:
-        task_id = int(args["task_id"])
-        t = db.get_task(task_id)
+        t = db.resolve_task(project_id, int(args["task_id"]))
+        task_id = t["id"] if t else -1
         if not t:
             return _text("error: no such task")
         model = str(args.get("model", "")).strip()
@@ -340,25 +356,25 @@ def build_team_server(project_id: int):
         bus.emit(project_id, task_id, "manager", "reassigned",
                  {"model": model, "reason": args.get("reason", "")})
         scheduler.ensure(project_id)
-        return _text(f"task {task_id} reassigned to {model}; the scheduler will re-run it.")
+        return _text(f"task {t['seq']} reassigned to {model}; the scheduler will re-run it.")
 
     @tool("accept_task", "Mark a task done after judging its report, when there is no PR to "
           "merge — e.g. a tester task that only verified and made no code changes. Use this "
           "to close verification tasks so dependents unblock and the board stays clean. Pass "
           "a one-line verdict.", {"task_id": int, "verdict": str})
     async def accept_task(args: dict[str, Any]) -> dict[str, Any]:
-        t = db.get_task(int(args["task_id"]))
+        t = db.resolve_task(project_id, int(args["task_id"]))
         if not t:
             return _text("error: no such task")
         db.update_task(t["id"], status="done")
         bus.emit(project_id, t["id"], "manager", "task_accepted",
                  {"verdict": args.get("verdict", "")})
-        return _text(f"task {t['id']} accepted and marked done.")
+        return _text(f"task {t['seq']} accepted and marked done.")
 
     @tool("merge_pr", "Squash-merge a task's pull request. Merging unblocks dependent tasks.",
           {"task_id": int})
     async def merge_pr(args: dict[str, Any]) -> dict[str, Any]:
-        t = db.get_task(int(args["task_id"]))
+        t = db.resolve_task(project_id, int(args["task_id"]))
         repo = project().get("repo", "")
         if not t:
             return _text("error: no such task")
@@ -379,7 +395,7 @@ def build_team_server(project_id: int):
             from . import preview
             if preview.preview_root(project_id) is not None:
                 asyncio.get_event_loop().create_task(preview.sync(project_id))
-            return _text(f"merged PR #{t['pr_number']}; task {t['id']} done")
+            return _text(f"merged PR #{t['pr_number']}; task {t['seq']} done")
         return _text(f"error: PR #{t['pr_number']} could not be merged (conflicts or checks)")
 
     @tool("finish", "Finish the project. status must be 'done' or 'failed'. Include a "
@@ -392,7 +408,7 @@ def build_team_server(project_id: int):
             stuck = [t for t in db.list_tasks(project_id)
                      if t["status"] in ("failed", "planned", "queued", "running", "pushed", "review")]
             if stuck:
-                lines = "; ".join(f"#{t['id']} {t['role']} is {t['status']}" for t in stuck[:6])
+                lines = "; ".join(f"#{t['seq']} {t['role']} is {t['status']}" for t in stuck[:6])
                 return _text(
                     f"REFUSED: you cannot finish as done while work is outstanding — {lines}. "
                     "Rework or reassign the failed ones, close the verified ones with "
