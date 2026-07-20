@@ -73,12 +73,14 @@ queries and hurt hard ones. "Burn all the compute" is not a strategy.
 
 ### Still open, in priority order
 
-**1. The manager judges prose, not evidence.** *(highest value)*
-It reads a worker's report and decides if it is convincing. The research says
-this is exactly where selection breaks down. Fix: make the worker run the
-project's tests/build and attach the raw output; make `merge_pr` refuse without
-it. This converts the verifier from "LLM opinion" to "did it compile and pass",
-which is what bounds everything else.
+**1. ~~The manager judges prose, not evidence.~~ DONE.**
+The platform now runs the project's own test/build command itself after each
+worker finishes — in the worker *process*, not the agent session, so the model
+cannot summarise or invent the result. The raw exit code and output lead the
+report, and `merge_pr` refuses a branch whose checks failed (override needs the
+boss). Detection is conservative: npm test/build/lint, pytest, go test, cargo
+test, make test. "No command declared" is reported as *unverified*, never as
+passing.
 
 **2. Workers are Claude-only.** `providers.py` gives plan mode Anthropic + OpenAI
 + Gemini, but `FALLBACK_ORDER` is three Claude models and the worker is built on

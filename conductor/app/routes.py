@@ -117,6 +117,7 @@ class WorkerReport(BaseModel):
     report: str
     cost_usd: float = 0
     contender_id: int = 0
+    verification: str = ""      # JSON, produced by the worker process not the model
 
 
 # --- auth & per-user settings ------------------------------------------------
@@ -1090,8 +1091,17 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
                  {"model": model, "cooldown_s": cooldown_left(model),
                   "detail": body.report[:300]})
     db.update_task(body.task_id, status=status, report=body.report,
+                   verification=body.verification or "",
                    cost_usd=(task["cost_usd"] if task else 0) + body.cost_usd)
     db.add_project_cost(body.project_id, body.cost_usd)
+    try:
+        v = json.loads(body.verification or "{}")
+    except Exception:
+        v = {}
+    if v.get("ran"):
+        bus.emit(body.project_id, body.task_id, "system",
+                 "verified" if v.get("ok") else "verification_failed",
+                 {"cmd": v.get("cmd"), "exit_code": v.get("exit_code")})
     bus.emit(body.project_id, body.task_id, f"worker:{task['role'] if task else '?'}",
              "report", {"status": status, "cost_usd": body.cost_usd,
                         "summary": body.report[:2000]})

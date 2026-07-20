@@ -10,6 +10,7 @@ role prompt -> commit & push -> POST the final report to the conductor.
 """
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -63,10 +64,74 @@ def emit(kind: str, payload: str) -> None:
 CONTENDER_ID = int(os.environ.get("CONTENDER_ID", "0") or 0)
 
 
-def report(status: str, text: str, cost: float) -> None:
+def report(status: str, text: str, cost: float, verification: dict | None = None) -> None:
     post("/internal/report", {"project_id": PROJECT_ID, "task_id": TASK_ID,
                               "status": status, "report": text[:12000], "cost_usd": cost,
-                              "contender_id": CONTENDER_ID})
+                              "contender_id": CONTENDER_ID,
+                              "verification": json.dumps(verification or {})})
+
+
+VERIFY_TIMEOUT = int(os.environ.get("VERIFY_TIMEOUT", "600"))
+
+
+def detect_verification(repo_dir: Path) -> tuple[str, str] | None:
+    """The command that proves this project still works, and how to describe it.
+
+    Deliberately conservative: only returns something when the repo clearly
+    declares a way to check itself. A wrong command produces noise, and noise
+    trains the manager to ignore the evidence.
+    """
+    pkg = repo_dir / "package.json"
+    if pkg.exists():
+        try:
+            scripts = (json.loads(pkg.read_text()).get("scripts") or {})
+        except Exception:
+            scripts = {}
+        if "test" in scripts:
+            # npm's default placeholder exits 1 and means nothing
+            if "no test specified" not in str(scripts.get("test", "")):
+                return ("npm test --silent", "npm test")
+        if "build" in scripts:
+            return ("npm run build", "npm run build")
+        if "lint" in scripts:
+            return ("npm run lint", "npm run lint")
+    if (repo_dir / "pytest.ini").exists() or (repo_dir / "tests").is_dir() or \
+            list(repo_dir.glob("test_*.py")) or list(repo_dir.glob("*/test_*.py")):
+        return ("python -m pytest -q", "pytest")
+    if (repo_dir / "go.mod").exists():
+        return ("go test ./...", "go test")
+    if (repo_dir / "Cargo.toml").exists():
+        return ("cargo test", "cargo test")
+    if (repo_dir / "Makefile").exists():
+        mk = (repo_dir / "Makefile").read_text(errors="ignore")
+        if "\ntest:" in mk or mk.startswith("test:"):
+            return ("make test", "make test")
+    return None
+
+
+def run_verification(repo_dir: Path) -> dict:
+    """Run the project's own checks and report the RAW result.
+
+    This runs in the worker process, not in the agent session, precisely so the
+    model cannot summarise, soften or invent the outcome. A manager judging prose
+    is judging a claim; a manager judging an exit code is judging evidence.
+    """
+    found = detect_verification(repo_dir)
+    if not found:
+        return {"ran": False, "reason": "this project declares no test/build command"}
+    cmd, label = found
+    emit("verifying", f"running {label}")
+    try:
+        r = subprocess.run(cmd, cwd=repo_dir, shell=True, capture_output=True,
+                           text=True, timeout=VERIFY_TIMEOUT)
+        out = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
+        return {"ran": True, "ok": r.returncode == 0, "cmd": label,
+                "exit_code": r.returncode, "output": out[-3000:]}
+    except subprocess.TimeoutExpired:
+        return {"ran": True, "ok": False, "cmd": label, "exit_code": -1,
+                "output": f"{label} timed out after {VERIFY_TIMEOUT}s"}
+    except Exception as e:
+        return {"ran": False, "reason": f"could not run {label}: {e}"}
 
 
 def sh(*cmd: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
@@ -268,9 +333,14 @@ async def run() -> None:
                cost)
         return
 
+    # Verify BEFORE reporting, so the manager receives evidence rather than a claim.
+    verification = run_verification(repo_dir)
+    if verification.get("ran"):
+        emit("verified", f"{verification['cmd']} exited {verification['exit_code']}")
+
     ok, push_note = commit_and_push(repo_dir)
     status = "pushed" if ok else "failed"
-    report(status, f"{last_text}\n\n---\n{push_note}", cost)
+    report(status, f"{last_text}\n\n---\n{push_note}", cost, verification)
     emit("agent_status", "finished")
 
 

@@ -353,3 +353,53 @@ def test_compare_work_hides_the_model_and_drops_failed_attempts(fresh_db):
         assert "===== ATTEMPT #3" not in text
         # model names must not appear next to the attempts
         assert "claude-opus-4-8" not in text and "claude-haiku-4-5" not in text
+
+
+# ---- executable verification: evidence beats prose ------------------------
+
+def test_merge_is_refused_when_the_projects_own_tests_failed(fresh_db):
+    """The verifier is the ceiling on everything compute can buy, so this one
+    judgement is not left to persuasion."""
+    import asyncio, json as _json
+    from app import manager
+    p = make_project(owner_id=1, repo="owner/repo")
+    t = make_task(p, status="review")
+    db.update_task(t, pr_number=5, report="Everything works! All tests pass. Ship it.",
+                   verification=_json.dumps({"ran": True, "ok": False, "cmd": "npm test",
+                                             "exit_code": 1, "output": "2 failing"}))
+    srv = manager.build_team_server(p)
+    fn = next((f for f in getattr(srv, "tools", []) if getattr(f, "name", "") == "merge_pr"), None)
+    if fn is None or not hasattr(fn, "handler"):
+        # assert the gate's data precondition instead of the SDK wrapper
+        v = manager.verification_of(db.get_task(t))
+        assert v["ran"] and not v["ok"]
+        return
+    out = asyncio.run(fn.handler({"task_id": 1}))["content"][0]["text"]
+    assert "REFUSED" in out
+    assert "npm test" in out
+    assert db.get_task(t)["status"] == "review"      # not merged
+
+
+def test_evidence_block_leads_the_report_and_contradicts_a_lying_summary(fresh_db):
+    import json as _json
+    from app import manager
+    p = make_project()
+    t = make_task(p)
+    db.update_task(t, report="I verified everything and it all passes.",
+                   verification=_json.dumps({"ran": True, "ok": False, "cmd": "pytest",
+                                             "exit_code": 1, "output": "FAILED test_x"}))
+    text = manager._with_evidence(db.get_task(t), db.get_task(t)["report"])
+    assert text.startswith("VERIFICATION: FAILED")
+    assert "believe the exit code, not the prose" in text
+    assert "FAILED test_x" in text
+
+
+def test_unverified_is_not_reported_as_passing(fresh_db):
+    import json as _json
+    from app import manager
+    p = make_project()
+    t = make_task(p)
+    db.update_task(t, report="done",
+                   verification=_json.dumps({"ran": False, "reason": "no test command"}))
+    text = manager._with_evidence(db.get_task(t), "done")
+    assert "none available" in text and "unverified claim" in text

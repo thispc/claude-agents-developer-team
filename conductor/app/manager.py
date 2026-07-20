@@ -60,6 +60,37 @@ def _seq_of(deps: list[int]) -> list[int]:
     return out
 
 
+def verification_of(t: dict) -> dict:
+    try:
+        return json.loads(t.get("verification") or "{}")
+    except Exception:
+        return {}
+
+
+def _with_evidence(t: dict, body: str) -> str:
+    """Put the harness-run result in front of the model's own account of itself.
+
+    The report is the worker's CLAIM. This block is EVIDENCE — our process ran the
+    project's own checks, so the model could not soften or invent the outcome.
+    """
+    v = verification_of(t)
+    if not v:
+        return body
+    if not v.get("ran"):
+        head = ("VERIFICATION: none available — " + str(v.get("reason", "")) +
+                "\nTreat everything below as an unverified claim.")
+    elif v.get("ok"):
+        head = (f"VERIFICATION: PASSED. `{v.get('cmd')}` exited 0 — run by the platform, "
+                f"not by the worker, so this is evidence rather than a claim.\n"
+                f"--- output (tail) ---\n{(v.get('output') or '')[-1200:]}")
+    else:
+        head = (f"VERIFICATION: FAILED. `{v.get('cmd')}` exited {v.get('exit_code')}. "
+                f"The worker's summary below may still claim success — believe the exit "
+                f"code, not the prose.\n--- output (tail) ---\n"
+                f"{(v.get('output') or '')[-1500:]}")
+    return f"{head}\n\n=== the worker's own report ===\n{body}"
+
+
 def _task_line(t: dict) -> str:
     deps = json.loads(t["deps"] or "[]")
     dep_note = f" deps={_seq_of(deps)}" if deps else ""
@@ -323,7 +354,7 @@ def build_team_server(project_id: int):
                              f"branch {r['branch']} ---")
                 lines.append((r["report"] or "(no report)")[:1500])
             return _text("\n".join(lines))
-        return _text(t["report"] or "(no report yet)")
+        return _text(_with_evidence(t, t["report"] or "(no report yet)"))
 
     @tool("request_changes", "Send a task back to its team member with specific feedback. "
           "The scheduler re-runs it on the same branch automatically. After 2 failed "
@@ -455,13 +486,29 @@ def build_team_server(project_id: int):
         scheduler.ensure(project_id)   # accepting unblocks dependents; wake the loop
         return _text(f"task {t['seq']} accepted and marked done.")
 
-    @tool("merge_pr", "Squash-merge a task's pull request. Merging unblocks dependent tasks.",
-          {"task_id": int})
+    @tool("merge_pr", "Squash-merge a task's pull request. Merging unblocks dependent "
+          "tasks. Refused when the project's own tests/build failed on that branch — the "
+          "platform runs them itself, so that result is evidence, not the worker's claim. "
+          "override_failed_tests is a last resort and needs the boss's agreement first.",
+          {"task_id": int, "override_failed_tests": bool})
     async def merge_pr(args: dict[str, Any]) -> dict[str, Any]:
         t = db.resolve_task(project_id, int(args["task_id"]))
         repo = project().get("repo", "")
         if not t:
             return _text("error: no such task")
+        # Hard gate: never merge work that failed the project's own checks. This is
+        # the one judgement that does not depend on reading prose, so it is not left
+        # to persuasion — an override needs the boss, not a convincing report.
+        v = verification_of(t)
+        if v.get("ran") and not v.get("ok") and not args.get("override_failed_tests"):
+            return _text(
+                f"REFUSED: `{v.get('cmd')}` exited {v.get('exit_code')} on this branch. "
+                f"The worker's report may claim success — the exit code says otherwise, "
+                f"and the exit code is the evidence.\n\n"
+                f"--- output (tail) ---\n{(v.get('output') or '')[-1200:]}\n\n"
+                f"Send it back with request_changes quoting this output. If you truly "
+                f"believe the check itself is broken (not the code), ask the boss first "
+                f"with ask_boss, then retry with override_failed_tests=true.")
         if not github_client.enabled(repo) or not t["pr_number"]:
             db.update_task(t["id"], status="done")
             return _text("no PR to merge; task marked done.")

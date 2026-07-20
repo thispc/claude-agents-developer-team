@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     pinned_model TEXT NOT NULL DEFAULT '',    -- explicit manager override; wins over auto-selection
     compete INTEGER NOT NULL DEFAULT 0,       -- >1 = run N rival attempts, manager picks the winner
     seq INTEGER NOT NULL DEFAULT 0,           -- per-project task number (1,2,3…) shown to humans
+    verification TEXT NOT NULL DEFAULT '',    -- JSON: the harness-run test/build result
     branch TEXT NOT NULL DEFAULT '',
     issue_number INTEGER,
     pr_number INTEGER,
@@ -161,6 +162,7 @@ def init() -> None:
         "ALTER TABLE tasks ADD COLUMN seq INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE projects ADD COLUMN is_self INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE roundtables ADD COLUMN mode TEXT NOT NULL DEFAULT 'debate'",
+        "ALTER TABLE tasks ADD COLUMN verification TEXT NOT NULL DEFAULT ''",
         # roundtables/seats/turns are created by SCHEMA above (CREATE TABLE IF NOT
         # EXISTS), so existing databases pick them up without a migration here.
     ):
