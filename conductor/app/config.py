@@ -47,6 +47,13 @@ GITHUB_TOKEN = _env("GITHUB_TOKEN")
 GITHUB_REPO = _env("GITHUB_REPO")
 # The repo holding this platform's own code. Blank = derive from the git remote.
 SELF_REPO = _env("SELF_REPO")
+# Wildcard domain for deployed apps (e.g. apps.example.com -> app-11.apps.example.com).
+# Blank = fall back to a per-app LoadBalancer, which the cloud bills for per app.
+APPS_DOMAIN = _env("APPS_DOMAIN")
+# Target CPU architecture for images pushed to a remote cluster. DigitalOcean
+# droplets are amd64; a Mac builds arm64 by default, and that image dies with
+# "exec format error" on the node. Blank = build natively (local kind only).
+DEPLOY_PLATFORM = _env("DEPLOY_PLATFORM", "linux/amd64")
 
 CONDUCTOR_URL = _env("CONDUCTOR_URL", "http://localhost:8000")
 WORKER_TOKEN = _env("WORKER_TOKEN", "dev-token")

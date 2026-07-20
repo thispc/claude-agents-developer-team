@@ -348,9 +348,30 @@ def _kubectl(*args: str, stdin: str | None = None) -> subprocess.CompletedProces
                           text=True, timeout=300)
 
 
-def manifests(project_id: int, image: str, port: int = 8080) -> str:
+def ingress_available() -> bool:
+    """Is there a shared ingress controller we can hang apps off?"""
+    r = _kubectl("get", "ingressclass", "-o", "jsonpath={.items[*].metadata.name}")
+    return bool(r.stdout.strip())
+
+
+def app_host(project_id: int) -> str:
+    domain = config.APPS_DOMAIN
+    return f"app-{project_id}.{domain}" if domain else ""
+
+
+def manifests(project_id: int, image: str, port: int = 8080,
+              use_ingress: bool = True) -> str:
+    """Deployment + Service, and an Ingress when a shared controller exists.
+
+    A DigitalOcean regional HTTP load balancer costs $12/month *per load balancer*.
+    Giving every deployed app `type: LoadBalancer` therefore bills per app — ten
+    apps is $120/month of pure plumbing. One ingress controller fronts every app
+    behind a single load balancer, routed by hostname, for $12 total.
+    """
     name = f"devteam-app-{project_id}"
-    return f"""apiVersion: apps/v1
+    host = app_host(project_id)
+    svc_type = "ClusterIP" if (use_ingress and host) else "LoadBalancer"
+    doc = f"""apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {name}
@@ -370,6 +391,11 @@ spec:
         ports: [{{containerPort: {port}}}]
         env:
         - {{name: PORT, value: "{port}"}}
+        readinessProbe:
+          httpGet: {{path: /, port: {port}}}
+          initialDelaySeconds: 3
+          periodSeconds: 5
+          failureThreshold: 12
         resources:
           requests: {{cpu: 50m, memory: 96Mi}}
           limits: {{cpu: 500m, memory: 512Mi}}
@@ -380,10 +406,31 @@ metadata:
   name: {name}
   namespace: {config.K8S_NAMESPACE}
 spec:
-  type: LoadBalancer
+  type: {svc_type}
   selector: {{app: {name}}}
   ports: [{{port: 80, targetPort: {port}}}]
 """
+    if svc_type == "ClusterIP":
+        doc += f"""---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {name}
+  namespace: {config.K8S_NAMESPACE}
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: {host}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {name}
+            port: {{number: 80}}
+"""
+    return doc
 
 
 async def deploy_k8s(project_id: int) -> dict[str, Any]:
@@ -402,27 +449,57 @@ async def deploy_k8s(project_id: int) -> dict[str, Any]:
         return {"ok": False, "spec": spec,
                 "error": f"nothing to deploy: {spec['why']}"}
 
+    # A cluster can only run an image it can pull. A managed cluster (DOKS) needs a
+    # registry it has credentials for; a local kind cluster can be handed the image
+    # directly, which is what makes this testable without paying for a registry.
     registry = config._env("DEPLOY_REGISTRY", "")
-    if not registry:
+    ctx = _kubectl("config", "current-context").stdout.strip()
+    local_cluster = ctx.startswith("kind-")
+    if not registry and not local_cluster:
         return {"ok": False, "spec": spec,
                 "error": "set DEPLOY_REGISTRY (e.g. registry.digitalocean.com/yourreg) "
                          "so the built image can be pushed where the cluster can pull it"}
-    image = f"{registry}/devteam-app-{project_id}:{int(time.time())}"
+    tag = str(int(time.time()))
+    image = f"{registry}/devteam-app-{project_id}:{tag}" if registry \
+        else f"devteam-app-{project_id}:{tag}"
 
+    dockerfile = "Dockerfile"
     if spec["kind"] != "docker":
-        # Generate a Dockerfile for projects that didn't ship one.
-        (root / "Dockerfile").write_text(_generated_dockerfile(spec))
+        # Written under our own name so it never shadows the repo's own file and
+        # never makes a later detect() believe the project ships a Dockerfile.
+        dockerfile = "Dockerfile.devteam"
+        (root / dockerfile).write_text(_generated_dockerfile(spec))
         _log(project_id, "no Dockerfile in the repo — generated one from the detected runtime")
 
-    for cmd in (["docker", "build", "-t", image, "."], ["docker", "push", image]):
+    build = ["docker", "build", "-f", dockerfile, "-t", image, "."]
+    if registry and config.DEPLOY_PLATFORM:
+        # A remote cluster runs whatever the cloud's nodes are, not what this host
+        # is. Building natively on an ARM Mac produces an image that crash-loops
+        # with "exec format error" on amd64 nodes.
+        build = ["docker", "buildx", "build", "--platform", config.DEPLOY_PLATFORM,
+                 "-f", dockerfile, "-t", image, "--load", "."]
+        _log(project_id, f"cross-building for {config.DEPLOY_PLATFORM} "
+                         f"(this host is {os.uname().machine})")
+    steps = [build]
+    if registry:
+        steps.append(["docker", "push", image])
+    else:
+        steps.append(["kind", "load", "docker-image", image,
+                      "--name", ctx.removeprefix("kind-")])
+    for cmd in steps:
         _log(project_id, " ".join(cmd))
         r = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=BUILD_TIMEOUT)
         _log(project_id, (r.stdout + r.stderr)[-3000:])
         if r.returncode != 0:
             return {"ok": False, "spec": spec,
-                    "error": f"{cmd[1]} failed: {r.stderr[-300:]}"}
+                    "error": f"{' '.join(cmd[:2])} failed: {(r.stderr or r.stdout)[-300:]}"}
 
-    r = _kubectl("apply", "-f", "-", stdin=manifests(project_id, image))
+    use_ingress = bool(config.APPS_DOMAIN) and ingress_available()
+    if not use_ingress:
+        _log(project_id, "no APPS_DOMAIN/ingress controller — falling back to a "
+                         "per-app LoadBalancer (billed separately by the cloud)")
+    r = _kubectl("apply", "-f", "-",
+                 stdin=manifests(project_id, image, use_ingress=use_ingress))
     _log(project_id, r.stdout + r.stderr)
     if r.returncode != 0:
         return {"ok": False, "spec": spec, "error": f"kubectl apply failed: {r.stderr[-300:]}"}
@@ -430,12 +507,17 @@ async def deploy_k8s(project_id: int) -> dict[str, Any]:
     name = f"devteam-app-{project_id}"
     _kubectl("rollout", "status", f"deployment/{name}", "-n", config.K8S_NAMESPACE,
              "--timeout=180s")
-    ip = _kubectl("get", "svc", name, "-n", config.K8S_NAMESPACE, "-o",
-                  "jsonpath={.status.loadBalancer.ingress[0].ip}").stdout.strip()
-    url = f"http://{ip}" if ip else ""
+    if use_ingress:
+        url = f"http://{app_host(project_id)}"
+        ip = ""
+    else:
+        ip = _kubectl("get", "svc", name, "-n", config.K8S_NAMESPACE, "-o",
+                      "jsonpath={.status.loadBalancer.ingress[0].ip}").stdout.strip()
+        url = f"http://{ip}" if ip else ""
     bus.emit(project_id, None, "system", "app_deployed",
              {"mode": "k8s", "url": url or "pending load balancer", "image": image})
     return {"ok": True, "mode": "k8s", "image": image, "url": url,
+            "routing": "shared ingress" if use_ingress else "dedicated load balancer",
             "note": "" if url else "the load balancer is still being assigned an IP",
             "spec": spec}
 
