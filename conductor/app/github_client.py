@@ -109,36 +109,6 @@ async def list_branches(repo: str) -> list[str]:
     return [b["name"] for b in data]
 
 
-async def get_pages_url(repo: str) -> str | None:
-    try:
-        data = await _request("GET", f"/repos/{repo}/pages")
-        return data.get("html_url")
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 404:
-            return None
-        raise
-
-
-async def enable_pages(repo: str) -> tuple[bool, str]:
-    """Enable GitHub Pages so the project has a public URL. Serves the default branch;
-    prefers a /docs folder, else root (works for a static site with index.html there)."""
-    existing = await get_pages_url(repo)
-    if existing:
-        return True, existing
-    base = await default_branch(repo)
-    # Serve from /docs if it exists, otherwise repo root.
-    path = "/"
-    try:
-        await _request("GET", f"/repos/{repo}/contents/docs")
-        path = "/docs"
-    except httpx.HTTPStatusError:
-        pass
-    try:
-        data = await _request("POST", f"/repos/{repo}/pages",
-                              json={"source": {"branch": base, "path": path}})
-        return True, data.get("html_url") or f"https://{repo.split('/')[0]}.github.io/{repo.split('/')[1]}/"
-    except httpx.HTTPStatusError as e:
-        return False, f"could not enable Pages: {e.response.status_code} {e.response.text[:160]}"
 
 
 async def ensure_repo(repo: str) -> tuple[bool, str]:

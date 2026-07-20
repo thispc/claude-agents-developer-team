@@ -10,6 +10,11 @@ services:
     env_file:
       - ../.env
     environment:
+      # env_file above pulls in the host's .env, where DB_PATH is a RELATIVE path
+      # for running outside Docker. Left alone it lands the database at /app,
+      # outside the volume below — so every rebuild silently destroyed it.
+      DB_PATH: /data/devteam.db
+      WORKSPACES_DIR: /data/workspaces
       LAUNCHER: local
       CONDUCTOR_URL: http://localhost:8000
     volumes:

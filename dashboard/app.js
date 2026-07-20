@@ -221,8 +221,11 @@ function openProject(id, view, skipHash) {
   $("main").hidden = false;
   $("#projectSelect").hidden = false;
   currentProject = Number(id);
-  loadProjects();      // on a direct URL open, the dropdown was never filled
+  // Must finish before selectProject sets .value, or the assignment lands on an
+  // empty <select> and is silently dropped (the dropdown then shows the wrong project).
+  const filled = loadProjects();
   if (view) switchView(view, true);
+  filled.then(() => { $("#projectSelect").value = String(id); });
   if (!skipHash) setHash(`#/p/${id}${view && view !== "command" ? "/" + view : ""}`);
   selectProject(id);
 }
@@ -375,6 +378,7 @@ async function renderSelf() {
     btn.disabled = true; btn.textContent = "briefing the team…";
     try {
       const r = await api("/api/self/issue", { method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: f.get("title"), body: f.get("body"),
                                severity: f.get("severity") }) });
       openProject(r.project_id, "command");
@@ -556,8 +560,7 @@ async function refreshBoard() {
   badge.title = p.summary || "";
   $("#cancelBtn").hidden = ["done", "failed", "cancelled"].includes(p.status);
   $("#restartBtn").hidden = !["failed", "review", "cancelled"].includes(p.status);
-  $("#artifactsBtn").hidden = true;   // artifacts live in their own tab now
-  if (!$("#artifacts").hidden) renderArtifacts();
+    if (!$("#artifacts").hidden) renderArtifacts();
   if (!$("#agents").hidden) renderAgents();
   refreshQuestion();
   for (const [col, statuses] of Object.entries(COLS)) {
@@ -586,6 +589,8 @@ async function refreshBoard() {
 }
 
 function escapeHtml(s) {
+  if (s === null || s === undefined) return "";
+  if (typeof s !== "string") s = String(s);
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
@@ -681,7 +686,7 @@ function notifyBoss(e) {
   try { q = JSON.parse(e.payload).question || ""; } catch { /* */ }
   notify("👔 Manager needs your decision", q.slice(0, 140));
   // also flash the tab title until focused
-  const orig = document.title;
+  const orig = document.title.replace(/^🔔 Needs you — /, "");
   document.title = "🔔 Needs you — " + orig;
   window.addEventListener("focus", function once() {
     document.title = orig; window.removeEventListener("focus", once);
@@ -927,8 +932,15 @@ function renderCommand(p) {
   const attnBtn = el.querySelector("[data-attn]");
   if (attnBtn) attnBtn.addEventListener("click", () => {
     const inp = $("#directiveInput");
-    inp.value = `This is not done: ${p.summary} Please redo the failed work and only finish when it actually works.`;
+    const msg = `This is not done: ${p.summary} Please redo the failed work and `
+      + `only finish when it actually works.`;
+    inp.value = msg;
     inp.focus();
+    api(`/api/projects/${currentProject}/directive`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: msg }),
+    }).then(() => { inp.value = ""; toast("Sent to your manager."); })
+      .catch((e) => alert(e.message));
   });
   el.querySelectorAll(".agent").forEach((a) =>
     a.addEventListener("click", () => showTask(Number(a.dataset.task))));
@@ -1317,7 +1329,9 @@ async function renderAgents() {
         if (!confirm("Stop this agent now?\n\nIts task is marked failed and any "
           + "unpushed work is lost. You can re-run the task afterwards.")) return;
         b.disabled = true; b.textContent = "stopping\u2026";
-        await api(`/api/tasks/${b.dataset.kill}/kill`, { method: "POST" });
+        const r = await api(`/api/tasks/${b.dataset.kill}/kill`, { method: "POST" });
+        toast(r.stopped ? `Stopped ${r.stopped} agent process(es).`
+                        : "That agent had already exited.");
         agentsSig = ""; renderAgents(); refreshBoard();
       }));
     $("#agentsBody").querySelectorAll("[data-logs]").forEach((b) =>
@@ -1366,51 +1380,6 @@ async function renderModelHealth() {
 }
 
 // --- artifacts / public link ------------------------------------------------
-async function showArtifacts() {
-  if (!currentProject) return;
-  $("#artifactsBody").innerHTML = `<pre class="dim">loading…</pre>`;
-  $("#artifactsDialog").showModal();
-  let a;
-  try { a = await api(`/api/projects/${currentProject}/artifacts`); }
-  catch (e) { $("#artifactsBody").innerHTML = `<pre class="dim">${escapeHtml(e.message)}</pre>`; return; }
-  const prs = (a.prs || []).map((p) =>
-    `<li><a href="${p.url}" target="_blank">PR #${p.number}</a> ${p.merged ? "✓ merged" : p.state} — ${escapeHtml(p.title)}</li>`).join("");
-  const publicLink = a.pages_url
-    ? `<div class="public-link">🌐 Public site: <a href="${a.pages_url}" target="_blank">${a.pages_url}</a>
-        <span class="hint">(may take a minute to go live after first publish)</span></div>`
-    : `<button id="publishBtn" class="primary">🌐 Publish to a public link</button>
-       <p class="hint">Enables GitHub Pages. Works when the built site's index.html is at the repo root or /docs.</p>`;
-  $("#artifactsBody").innerHTML = `
-    <div class="art-repo">📁 <a href="${a.repo_url}" target="_blank">${escapeHtml(a.repo || "no repo")}</a></div>
-    <div class="preview-box">
-      <button id="previewBtn">▶ Preview the app here</button>
-      <span class="hint">runs the built static site under this app, sandboxed</span>
-    </div>
-    ${publicLink}
-    <h3>Pull requests</h3><ul class="art-list">${prs || "<li class='dim'>none yet</li>"}</ul>
-    <h3>Branches</h3><div class="art-branches">${(a.branches || []).map((b) => `<span class="tag">${escapeHtml(b)}</span>`).join("") || "<span class='dim'>none</span>"}</div>`;
-  const prev = $("#previewBtn");
-  if (prev) prev.addEventListener("click", async () => {
-    prev.disabled = true; prev.textContent = "Building preview…";
-    try {
-      const r = await api(`/api/projects/${currentProject}/preview`, { method: "POST" });
-      window.open(r.url, "_blank");
-      prev.textContent = "▶ Preview the app here";
-    } catch (e) { alert(e.message); prev.textContent = "▶ Preview the app here"; }
-    finally { prev.disabled = false; }
-  });
-  const pub = $("#publishBtn");
-  if (pub) pub.addEventListener("click", async () => {
-    pub.disabled = true; pub.textContent = "Publishing…";
-    try {
-      const r = await api(`/api/projects/${currentProject}/publish`, { method: "POST" });
-      showArtifacts();  // reload to show the live link
-      window.open(r.url, "_blank");
-    } catch (e) { pub.disabled = false; pub.textContent = "🌐 Publish to a public link"; alert(e.message); }
-  });
-}
-$("#artifactsBtn").addEventListener("click", showArtifacts);
-$("#closeArtifactsBtn").addEventListener("click", () => $("#artifactsDialog").close());
 
 // --- editable DAG: add + edit tasks -----------------------------------------
 let editingTaskId = null;
@@ -1592,7 +1561,7 @@ const openDialog = () => {
   dialog.showModal();
 };
 $("#projectSelect").addEventListener("change", (e) => selectProject(e.target.value));
-$("#homeLink").addEventListener("click", showHome);
+$("#homeLink").addEventListener("click", () => showHome());
 $("#homeLink").style.cursor = "pointer";
 $("#newProjectBtn").addEventListener("click", openDialog);
 $("#homeNewBtn").addEventListener("click", openDialog);

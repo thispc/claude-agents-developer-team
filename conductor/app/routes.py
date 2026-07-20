@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 
 from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
@@ -107,6 +108,19 @@ def can_see(project: dict, user: dict) -> bool:
     if user["is_root"]:
         return True
     return project.get("owner_id") == user["id"]
+
+
+def owned_task(task_id: int, request: Request) -> dict:
+    """Fetch a task only if the caller may see the project it belongs to.
+
+    Task ids are global, so without this any signed-in user could read another
+    user's agent transcripts or steer their work just by guessing a number.
+    """
+    t = db.get_task(task_id)
+    if not t:
+        raise HTTPException(404, "no such task")
+    owned_project(t["project_id"], request)
+    return t
 
 
 def owned_project(project_id: int, request: Request) -> dict:
@@ -242,8 +256,9 @@ def list_agents(request: Request, project_id: int | None = None) -> dict:
 
 
 @router.get("/api/tasks/{task_id}/machine-logs")
-def machine_logs(task_id: int) -> dict:
+def machine_logs(task_id: int, request: Request) -> dict:
     """Raw logs from the machine running this task (k8s pod logs when on a cluster)."""
+    owned_task(task_id, request)
     if config.LAUNCHER == "k8s":
         try:
             from .launcher import get_launcher
@@ -558,11 +573,9 @@ def get_project(project_id: int, request: Request) -> dict:
 
 
 @router.post("/api/projects/{project_id}/restart")
-async def restart_project(project_id: int) -> dict:
+async def restart_project(project_id: int, request: Request) -> dict:
     """Re-run the lead session on a failed/review/cancelled project (tasks are kept)."""
-    project = db.get_project(project_id)
-    if not project:
-        raise HTTPException(404, "no such project")
+    project = owned_project(project_id, request)
     if project["status"] not in ("failed", "review", "cancelled"):
         raise HTTPException(400, f"cannot restart a project in status '{project['status']}'")
     existing = _manager_tasks.get(project_id)
@@ -636,10 +649,9 @@ async def get_artifacts(project_id: int, request: Request) -> dict:
 
 
 @router.post("/api/projects/{project_id}/preview")
-async def build_preview(project_id: int) -> dict:
+async def build_preview(project_id: int, request: Request) -> dict:
     """Sync the project's static site into our own preview host → viewable at /preview/{id}/."""
-    if not db.get_project(project_id):
-        raise HTTPException(404, "no such project")
+    owned_project(project_id, request)
     ok, note = await preview.sync(project_id)
     if not ok:
         raise HTTPException(400, note)
@@ -669,34 +681,19 @@ def serve_preview(project_id: int, path: str) -> Response:
                                          "X-Devteam-Preview": str(project_id)})
 
 
-@router.post("/api/projects/{project_id}/publish")
-async def publish_artifacts(project_id: int) -> dict:
-    """Enable GitHub Pages → a public link named after the repo/project."""
-    project = db.get_project(project_id)
-    if not project:
-        raise HTTPException(404, "no such project")
-    if not github_client.enabled(project["repo"]):
-        raise HTTPException(400, "GitHub not configured for this project")
-    ok, result = await github_client.enable_pages(project["repo"])
-    if not ok:
-        raise HTTPException(400, result)
-    bus.emit(project_id, None, "boss", "published", {"url": result})
-    return {"url": result}
-
-
 @router.get("/api/tasks/{task_id}/events")
-def get_task_events(task_id: int) -> list[dict]:
+def get_task_events(task_id: int, request: Request) -> list[dict]:
     """Full start-to-end transcript for one task's agent (messages + tool calls)."""
+    owned_task(task_id, request)
     return db.list_task_events(task_id)
 
 
 # --- boss controls -----------------------------------------------------------
 
 @router.post("/api/projects/{project_id}/directive")
-def send_directive(project_id: int, body: Directive) -> dict:
+def send_directive(project_id: int, body: Directive, request: Request) -> dict:
     """Boss -> manager message. Delivered at the manager's next decision point."""
-    if not db.get_project(project_id):
-        raise HTTPException(404, "no such project")
+    owned_project(project_id, request)
     db.add_directive(project_id, body.text)
     bus.emit(project_id, None, "boss", "directive", body.text)
     return {"ok": True}
@@ -715,10 +712,11 @@ def get_pending_question(project_id: int, request: Request) -> dict:
 
 
 @router.post("/api/questions/{qid}/answer")
-def answer(qid: int, body: Answer) -> dict:
+def answer(qid: int, body: Answer, request: Request) -> dict:
     q = db.get_question(qid)
     if not q:
         raise HTTPException(404, "no such question")
+    owned_project(q["project_id"], request)     # only the boss answers their manager
     db.answer_question(qid, body.answer)
     bus.emit(q["project_id"], None, "boss", "answered",
              {"question": q["text"], "answer": body.answer})
@@ -726,20 +724,17 @@ def answer(qid: int, body: Answer) -> dict:
 
 
 @router.post("/api/projects/{project_id}/budget")
-def set_budget(project_id: int, body: Budget) -> dict:
-    if not db.get_project(project_id):
-        raise HTTPException(404, "no such project")
-    db._execute("UPDATE projects SET budget_usd=? WHERE id=?", (body.budget_usd, project_id))
+def set_budget(project_id: int, body: Budget, request: Request) -> dict:
+    owned_project(project_id, request)
+    db.set_project_budget(project_id, body.budget_usd)
     bus.emit(project_id, None, "boss", "budget_changed", {"budget_usd": body.budget_usd})
     return {"ok": True}
 
 
 @router.post("/api/projects/{project_id}/tasks")
-async def add_task(project_id: int, body: NewTask) -> dict:
+async def add_task(project_id: int, body: NewTask, request: Request) -> dict:
     """Boss adds a task to the DAG directly (no manager needed)."""
-    project = db.get_project(project_id)
-    if not project:
-        raise HTTPException(404, "no such project")
+    project = owned_project(project_id, request)
     valid = {t["id"] for t in db.list_tasks(project_id)}
     deps = [d for d in body.depends_on if d in valid]
     task_id = db.create_task(project_id, body.role, body.title, body.description,
@@ -768,11 +763,9 @@ async def add_task(project_id: int, body: NewTask) -> dict:
 
 
 @router.post("/api/tasks/{task_id}/edit")
-def edit_task(task_id: int, body: EditTask) -> dict:
+def edit_task(task_id: int, body: EditTask, request: Request) -> dict:
     """Boss edits a task's title/spec/dependencies live."""
-    t = db.get_task(task_id)
-    if not t:
-        raise HTTPException(404, "no such task")
+    t = owned_task(task_id, request)
     fields: dict = {}
     if body.title is not None:
         fields["title"] = body.title
@@ -792,10 +785,8 @@ def edit_task(task_id: int, body: EditTask) -> dict:
 
 
 @router.post("/api/tasks/{task_id}/retry")
-def retry_task(task_id: int) -> dict:
-    t = db.get_task(task_id)
-    if not t:
-        raise HTTPException(404, "no such task")
+def retry_task(task_id: int, request: Request) -> dict:
+    t = owned_task(task_id, request)
     db.update_task(task_id, status="planned")
     scheduler.ensure(t["project_id"])
     bus.emit(t["project_id"], task_id, "boss", "retry_requested", {})
@@ -803,11 +794,13 @@ def retry_task(task_id: int) -> dict:
 
 
 @router.post("/api/tasks/{task_id}/skip")
-def skip_task(task_id: int) -> dict:
+def skip_task(task_id: int, request: Request) -> dict:
     """Boss marks a task done/skipped so dependents can proceed."""
-    t = db.get_task(task_id)
-    if not t:
-        raise HTTPException(404, "no such task")
+    t = owned_task(task_id, request)
+    # Skipping a task the boss no longer wants must also stop the agent doing it —
+    # otherwise it keeps running and spending against a task already marked done.
+    if t["status"] in ("queued", "running"):
+        launcher.kill_task(task_id, "task was skipped by the boss")
     db.update_task(task_id, status="done")
     scheduler.ensure(t["project_id"])
     bus.emit(t["project_id"], task_id, "boss", "task_skipped", {})
@@ -817,13 +810,27 @@ def skip_task(task_id: int) -> dict:
 # --- internal endpoints used by workers ---
 
 def _check_token(token: str | None) -> None:
-    if token != config.WORKER_TOKEN:
+    # Constant-time: a plain != leaks the token one character at a time to anyone
+    # who can measure the response.
+    if not token or not hmac.compare_digest(token, config.WORKER_TOKEN):
         raise HTTPException(401, "bad worker token")
+
+
+def _owns_task(project_id: int, task_id: int) -> None:
+    """A worker may only report on the task it was actually given.
+
+    Without this, one valid worker token lets any caller forge outcomes and costs
+    for any (project, task) pair in the system.
+    """
+    t = db.get_task(task_id)
+    if not t or t["project_id"] != project_id:
+        raise HTTPException(400, "task does not belong to that project")
 
 
 @router.post("/internal/events")
 def worker_event(body: WorkerEvent, x_worker_token: str | None = Header(None)) -> dict:
     _check_token(x_worker_token)
+    _owns_task(body.project_id, body.task_id)
     bus.emit(body.project_id, body.task_id, body.source, body.kind, body.payload)
     if body.kind == "agent_status" and body.payload == "running":
         db.update_task(body.task_id, status="running")
@@ -835,6 +842,7 @@ def worker_event(body: WorkerEvent, x_worker_token: str | None = Header(None)) -
 @router.post("/internal/report")
 def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None)) -> dict:
     _check_token(x_worker_token)
+    _owns_task(body.project_id, body.task_id)
     status = "pushed" if body.status == "pushed" else "failed"
     task = db.get_task(body.task_id)
 
@@ -880,12 +888,28 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
 
 @router.websocket("/ws")
 async def ws_feed(ws: WebSocket) -> None:
+    """Live event feed, filtered to what this user is allowed to see.
+
+    The bus is global: every project's events pass through it. Without the
+    check below an anonymous socket received the live activity — briefs, agent
+    messages, reports — of every project belonging to every user.
+    """
+    user = auth.user_for_token(ws.cookies.get("devteam_session"))
+    if not user:
+        await ws.close(code=1008)      # policy violation
+        return
     await ws.accept()
     q = bus.subscribe()
+    visible: dict[int, bool] = {}      # project_id -> allowed, resolved once each
     try:
         while True:
             event = await q.get()
-            await ws.send_json(event)
+            pid = event.get("project_id")
+            if pid not in visible:
+                p = db.get_project(pid) if pid else None
+                visible[pid] = bool(p and can_see(p, user))
+            if visible[pid]:
+                await ws.send_json(event)
     except (WebSocketDisconnect, RuntimeError):
         pass
     finally:

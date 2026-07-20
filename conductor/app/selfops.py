@@ -164,7 +164,10 @@ def can_redeploy() -> dict[str, Any]:
         for t in db.list_tasks(proj["id"]):
             if t["status"] not in ("running", "queued"):
                 continue
-            tracked = any(str(k).startswith(str(t["id"])) for k in launcher.ACTIVE)
+            # Keys are f"{task_id}{suffix}" where suffix is "" or "-<rival>", so a
+            # bare startswith made task 1 match active keys "12", "13", "100"…
+            tid = str(t["id"])
+            tracked = any(k == tid or k.startswith(tid + "-") for k in launcher.ACTIVE)
             fresh = now - t["updated_at"] < scheduler.STUCK_SECONDS
             if tracked or fresh:
                 live += 1

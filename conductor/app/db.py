@@ -161,6 +161,10 @@ def create_project(name: str, brief: str, repo: str, budget_usd: float,
     return cur.lastrowid
 
 
+def set_project_budget(project_id: int, budget_usd: float) -> None:
+    _execute("UPDATE projects SET budget_usd=? WHERE id=?", (budget_usd, project_id))
+
+
 def set_project_self(project_id: int, is_self: bool = True) -> None:
     """Mark the row that represents this platform's own codebase."""
     _execute("UPDATE projects SET is_self=? WHERE id=?", (1 if is_self else 0, project_id))

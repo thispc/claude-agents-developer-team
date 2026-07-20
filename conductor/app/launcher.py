@@ -31,13 +31,20 @@ def owner_credentials(project: dict) -> dict[str, str]:
     owner = auth_mod.get_user(project.get("owner_id") or 0)
     if owner and not owner["is_root"]:
         s = auth_mod.get_settings(owner)
+        # Both variables are always set, one of them to "". Returning only the key
+        # we want was not enough: the worker env is built as {**os.environ, **env},
+        # so an unset variable is inherited from the operator's shell — a user with
+        # only an API key still leaked the operator's CLAUDE_CODE_OAUTH_TOKEN, and a
+        # user with nothing fell through to the operator's `claude` CLI login.
+        blank = {"ANTHROPIC_API_KEY": "", "CLAUDE_CODE_OAUTH_TOKEN": "",
+                 # …and the CLI login lives in a config dir under the operator's
+                 # HOME, so point elsewhere or it is reachable regardless.
+                 "CLAUDE_CONFIG_DIR": str(config.WORKSPACES_DIR / f"cfg-u{owner['id']}")}
         if s.get("anthropic_api_key"):
-            return {"ANTHROPIC_API_KEY": s["anthropic_api_key"]}
+            return {**blank, "ANTHROPIC_API_KEY": s["anthropic_api_key"]}
         if s.get("claude_oauth_token"):
-            return {"CLAUDE_CODE_OAUTH_TOKEN": s["claude_oauth_token"]}
-        # No credentials of their own — deliberately return an unusable env rather
-        # than inheriting the operator's. dispatch/creation guards catch this first.
-        return {"ANTHROPIC_API_KEY": ""}
+            return {**blank, "CLAUDE_CODE_OAUTH_TOKEN": s["claude_oauth_token"]}
+        return blank      # no credentials of their own: unusable, by design
     # Root / operator: their stored settings, then the server's, then CLI login.
     if owner:
         s = auth_mod.get_settings(owner)
@@ -433,6 +440,15 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
         return f"error: project for task {task_id} not found"
     if project["status"] == "cancelled":
         return "error: project is cancelled"
+    creds = owner_credentials(project)
+    if not any(creds.get(k) for k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")) \
+            and project.get("owner_id"):
+        owner = db.get_project(task["project_id"])
+        db.update_task(task_id, status="failed",
+                       report="the project owner has no Anthropic API key or Claude "
+                              "subscription token, so no agent can run. Add one in Settings.")
+        bus.emit(task["project_id"], task_id, "system", "no_credentials", {})
+        return "error: project owner has no AI credentials"
     running = db.count_running(task["project_id"])
     if running >= project["max_workers"]:
         return f"error: {running} workers already running (max {project['max_workers']}); call wait first"

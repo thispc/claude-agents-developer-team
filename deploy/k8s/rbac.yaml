@@ -16,6 +16,42 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
+  # Deploying a project's app (deploy.py) applies a Deployment + Service, and an
+  # Ingress when APPS_DOMAIN is set. Without these the conductor can launch
+  # workers but every app deployment fails with Forbidden.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+---
+# ingressclasses are cluster-scoped, so deploy.ingress_available() needs a
+# ClusterRole to see whether a shared ingress controller exists at all.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: devteam-ingressclass-reader
+rules:
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingressclasses"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: devteam-conductor-ingressclass
+subjects:
+  - kind: ServiceAccount
+    name: devteam-conductor
+    namespace: devteam
+roleRef:
+  kind: ClusterRole
+  name: devteam-ingressclass-reader
+  apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

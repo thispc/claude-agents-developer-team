@@ -12,6 +12,13 @@
   --dim: #6b7280;
   --faint: #9aa1ac;
   --accent: #4f46e5;
+  /* Aliases: the Blockers, Self-repair and deployment cards were written against
+     these names. Without them every rule using them was invalid, so those cards
+     rendered with no background and unreadable secondary text. */
+  --panel: #ffffff;
+  --soft: #f5f6f8;
+  --fg: #16191f;
+  --muted: #6b7280;
   --accent-soft: #eef2ff;
   --good: #15803d;
   --good-soft: #e9f8ef;
@@ -230,8 +237,6 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 380px; gap: 16px; padd
 #feed[data-verbosity="simple"] .ev.tool,
 #feed[data-verbosity="simple"] .ev.think,
 #feed[data-verbosity="simple"] .ev.sys-noise { display: none; }
-#feed[data-filter="manager"] .ev.worker, #feed[data-filter="manager"] .ev.system { display: none; }
-#feed[data-filter="worker"] .ev.manager, #feed[data-filter="worker"] .ev.system { display: none; }
 #directiveForm { display: flex; gap: 8px; margin-top: 10px; }
 #directiveForm input { flex: 1; }
 
@@ -297,17 +302,8 @@ dialog textarea { resize: vertical; min-height: 96px; line-height: 1.55; }
 pre.dim, .dim { color: var(--dim); }
 
 /* approval modal */
-#approvalDialog { width: min(560px, 94vw); }
-.approval-badge { font-size: 11px; text-transform: uppercase; letter-spacing: .9px; color: var(--warn); font-weight: 700; }
-.approval-q { font-size: 16px; line-height: 1.55; }
-.approval-opts { display: flex; flex-direction: column; gap: 8px; }
-.approval-opt { text-align: left; padding: 13px 15px; border-radius: 10px; background: var(--card-2); font-size: 13.5px; }
-.approval-opt:hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
-.approval-custom { display: flex; gap: 8px; }
-.approval-custom input { flex: 1; }
 
 /* artifacts */
-#artifactsDialog { width: min(680px, 94vw); }
 #artifactsBody h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--accent); margin: 16px 0 7px; font-weight: 650; }
 .art-repo { font-size: 14px; margin-bottom: 10px; }
 .public-link { background: var(--good-soft); border: 1px solid #bfe6cd; border-radius: 10px; padding: 12px 14px; font-size: 13px; }

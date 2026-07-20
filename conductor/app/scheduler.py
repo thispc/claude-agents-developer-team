@@ -150,11 +150,17 @@ async def _run(project_id: int) -> None:
         for t in tasks:
             if t["status"] == "pushed":
                 await _auto_open_pr(project, t)
-            elif t["status"] == "running" and now - t["updated_at"] > STUCK_SECONDS:
+            elif t["status"] in ("running", "queued") and now - t["updated_at"] > STUCK_SECONDS:
+                # 'queued' matters as much as 'running': a worker that dies before it
+                # ever emits agent_status (image pull failure, crash on import, no
+                # route to the conductor) never reaches 'running', and count_running
+                # counts 'queued' — so without this the project deadlocks silently.
                 db.update_task(t["id"], status="failed",
-                               report="worker stalled with no activity; marked failed by watchdog")
+                               report=f"worker was {t['status']} with no activity for "
+                                      f"{int((now - t['updated_at']) / 60)} min; "
+                                      f"marked failed by the watchdog")
                 bus.emit(project_id, t["id"], "scheduler", "worker_stalled",
-                         {"idle_seconds": int(now - t["updated_at"])})
+                         {"idle_seconds": int(now - t["updated_at"]), "was": t["status"]})
 
         ready, blocked = [], []
         for t in tasks:
@@ -169,7 +175,12 @@ async def _run(project_id: int) -> None:
         for t in ready:
             if db.count_running(project_id) >= project["max_workers"]:
                 break
-            if project["cost_usd"] >= project["budget_usd"]:
+            # Only a real API key spends real money. On a subscription cost_usd is an
+            # SDK estimate that db.add_project_cost already forces to 0 — gating on it
+            # here stopped dispatch with no event and no explanation anywhere.
+            if config.ANTHROPIC_API_KEY and project["cost_usd"] >= project["budget_usd"]:
+                bus.emit(project_id, None, "scheduler", "budget_reached",
+                         {"cost_usd": project["cost_usd"], "budget_usd": project["budget_usd"]})
                 break
             result = await launcher.dispatch_task(t["id"], source="scheduler")
             if result.startswith("error"):
