@@ -9,3 +9,7 @@ workspaces/
 previews/
 .DS_Store
 node_modules/
+
+# local build/run artifacts of deployed projects
+deployments/
+.devteam-deploy.json
