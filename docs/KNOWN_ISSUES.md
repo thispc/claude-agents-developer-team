@@ -5,39 +5,11 @@ actually happens, why, and the concrete fix.
 
 ---
 
-## 1. Tasks stay "running" forever once a project is stopped
+## 1. ~~Tasks stay "running" forever~~ — FIXED
 
-**Confirmed:** projects 1, 2 and 3 (all `cancelled`) still hold tasks marked
-`running` after 15–16 hours, with zero worker processes alive.
-
-**Why:** `scheduler._run()` returns immediately when the project's status is
-`done`, `failed` or `cancelled`:
-
-```python
-if not project or project["status"] in ("done", "failed", "cancelled"):
-    return
-```
-
-The stall watchdog that flips a silent task to `failed` lives *inside* that
-loop, so the moment a project stops, its in-flight tasks are frozen in
-`running` and nothing ever reaps them. Workers also can't survive a conductor
-restart, so every restart leaves more.
-
-**What it breaks:** the Blockers tab reports them as "silent for 917 min" and
-promises "it is killed automatically at 30 min" — which is a lie for these
-tasks. The Agents tab shows machines that don't exist, and the deploy guard's
-freshness heuristic can count them as live.
-
-**Fix:**
-1. Reap on stop — in the cancel/finish paths, flip `running`/`queued` tasks to
-   `failed` with a reason like "project was cancelled while this was running".
-2. Sweep on startup — an in-process worker cannot outlive the conductor, so at
-   boot any task still `running` that is not in `launcher.ACTIVE` is dead by
-   definition. Mark it `failed` ("conductor restarted while this was running").
-   Do this in `main.py` startup, before schedulers start.
-3. Then the Blockers copy becomes true.
-
----
+Cancel now kills every agent on the project, a startup sweep releases ghosts
+from a previous process, and the stall watchdog covers `queued` as well as
+`running`. Kept here as a pointer: the Agents tab has a per-agent **■ stop**.
 
 ## 2. A deployed app has no way to receive secrets
 
@@ -167,3 +139,116 @@ they're useful for debugging — but bound it by count or age.
   recently-updated tasks as live because `launcher.ACTIVE` is empty after a
   restart. Deliberate — better to delay a deploy than kill live work — and it
   self-clears. Fixing issue 1 removes most of the annoyance.
+
+---
+
+# Found by the full-codebase audit (2026-07-20)
+
+Confirmed by reading every file. Not yet fixed.
+
+## 9. A k8s worker Job is never cleaned out of the live-agent registry
+
+`K8sLauncher` has no equivalent of `LocalLauncher._reap`, so nothing removes its
+`ACTIVE` entry when the Job finishes. Completed Jobs show as live agents forever,
+and a Job that dies without reporting never fails its task.
+
+Worse, `sweep_orphans` assumes "a worker cannot outlive the conductor" — true for
+a subprocess, **false for a Job owned by the cluster**. On k8s it will fail tasks
+whose Jobs are still genuinely running.
+
+**Fix:** a reconcile pass for k8s — list Jobs with `app=devteam-worker`, drop
+`ACTIVE` entries whose Job is gone, and fail tasks whose Job completed without a
+report. Make `sweep_orphans` skip tasks whose Job still exists when `LAUNCHER=k8s`.
+
+## 10. "429" in a task's own report reroutes it forever
+
+`RATE_LIMIT_MARKERS` includes the bare strings `"429"` and `"quota"`, and
+`pick_model` tests them against `task["report"]`. A tester task that legitimately
+*mentions* HTTP 429 is treated as rate-limited on every retry, is permanently
+misrouted, and emits a bogus `rate_limited` event with a fabricated 300s cooldown.
+The stale report is never cleared on rework, so it persists.
+
+**Fix:** only inspect reports from runs that actually failed, require a
+co-occurring signal (`rate_limit`, `overloaded`, `retry-after`), and clear
+`report` when a task is re-dispatched.
+
+## 11. Rival branches are reused between contests
+
+Rivals always use `task/<id>-c<i>`. `clear_contenders` deletes the rows but not
+the git branches, and the worker checks out an existing branch — so a second
+contest's rival #1 inherits the previous contest's losing code.
+
+**Fix:** include the attempt number in the branch (`task/<id>-a<n>-c<i>`), or
+delete the remote branches when clearing contenders.
+
+## 12. A recruited role with a space silently loses its model
+
+The manager normalises roles to `lower-kebab`, but the recruited roster stores
+snake_case. "Propulsion Engineer" → `propulsion-engineer` never matches the
+roster's `propulsion_engineer`, so the boss's per-role model choice is discarded
+with no warning. The per-role `max_parallel` cap is skipped for recruited roles
+too, since it only applies to roles found in `roles.json`.
+
+**Fix:** normalise both sides through one helper, and apply the parallelism cap
+from the roster as well.
+
+## 13. `accept_task` doesn't restart the scheduler
+
+Every other mutating manager tool calls `scheduler.ensure()`. If the scheduler
+task has exited, accepting a task never restarts dispatching and its dependents
+never run.
+
+**Fix:** one line — call `scheduler.ensure(project_id)`.
+
+## 14. A dispatch that throws kills the scheduler permanently
+
+`await launcher.dispatch_task(...)` is unguarded in the scheduler loop. A k8s API
+error or a subprocess failure escapes, kills the loop task, and nothing restarts
+it until some manager tool happens to call `ensure()`. The exception is never
+retrieved, so it is never logged either. `inc_runs` and `attempts+1` also happen
+*before* the launch, so a failed launch still consumes the run cap.
+
+**Fix:** wrap the dispatch in try/except, emit the failure as an event, and move
+the counter increments after a successful launch.
+
+## 15. The worker discards its work when the session errors
+
+On any session exception the worker reports `failed` and returns **without
+pushing**, so everything already written to the checkout is lost — and the retry
+clones a fresh workspace. This is what lost the cart-and-checkout work.
+
+**Fix:** commit and push whatever exists before reporting the failure; the branch
+is reviewable even if incomplete.
+
+## 16. Prompt files contradict the code
+
+- `agents/manager.md` still says "your team members (backend, frontend, tester)"
+  though roles are now fully dynamic, and still frames decisions around spending
+  money — the exact framing the code removed because it made managers cut
+  projects short.
+- It promises "the third attempt auto-escalates", which `pinned_model` silently
+  disables.
+- It never mentions that `finish` will refuse while any task has failed.
+- `roles.json` says a new role needs a `.md` file; unknown roles now get a
+  generic prompt.
+
+**Fix:** these are the manager's actual instructions, so drift here changes
+behaviour. Re-read `manager.md` against `manager.py` and correct all four.
+
+## 17. Sessions never expire
+
+`sessions` has no expiry column and nothing deletes rows except explicit logout.
+Every cookie ever issued is valid forever.
+
+**Fix:** store an expiry, check it in `user_for_token`, sweep on startup.
+
+## 18. Dead migrations mask real ones
+
+All 14 `ALTER TABLE` statements duplicate columns already in `SCHEMA`, so on a
+fresh database every one raises and is swallowed by a blanket
+`except OperationalError: pass` — which would also swallow a *genuine* migration
+failure on an old database. The `seq` backfill also re-runs on every startup with
+a correlated subquery per row.
+
+**Fix:** a `schema_version` row; run migrations only when behind, and let a
+failure surface.

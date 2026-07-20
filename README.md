@@ -1,159 +1,130 @@
-# devteam — an autonomous AI software development team
+# devteam
 
-A self-hosted platform where a **Lead agent** (Claude Sonnet 5) plans a software project,
-files GitHub issues, and dispatches **worker agents** (Claude Haiku 4.5 — backend,
-frontend, tester) that run as Kubernetes Jobs. Workers clone the repo, implement their
-task on a branch, push, and report back; the lead reviews, requests changes, opens and
-merges PRs, and iterates until the brief is shipped. You watch everything on a live
-dashboard.
+Describe an idea. A **manager** agent plans it, hires a team, and dispatches
+**worker** agents that clone your repo, work on branches, open PRs, and iterate
+until it ships. You watch it happen, answer questions, and stop anything at any
+time.
 
-The bet: many cheap-model iterations orchestrated well, running unattended for hours,
-can match what an expensive model + a human-in-the-loop does in fewer shots — at a
-fraction of the cost.
+The bet: many cheap-model iterations, orchestrated well, beat one expensive
+model with a human babysitting it.
 
+Not limited to software — the roster is generated from your brief, so a rocket
+blueprint or a research review gets a rocket or research team, not a backend
+engineer.
+
+---
+
+## Quick start
+
+```bash
+python -m venv .venv && .venv/bin/pip install -r conductor/requirements.txt
+cp .env.example .env          # then fill in GITHUB_TOKEN and, optionally, an AI key
+set -a && source .env && set +a          # required: there is no dotenv loader
+PYTHONPATH=conductor .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
- you ──▶ dashboard ──▶ conductor (FastAPI, SQLite, WebSocket)
-                          │  runs Lead agent (Sonnet 5) with team tools:
-                          │  create_tasks · dispatch · wait · get_report ·
-                          │  open_pr · request_changes · merge_pr · finish
-                          │
-                          ├──▶ GitHub (issues, PRs, merges)
-                          │
-                          └──▶ k8s Jobs (or local subprocesses)
-                                 worker pod = headless Claude Code session (Haiku 4.5)
-                                 clone → code → verify → push branch → report
-```
+
+Open <http://localhost:8000>, sign in as `root` (password from `ROOT_PASSWORD`,
+default `devteam` — change it), add your credentials in ⚙ Settings, and create a
+project.
+
+**Authentication for agents**, in precedence order:
+
+1. `ANTHROPIC_API_KEY` — pay-per-token, real money.
+2. `CLAUDE_CODE_OAUTH_TOKEN` — runs on a Claude Pro/Max plan (`claude setup-token`).
+3. The host's `claude` CLI login — whatever you are already signed in as.
+
+Each user supplies their own in Settings. A normal user's agents **never** fall
+back to the operator's credentials.
+
+---
+
+## Documentation
+
+| Doc | What's in it |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How it works: the four moving parts, the life of a task, model selection, the database, credential isolation |
+| [docs/UI_ACTIONS.md](docs/UI_ACTIONS.md) | What every button actually triggers — including which ones spend money, start an agent, or kill one |
+| [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) | Confirmed bugs that are **not** fixed, each with the fix |
+| [deploy/README.md](deploy/README.md) | Local kind rehearsal cluster, the DigitalOcean differences, and what it costs |
+
+---
+
+## What it does
+
+- **Plans** — the manager turns your brief into a task DAG with real dependencies.
+- **Hires** — a roster suggested from the brief, which you edit before starting.
+- **Dispatches** — a deterministic scheduler runs every task whose dependencies
+  are done. This costs **no tokens**: the manager writes rows, code does the rest.
+- **Escalates** — two failed attempts move a task to a stronger model; a
+  rate-limited model is routed around automatically.
+- **Competes** — optionally run 2–3 rivals on the same task and let the manager
+  pick the winner.
+- **Collaborates** — workers hand off notes to their successors and can call
+  `ask_teammate` to consult a stronger model instead of grinding alone.
+- **Ships** — PRs open automatically; the manager reviews, requests changes, merges.
+- **Runs it** — one click builds and runs the actual app (backend included),
+  locally or as a pod on a cluster.
+- **Fixes itself** — devteam appears in its own project list; raise an issue
+  against it and the team fixes the platform you are using.
+
+## Safety rails
+
+- **Agent-run cap** (`max_runs`, default 40) — the primary limit, and the only
+  one that means anything on a subscription. Dispatch stops when it is reached.
+- **Budget cap** (`budget_usd`) — real only with an API key. On a subscription
+  no tokens are billed, so recorded cost is 0 and this rail is inert by design.
+- **Max parallel workers** per project, and an optional per-role cap.
+- **Turn caps** — `WORKER_MAX_TURNS` (120), `WORKER_MAX_TURNS_RETRY` (180),
+  `LEAD_MAX_TURNS` (120).
+- **Stall watchdog** — a task with no activity for `WORKER_STUCK_SECONDS`
+  (30 min) is failed and retried.
+- **Startup sweep** — a local worker cannot outlive the conductor, so anything
+  still marked running at boot is released.
+- **Kill switches** — stop one agent from the Agents tab, or cancel the project
+  to stop all of them.
 
 ## Repo layout
 
-| Path | What |
+| Path | What's there |
 |---|---|
-| `conductor/` | FastAPI control plane: REST + WebSocket API, SQLite, lead agent, launchers |
-| `worker/` | Worker entrypoint run in each Job/subprocess |
-| `agents/` | Role system prompts: `lead.md`, `backend.md`, `frontend.md`, `tester.md` |
-| `dashboard/` | Zero-build web UI (kanban + live agent feed + cost meter) |
-| `deploy/` | Dockerfiles, docker-compose, DOKS manifests |
+| `conductor/app/` | FastAPI server: routes, manager, scheduler, launcher, deploy, auth, db |
+| `worker/worker.py` | The worker agent: clone → work → push → report |
+| `agents/` | Role prompts (`manager.md`, `backend.md`, `frontend.md`, `tester.md`) and `roles.json`. Unknown roles get a capable generic prompt |
+| `dashboard/` | The UI. Vanilla JS, no build step |
+| `deploy/` | Dockerfiles, k8s manifests, the kind rehearsal cluster |
+| `docs/` | Architecture, UI reference, known issues |
 
-## Safety rails (why this won't eat your wallet)
+## The manager's tools
 
-- Per-project **budget cap** — the lead is told to wrap up when cost ≥ budget, and
-  `dispatch` refuses new workers past it.
-- **Max parallel workers** per project (`dispatch` enforces it).
-- **Turn caps**: workers ≤ `WORKER_MAX_TURNS` (40), lead ≤ `LEAD_MAX_TURNS` (120).
-- k8s Jobs get `activeDeadlineSeconds: 3600`, `backoffLimit: 0`, auto-cleanup.
-- **Model escalation**: a task that fails twice re-runs on `ESCALATION_MODEL` (Sonnet 5).
-- Only the conductor calls the GitHub API; workers get a repo-scoped token only to
-  clone/push. The `wait` tool blocks without burning tokens.
+`create_tasks` · `add_tasks` · `status` · `wait` · `ask_boss` · `get_report` ·
+`request_changes` · `compare_work` · `pick_winner` · `reassign_task` ·
+`accept_task` · `merge_pr` · `finish`
 
-## Run it locally (no cloud, no Docker)
+Note what is *not* there: the manager cannot dispatch a worker or open a PR.
+Both happen automatically in the scheduler, so orchestration costs no tokens and
+a manager that dies mid-project loses no work.
 
-```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r conductor/requirements.txt -r worker/requirements.txt
-npm install -g @anthropic-ai/claude-code        # the Agent SDK drives this CLI
+## Running on Kubernetes
 
-cp .env.example .env                             # fill ANTHROPIC_API_KEY (+ GitHub)
-set -a && source .env && set +a
-PYTHONPATH=conductor uvicorn app.main:app --port 8000
-```
+`LAUNCHER=k8s` runs each worker as a Job. Deploying a project's *app* is chosen
+per request and is independent of that setting.
 
-Open http://localhost:8000 → **New project** → write a brief, e.g.:
-
-> Build a URL shortener. Python FastAPI backend in `api/` with POST /shorten and
-> GET /{code} (redirect), SQLite storage. Static frontend in `web/` with a form that
-> calls the API and shows the short link. Done = both run locally and a tester has
-> verified shorten+redirect round-trip.
-
-Set a small budget ($2–5) for the first run. Watch the lead plan, workers stream their
-tool calls, and PRs appear on the repo.
-
-### With docker-compose
+Rehearse locally first — same code path, no cloud bill:
 
 ```bash
-cp .env.example .env   # fill values
-docker compose -f deploy/docker-compose.yml up --build
+brew install kind
+./deploy/kind-up.sh
 ```
 
-## Deploy on DigitalOcean Kubernetes (DOKS)
+See [deploy/README.md](deploy/README.md) for the DigitalOcean differences
+(image architecture, registry, and why one shared ingress instead of a load
+balancer per app) and for sizing.
 
-```bash
-# 1. Cluster (control plane is free) + registry
-doctl kubernetes cluster create devteam --count 2 --size s-2vcpu-4gb --region blr1
-doctl registry create YOUR_REGISTRY
-doctl registry kubernetes-manifest | kubectl apply -f -   # pull secret
+## Configuration
 
-# 2. Build & push images
-docker build -f deploy/Dockerfile.conductor -t registry.digitalocean.com/YOUR_REGISTRY/devteam-conductor:latest .
-docker build -f deploy/Dockerfile.worker    -t registry.digitalocean.com/YOUR_REGISTRY/devteam-worker:latest .
-doctl registry login
-docker push registry.digitalocean.com/YOUR_REGISTRY/devteam-conductor:latest
-docker push registry.digitalocean.com/YOUR_REGISTRY/devteam-worker:latest
+`.env.example` lists every variable with a comment. The ones that matter most:
+`ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`, `GITHUB_TOKEN`, `LAUNCHER`,
+`MAX_AGENT_RUNS`, `MAX_CONCURRENT_WORKERS`, `WORKER_MODEL`, `ESCALATION_MODEL`,
+`APPS_DOMAIN`, `DEPLOY_REGISTRY`.
 
-# 3. Deploy
-kubectl apply -f deploy/k8s/namespace.yaml
-cp deploy/k8s/secrets.example.yaml deploy/k8s/secrets.yaml   # fill values
-kubectl apply -f deploy/k8s/secrets.yaml
-kubectl apply -f deploy/k8s/rbac.yaml
-# edit deploy/k8s/conductor.yaml → set YOUR_REGISTRY, then:
-kubectl apply -f deploy/k8s/conductor.yaml
-
-kubectl -n devteam get svc devteam-dashboard   # EXTERNAL-IP → open in browser
-```
-
-Each dispatched task becomes a Job: `kubectl -n devteam get jobs -w`. "Autoscaling" v1
-is conductor-driven Job creation bounded by `max_workers`; add DOKS cluster autoscaling
-on the node pool if you want nodes to scale too.
-
-## Budget plan ($140 DO credit, 10 days)
-
-| Item | Rate | 10 days |
-|---|---|---|
-| DOKS control plane | free | $0 |
-| 2 × s-2vcpu-4gb nodes | ~$24/mo each | ~$16 |
-| Load balancer (optional — port-forward is free) | ~$12/mo | ~$4 |
-| Container registry (starter) | free tier | $0 |
-| **DO total** | | **~$20 of $140** |
-
-Headroom: you could run 3 nodes + LB for the full 10 days and still use barely $30.
-Anthropic tokens bill separately to your API key: a small project run
-(lead Sonnet 5 + 3–6 Haiku worker runs) typically lands around **$0.50–$3**; the
-per-project budget cap is the hard stop.
-
-## Adding a team role (and how roles multiply)
-
-Roles are declarative. To add one — say a `designer` or `devops` or `security` lead:
-
-1. Add an entry to [agents/roles.json](agents/roles.json):
-   ```json
-   { "name": "designer", "model": "worker", "max_parallel": 2,
-     "summary": "Visual design, CSS, UX polish.",
-     "fan_out": "Split when there are several independent screens to design." }
-   ```
-   `model` is `worker` (Haiku, cheap), `lead` (Sonnet, strong), or a literal model id.
-   `max_parallel` caps how many of this role run at once.
-2. Create `agents/designer.md` — its system prompt (copy an existing one as a template).
-
-That's it. The manager reads the catalog, assigns tasks to the role, and **fans it out into
-multiple parallel workers when `fan_out` applies** — i.e. when the work is *both* parallelizable
-(independent, no shared ordering) *and* big enough that splitting saves wall-clock time. A tester
-facing 6 independent endpoint checks becomes two tester workers of 3; 6 checks that must run in
-order stay one worker. Each parallel task is a separate process locally and a **separate
-Kubernetes Job (pod)** in the cloud — so "two testers instead of one" literally means two pods
-running side by side, which is exactly the autoscaling the DOKS setup provides (bounded by the
-role's `max_parallel` and the project's max-workers / agent-run caps).
-
-## Config reference
-
-See `.env.example`. Key ones: `LEAD_MODEL` / `WORKER_MODEL` / `ESCALATION_MODEL`,
-`LAUNCHER` (`local` | `k8s`), `MAX_CONCURRENT_WORKERS`, `PROJECT_BUDGET_USD`,
-`GITHUB_TOKEN` (fine-grained PAT: Contents RW, Issues RW, Pull requests RW),
-`GITHUB_REPO` (default `owner/repo` target).
-
-## How a project flows
-
-1. You submit a brief → conductor starts a Lead session (Sonnet 5).
-2. Lead `create_tasks` → tasks in DB + GitHub issues.
-3. Lead `dispatch` → worker Jobs (Haiku 4.5) clone, code, verify, push `task/N` branches, report.
-4. Lead `wait` (token-free blocking) → reads reports → `open_pr` / `request_changes` (≤2 rounds, then model escalation).
-5. Lead merges prerequisites before dependent tasks, dispatches the tester, and `finish`es with a summary.
-6. Everything streams to the dashboard; every artifact lives on GitHub.
+There is no dotenv loader — `source` the file, or use `deploy/docker-compose.yml`.
