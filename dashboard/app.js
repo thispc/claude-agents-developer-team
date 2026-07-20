@@ -1889,9 +1889,14 @@ $("#addSeatBtn").addEventListener("click", () => {
 $("#startTableBtn").addEventListener("click", startTable);
 $("#whyCircle").addEventListener("click", (e) => {
   e.preventDefault();
-  alert("The seating rules come from research, not taste:\n\n"
-    + "\u2022 Mixing PROVIDERS is the one intervention shown to reliably improve "
-    + "multi-agent debate. Identical models debating is no better than asking one model once.\n\n"
+  alert("The seating rules come from research, not taste — including the "
+    + "uncomfortable part:\n\n"
+    + "\u2022 Debate does NOT reliably beat one good model on benchmarks with a "
+    + "single right answer. On GSM8k, self-consistency (95.7%) still edges the best "
+    + "mixed-model debate (95.0%). Use a table for OPEN-ENDED planning, where there "
+    + "is no right answer to vote on \u2014 not to get a more correct answer.\n\n"
+    + "\u2022 Mixing PROVIDERS is the one lever shown to reliably help debate. "
+    + "Identical seats are the worst setup: more expensive, no measured upside.\n\n"
     + "\u2022 Round 1 is independent so nobody anchors the group (first speakers win far above chance).\n\n"
     + "\u2022 Round 2 forces dissent \u2014 structured conflict beats consensus on decision quality.\n\n"
     + "\u2022 Equal turn-taking predicts group intelligence; every seat speaks exactly once per round.\n\n"

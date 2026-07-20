@@ -1,33 +1,68 @@
 # Plan mode: the round table
 
 Before hiring engineers, a circle of diverse agents deliberates and produces a
-blueprint. This document records **why the arrangement is what it is** — every
-rule below comes from published research on group decision quality, human or
-LLM. The seating chart is not decoration; it is the mechanism.
+blueprint. This document records **why the arrangement is what it is**, and —
+more importantly — **what the evidence does and does not support.** Read the
+next section before deciding a table is worth its cost.
 
 ---
 
-## The single most important finding
+## Read this first: what the evidence does NOT support
 
-Multi-agent debate does **not** reliably beat one good model talking to itself.
-[Estornell & Liu (2025)](https://arxiv.org/abs/2502.08788) evaluated the popular
-debate frameworks and found they "fail to reliably outperform simple single-agent
-baselines such as Chain-of-Thought and Self-Consistency, even when consuming
-additional inference-time computation" — and sometimes flip *correct* answers to
-wrong ones.
+**Multi-agent debate does not reliably beat one good model talking to itself —
+and heterogeneity does not clearly fix that.** Be honest about this before
+spending 3N+1 model calls on a table.
 
-The intervention that did work, consistently, was **model heterogeneity**: their
-Heter-MAD lets each agent draw from a pool of different foundation models, and
-that "consistently improved performance across the various benchmarks evaluated."
+[Estornell & Liu (2025)](https://arxiv.org/abs/2502.08788) found debate
+frameworks "fail to reliably outperform simple single-agent baselines such as
+Chain-of-Thought and Self-Consistency, even when consuming additional
+inference-time computation," and sometimes flip *correct* answers to wrong ones.
 
-**So: a round table of five Claude seats is theatre. A round table of Claude +
-GPT + Gemini is the actual mechanism.** Cross-provider is not a nice-to-have
-feature of this design — it is the reason the design works at all.
+Model heterogeneity is the one intervention that consistently helps — but it
+helps *MAD*, which is not the same as beating a single agent. Measured
+([ICLR 2025 analysis](https://d2jud02ci9yv69.cloudfront.net/2025-04-28-mad-159/blog/mad/),
+GPT-4o-mini):
 
-This also matches [Woolley et al. (Science, 2010)](https://www.science.org/doi/10.1126/science.1193147),
-who found a group's collective intelligence is "not strongly correlated with the
-average or maximum individual intelligence of group members." Putting your best
-model in every chair is not the win it feels like.
+| Benchmark | Best single-agent | Best heterogeneous MAD |
+|---|---|---|
+| GSM8k | Self-Consistency **95.67%** | 95.00% — still behind |
+| MMLU | CoT 80.73% | **88.20%** — ahead |
+| HumanEval | SC beats most MAD | — |
+
+At matched compute, plain resampling scales *better* per token. That analysis
+concludes MAD is "not recommended" for typical benchmarks.
+
+### So why does this feature exist?
+
+Because **every one of those benchmarks is a closed-form question with one
+correct answer.** GSM8k, MMLU, HumanEval. Self-Consistency works there precisely
+because you can majority-vote your way to the right number. *You cannot
+majority-vote a system design.*
+
+For open-ended planning — where there is no single right answer, and the value
+is in which alternatives were considered and which risks were named — the honest
+status is **largely untested**: most debate protocols "remain untested for
+cross-lingual, multi-modal, or open-ended creative tasks."
+
+That means the justification for a round table is **not** "it gives more correct
+answers." The claim it can actually support is narrower:
+
+> A structured argument between different models produces a better *artifact*
+> than a single pass does — one that records the alternatives it rejected, the
+> risks it found, and the objection it could not answer.
+
+That is a **design bet, not a proven result.** It is plausible (structured
+dissent beats consensus for humans, and heterogeneity demonstrably adds
+something) but it is not what the benchmarks measured. Treat plan mode as a
+deliberate spend on plan quality, not as a free accuracy win — and if you only
+want an answer to a question with one right answer, ask one good model instead.
+
+Given that: a table of five identical models is the *worst* configuration —
+strictly more expensive than one call with no measured upside. If you run a
+table, vary the seats. And [Woolley et al. (Science, 2010)](https://www.science.org/doi/10.1126/science.1193147)
+found collective intelligence is "not strongly correlated with the average or
+maximum individual intelligence of group members," so putting your best model in
+every chair is not the win it feels like either.
 
 ---
 
@@ -109,7 +144,7 @@ and the manager builds the DAG from the chosen approach.
 
 | Rule | Implementation |
 |---|---|
-| Heterogeneity is the mechanism | Per-seat provider + model + key. Warn when all seats share one provider. |
+| Heterogeneity is the only reliably helpful lever | Per-seat provider + model + key. Warn when all seats share one provider, and harder when they share one model. |
 | Independent round 1 | Seat prompts for round 1 contain no other seat's text. |
 | Structured dissent | Round 2 prompt *requires* naming a specific flaw; one seat is a standing skeptic. |
 | Equal turn-taking | Fixed one-turn-per-seat-per-round; rotate starting seat each round. |

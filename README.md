@@ -55,9 +55,11 @@ back to the operator's credentials.
 - **Deliberates first (optional)** — Plan mode seats 3–6 *different* models
   (Claude, GPT, Gemini) around a circle with a moderator in the middle. They
   propose independently, then argue, then revise, and the moderator writes a
-  blueprint — including the strongest objection nobody answered. See
-  [docs/ROUNDTABLE_DESIGN.md](docs/ROUNDTABLE_DESIGN.md) for the research behind
-  the seating rules; mixing providers is the part that measurably matters.
+  blueprint — including the strongest objection nobody answered. Worth knowing:
+  debate does **not** reliably beat one good model on closed-form benchmarks, so
+  this is a deliberate spend on plan *quality*, not a free accuracy win — see
+  [docs/ROUNDTABLE_DESIGN.md](docs/ROUNDTABLE_DESIGN.md) for the numbers and the
+  honest case for it.
 - **Plans** — the manager turns your brief into a task DAG with real dependencies.
 - **Hires** — a roster suggested from the brief, which you edit before starting.
 - **Dispatches** — a deterministic scheduler runs every task whose dependencies
