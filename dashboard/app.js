@@ -479,21 +479,38 @@ async function renderSelf() {
 
     <div class="self-card">
       <h3>Raise an issue against this platform</h3>
+      <!-- Say it however you'd say it out loud; the draft step turns that into a
+           ticket. A vague ticket is the cheapest way to waste a sprint — the team
+           builds the wrong thing, competently. -->
+      <div class="rough-row">
+        <textarea id="roughIssue" rows="2"
+          placeholder="Describe it however you'd say it — e.g. &quot;the blockers tab looks broken and I can't read the text&quot;"></textarea>
+        <button type="button" id="refineBtn">✨ Draft the ticket</button>
+      </div>
+      <p class="hint" id="refineNote">Drafting reads your words and fills in the form
+        below — what happens now, what should happen, where it probably lives, and how
+        to check the fix. You edit it before anything is filed.</p>
+
       <form id="selfIssueForm">
-        <label>What's wrong (or what should be better)
+        <label>Title
           <input name="title" required placeholder="e.g. Agents tab loses scroll position" autocomplete="off"></label>
         <label>Details <span class="hint">steps to reproduce, what you expected, which page</span>
-          <textarea name="body" rows="5" required placeholder="Be specific — this becomes the spec a worker builds against."></textarea></label>
-        <label>Kind
-          <select name="severity">
-            <option value="bug">Bug — something is broken</option>
-            <option value="improvement">Improvement — it works but could be better</option>
-            <option value="urgent">Urgent — breaking the platform right now</option>
-          </select></label>
+          <textarea name="body" rows="8" required placeholder="Be specific — this becomes the spec a worker builds against."></textarea></label>
+        <div class="issue-opts">
+          <label>Kind
+            <select name="severity">
+              <option value="bug">Bug — something is broken</option>
+              <option value="improvement">Improvement — it works but could be better</option>
+              <option value="urgent">Urgent — breaking the platform right now</option>
+            </select></label>
+          <label>Sprints <span class="hint">cycles it may take to get this right</span>
+            <input name="sprints" type="number" min="1" max="10" value="1"></label>
+        </div>
         <p id="selfErr" class="form-error" hidden></p>
         <button type="submit" class="primary">🔧 Put the team on it</button>
-        <p class="hint">Your manager plans the fix, assigns it, and reviews the PR.
-        Nothing reaches the running app until you deploy it above.</p>
+        <p class="hint">This runs <b>autonomously</b>: the team plans the fix, writes it,
+        runs the tests and opens a PR without stopping to ask. Nothing reaches the
+        running app until you deploy it above.</p>
       </form>
     </div>
 
@@ -512,6 +529,34 @@ async function renderSelf() {
     </div>`;
 
   const form = $("#selfIssueForm");
+
+  const refine = $("#refineBtn");
+  if (refine) refine.addEventListener("click", async () => {
+    const rough = $("#roughIssue").value.trim();
+    const note = $("#refineNote");
+    if (rough.length < 8) { note.textContent = "Say a little more about what's wrong."; return; }
+    refine.disabled = true; refine.textContent = "drafting…";
+    note.textContent = "Reading what you wrote and drafting a ticket…";
+    try {
+      const d = await api("/api/self/refine", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rough }) });
+      form.querySelector("[name=title]").value = d.title || "";
+      form.querySelector("[name=body]").value = d.body || "";
+      if (d.severity) form.querySelector("[name=severity]").value = d.severity;
+      // Say plainly when the draft is just the user's own words echoed back —
+      // otherwise a silent fallback looks like the AI agreed it was already perfect.
+      note.textContent = d.refined
+        ? "Draft ready — edit anything that's wrong, then file it."
+        : "No provider could draft this, so your own words were kept. Add detail by hand.";
+      form.querySelector("[name=body]").focus();
+    } catch (e) {
+      note.textContent = `Could not draft it: ${e.message || e}. Write the ticket by hand.`;
+    } finally {
+      refine.disabled = false; refine.textContent = "✨ Draft the ticket";
+    }
+  });
+
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const f = new FormData(form);
@@ -521,7 +566,8 @@ async function renderSelf() {
       const r = await api("/api/self/issue", { method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: f.get("title"), body: f.get("body"),
-                               severity: f.get("severity") }) });
+                               severity: f.get("severity"),
+                               sprints: Number(f.get("sprints")) || 1 }) });
       openProject(r.project_id, "command");
     } catch (e) {
       $("#selfErr").hidden = false; $("#selfErr").textContent = String(e.message || e);

@@ -133,3 +133,63 @@ def test_a_single_sprint_issue_leaves_the_cap_alone(root_client, fresh_db, monke
     monkeypatch.setattr("app.routes.manager.run_manager", lambda pid: _noop())
     r = root_client.post("/api/self/issue", json={"title": "t", "body": "b"})
     assert db.get_project(r.json()["project_id"])["max_runs"] == config.MAX_AGENT_RUNS
+
+
+# ---- the draft step has to exist in the UI, not just the API --------------
+
+def test_the_self_panel_offers_a_draft_step():
+    js = (DASH / "app.js").read_text()
+    assert 'id="roughIssue"' in js and 'id="refineBtn"' in js
+    assert "/api/self/refine" in js
+
+
+def test_the_ui_admits_when_the_draft_is_just_your_own_words():
+    """A silent fallback reads as 'the AI thought it was already perfect'."""
+    js = (DASH / "app.js").read_text()
+    block = js.split('id="refineBtn"', 1)[1]
+    assert "d.refined" in block
+
+
+def test_the_issue_form_collects_sprints():
+    js = (DASH / "app.js").read_text()
+    assert 'name="sprints"' in js and "sprints: Number(f.get(\"sprints\"))" in js
+
+
+# ---- pruning must never delete a live agent's workspace ------------------
+
+def test_pruning_keeps_workspaces_of_running_tasks(fresh_db, tmp_path, monkeypatch):
+    from app import config as cfg, launcher
+    monkeypatch.setattr(cfg, "WORKSPACES_DIR", tmp_path)
+    p = make_project()
+    live = make_task(p, status="running")
+    old = make_task(p, status="done")
+    for tid in (live, old):
+        (tmp_path / f"task-{tid}-a1" / "repo").mkdir(parents=True)
+    # plus plenty of finished clones so the keep-window is exceeded
+    for i in range(12):
+        (tmp_path / f"task-{old}-old{i}").mkdir()
+    launcher.prune_workspaces(keep=2)
+    assert (tmp_path / f"task-{live}-a1").exists(), "deleted a running agent's checkout"
+
+
+def test_pruning_deletes_finished_clones(fresh_db, tmp_path, monkeypatch):
+    from app import config as cfg, launcher
+    monkeypatch.setattr(cfg, "WORKSPACES_DIR", tmp_path)
+    p = make_project()
+    done = make_task(p, status="done")
+    for i in range(10):
+        (tmp_path / f"task-{done}-a{i}").mkdir()
+    removed = launcher.prune_workspaces(keep=2)
+    assert removed == 8
+    assert len(list(tmp_path.iterdir())) == 2
+
+
+def test_pruning_deletes_nothing_when_it_cannot_tell(fresh_db, tmp_path, monkeypatch):
+    """Failing closed matters here — the alternative is deleting live work."""
+    from app import config as cfg, launcher
+    monkeypatch.setattr(cfg, "WORKSPACES_DIR", tmp_path)
+    monkeypatch.setattr(launcher, "_rows_of_live_tasks",
+                        lambda: (_ for _ in ()).throw(RuntimeError("db gone")))
+    (tmp_path / "task-1-a1").mkdir()
+    assert launcher.prune_workspaces(keep=0) == 0
+    assert (tmp_path / "task-1-a1").exists()

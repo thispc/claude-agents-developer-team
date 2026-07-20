@@ -404,23 +404,49 @@ def kill_project(project_id: int, reason: str) -> list[str]:
     return notes
 
 
-def prune_workspaces(keep: int = 30) -> int:
+def prune_workspaces(keep: int = 8) -> int:
     """Delete old per-attempt worker clones, keeping the most recent `keep`.
 
     Every task attempt clones the repo into its own dir and nothing removed them,
     so workspaces/ grew without bound (1.2 GB before this existed).
     """
+    import re
     import shutil
     base = config.WORKSPACES_DIR
     if not base.exists():
         return 0
+
+    # A clone whose task is finished has nothing left in it that isn't on the
+    # branch it pushed. Keeping 30 of them regardless of state meant a project
+    # with retries sat on hundreds of megabytes of dead checkouts — the mars-rover
+    # run left 246 MB across 5 attempts of a single task. Live work is never
+    # touched, however old it looks.
+    live: set[int] = set()
+    try:
+        for t in _rows_of_live_tasks():
+            live.add(t["id"])
+    except Exception:
+        return 0        # if we cannot tell what is live, delete nothing
+
+    def task_of(d) -> int | None:
+        m = re.match(r"task-(\d+)", d.name)
+        return int(m.group(1)) if m else None
+
     dirs = sorted((d for d in base.iterdir() if d.is_dir()),
                   key=lambda d: d.stat().st_mtime, reverse=True)
+    finished = [d for d in dirs if (task_of(d) not in live)]
     removed = 0
-    for d in dirs[keep:]:
+    # Keep a handful of the most recent finished clones for post-mortems.
+    for d in finished[keep:]:
         shutil.rmtree(d, ignore_errors=True)
         removed += 1
     return removed
+
+
+def _rows_of_live_tasks() -> list[dict]:
+    """Tasks whose workspace must survive: still queued, running, or awaiting review."""
+    return db._rows(
+        "SELECT id FROM tasks WHERE status IN ('queued','running','pushed','review')")
 
 
 def sweep_orphans() -> int:
