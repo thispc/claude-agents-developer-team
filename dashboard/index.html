@@ -48,26 +48,27 @@
 <main hidden>
   <div id="left">
     <div class="view-toggle">
-      <button class="chip vchip active" data-v="board">Board</button>
-      <button class="chip vchip" data-v="dag">DAG</button>
+      <button class="chip vchip active" data-v="command">👑 Command</button>
+      <button class="chip vchip" data-v="board">Board</button>
+      <button class="chip vchip" data-v="dag">Dependencies</button>
       <div class="vspacer"></div>
-      <button id="addTaskBtn" class="chip" title="Add a task to the DAG yourself">+ Add task</button>
+      <button id="addTaskBtn" class="chip" title="Add a task yourself">+ Add task</button>
     </div>
+    <section id="command"></section>
     <section id="dag" hidden><svg id="dagSvg" xmlns="http://www.w3.org/2000/svg"></svg></section>
-    <section id="board">
+    <section id="board" hidden>
     <div class="col" data-col="planned"><h2>Planned</h2><div class="cards"></div></div>
     <div class="col" data-col="working"><h2>In progress</h2><div class="cards"></div></div>
     <div class="col" data-col="review"><h2>Review / Needs attention</h2><div class="cards"></div></div>
     <div class="col" data-col="done"><h2>Done</h2><div class="cards"></div></div>
     </section>
   </div>
-  <section id="feed" data-filter="all">
+  <section id="feed" data-verbosity="simple">
     <div class="feed-head">
       <h2 id="feedTitle">Live activity</h2>
       <div class="chips">
-        <button class="chip active" data-f="all">All</button>
-        <button class="chip" data-f="manager">Manager</button>
-        <button class="chip" data-f="worker">Team</button>
+        <button class="chip vb active" data-verb="simple" title="Plain-language updates only">Simple</button>
+        <button class="chip vb" data-verb="detailed" title="Every tool call and thought">Detailed</button>
       </div>
     </div>
     <div id="events"></div>

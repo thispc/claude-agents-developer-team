@@ -208,13 +208,15 @@ async function selectProject(id) {
   currentProject = Number(id);
   $("#projectSelect").value = id;
   $("#events").innerHTML = "";
-  $("#feedTitle").textContent = `Live activity — project #${id}`;
-  await refreshBoard();
+  $("#feedTitle").textContent = "Activity";
+  managerThought = ""; managerThinking = ""; agentActivity = {}; pendingQ = null;
   const events = await api(`/api/projects/${id}/events`);
-  for (const e of events.slice(-200)) renderEvent(e);
+  for (const e of events.slice(-250)) { noteActivity(e); renderEvent(e); }
+  await refreshBoard();
 }
 
 let lastTasks = [];
+let lastProject = null;
 
 async function refreshBoard() {
   if (!currentProject) return;
@@ -222,7 +224,9 @@ async function refreshBoard() {
   try { p = await api(`/api/projects/${currentProject}`); } catch { return; }
   lastTasks = p.tasks;
   currentRepo = p.repo || "";
+  lastProject = p;
   if (!$("#dag").hidden) renderDag(p.tasks);
+  renderCommand(p);
   const runs = p.runs_used ?? 0, maxRuns = p.max_runs ?? 40;
   $("#costBadge").hidden = false;
   if (authMode === "subscription") {
@@ -283,6 +287,9 @@ function renderEvent(e) {
   if (e.source === "manager" && e.kind === "message") cls += " mgrmsg";
   if (e.kind === "boss_question") cls += " question";
   if (e.source === "boss") cls += " bossmsg";
+  // Simple mode hides mechanical chatter; these are the "noise" kinds.
+  if (["result", "agent_status", "dispatched", "repo_ready", "resumed_after_restart",
+       "task_edited", "push_retry"].includes(e.kind)) cls += " sys-noise";
   if (e.kind === "error" || e.kind === "worker_died" || e.kind === "dag_blocked") cls += " error";
   div.className = `ev ${cls}`;
   let text = e.payload;
@@ -295,6 +302,13 @@ function renderEvent(e) {
         const cost = authMode === "subscription" ? "" : ` · est. $${(obj.cost_usd || 0).toFixed(2)}`;
         text = `[${obj.status}]${cost}\n${obj.summary || ""}`;
       } else if (e.kind === "result" && authMode === "subscription") text = "(turn complete)";
+      else if (e.kind === "boss_question") text = "❓ " + (obj.question || "");
+      else if (e.kind === "task_created") text = `📋 New task for ${obj.role}: ${obj.title}`;
+      else if (e.kind === "pr_merged") text = `✅ Merged PR #${obj.pr}`;
+      else if (e.kind === "pr_opened") text = `🔀 Opened PR #${obj.pr} for review`;
+      else if (e.kind === "task_accepted") text = `✅ Accepted: ${obj.verdict || ""}`;
+      else if (e.kind === "changes_requested") text = `↩ Sent back for changes: ${obj.feedback || ""}`;
+      else if (e.kind === "project_finished") text = `🏁 Project ${obj.status}`;
       else text = JSON.stringify(obj);
     }
   } catch { /* plain text payload */ }
@@ -313,7 +327,7 @@ function connectWs() {
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onmessage = (m) => {
     const e = JSON.parse(m.data);
-    if (currentProject) { renderEvent(e); refreshBoard(); }
+    if (currentProject) { noteActivity(e); renderEvent(e); refreshBoard(); }
     else loadProjects();  // on the home page, keep the table live
     if (e.kind === "boss_question" || e.kind === "answered") refreshQuestion();
     if (e.kind === "boss_question") notifyBoss(e);
@@ -349,7 +363,14 @@ async function refreshQuestion() {
   let q;
   try { q = await api(`/api/projects/${currentProject}/question`); } catch { return; }
   const dlg = $("#approvalDialog");
-  if (!q.question) { currentQuestionId = null; if (dlg.open) dlg.close(); return; }
+  if (!q.question) {
+    currentQuestionId = null; pendingQ = null;
+    if (dlg.open) dlg.close();
+    if (lastProject) renderCommand(lastProject);
+    return;
+  }
+  pendingQ = { id: q.id, text: q.question, options: q.options || [] };
+  if (lastProject) renderCommand(lastProject);   // show it inline in the Command view too
   if (currentQuestionId === q.id && dlg.open) return;  // already showing it
   currentQuestionId = q.id;
   $("#approvalQ").textContent = q.question;
@@ -438,6 +459,104 @@ async function showTask(id) {
 }
 
 let currentRepo = "";
+
+// --- COMMAND VIEW: the org chart (BOSS → MANAGER → agents) -------------------
+let managerThought = "";      // latest manager message
+let managerThinking = "";     // latest manager internal thought
+let agentActivity = {};       // task_id -> last human-readable activity line
+let pendingQ = null;
+
+const STATUS_WORD = {
+  planned: "waiting", queued: "starting", running: "working",
+  pushed: "submitted", review: "in review", done: "done", failed: "needs attention",
+};
+
+function trim(s, n) { s = (s || "").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+
+function renderCommand(p) {
+  const el = $("#command");
+  if (!el || el.hidden) return;
+  const tasks = p.tasks || [];
+  const busy = tasks.some((t) => ["running", "queued"].includes(t.status));
+  const mgrModel = p.manager_model || "Sonnet 5";
+  const mode = p.autonomy === "autonomous" ? "full autonomy" : "checks with you";
+
+  const askHtml = pendingQ ? `
+    <div class="ask-card">
+      <div class="bl">⏸ Your manager needs a decision</div>
+      <div class="qtext">${escapeHtml(pendingQ.text)}</div>
+      <div class="qbtns">
+        ${(pendingQ.options || []).map((o, i) =>
+          `<button data-qopt="${i}">${escapeHtml(o)}</button>`).join("")}
+        <button data-qopt="custom">✍ Reply in my own words</button>
+      </div>
+    </div>` : "";
+
+  const bubbleHtml = (label, text, cls) => text
+    ? `<div class="bubble ${cls || ""}"><div class="bl">${label}</div>${escapeHtml(trim(text, 420))}</div>` : "";
+
+  const agents = tasks.map((t) => {
+    let deps = []; try { deps = JSON.parse(t.deps || "[]"); } catch { /* */ }
+    const doing = agentActivity[t.id] || (t.status === "planned"
+      ? "Waiting for their turn." : t.status === "done" ? "Finished and handed in."
+      : t.status === "failed" ? "Hit a problem — manager is on it." : "Getting started…");
+    return `<div class="agent ${t.status}" data-task="${t.id}">
+      <div class="top">
+        <span class="role">${escapeHtml(t.role)}</span>
+        <span class="st">${STATUS_WORD[t.status] || t.status}</span>
+      </div>
+      <div class="title">${escapeHtml(t.title)}</div>
+      <div class="doing">${escapeHtml(trim(doing, 150))}</div>
+      ${deps.length ? `<div class="deps">starts after ${deps.map((d) => "#" + d).join(", ")}</div>` : ""}
+    </div>`;
+  }).join("");
+
+  el.innerHTML = `
+    <div class="chain">
+      ${askHtml}
+      <div class="node boss">
+        <div class="who">👑 Boss</div>
+        <div class="name">${escapeHtml(me.username || "You")}</div>
+        <div class="sub">${escapeHtml(trim(p.brief, 90))}</div>
+      </div>
+      <div class="connector"></div>
+      <div class="node-row">
+        <div class="node manager ${busy ? "busy" : ""}">
+          <div class="who">👔 Manager</div>
+          <div class="name">${escapeHtml(mgrModel)}</div>
+          <div class="sub">${mode} · ${tasks.length} on the team</div>
+        </div>
+        ${bubbleHtml("Manager says", managerThought)}
+        ${bubbleHtml("thinking", managerThinking, "thinking")}
+      </div>
+      <div class="fan"></div>
+      <div class="section-label">The team</div>
+      <div class="agents">${agents || '<div class="empty">Assembling the team…</div>'}</div>
+    </div>`;
+
+  el.querySelectorAll(".agent").forEach((a) =>
+    a.addEventListener("click", () => showTask(Number(a.dataset.task))));
+  el.querySelectorAll("[data-qopt]").forEach((b) =>
+    b.addEventListener("click", () => {
+      if (b.dataset.qopt === "custom") { $("#approvalDialog").showModal(); return; }
+      answerQuestion(pendingQ.id, pendingQ.options[Number(b.dataset.qopt)]);
+    }));
+}
+
+// Track what each agent is doing, in plain language, from the event stream.
+function noteActivity(e) {
+  if (e.source === "manager" && e.kind === "message") managerThought = e.payload;
+  if (e.source === "manager" && e.kind === "thinking") managerThinking = e.payload;
+  if (!e.task_id) return;
+  if (e.kind === "message") agentActivity[e.task_id] = e.payload;
+  else if (e.kind === "tool_use") {
+    let s = e.payload;
+    try { const o = JSON.parse(e.payload); s = `${o.tool || ""} ${JSON.stringify(o.input || {})}`; } catch { /* */ }
+    agentActivity[e.task_id] = "Working: " + trim(s.replace(/[{}"]/g, " "), 120);
+  } else if (e.kind === "report") {
+    try { const o = JSON.parse(e.payload); agentActivity[e.task_id] = trim(o.summary || "", 150); } catch { /* */ }
+  }
+}
 
 // --- DAG view ---------------------------------------------------------------
 const DAG_COLORS = {
@@ -665,20 +784,23 @@ document.querySelectorAll(".vchip").forEach((chip) =>
   chip.addEventListener("click", () => {
     document.querySelectorAll(".vchip").forEach((c) => c.classList.remove("active"));
     chip.classList.add("active");
-    const dagMode = chip.dataset.v === "dag";
-    $("#dag").hidden = !dagMode;
-    $("#board").hidden = dagMode;
-    if (dagMode) renderDag(lastTasks);
+    const v = chip.dataset.v;
+    $("#command").hidden = v !== "command";
+    $("#board").hidden = v !== "board";
+    $("#dag").hidden = v !== "dag";
+    if (v === "dag") renderDag(lastTasks);
+    if (v === "command" && lastProject) renderCommand(lastProject);
   }),
 );
 
-document.querySelectorAll(".chips .chip").forEach((chip) =>
+document.querySelectorAll(".vb").forEach((chip) =>
   chip.addEventListener("click", () => {
-    document.querySelectorAll(".chips .chip").forEach((c) => c.classList.remove("active"));
+    document.querySelectorAll(".vb").forEach((c) => c.classList.remove("active"));
     chip.classList.add("active");
-    $("#feed").dataset.filter = chip.dataset.f;
+    $("#feed").dataset.verbosity = chip.dataset.verb;
   }),
 );
+
 
 // --- recruiting wizard ------------------------------------------------------
 let knownRoles = ["backend", "frontend", "tester"];

@@ -352,7 +352,9 @@ def get_pending_question(project_id: int) -> dict:
     q = db.pending_question(project_id)
     if not q:
         return {"question": None}
-    return {"id": q["id"], "text": q["text"], "options": db.json.loads(q["options"])}
+    # NOTE: the key is "question" (not "text") — the dashboard keys off it to raise
+    # the approval modal. Keep this name stable.
+    return {"id": q["id"], "question": q["text"], "options": db.json.loads(q["options"])}
 
 
 @router.post("/api/questions/{qid}/answer")
