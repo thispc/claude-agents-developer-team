@@ -59,10 +59,38 @@ def owner_github_token(project: dict) -> str:
     return config.GITHUB_TOKEN
 
 
+def handoff_context(task: dict) -> str:
+    """What teammates this task depends on actually delivered.
+
+    Agents run in isolation, so without this a second backend has no idea what the
+    first one built beyond reading the code. Passing the predecessors' final reports
+    forward is the handoff note a human would have written.
+    """
+    import json as _json
+    try:
+        dep_ids = _json.loads(task.get("deps") or "[]")
+    except Exception:
+        return ""
+    parts: list[str] = []
+    for dep_id in dep_ids:
+        d = db.get_task(dep_id)
+        if not d or not d.get("report"):
+            continue
+        parts.append(
+            f"### From {d['role']} (task #{d['id']}: {d['title']})\n"
+            f"{d['report'].strip()[:2500]}")
+    if not parts:
+        return ""
+    return ("Notes handed over by teammates whose work you build on. Their code is "
+            "already merged into the branch you cloned — read these before starting so "
+            "you match their contracts and don't redo their work.\n\n" + "\n\n".join(parts))
+
+
 def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
     auth = owner_credentials(project)
     return {
         **auth,
+        "HANDOFF_CONTEXT": handoff_context(task),
         "CONDUCTOR_URL": config.CONDUCTOR_URL,
         "WORKER_TOKEN": config.WORKER_TOKEN,
         "TASK_ID": str(task["id"]),

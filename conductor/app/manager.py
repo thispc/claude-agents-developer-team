@@ -324,6 +324,11 @@ def build_team_server(project_id: int):
                 except Exception:
                     pass
             bus.emit(project_id, t["id"], "manager", "pr_merged", {"pr": t["pr_number"]})
+            # Keep the previewed demo in step with main, so the boss never opens an
+            # old build after new work lands.
+            from . import preview
+            if preview.preview_root(project_id) is not None:
+                asyncio.get_event_loop().create_task(preview.sync(project_id))
             return _text(f"merged PR #{t['pr_number']}; task {t['id']} done")
         return _text(f"error: PR #{t['pr_number']} could not be merged (conflicts or checks)")
 

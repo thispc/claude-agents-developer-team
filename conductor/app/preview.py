@@ -16,6 +16,22 @@ PREVIEW_DIR = Path(config._env("PREVIEW_DIR", str(config.ROOT / "previews")))
 _STATIC_SUBDIRS = ("", "docs", "web", "public", "dist", "build")
 
 
+def synced_at(project_id: int) -> str:
+    """Human-readable freshness of the previewed build, so a stale demo is obvious."""
+    import time
+    base = PREVIEW_DIR / str(project_id) / "repo" / ".git"
+    if not base.exists():
+        return ""
+    age = int(time.time() - base.stat().st_mtime)
+    if age < 90:
+        return "built just now"
+    if age < 3600:
+        return f"built {age // 60} min ago"
+    if age < 86400:
+        return f"built {age // 3600} h ago"
+    return f"built {age // 86400} d ago"
+
+
 def preview_root(project_id: int) -> Path | None:
     """The served directory for a project, or None if not synced / not static."""
     base = PREVIEW_DIR / str(project_id) / "repo"

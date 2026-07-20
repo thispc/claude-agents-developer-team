@@ -114,6 +114,9 @@ def commit_and_push(repo_dir: Path) -> tuple[bool, str]:
 
 def build_prompt() -> str:
     parts = [f"# Task {TASK_ID}: {TITLE}", "", DESCRIPTION]
+    handoff = os.environ.get("HANDOFF_CONTEXT", "")
+    if handoff:
+        parts += ["", "## Handover from your teammates", handoff]
     if FEEDBACK:
         parts += ["", "## Review feedback on your previous attempt (address all of it):",
                   FEEDBACK]

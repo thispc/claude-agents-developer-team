@@ -703,17 +703,23 @@ $("#taskDialog").addEventListener("click", (ev) => {
 });
 
 // --- ARTIFACTS TAB: the deliverable, documented ------------------------------
-async function renderArtifacts() {
+let artifactsSig = "";      // only repaint when the content actually changed
+async function renderArtifacts(force) {
   const el = $("#artifacts");
   if (!currentProject || el.hidden) return;
-  el.innerHTML = `<div class="pane"><p class="dim">Loading…</p></div>`;
+  if (force || !el.innerHTML) el.innerHTML = `<div class="pane"><p class="dim">Loading…</p></div>`;
   let a;
   try { a = await api(`/api/projects/${currentProject}/artifacts`); }
   catch (e) { el.innerHTML = `<div class="pane"><p class="dim">${escapeHtml(e.message)}</p></div>`; return; }
+  // Repainting identical HTML on every event is what made this flicker.
+  const sig = JSON.stringify(a);
+  if (!force && sig === artifactsSig) return;
+  artifactsSig = sig;
 
   const demo = a.preview_url
-    ? `<a class="demo-btn" href="${a.preview_url}" target="_blank">▶ Open the demo app</a>
-       <span class="hint">served from this app, sandboxed — no external hosting</span>`
+    ? `<a class="demo-btn" href="${a.preview_url}?t=${Date.now()}" target="_blank">▶ Open the demo app</a>
+       <button id="buildPreviewBtn">↻ Rebuild from latest main</button>
+       <span class="hint">${a.preview_synced || "built earlier"} · served here, sandboxed</span>`
     : `<button id="buildPreviewBtn" class="primary">▶ Build the demo app</button>
        <span class="hint">runs the built site here (static apps only)</span>`;
 
@@ -751,9 +757,10 @@ async function renderArtifacts() {
 
   const bp = $("#buildPreviewBtn");
   if (bp) bp.addEventListener("click", async () => {
-    bp.disabled = true; bp.textContent = "Building…";
-    try { await api(`/api/projects/${currentProject}/preview`, { method: "POST" }); renderArtifacts(); }
-    catch (e) { alert(e.message); bp.disabled = false; bp.textContent = "▶ Build the demo app"; }
+    const label = bp.textContent;
+    bp.disabled = true; bp.textContent = "Pulling latest…";
+    try { await api(`/api/projects/${currentProject}/preview`, { method: "POST" }); renderArtifacts(true); }
+    catch (e) { alert(e.message); bp.disabled = false; bp.textContent = label; }
   });
 }
 

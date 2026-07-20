@@ -379,6 +379,7 @@ async def get_artifacts(project_id: int) -> dict:
         "project": project["name"], "brief": project["brief"],
         "status": project["status"], "conclusion": project["summary"],
         "preview_url": f"/preview/{project_id}/" if preview.preview_root(project_id) else None,
+        "preview_synced": preview.synced_at(project_id),
         "work": work, "prs": [], "branches": [],
     }
     if github_client.enabled(repo):
