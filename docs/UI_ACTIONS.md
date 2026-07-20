@@ -32,7 +32,6 @@ Legend: 💸 spends tokens · 🤖 starts an agent · 🛑 stops an agent ·
 | Control | Calls | What happens |
 |---|---|---|
 | **🧠 Plan it first** | — | Opens Plan mode — the round table. Nothing is created until you convene. |
-|---|---|---|
 | Project row | — | Opens it. |
 | **Open** | — | Same. |
 | **Cancel** ⚠️🛑 | `POST /projects/{id}/cancel` | Identical to the header Cancel. |
@@ -171,3 +170,24 @@ Severity: *Stopping the project* (critical) · *Slowing it down* (warning).
 - **Max agents at once** (`max_workers`): how many workers run in parallel.
 - **Two attempts failed** → the task automatically escalates to a stronger
   model. Unless the manager has pinned one, which disables escalation.
+
+
+---
+
+## Plan mode — the round table
+
+Reached from **🧠 Plan it first** on the home page. Nothing is created until you
+convene; nothing is built until you click Build.
+
+| Control | Calls | What happens |
+|---|---|---|
+| **Seat row** (name / provider / model / persona) | — | Configures one voice. The provider dropdown disables any provider you have no key for. |
+| **+ Add a seat** | — | Up to 8. Warns past 6, where deliberation degrades. |
+| **✕** on a seat | — | Removes it; refuses below 3. |
+| **seat warning** | — | Tells you when your table is homogeneous — the configuration research found does *not* beat asking one model once. |
+| **Moderator in the centre** | — | Which model synthesises. It weighs arguments, not head-counts. |
+| **▶ Convene the table** 💸 | `POST /tables` then `POST /tables/{id}/run` | Runs 3 rounds × N seats + 1 synthesis. That is `3N+1` model calls — a 4-seat table is 13. |
+| **🚀 Build this with a team** 💸🤖🌐 | `POST /tables/{id}/build` | Creates a real project whose brief *is* the blueprint (dissent included) and whose roster is the proposed team, then starts the manager. |
+
+Cost note: seats run concurrently within a round, so wall-clock is ~3 rounds,
+but you pay for every seat in every round.
