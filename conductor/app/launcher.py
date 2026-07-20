@@ -124,13 +124,23 @@ def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
     }
 
 
-RATE_LIMIT_MARKERS = ("rate limit", "rate_limit", "429", "overloaded", "quota",
-                      "usage limit", "too many requests")
+# Strong signals: their presence alone means we were throttled.
+RATE_LIMIT_MARKERS = ("rate limit", "rate_limit", "overloaded",
+                      "usage limit", "too many requests", "retry-after")
+# Weak signals: a task's own output can legitimately contain these (a tester
+# reporting an HTTP 429, code mentioning a quota). Only count them alongside a
+# strong signal or an explicit API error shape.
+_WEAK_MARKERS = ("429", "quota")
 
 
 def looks_rate_limited(text: str) -> bool:
     t = (text or "").lower()
-    return any(m in t for m in RATE_LIMIT_MARKERS)
+    if any(m in t for m in RATE_LIMIT_MARKERS):
+        return True
+    # A weak marker only counts next to an error/status context, not when a task
+    # merely describes a 429 it saw while testing.
+    return any(m in t for m in _WEAK_MARKERS) and \
+        any(ctx in t for ctx in ("error", "status", "exceeded", "throttl"))
 
 
 # model -> unix timestamp when it should be usable again (from real retry-after /
@@ -209,11 +219,22 @@ def pick_model(task: dict, project: dict | None = None) -> str:
         return config.ESCALATION_MODEL
     if project:
         import json
+        want = canon_role(task["role"])
         for member in json.loads(project.get("team") or "[]"):
-            if member.get("role") == task["role"] and member.get("model"):
+            if canon_role(member.get("role", "")) == want and member.get("model"):
                 return config._resolve_model(member["model"])
     role = config.roles_by_name().get(task["role"])
     return role["model"] if role else config.WORKER_MODEL
+
+
+def canon_role(role: str) -> str:
+    """Canonical role key: lowercase, spaces and underscores both become hyphens.
+
+    The manager stores task roles as lower-kebab; the recruited roster may store
+    "Propulsion Engineer" or "propulsion_engineer". Without normalising both sides
+    a recruited role silently loses its per-role model and parallelism cap.
+    """
+    return "-".join(str(role).strip().lower().replace("_", " ").replace("-", " ").split())
 
 
 # Live worker registry so the dashboard can show real running machines.
@@ -331,6 +352,25 @@ def kill_project(project_id: int, reason: str) -> list[str]:
         bus.emit(project_id, None, "system", "agents_killed",
                  {"count": len(notes), "reason": reason, "detail": "; ".join(notes)})
     return notes
+
+
+def prune_workspaces(keep: int = 30) -> int:
+    """Delete old per-attempt worker clones, keeping the most recent `keep`.
+
+    Every task attempt clones the repo into its own dir and nothing removed them,
+    so workspaces/ grew without bound (1.2 GB before this existed).
+    """
+    import shutil
+    base = config.WORKSPACES_DIR
+    if not base.exists():
+        return 0
+    dirs = sorted((d for d in base.iterdir() if d.is_dir()),
+                  key=lambda d: d.stat().st_mtime, reverse=True)
+    removed = 0
+    for d in dirs[keep:]:
+        shutil.rmtree(d, ignore_errors=True)
+        removed += 1
+    return removed
 
 
 def sweep_orphans() -> int:
@@ -472,7 +512,10 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
     model = pick_model(task, project)
     # Record the model this run actually uses so it's visible in the UI and the
     # manager can reason about who is on what.
-    db.update_task(task_id, status="queued", attempts=task["attempts"] + 1, model=model)
+    # Clear the previous run's report on re-dispatch: pick_model reads it for
+    # rate-limit signals, and a stale report would mislead every future attempt.
+    db.update_task(task_id, status="queued", attempts=task["attempts"] + 1,
+                   model=model, report="")
     task = db.get_task(task_id)
 
     # --- competitive mode: N rivals attack the same task at once ---------------
@@ -486,7 +529,7 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
         launched = []
         for i in range(1, n + 1):
             cm = models[(i - 1) % len(models)] if models else model
-            branch = f"task/{task_id}-c{i}"
+            branch = f"task/{task_id}-a{task['attempts'] + 1}-c{i}"
             cid = db.create_contender(task_id, i, branch, cm)
             rival = {**task, "branch": branch, "model": cm}
             await get_launcher().launch(rival, project, contender_id=cid, label=f"c{i}")

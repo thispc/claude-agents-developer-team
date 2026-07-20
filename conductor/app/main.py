@@ -24,6 +24,12 @@ async def lifespan(app: FastAPI):
     ghosts = launcher.sweep_orphans()
     if ghosts:
         print(f"[startup] released {ghosts} task(s) orphaned by the previous run")
+    pruned = launcher.prune_workspaces()
+    if pruned:
+        print(f"[startup] pruned {pruned} old worker workspace(s)")
+    stale = auth.prune_sessions()
+    if stale:
+        print(f"[startup] removed {stale} expired session(s)")
     # Resume any project that was mid-flight when the conductor last stopped, so a
     # restart (deploy, crash) doesn't strand a running project without its manager.
     for p in db.list_projects():

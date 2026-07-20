@@ -235,7 +235,14 @@ async def run() -> None:
         error = str(e)
 
     if error:
-        report("failed", f"agent session error: {error}\n\nlast message:\n{last_text}", cost)
+        # Salvage: commit and push anything already written before giving up, so a
+        # crash near the end doesn't throw away a session's worth of real work.
+        saved, push_note = commit_and_push(repo_dir)
+        note = f"(work in progress was pushed: {push_note})" if saved else \
+               f"(nothing could be pushed: {push_note})"
+        report("failed",
+               f"agent session error: {error}\n\n{note}\n\nlast message:\n{last_text}",
+               cost)
         return
 
     ok, push_note = commit_and_push(repo_dir)

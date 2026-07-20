@@ -672,7 +672,18 @@ def serve_preview(project_id: int, path: str) -> Response:
     if target.is_dir():
         target = target / "index.html"
     if not target.is_file():
-        target = root / "index.html"  # SPA fallback
+        # SPA fallback — but NOT for API-shaped or file-extension paths. Returning
+        # index.html for /api/... makes the app's own backend calls "succeed" with
+        # HTML, which the frontend then fails to parse. Name the real problem.
+        looks_api = path.startswith("api/") or "/api/" in path
+        has_ext = "." in path.rsplit("/", 1)[-1]
+        if looks_api or has_ext:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(status_code=404, content={
+                "error": "This is the static preview — it serves files only and "
+                         "cannot run this app's backend. Use Artifacts -> Full "
+                         "deployment to run the real app."})
+        target = root / "index.html"
     # Sandbox the previewed app: it may run its own JS, but it can't call our API
     # (same-origin fetch to /api is blocked) and can't be embedded elsewhere.
     csp = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; " \

@@ -182,7 +182,16 @@ async def _run(project_id: int) -> None:
                 bus.emit(project_id, None, "scheduler", "budget_reached",
                          {"cost_usd": project["cost_usd"], "budget_usd": project["budget_usd"]})
                 break
-            result = await launcher.dispatch_task(t["id"], source="scheduler")
+            try:
+                result = await launcher.dispatch_task(t["id"], source="scheduler")
+            except Exception as e:
+                # A launch failure (k8s API error, subprocess spawn failure) must
+                # not escape and kill this loop permanently — mark the task failed
+                # and carry on with the rest of the ready set.
+                db.update_task(t["id"], status="failed",
+                               report=f"dispatch raised: {e}")
+                bus.emit(project_id, t["id"], "scheduler", "dispatch_error", str(e)[:300])
+                continue
             if result.startswith("error"):
                 bus.emit(project_id, t["id"], "scheduler", "dispatch_error", result)
 

@@ -241,10 +241,17 @@ def _wait_healthy(port: int, proc: subprocess.Popen, path: str) -> tuple[bool, s
 
 
 def stop(project_id: int) -> str:
+    # Tear down a k8s deployment first (label was set at apply time). Harmless when
+    # there is nothing there; essential so cloud resources don't leak.
+    if shutil.which("kubectl"):
+        subprocess.run(["kubectl", "delete", "deployment,service,ingress",
+                        "-n", config.K8S_NAMESPACE,
+                        "-l", f"devteam/project={project_id}", "--ignore-not-found"],
+                       capture_output=True, text=True)
     r = RUNNING.pop(project_id, None) or (_adopt(project_id) and RUNNING.pop(project_id, None))
     pid_file(project_id).unlink(missing_ok=True)
     if not r:
-        return "not running"
+        return "stopped"
     proc = r["proc"]
     try:
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -405,6 +412,7 @@ kind: Service
 metadata:
   name: {name}
   namespace: {config.K8S_NAMESPACE}
+  labels: {{app: {name}, devteam/project: "{project_id}"}}
 spec:
   type: {svc_type}
   selector: {{app: {name}}}
@@ -417,6 +425,7 @@ kind: Ingress
 metadata:
   name: {name}
   namespace: {config.K8S_NAMESPACE}
+  labels: {{app: {name}, devteam/project: "{project_id}"}}
 spec:
   ingressClassName: nginx
   rules:

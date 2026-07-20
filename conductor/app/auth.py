@@ -87,11 +87,26 @@ def end_session(token: str) -> None:
     db._execute("DELETE FROM sessions WHERE token=?", (token,))
 
 
+SESSION_TTL = 30 * 86400   # matches the cookie max-age set in routes.login
+
+
 def user_for_token(token: str | None) -> dict | None:
     if not token:
         return None
-    rows = db._rows("SELECT user_id FROM sessions WHERE token=?", (token,))
-    return get_user(rows[0]["user_id"]) if rows else None
+    rows = db._rows("SELECT user_id, created_at FROM sessions WHERE token=?", (token,))
+    if not rows:
+        return None
+    if time.time() - rows[0]["created_at"] > SESSION_TTL:
+        db._execute("DELETE FROM sessions WHERE token=?", (token,))   # expired
+        return None
+    return get_user(rows[0]["user_id"])
+
+
+def prune_sessions() -> int:
+    """Drop expired sessions. Called at startup so the table can't grow forever."""
+    cutoff = time.time() - SESSION_TTL
+    cur = db._execute("DELETE FROM sessions WHERE created_at < ?", (cutoff,))
+    return cur.rowcount if cur else 0
 
 
 def get_settings(user: dict) -> dict:

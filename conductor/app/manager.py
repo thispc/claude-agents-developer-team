@@ -369,6 +369,7 @@ def build_team_server(project_id: int):
         db.update_task(t["id"], status="done")
         bus.emit(project_id, t["id"], "manager", "task_accepted",
                  {"verdict": args.get("verdict", "")})
+        scheduler.ensure(project_id)   # accepting unblocks dependents; wake the loop
         return _text(f"task {t['seq']} accepted and marked done.")
 
     @tool("merge_pr", "Squash-merge a task's pull request. Merging unblocks dependent tasks.",
