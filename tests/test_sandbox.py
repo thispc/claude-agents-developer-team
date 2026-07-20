@@ -271,3 +271,25 @@ async def test_deploy_refuses_a_traversing_workspace_name(fresh_db):
     from app import deploy
     ok, note = await deploy.sync_from_workspace(1, "../../etc")
     assert ok is False and "refusing" in note
+
+
+# ---- page/server drift must announce itself ------------------------------
+
+def test_health_reports_when_the_page_is_newer_than_the_server(root_client, fresh_db):
+    """The dashboard is served from disk, the API is whichever process is running.
+    Edit both and the page calls endpoints that do not exist yet — which looks
+    like a broken feature, not a conductor that needs restarting."""
+    d = root_client.get("/api/health").json()
+    assert "stale_ui" in d
+
+
+def test_the_dashboard_shows_a_banner_when_it_is_ahead():
+    js = (REPO / "dashboard" / "app.js").read_text()
+    assert "stale_ui" in js and "showStaleBanner" in js
+
+
+def test_the_source_dropdown_degrades_instead_of_emptying():
+    """It read d.sources against a server that still returned d.branches, so the
+    dropdown was empty and the feature looked dead."""
+    js = (REPO / "dashboard" / "app.js").read_text()
+    assert "d.sources || d.branches" in js

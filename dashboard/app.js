@@ -206,10 +206,25 @@ $("#personaPreset").addEventListener("change", (e) => {
 });
 const taskCost = (t) => (authMode === "subscription" ? "" : ` · $${t.cost_usd.toFixed(2)}`);
 
+function showStaleBanner() {
+  if ($("#staleBanner")) return;
+  const el = document.createElement("div");
+  el.id = "staleBanner";
+  el.innerHTML = `<b>This page is newer than the server.</b> The dashboard files on
+    disk changed after the conductor started, so new screens may call endpoints this
+    process does not have yet. Restart the conductor to pick them up.`;
+  document.body.prepend(el);
+}
+
 async function loadHealth() {
   try {
     const h = await api("/api/health");
     authMode = h.auth || "none";
+    // The dashboard is served from disk; the API is whatever process is running.
+    // Change both and the page runs ahead of the server, which looks like a broken
+    // feature — an empty dropdown, a button that does nothing — rather than a
+    // conductor that needs restarting. Say which it is.
+    if (h.stale_ui) showStaleBanner();
     const b = $("#authBadge");
     // Say what it MEANS, not what it is called. "auth: Max subscription" told you
     // nothing about whether you were about to be charged.
@@ -346,8 +361,8 @@ async function renderSandbox() {
   // Sources are ordered by immediacy: this working tree, then agent workspaces,
   // then branches. Nothing here needs a commit — waiting on one is what made
   // trying a change slower than making it.
-  const opts = (d.sources || []).map((s) =>
-    `<option value="${escapeHtml(s.id)}">${escapeHtml(s.label)} — ${escapeHtml(s.detail)}</option>`).join("");
+  const opts = (d.sources || d.branches || []).map((s) =>
+    `<option value="${escapeHtml(s.id || ("ref:" + s.ref))}">${escapeHtml(s.label || s.name)} — ${escapeHtml(s.detail || s.subject || "")}</option>`).join("");
   el.innerHTML = `
     ${d.died ? `<p class="form-error">The last sandbox exited on its own.
        <details><summary>log</summary><pre class="sbx-log">${escapeHtml(d.log_tail || "")}</pre></details></p>` : ""}

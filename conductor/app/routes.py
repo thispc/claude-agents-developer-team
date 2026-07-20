@@ -758,8 +758,19 @@ def notifications(request: Request) -> dict:
 
 @router.get("/api/health")
 def health() -> dict:
+    # The dashboard is static and served straight from disk, but the API is
+    # whichever process is running. Edit both and the page silently runs ahead of
+    # the server — which looks exactly like a broken feature (an empty dropdown,
+    # a button that does nothing) rather than a conductor that needs restarting.
+    stale_ui = False
+    try:
+        js = config.DASHBOARD_DIR / "app.js"
+        from .main import STARTED_AT
+        stale_ui = js.stat().st_mtime > STARTED_AT
+    except Exception:
+        pass
     return {"ok": True, "launcher": config.LAUNCHER, "auth": config.auth_mode(),
-            "github": bool(config.GITHUB_TOKEN)}
+            "github": bool(config.GITHUB_TOKEN), "stale_ui": stale_ui}
 
 
 @router.post("/api/suggest-team")

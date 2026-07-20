@@ -1,4 +1,5 @@
 import asyncio
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -6,6 +7,9 @@ from fastapi.staticfiles import StaticFiles
 
 from . import auth, bus, config, db, launcher, manager, scheduler
 from .routes import router, _manager_tasks
+
+
+STARTED_AT = time.time()
 
 
 @asynccontextmanager
