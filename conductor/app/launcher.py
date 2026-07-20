@@ -15,23 +15,33 @@ from . import config, db, bus
 
 
 def owner_credentials(project: dict) -> dict[str, str]:
-    """Credentials the agents on this project should run under.
+    """Credentials the agents on this project run under.
 
-    Precedence: the project owner's own keys (so each user pays their own way and
-    uses their own subscription), then the server's, then the machine's Claude CLI
-    login (inherited by subprocesses when nothing else is set).
+    Each user pays their own way: a normal user's agents use ONLY that user's own key
+    or subscription token. They never fall back to the server's credentials — otherwise
+    anyone who signed up would silently spend the operator's subscription.
+
+    Only the root/operator account (and legacy owner-less projects) uses the server
+    credentials, including the host machine's Claude CLI login.
     """
     from . import auth as auth_mod
-    creds: dict[str, str] = {}
     owner = auth_mod.get_user(project.get("owner_id") or 0)
+    if owner and not owner["is_root"]:
+        s = auth_mod.get_settings(owner)
+        if s.get("anthropic_api_key"):
+            return {"ANTHROPIC_API_KEY": s["anthropic_api_key"]}
+        if s.get("claude_oauth_token"):
+            return {"CLAUDE_CODE_OAUTH_TOKEN": s["claude_oauth_token"]}
+        # No credentials of their own — deliberately return an unusable env rather
+        # than inheriting the operator's. dispatch/creation guards catch this first.
+        return {"ANTHROPIC_API_KEY": ""}
+    # Root / operator: their stored settings, then the server's, then CLI login.
     if owner:
         s = auth_mod.get_settings(owner)
         if s.get("anthropic_api_key"):
-            creds["ANTHROPIC_API_KEY"] = s["anthropic_api_key"]
-        elif s.get("claude_oauth_token"):
-            creds["CLAUDE_CODE_OAUTH_TOKEN"] = s["claude_oauth_token"]
-    if creds:
-        return creds
+            return {"ANTHROPIC_API_KEY": s["anthropic_api_key"]}
+        if s.get("claude_oauth_token"):
+            return {"CLAUDE_CODE_OAUTH_TOKEN": s["claude_oauth_token"]}
     if config.ANTHROPIC_API_KEY:
         return {"ANTHROPIC_API_KEY": config.ANTHROPIC_API_KEY}
     if config.CLAUDE_CODE_OAUTH_TOKEN:

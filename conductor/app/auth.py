@@ -95,8 +95,8 @@ def user_for_token(token: str | None) -> dict | None:
 
 
 def get_settings(user: dict) -> dict:
-    """Per-user secrets. The root user falls back to the server .env values so the
-    existing single-user setup keeps working with nothing to configure."""
+    """Per-user secrets. ONLY the root/operator account inherits the server .env values;
+    normal users must supply their own so they never spend the operator's quota."""
     try:
         s = json.loads(user["settings"] or "{}")
     except Exception:
@@ -104,8 +104,16 @@ def get_settings(user: dict) -> dict:
     if user["is_root"]:
         s.setdefault("github_token", config.GITHUB_TOKEN)
         s.setdefault("anthropic_api_key", config.ANTHROPIC_API_KEY)
-        s.setdefault("default_repo_owner", "")
     return s
+
+
+def has_own_ai_credentials(user: dict) -> bool:
+    """True when this user can run agents on their own account. Root also counts if
+    the server itself is authenticated (its own key / token / machine CLI login)."""
+    s = get_settings(user)
+    if s.get("anthropic_api_key") or s.get("claude_oauth_token"):
+        return True
+    return bool(user["is_root"] and config.AUTH_CONFIGURED)
 
 
 def save_settings(user_id: int, updates: dict) -> dict:
@@ -125,5 +133,6 @@ def redacted(settings: dict) -> dict:
     return {
         "github_token_set": bool(settings.get("github_token")),
         "anthropic_api_key_set": bool(settings.get("anthropic_api_key")),
+        "claude_oauth_token_set": bool(settings.get("claude_oauth_token")),
         "github_login": settings.get("github_login", ""),
     }

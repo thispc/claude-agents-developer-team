@@ -41,6 +41,7 @@ class Login(BaseModel):
 class Settings(BaseModel):
     github_token: str | None = None
     anthropic_api_key: str | None = None
+    claude_oauth_token: str | None = None
 
 
 class NewRepo(BaseModel):
@@ -108,6 +109,21 @@ def login(body: Login, response: Response) -> dict:
     return {"username": u["username"], "is_root": bool(u["is_root"])}
 
 
+@router.post("/api/signup")
+def signup(body: Login, response: Response) -> dict:
+    """Anyone can create an account, but they bring their own AI credentials —
+    a new user never runs on the operator's subscription."""
+    name = body.username.strip().lower()
+    if len(name) < 3 or len(body.password) < 6:
+        raise HTTPException(400, "username needs 3+ chars, password 6+")
+    if auth.get_user_by_name(name):
+        raise HTTPException(400, "that username is taken")
+    uid = auth.create_user(name, body.password)
+    token = auth.start_session(uid)
+    response.set_cookie("devteam_session", token, httponly=True, samesite="lax", max_age=30 * 86400)
+    return {"username": name, "is_root": False, "needs_credentials": True}
+
+
 @router.post("/api/logout")
 def logout(request: Request, response: Response) -> dict:
     auth.end_session(request.cookies.get("devteam_session"))
@@ -122,6 +138,7 @@ def me(request: Request) -> dict:
         return {"signed_in": False}
     s = auth.get_settings(u)
     return {"signed_in": True, "username": u["username"], "is_root": bool(u["is_root"]),
+            "has_ai_credentials": auth.has_own_ai_credentials(u),
             "settings": auth.redacted(s)}
 
 
@@ -222,6 +239,16 @@ async def suggest_team(body: BriefOnly) -> dict:
 @router.post("/api/projects")
 async def create_project(body: NewProject, request: Request) -> dict:
     owner = auth.user_for_token(request.cookies.get("devteam_session"))
+    if not owner:
+        raise HTTPException(401, "sign in to start a project")
+    # Every user brings their own AI credentials — no borrowing the operator's.
+    if not auth.has_own_ai_credentials(owner):
+        raise HTTPException(400, "Add your own Anthropic API key or Claude subscription "
+                                 "token in Settings (⚙) before starting a project — "
+                                 "agents run on your account, not the server's.")
+    if not owner["is_root"] and not auth.get_settings(owner).get("github_token"):
+        raise HTTPException(400, "Add your own GitHub token in Settings (⚙) — "
+                                 "your team needs a repo it can push to.")
     if not config.AUTH_CONFIGURED:
         raise HTTPException(400, "Set ANTHROPIC_API_KEY (API billing) or "
                                  "CLAUDE_CODE_OAUTH_TOKEN (Pro/Max subscription) on the conductor")
@@ -262,6 +289,11 @@ def list_projects() -> list[dict]:
 
 @router.get("/api/projects/{project_id}")
 def get_project(project_id: int) -> dict:
+    if scheduler.reconcile_status(project_id):   # keeps 'done' honest
+        project = db.get_project(project_id)
+        if project and not (_manager_tasks.get(project_id) and not _manager_tasks[project_id].done()):
+            _manager_tasks[project_id] = asyncio.get_event_loop().create_task(
+                manager.run_manager(project_id))
     project = db.get_project(project_id)
     if not project:
         raise HTTPException(404, "no such project")

@@ -29,6 +29,24 @@ STUCK_SECONDS = int(config._env("WORKER_STUCK_SECONDS", "1800"))
 _schedulers: dict[int, asyncio.Task] = {}
 
 
+UNFINISHED = ("planned", "queued", "running", "pushed", "review")
+
+
+def reconcile_status(project_id: int) -> bool:
+    """A project is only 'done' when no work is outstanding. If tasks remain (e.g. the
+    boss added one after the manager finished), put it back to work and return True."""
+    p = db.get_project(project_id)
+    if not p or p["status"] not in ("done", "failed", "review"):
+        return False
+    if any(t["status"] in UNFINISHED for t in db.list_tasks(project_id)):
+        db.set_project_status(project_id, "running")
+        bus.emit(project_id, None, "system", "reopened",
+                 {"reason": "outstanding tasks remain"})
+        ensure(project_id)
+        return True
+    return False
+
+
 def has_cycle(project_id: int) -> list[int]:
     """Return a task cycle in the project's DAG if one exists (else empty list).
     Keeps the graph valid without needing a graph database — the DAG is small."""

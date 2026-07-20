@@ -54,6 +54,20 @@ $("#loginForm").addEventListener("submit", async (ev) => {
   } catch (e) { err.textContent = e.message; err.hidden = false; }
 });
 
+$("#signupBtn").addEventListener("click", async () => {
+  const f = new FormData($("#loginForm"));
+  const err = $("#loginError");
+  err.hidden = true;
+  try {
+    await api("/api/signup", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: f.get("username"), password: f.get("password") }),
+    });
+    await boot();
+    $("#settingsBtn").click();   // straight to Settings — they need their own credentials
+  } catch (e) { err.textContent = e.message; err.hidden = false; }
+});
+
 $("#logoutBtn").addEventListener("click", async () => {
   await api("/api/logout", { method: "POST" });
   location.reload();
@@ -65,6 +79,7 @@ $("#settingsBtn").addEventListener("click", async () => {
   $("#settingsWho").textContent = `Signed in as ${me.username}${me.is_root ? " (root)" : ""}`;
   $("#ghState").textContent = s.github_token_set ? "— currently set ✓" : "— not set";
   $("#keyState").textContent = s.anthropic_api_key_set ? "— currently set ✓" : "— not set";
+  $("#subState").textContent = s.claude_oauth_token_set ? "— currently set ✓" : "— not set";
   $("#settingsError").hidden = true;
   $("#settingsForm").reset();
   $("#settingsDialog").showModal();
@@ -76,6 +91,7 @@ $("#settingsForm").addEventListener("submit", async (ev) => {
   const body = {};
   if (f.get("github_token")) body.github_token = f.get("github_token");
   if (f.get("anthropic_api_key")) body.anthropic_api_key = f.get("anthropic_api_key");
+  if (f.get("claude_oauth_token")) body.claude_oauth_token = f.get("claude_oauth_token");
   try {
     await api("/api/settings", {
       method: "POST", headers: { "Content-Type": "application/json" },

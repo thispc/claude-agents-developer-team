@@ -15,6 +15,9 @@
     <label>Password <input name="password" type="password" autocomplete="current-password"></label>
     <p id="loginError" class="form-error" hidden></p>
     <button type="submit" class="primary">Sign in</button>
+    <button type="button" id="signupBtn">Create an account</button>
+    <p class="hint">New accounts run on <b>your own</b> Anthropic key or Claude
+      subscription token — you'll add them after signing up.</p>
   </form>
 </div>
 
@@ -94,7 +97,11 @@
     <label>GitHub token <span class="hint" id="ghState"></span>
       <input name="github_token" type="password" placeholder="github_pat_… (leave blank to keep current)"></label>
     <label>Anthropic API key <span class="hint" id="keyState"></span>
-      <input name="anthropic_api_key" type="password" placeholder="sk-ant-… (optional — blank uses the server's subscription)"></label>
+      <input name="anthropic_api_key" type="password" placeholder="sk-ant-… (pay-per-token API billing)"></label>
+    <label>…or Claude subscription token <span class="hint" id="subState"></span>
+      <input name="claude_oauth_token" type="password" placeholder="run `claude setup-token` and paste it here"></label>
+    <p class="hint">Use <b>one</b> of the two. The subscription token runs agents on your own
+      Claude Pro/Max plan at no per-token cost; the API key bills your Anthropic account.</p>
     <p class="hint">Your credentials are stored per user on the server and never sent back to the browser.
       Full GitHub OAuth ("Authorize once") is the next step — for now paste a fine-grained token
       with Contents, Issues and Pull requests read/write.</p>
