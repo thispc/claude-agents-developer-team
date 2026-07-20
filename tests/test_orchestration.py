@@ -305,3 +305,16 @@ def test_contest_completion_writes_a_digest_onto_the_task(fresh_db):
     db.update_task(t, status="review", report=digest)
     got = db.get_task(t)["report"]
     assert "rival one delivered X" in got and "rival two delivered Y" in got
+
+
+def test_retry_revives_a_parked_project_so_someone_judges_the_work(root_client, fresh_db):
+    """A project in 'review' has no manager running. Retrying a task there used to
+    dispatch a worker whose output nobody would ever look at."""
+    p = make_project(owner_id=1, status="review")
+    t = make_task(p, status="failed")
+    r = root_client.post(f"/api/tasks/{t}/retry")
+    assert r.status_code == 200
+    assert db.get_task(t)["status"] == "planned"
+    # the project must be live again, not parked in review
+    assert db.get_project(p)["status"] == "running"
+    assert r.json()["manager_started"] is True

@@ -966,12 +966,36 @@ def edit_task(task_id: int, body: EditTask, request: Request) -> dict:
 
 
 @router.post("/api/tasks/{task_id}/retry")
-def retry_task(task_id: int, request: Request) -> dict:
+async def retry_task(task_id: int, request: Request) -> dict:
     t = owned_task(task_id, request)
+    pid = t["project_id"]
     db.update_task(task_id, status="planned")
-    scheduler.ensure(t["project_id"])
-    bus.emit(t["project_id"], task_id, "boss", "retry_requested", {})
-    return {"ok": True}
+    # Re-running work on a finished/parked project needs BOTH halves alive: the
+    # scheduler to dispatch it, and a manager to judge the result. Without the
+    # manager the worker pushes, the task lands in review, and nothing ever looks
+    # at it — the boss sees it hang forever.
+    revived = _revive(pid)
+    scheduler.ensure(pid)
+    bus.emit(pid, task_id, "boss", "retry_requested", {"manager_started": revived})
+    return {"ok": True, "manager_started": revived}
+
+
+def _revive(project_id: int) -> bool:
+    """Make sure a parked project has a manager again. Returns True if one started."""
+    p = db.get_project(project_id)
+    if not p or p["status"] == "cancelled":
+        return False
+    if p["status"] in ("done", "review", "failed"):
+        db.set_project_status(project_id, "running")
+    existing = _manager_tasks.get(project_id)
+    if existing and not existing.done():
+        return False
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return False        # called from a thread with no loop; nothing to schedule
+    _manager_tasks[project_id] = loop.create_task(manager.run_manager(project_id))
+    return True
 
 
 @router.post("/api/tasks/{task_id}/skip")
