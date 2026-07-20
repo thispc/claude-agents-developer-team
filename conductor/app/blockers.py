@@ -77,23 +77,29 @@ def scan(project_id: int) -> list[dict[str, Any]]:
                  "After 2 attempts it automatically moves to a stronger model."),
             task_seq=t["seq"], task_id=t["id"], action="retry", since=t["updated_at"]))
 
-    # 2. Work that cannot start because something it needs failed.
-    for t in tasks:
-        if t["status"] != "planned":
-            continue
+    # 2. Work that cannot start because something it needs failed — including
+    # work stranded further down the chain, behind a task that is itself frozen.
+    from . import scheduler  # local import: scheduler imports launcher, avoid a cycle
+    frozen = scheduler.unreachable(project_id, tasks)
+    frozen_ids = {t["id"] for t in frozen}
+    for t in frozen:
         deps = set(json.loads(t["deps"] or "[]"))
-        blocking = deps & failed_ids
-        if blocking:
-            names = ", ".join(f"#{by_id[d]['seq']}" for d in sorted(blocking) if d in by_id)
-            out.append(_b(
-                "critical", "dep_blocked",
-                f"Task #{t['seq']} ({t['role']}) can't start",
-                f"“{t['title']}” is waiting on {names}, which failed.",
-                fix=f"Clear {names} first — everything behind it is frozen.",
-                task_seq=t["seq"], task_id=t["id"]))
+        direct = deps & failed_ids
+        via = deps & frozen_ids
+        if direct:
+            names = ", ".join(f"#{by_id[d]['seq']}" for d in sorted(direct) if d in by_id)
+            why, fix = (f"“{t['title']}” is waiting on {names}, which failed.",
+                        f"Clear {names} first — everything behind it is frozen.")
+        else:
+            names = ", ".join(f"#{by_id[d]['seq']}" for d in sorted(via) if d in by_id)
+            why, fix = (f"“{t['title']}” is waiting on {names}, which is itself blocked.",
+                        "It unfreezes on its own once the failed work above it is cleared.")
+        out.append(_b(
+            "critical" if direct else "warning", "dep_blocked",
+            f"Task #{t['seq']} ({t['role']}) can't start", why, fix=fix,
+            task_seq=t["seq"], task_id=t["id"]))
 
     # 3. A dependency cycle means nothing in the loop will ever run.
-    from . import scheduler  # local import: scheduler imports launcher, avoid a cycle
     cyc = scheduler.has_cycle(project_id)
     if cyc:
         names = " → ".join(f"#{by_id[c]['seq']}" for c in cyc if c in by_id)
@@ -195,6 +201,25 @@ def scan(project_id: int) -> list[dict[str, Any]]:
                 "warning", "stalled", "Project is stalled",
                 "It's marked running, but nothing is executing and nothing can start.",
                 fix="Restart the manager (↻) so it re-plans."))
+
+    # 11. Nothing is checking this project's work.
+    # Merging on the worker's prose is the weakest thing the platform does: an
+    # imperfect verifier caps accuracy regardless of how much compute is spent, and
+    # no verifier removes the ceiling entirely. Worth saying out loud, because the
+    # symptom (a manager confidently merging) looks exactly like success.
+    finished = [t for t in tasks if t["status"] in ("done", "review", "pushed")]
+    if finished and not any(json.loads(t["verification"] or "{}").get("ran")
+                            for t in finished):
+        out.append(_b(
+            "warning", "unverified",
+            "Nothing is verifying this project",
+            f"{len(finished)} task(s) have been submitted or merged, and not one was "
+            f"checked by a test, build or lint command — the manager is judging the "
+            f"worker's own account of its work.",
+            fix="Add a test command the repo declares: a `test` script in package.json, "
+                "a pytest suite, `go test`, `cargo test`, or a `test:` target in a "
+                "Makefile. The platform runs it itself and refuses to merge a branch "
+                "that fails it."))
 
     out.sort(key=lambda b: (SEVERITY_RANK.get(b["severity"], 9), -(b["since"] or 0)))
     return out

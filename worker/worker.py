@@ -11,7 +11,10 @@ role prompt -> commit & push -> POST the final report to the conductor.
 
 import asyncio
 import json
+import fnmatch
 import os
+import random
+import re
 import subprocess
 import sys
 import time
@@ -74,6 +77,38 @@ def report(status: str, text: str, cost: float, verification: dict | None = None
 VERIFY_TIMEOUT = int(os.environ.get("VERIFY_TIMEOUT", "600"))
 
 
+# Directories full of other people's tests, or of build output. Walking into them
+# is both slow and wrong — a dependency's test suite is not this project's.
+_SKIP_DIRS = {"node_modules", "site-packages", "vendor", "dist", "build",
+              "__pycache__", "venv", "env", ".tox"}
+
+
+def _has_tests(repo_dir: Path, patterns: tuple[str, ...]) -> bool:
+    """Any test file, at any depth. The old check globbed one level down, so a
+    perfectly ordinary layout like sim/dsp/test_ber_sim.py was invisible and the
+    project was reported as having no way to check itself."""
+    for root, dirs, files in os.walk(repo_dir):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
+        if any(fnmatch.fnmatch(f, pat) for f in files for pat in patterns):
+            return True
+    return False
+
+
+def _python(repo_dir: Path) -> str:
+    """The interpreter that can actually import this project's dependencies.
+
+    Agents routinely create a virtualenv and install into it, so the *system*
+    interpreter has none of the project's packages. Running bare `python -m pytest`
+    then fails with "No module named pytest" — which the harness would record as a
+    FAILED verification and refuse to merge on. A false failure is worse than no
+    check at all, because it blocks work that was fine.
+    """
+    for venv in (".venv", "venv", "env"):
+        if (repo_dir / venv / "bin" / "python").exists():
+            return f"{venv}/bin/python"
+    return "python3"
+
+
 def detect_verification(repo_dir: Path) -> tuple[str, str] | None:
     """The command that proves this project still works, and how to describe it.
 
@@ -96,8 +131,8 @@ def detect_verification(repo_dir: Path) -> tuple[str, str] | None:
         if "lint" in scripts:
             return ("npm run lint", "npm run lint")
     if (repo_dir / "pytest.ini").exists() or (repo_dir / "tests").is_dir() or \
-            list(repo_dir.glob("test_*.py")) or list(repo_dir.glob("*/test_*.py")):
-        return ("python -m pytest -q", "pytest")
+            _has_tests(repo_dir, ("test_*.py", "*_test.py")):
+        return (f"{_python(repo_dir)} -m pytest -q", "pytest")
     if (repo_dir / "go.mod").exists():
         return ("go test ./...", "go test")
     if (repo_dir / "Cargo.toml").exists():
@@ -107,6 +142,50 @@ def detect_verification(repo_dir: Path) -> tuple[str, str] | None:
         if "\ntest:" in mk or mk.startswith("test:"):
             return ("make test", "make test")
     return None
+
+
+# Which lines in a test run actually name what broke, by toolchain.
+#
+# The tail of the output is not enough. A long build log pushes the failure names
+# out of the window, and "exited 1" tells the manager that something broke without
+# telling it what — which is the difference between a grounded judgement and a
+# coin flip. Changing only the value function moved published results 7 points;
+# changing the search algorithm moved them less than 1. This is the value function.
+#
+# Deliberately narrow: a pattern that fires on ordinary log noise trains the
+# manager to ignore the evidence, which is worse than having none.
+FAILURE_PATTERNS = (
+    re.compile(r"^FAILED\s+\S+.*$", re.M),                            # pytest short summary
+    re.compile(r"^ERROR\s+\S+.*$", re.M),                             # pytest collection error
+    re.compile(r"^E\s{3}\w*(?:Error|Exception)\b.*$", re.M),          # pytest assertion detail
+    re.compile(r"^\s*[●✕✗]\s+\S.*$", re.M),                           # jest / vitest
+    re.compile(r"^\s*--- FAIL: \S+.*$", re.M),                        # go test
+    re.compile(r"^error\[E\d+\]:.*$", re.M),                          # rustc
+    re.compile(r"^\S+\(\d+,\d+\): error TS\d+:.*$", re.M),            # tsc
+)
+# "3 failed, 12 passed in 4.2s" / "Tests: 2 failed, 8 passed"
+COUNT_PATTERN = re.compile(r"^.*?\b\d+\s+(?:failed|failing)\b.*$", re.M | re.I)
+
+
+def extract_failures(output: str, limit: int = 12) -> list[str]:
+    """The specific things that broke, deduped, in the order the patterns match."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for pat in FAILURE_PATTERNS:
+        for line in pat.findall(output or ""):
+            norm = " ".join(line.split())[:220]
+            if norm and norm not in seen:
+                seen.add(norm)
+                out.append(norm)
+                if len(out) >= limit:
+                    return out
+    return out
+
+
+def failure_headline(output: str) -> str:
+    """The tool's own count line, e.g. '3 failed, 12 passed in 4.21s'."""
+    found = COUNT_PATTERN.findall(output or "")
+    return " ".join(found[-1].split())[:200] if found else ""
 
 
 def run_verification(repo_dir: Path) -> dict:
@@ -125,8 +204,15 @@ def run_verification(repo_dir: Path) -> dict:
         r = subprocess.run(cmd, cwd=repo_dir, shell=True, capture_output=True,
                            text=True, timeout=VERIFY_TIMEOUT)
         out = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
-        return {"ran": True, "ok": r.returncode == 0, "cmd": label,
-                "exit_code": r.returncode, "output": out[-3000:]}
+        ok = r.returncode == 0
+        res = {"ran": True, "ok": ok, "cmd": label,
+               "exit_code": r.returncode, "output": out[-3000:]}
+        if not ok:
+            # Extracted from the WHOLE output, not the tail we keep — the names of
+            # what failed are often scrolled past by the time the run ends.
+            res["failures"] = extract_failures(out)
+            res["headline"] = failure_headline(out)
+        return res
     except subprocess.TimeoutExpired:
         return {"ran": True, "ok": False, "cmd": label, "exit_code": -1,
                 "output": f"{label} timed out after {VERIFY_TIMEOUT}s"}
@@ -199,7 +285,11 @@ def commit_and_push(repo_dir: Path) -> tuple[bool, str]:
             continue          # retry the plain push immediately after a clean rebase
 
         emit("push_retry", f"attempt {attempt + 1} failed: {last_err[-200:]}")
-        time.sleep(3 * (attempt + 1))
+        # Jittered backoff. Rivals in a contest finish within seconds of each other,
+        # so a fixed 3/6/9 schedule marches them straight back into the same
+        # collision on every retry — which is how a transient ref lock became three
+        # observed push failures on one project.
+        time.sleep(3 * (attempt + 1) * (0.5 + random.random()))
     return False, f"git push failed after 4 attempts: {last_err}"
 
 
@@ -258,6 +348,9 @@ def build_prompt() -> str:
     if FEEDBACK:
         parts += ["", "## Review feedback on your previous attempt (address all of it):",
                   FEEDBACK]
+    prior = os.environ.get("PRIOR_ATTEMPT", "")
+    if prior:
+        parts += ["", "## Where the previous attempt got to", prior]
     parts += ["", "Work inside the current directory (the repository checkout). "
               "When you are done, end with a final summary message as instructed."]
     return "\n".join(parts)
