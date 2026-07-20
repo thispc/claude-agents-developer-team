@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS roundtables (
     title TEXT NOT NULL DEFAULT '',
     brief TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'draft',     -- draft | running | done | failed
+    mode TEXT NOT NULL DEFAULT 'debate',      -- diverge (N+1 calls) | debate (3N+1)
     mod_provider TEXT NOT NULL DEFAULT '',    -- the moderator in the centre
     mod_model TEXT NOT NULL DEFAULT '',
     blueprint TEXT NOT NULL DEFAULT '',       -- JSON, once synthesised
@@ -152,6 +153,7 @@ def init() -> None:
         "ALTER TABLE tasks ADD COLUMN compete INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE tasks ADD COLUMN seq INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE projects ADD COLUMN is_self INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE roundtables ADD COLUMN mode TEXT NOT NULL DEFAULT 'debate'",
         # roundtables/seats/turns are created by SCHEMA above (CREATE TABLE IF NOT
         # EXISTS), so existing databases pick them up without a migration here.
     ):
@@ -203,11 +205,12 @@ def create_project(name: str, brief: str, repo: str, budget_usd: float,
 # --- round tables ---------------------------------------------------------
 
 def create_table(owner_id: int, brief: str, title: str = "",
-                 mod_provider: str = "", mod_model: str = "") -> int:
+                 mod_provider: str = "", mod_model: str = "",
+                 mode: str = "debate") -> int:
     cur = _execute(
-        "INSERT INTO roundtables (owner_id, brief, title, mod_provider, mod_model, created_at) "
-        "VALUES (?,?,?,?,?,?)",
-        (owner_id, brief, title, mod_provider, mod_model, time.time()))
+        "INSERT INTO roundtables (owner_id, brief, title, mod_provider, mod_model, "
+        "mode, created_at) VALUES (?,?,?,?,?,?,?)",
+        (owner_id, brief, title, mod_provider, mod_model, mode, time.time()))
     return cur.lastrowid
 
 
@@ -226,7 +229,7 @@ def update_table(table_id: int, **fields: Any) -> None:
     if not fields:
         return
     allowed = {"project_id", "title", "brief", "status", "mod_provider",
-               "mod_model", "blueprint", "started_at", "finished_at"}
+               "mod_model", "mode", "blueprint", "started_at", "finished_at"}
     bad = set(fields) - allowed
     assert not bad, f"update_table got unknown field(s): {bad}"
     sets = ", ".join(f"{k}=?" for k in fields)

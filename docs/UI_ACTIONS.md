@@ -186,7 +186,8 @@ convene; nothing is built until you click Build.
 | **✕** on a seat | — | Removes it; refuses below 3. |
 | **seat warning** | — | Tells you when your table is homogeneous — the configuration research found does *not* beat asking one model once. |
 | **Moderator in the centre** | — | Which model synthesises. It weighs arguments, not head-counts. |
-| **▶ Convene the table** 💸 | `POST /tables` then `POST /tables/{id}/run` | Runs 3 rounds × N seats + 1 synthesis. That is `3N+1` model calls — a 4-seat table is 13. |
+| **Diverge only / Full debate** | — | Diverge = `N+1` calls (propose → synthesise). Debate = `3N+1` (adds critique + revise). Diverge is the shape the evidence supports for open-ended work; debate stress-tests but risks losing facts to consensus pressure. |
+| **▶ Convene the table** 💸 | `POST /tables` then `POST /tables/{id}/run` | Runs the chosen mode. A 4-seat table is 5 calls (diverge) or 13 (debate). |
 | **🚀 Build this with a team** 💸🤖🌐 | `POST /tables/{id}/build` | Creates a real project whose brief *is* the blueprint (dissent included) and whose roster is the proposed team, then starts the manager. |
 
 Cost note: seats run concurrently within a round, so wall-clock is ~3 rounds,

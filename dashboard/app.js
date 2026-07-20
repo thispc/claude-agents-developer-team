@@ -632,6 +632,7 @@ async function startTable() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         brief, title: brief.slice(0, 60),
+        mode: (document.querySelector("input[name=tmode]:checked") || {}).value || "debate",
         mod_provider: mod[0] || "", mod_model: mod[1] || "",
         seats: seats.map((s) => ({ name: s.name, provider: s.provider,
                                    model: s.model, persona: s.persona })),

@@ -195,3 +195,62 @@ def test_create_table_rejects_providers_without_keys(root_client, monkeypatch):
 
 def test_providers_endpoint_requires_login(client):
     assert client.get("/api/providers").status_code == 401
+
+
+# ---- diverge vs debate mode ------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_diverge_mode_skips_the_debate_rounds(table, monkeypatch):
+    """Diverge mode is N+1 calls: propose -> synthesise, no critique/revise.
+
+    It exists because deliberation is measured to erase facts and homogenise
+    stances on open-ended tasks; skipping it removes that exposure.
+    """
+    db.update_table(table, mode="diverge")
+    calls = []
+
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+        calls.append(prompt)
+        if "ONLY valid JSON" in prompt:
+            return json.dumps({"approach": "x", "team": []})
+        return "a proposal"
+    monkeypatch.setattr("app.roundtable.providers.complete", fake)
+    from app import auth
+    monkeypatch.setattr(auth, "get_settings", lambda u: {"anthropic_api_key": "k",
+                                                         "openai_api_key": "k",
+                                                         "gemini_api_key": "k"})
+    monkeypatch.setattr(auth, "get_user", lambda uid: {"id": 1, "is_root": 1, "settings": "{}"})
+
+    await roundtable.run_table(table)
+    phases = {t["phase"] for t in db.list_turns(table)}
+    assert phases == {"propose", "synthesis"}, f"diverge ran extra rounds: {phases}"
+    assert len(calls) == 3 + 1, f"expected N+1 calls, got {len(calls)}"
+
+
+@pytest.mark.asyncio
+async def test_debate_mode_costs_three_rounds_plus_one(table, monkeypatch):
+    db.update_table(table, mode="debate")
+    calls = []
+
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+        calls.append(prompt)
+        if "ONLY valid JSON" in prompt:
+            return json.dumps({"approach": "x", "team": []})
+        return "text"
+    monkeypatch.setattr("app.roundtable.providers.complete", fake)
+    from app import auth
+    monkeypatch.setattr(auth, "get_settings", lambda u: {"anthropic_api_key": "k",
+                                                         "openai_api_key": "k",
+                                                         "gemini_api_key": "k"})
+    monkeypatch.setattr(auth, "get_user", lambda uid: {"id": 1, "is_root": 1, "settings": "{}"})
+
+    await roundtable.run_table(table)
+    assert len(calls) == 3 * 3 + 1, f"expected 3N+1, got {len(calls)}"
+
+
+def test_synthesis_prompt_guards_against_fact_attrition():
+    """The moderator must be told to recover facts that vanished after round 1."""
+    s = roundtable.SYNTH_SYSTEM.lower()
+    assert "round 1" in s
+    assert "disappear" in s or "dropped" in s
+    assert "silence is not refutation" in s

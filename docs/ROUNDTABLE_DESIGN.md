@@ -19,18 +19,39 @@ Chain-of-Thought and Self-Consistency, even when consuming additional
 inference-time computation," and sometimes flip *correct* answers to wrong ones.
 
 Model heterogeneity is the one intervention that consistently helps — but it
-helps *MAD*, which is not the same as beating a single agent. Measured
-([ICLR 2025 analysis](https://d2jud02ci9yv69.cloudfront.net/2025-04-28-mad-159/blog/mad/),
-GPT-4o-mini):
+helps *MAD*, which is not the same as beating a single agent.
 
-| Benchmark | Best single-agent | Best heterogeneous MAD |
-|---|---|---|
-| GSM8k | Self-Consistency **95.67%** | 95.00% — still behind |
-| MMLU | CoT 80.73% | **88.20%** — ahead |
-| HumanEval | SC beats most MAD | — |
+**The paper never compares Heter-MAD to Self-Consistency.** Its only baseline is
+"CoT-Average" — the *mean* of the two pooled models' scores, which includes the
+weaker one. That is how "+29.3% on MATH" is produced: SoM-Heter scores 71.1 on
+MATH, while GPT-4o-mini's plain CoT alone scores **72.87**. The headline gain is
+an artefact of averaging in the weaker model.
 
-At matched compute, plain resampling scales *better* per token. That analysis
-concludes MAD is "not recommended" for typical benchmarks.
+Doing the comparison the paper omits, using its own Tables 3/4/7 (SoM-Heter vs
+Self-Consistency, GPT-4o-mini + Llama3.1-70b pool):
+
+| Benchmark | SoM-Heter | Best SC | |
+|---|---|---|---|
+| MMLU | 83.5 | 83.73 | lose |
+| MMLU-Pro | 65.0 | 66.27 | lose |
+| CommonsenseQA | 83.3 | 83.80 | lose |
+| ARC-Challenge | 92.1 | 93.93 | lose |
+| AGIEval | 70.1 | 67.07 | **win** |
+| GSM8K | 94.6 | 95.67 | lose |
+| MATH | 71.1 | 73.96 | lose |
+
+**Heterogeneous debate beats Self-Consistency on 1 of 7 benchmarks.** The
+paper's own conclusion, written *after* the Heter-MAD results, is not retracted:
+"existing MAD frameworks fail to reliably outperform simple single-agent
+baselines like CoT and SC, despite consuming additional computational resources."
+
+One real caveat, buried in Appendix D.1: heterogeneity *stacked with* CoT
+prompting (Heter-SoM-CoT) does beat SC on 6 of 7. So heterogeneity plus a strong
+single-agent technique can edge ahead; heterogeneity alone cannot.
+
+On compute: "in comparison to SC, MAD is generally a less efficient method for
+leveraging token consumption." No MAD method achieved a >20% win rate against
+plain CoT across 36 configurations.
 
 ### So why does this feature exist?
 
@@ -39,10 +60,31 @@ correct answer.** GSM8k, MMLU, HumanEval. Self-Consistency works there precisely
 because you can majority-vote your way to the right number. *You cannot
 majority-vote a system design.*
 
-For open-ended planning — where there is no single right answer, and the value
-is in which alternatives were considered and which risks were named — the honest
-status is **largely untested**: most debate protocols "remain untested for
-cross-lingual, multi-modal, or open-ended creative tasks."
+For open-ended work the evidence **splits**, and the split is the single most
+important thing on this page:
+
+- **Divergent generation (ideation): supported.** [Multi-agent AI systems
+  outperform human teams in creativity](https://arxiv.org/abs/2605.17885) scored
+  4,541 ideas across six open-ended problems, blind-rated by five human judges,
+  and found multi-agent beats a *single-agent baseline* with d=0.52 (GPT-4.1) and
+  d=0.61 (o3-low) — driven by novelty. Note the effect shrinks as the base model
+  gets stronger, the same pattern that kills MAD on QA.
+
+- **Convergent deliberation: actively contradicted.** [The Deliberative
+  Illusion](https://arxiv.org/abs/2606.03032) studied exactly the no-right-answer
+  regime and found multi-agent discussion **erases up to 72% of issue-critical
+  facts**, with positions collapsing toward base-model defaults rather than toward
+  anything the discussion produced. Agents end up *more aligned and less
+  informed*.
+
+Planning is a convergent task — it must end in one plan. So the failure mode
+documented in that second paper is the one this feature is most exposed to, and
+no study was found showing multi-agent debate beating a comparable-compute single
+agent on a design or planning task specifically.
+
+The reading that fits both results: **the gain comes from the fan-out, not from
+the debate.** Sampling several genuinely different minds is what adds something;
+arguing them toward consensus is what destroys information.
 
 That means the justification for a round table is **not** "it gives more correct
 answers." The claim it can actually support is narrower:
@@ -51,11 +93,22 @@ answers." The claim it can actually support is narrower:
 > than a single pass does — one that records the alternatives it rejected, the
 > risks it found, and the objection it could not answer.
 
-That is a **design bet, not a proven result.** It is plausible (structured
-dissent beats consensus for humans, and heterogeneity demonstrably adds
-something) but it is not what the benchmarks measured. Treat plan mode as a
-deliberate spend on plan quality, not as a free accuracy win — and if you only
-want an answer to a question with one right answer, ask one good model instead.
+That is a **design bet, not a proven result** — and the strongest counter-evidence
+(fact attrition and stance homogenisation during deliberation) is aimed squarely
+at it. Three things in the implementation exist specifically to blunt it:
+
+1. **Round 1 is preserved and re-read at synthesis.** The moderator is given the
+   original independent proposals *and* told to look for facts that appeared in
+   round 1 and then vanished — the exact attrition the Deliberative Illusion
+   measured.
+2. **Dissent is an output field, not something consensus is allowed to dissolve.**
+3. **Diverge-only mode** skips the debate rounds entirely: independent proposals
+   straight to synthesis. It is `N+1` calls instead of `3N+1`, and it is the
+   configuration the evidence actually supports. Use it when you want options;
+   use the full table when you want the argument stress-tested and accept the risk.
+
+If you only want an answer to a question with one right answer, ask one good
+model — that is cheaper and the evidence says it is at least as good.
 
 Given that: a table of five identical models is the *worst* configuration —
 strictly more expensive than one call with no measured upside. If you run a

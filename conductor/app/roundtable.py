@@ -94,6 +94,13 @@ def _revise_prompt(own: str, critiques: list[dict]) -> str:
 SYNTH_SYSTEM = (
     "You are the moderator at the centre of a planning round table. You did not "
     "propose anything; you decide.\n\n"
+    "FIRST, guard against the known failure mode of group deliberation: discussion "
+    "destroys information. Measured on open-ended tasks, multi-agent debate erases "
+    "a large share of issue-critical facts and pulls positions toward bland "
+    "defaults. So before you decide, re-read ROUND 1 specifically and ask: which "
+    "concrete facts, constraints, numbers or risks appeared there and then quietly "
+    "disappeared from the later rounds? Anything that was dropped without being "
+    "rebutted must survive into your blueprint. Silence is not refutation.\n\n"
     "How to weigh what you heard:\n"
     "- Weigh ARGUMENTS, not head-counts. Models tend to converge socially rather "
     "than on the merits, so unanimity is weak evidence — treat it as a warning "
@@ -181,7 +188,17 @@ def _rotate(seats: list[dict], rnd: int) -> list[dict]:
 
 
 async def run_table(table_id: int) -> dict:
-    """Run the full deliberation. Returns the blueprint dict."""
+    """Run the deliberation. Returns the blueprint dict.
+
+    Two shapes, because the evidence points different ways for each:
+
+    - 'diverge' (N+1 calls): independent proposals -> synthesis. Sampling several
+      genuinely different models is the part with support behind it for
+      open-ended work.
+    - 'debate' (3N+1 calls): adds critique and revise rounds. Stress-tests the
+      argument, but is exposed to the fact-attrition and stance-homogenisation
+      that deliberation demonstrably causes.
+    """
     table = db.get_table(table_id)
     if not table:
         raise ValueError("no such round table")
@@ -211,6 +228,12 @@ async def run_table(table_id: int) -> dict:
         db.update_table(table_id, status="failed")
         raise ValueError("no seat could speak — check the API keys for these providers")
 
+    if (table["mode"] or "debate") == "diverge":
+        # Straight from independent proposals to synthesis — no consensus pressure,
+        # so nothing gets talked out of the record.
+        return await _synthesise(table, seats, brief, pid, table_id,
+                                 _transcript(proposals, [], []))
+
     # --- round 2: structured dissent ------------------------------------
     def critique_for(seat):
         others = [p for p in _rotate(live, 2) if p["seat_id"] != seat["id"]]
@@ -231,8 +254,16 @@ async def run_table(table_id: int) -> dict:
                           "revise", 3, brief, skeptic_id)
 
     # --- centre: synthesis ----------------------------------------------
+    return await _synthesise(table, seats, brief, pid, table_id,
+                             _transcript(proposals, critiques, finals))
+
+
+async def _synthesise(table: dict, seats: list[dict], brief: str, pid: int,
+                      table_id: int, transcript: str) -> dict:
+    from . import auth
+    owner = auth.get_user(table["owner_id"])
+    settings = auth.get_settings(owner) if owner else {}
     _emit(table_id, pid, "phase_started", {"phase": "synthesis", "round": 4})
-    transcript = _transcript(proposals, critiques, finals)
     mod_provider = table["mod_provider"] or seats[0]["provider"]
     mod_model = table["mod_model"] or seats[0]["model"]
     try:
@@ -253,15 +284,18 @@ async def run_table(table_id: int) -> dict:
 
 
 def _transcript(proposals, critiques, finals) -> str:
-    out = ["=== ROUND 1: independent proposals ==="]
+    out = ["=== ROUND 1: independent proposals (check these for facts that "
+           "disappear later) ==="]
     for p in proposals:
         out.append(f"[{p['name']}]\n{p['text']}")
-    out.append("\n=== ROUND 2: critique ===")
-    for c in critiques:
-        out.append(f"[{c['name']}]\n{c['text']}")
-    out.append("\n=== ROUND 3: final positions ===")
-    for f in finals:
-        out.append(f"[{f['name']}]\n{f['text']}")
+    if critiques:
+        out.append("\n=== ROUND 2: critique ===")
+        for c in critiques:
+            out.append(f"[{c['name']}]\n{c['text']}")
+    if finals:
+        out.append("\n=== ROUND 3: final positions ===")
+        for f in finals:
+            out.append(f"[{f['name']}]\n{f['text']}")
     return "\n\n".join(out)
 
 

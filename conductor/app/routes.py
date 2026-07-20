@@ -77,6 +77,7 @@ class Seat(BaseModel):
 class NewTable(BaseModel):
     brief: str
     title: str = ""
+    mode: str = "debate"        # diverge | debate
     seats: list[Seat] = []
     mod_provider: str = ""
     mod_model: str = ""
@@ -464,7 +465,8 @@ def create_table(body: NewTable, request: Request) -> dict:
         labels = ", ".join(providers.PROVIDERS.get(m, {}).get("label", m) for m in missing)
         raise HTTPException(400, f"no credentials for: {labels}. Add a key in Settings.")
     tid = db.create_table(u["id"], body.brief.strip(), body.title.strip(),
-                          body.mod_provider, body.mod_model)
+                          body.mod_provider, body.mod_model,
+                          "diverge" if body.mode == "diverge" else "debate")
     for i, s in enumerate(body.seats):
         db.add_seat(tid, i, s.name.strip() or f"Seat {i+1}", s.provider, s.model,
                     s.persona.strip())
