@@ -48,8 +48,9 @@ def test_the_sandbox_cannot_reach_the_operators_cli_login():
 
 
 def test_a_hostile_ref_is_refused():
-    for bad in ("main; rm -rf /", "--upload-pack=evil", "$(whoami)", "a b"):
-        assert sandbox.start(bad)["ok"] is False
+    for bad in ("ref:main; rm -rf /", "ref:--upload-pack=evil", "ref:$(whoami)",
+                "ref:a b", "ref:../../etc", "workspace:../../etc", "nonsense:x"):
+        assert sandbox.start(bad)["ok"] is False, bad
 
 
 def test_stop_is_safe_when_nothing_is_running(monkeypatch, tmp_path):
@@ -166,9 +167,12 @@ def test_sandbox_routes_are_not_open_to_everyone(client, make_user, fresh_db, mo
     assert c2.delete("/api/self/sandbox").status_code == 403
 
 
-def test_sandbox_status_lists_branches_to_try(root_client, fresh_db):
+def test_sandbox_status_lists_what_can_be_run(root_client, fresh_db):
     d = root_client.get("/api/self/sandbox").json()
-    assert "running" in d and isinstance(d["branches"], list)
+    assert "running" in d and isinstance(d["sources"], list)
+    # the working tree must always be offered: needing a commit first is the
+    # limitation this replaced
+    assert any(s["kind"] == "live" for s in d["sources"])
 
 
 def test_a_failed_boot_surfaces_the_reason(root_client, fresh_db, monkeypatch):
@@ -195,3 +199,75 @@ def test_isolation_does_not_rely_on_the_candidates_own_code():
                        "HOME", "DB_PATH", "WORKSPACES_DIR"]
     for k in parent_enforced:
         assert k in env, f"{k} left to the candidate to get right"
+
+
+# ---- no commit required: the point of the whole thing ---------------------
+
+def test_a_snapshot_captures_uncommitted_work(tmp_path):
+    """A git worktree can only show you a commit, which is the wrong tool for
+    "does this change work?" — the change you want to try is usually the one
+    still sitting in an agent's workspace."""
+    src, dest = tmp_path / "src", tmp_path / "dest"
+    (src / "conductor" / "app").mkdir(parents=True)
+    (src / "conductor" / "app" / "main.py").write_text("# never committed\n")
+    ok, _ = sandbox.snapshot(src, dest)
+    assert ok
+    assert (dest / "conductor" / "app" / "main.py").read_text() == "# never committed\n"
+
+
+def test_a_snapshot_leaves_out_weight_and_state(tmp_path):
+    src, dest = tmp_path / "src", tmp_path / "dest"
+    (src / "node_modules" / "dep").mkdir(parents=True)
+    (src / ".venv" / "bin").mkdir(parents=True)
+    (src / ".git").mkdir()
+    (src / "workspaces").mkdir()
+    (src / "app.py").write_text("keep me")
+    (src / "devteam.db").write_text("real data")
+    ok, _ = sandbox.snapshot(src, dest)
+    assert ok and (dest / "app.py").exists()
+    for gone in ("node_modules", ".venv", ".git", "workspaces", "devteam.db"):
+        assert not (dest / gone).exists(), f"{gone} was copied into the sandbox"
+
+
+def test_a_snapshot_of_a_missing_source_fails_cleanly(tmp_path):
+    ok, note = sandbox.snapshot(tmp_path / "nope", tmp_path / "dest")
+    assert ok is False and "does not exist" in note
+
+
+def test_a_source_that_is_not_a_devteam_checkout_is_refused(tmp_path, monkeypatch):
+    """Booting some unrelated folder as the conductor would fail confusingly."""
+    monkeypatch.setattr(sandbox, "TREE", tmp_path / "tree")
+    monkeypatch.setattr(sandbox, "SANDBOX_DIR", tmp_path)
+    src = tmp_path / "notdevteam"
+    (src).mkdir()
+    (src / "readme.md").write_text("hi")
+    monkeypatch.setattr(config, "WORKSPACES_DIR", tmp_path)
+    (tmp_path / "thing" / "repo").mkdir(parents=True)
+    (tmp_path / "thing" / "repo" / "x.txt").write_text("y")
+    res = sandbox.start("workspace:thing")
+    assert res["ok"] is False and "does not look like a devteam checkout" in res["error"]
+
+
+# ---- deploying an agent's work without a commit --------------------------
+
+@pytest.mark.asyncio
+async def test_deploy_can_run_an_agents_checkout(fresh_db, tmp_path, monkeypatch):
+    """Deploying only from main means the first time anyone runs a change is
+    after it has already shipped."""
+    from app import deploy
+    monkeypatch.setattr(config, "WORKSPACES_DIR", tmp_path)
+    repo = tmp_path / "task-9-a1" / "repo"
+    repo.mkdir(parents=True)
+    (repo / "app.py").write_text("# uncommitted work")
+    p = make_project(owner_id=1)
+    monkeypatch.setattr(deploy, "workdir", lambda pid: tmp_path / f"out-{pid}")
+    ok, note = await deploy.sync_from_workspace(p, "task-9-a1")
+    assert ok, note
+    assert (tmp_path / f"out-{p}" / "app.py").read_text() == "# uncommitted work"
+
+
+@pytest.mark.asyncio
+async def test_deploy_refuses_a_traversing_workspace_name(fresh_db):
+    from app import deploy
+    ok, note = await deploy.sync_from_workspace(1, "../../etc")
+    assert ok is False and "refusing" in note

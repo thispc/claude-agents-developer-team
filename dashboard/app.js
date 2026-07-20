@@ -325,7 +325,8 @@ async function renderSandbox() {
     el.innerHTML = `
       <div class="sbx live">
         <div class="sbx-head"><span class="sbx-dot"></span>
-          <b>Sandbox running</b><span class="hint">${escapeHtml(d.ref)} · ${escapeHtml(d.commit)} · up ${mins}m</span></div>
+          <b>Sandbox running</b><span class="hint">${escapeHtml(d.origin || d.ref)} · ${escapeHtml(d.commit)} · up ${mins}m</span></div>
+        ${d.dirty ? `<p class="sbx-dirty">Includes ${d.dirty} uncommitted change(s) — this is code that exists nowhere else yet.</p>` : ""}
         <p class="sbx-sub">${escapeHtml(d.subject || "")}</p>
         <div class="sbx-actions">
           <a class="btn-like primary" href="${escapeHtml(d.url)}" target="_blank" rel="noopener">↗ Open the sandbox</a>
@@ -342,13 +343,16 @@ async function renderSandbox() {
     return;
   }
 
-  const opts = (d.branches || []).map((b) =>
-    `<option value="${escapeHtml(b.ref)}">${escapeHtml(b.name)} — ${escapeHtml(b.subject)} (${escapeHtml(b.when)})</option>`).join("");
+  // Sources are ordered by immediacy: this working tree, then agent workspaces,
+  // then branches. Nothing here needs a commit — waiting on one is what made
+  // trying a change slower than making it.
+  const opts = (d.sources || []).map((s) =>
+    `<option value="${escapeHtml(s.id)}">${escapeHtml(s.label)} — ${escapeHtml(s.detail)}</option>`).join("");
   el.innerHTML = `
     ${d.died ? `<p class="form-error">The last sandbox exited on its own.
        <details><summary>log</summary><pre class="sbx-log">${escapeHtml(d.log_tail || "")}</pre></details></p>` : ""}
     <div class="sbx-start">
-      <label>Branch to try <select id="sbxRef">${opts || "<option value=''>no branches found</option>"}</select></label>
+      <label>What to run <select id="sbxRef">${opts || "<option value=''>nothing to run</option>"}</select></label>
       <button id="sbxStart" class="primary">▶ Boot the sandbox</button>
     </div>`;
   $("#sbxStart").addEventListener("click", async () => {

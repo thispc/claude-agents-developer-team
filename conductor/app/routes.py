@@ -422,13 +422,18 @@ def deploy_status(project_id: int, request: Request) -> dict:
 
 
 @router.post("/api/projects/{project_id}/deploy")
-async def deploy_app(project_id: int, request: Request, mode: str = "") -> dict:
-    """Build and run the project's real app — backend included."""
+async def deploy_app(project_id: int, request: Request, mode: str = "",
+                     workspace: str = "") -> dict:
+    """Build and run the project's real app — backend included.
+
+    `workspace` runs an agent's own checkout rather than the merged default
+    branch, so a change can be exercised before it is committed.
+    """
     owned_project(project_id, request)
     mode = mode or ("k8s" if config.LAUNCHER == "k8s" else "local")
     if mode == "k8s":
         return await deploy.deploy_k8s(project_id)
-    return await deploy.deploy_local(project_id)
+    return await deploy.deploy_local(project_id, workspace.strip())
 
 
 @router.delete("/api/projects/{project_id}/deploy")
@@ -684,13 +689,13 @@ async def self_issue(payload: SelfIssue, request: Request) -> dict:
 
 
 class SandboxReq(BaseModel):
-    ref: str
+    ref: str          # a source id from sandbox.sources(): live | workspace:… | ref:…
 
 
 @router.get("/api/self/sandbox")
 def sandbox_status(request: Request) -> dict:
     _root(request)
-    return {**sandbox.status(), "branches": sandbox.branches()}
+    return {**sandbox.status(), "sources": sandbox.sources()}
 
 
 @router.post("/api/self/sandbox")

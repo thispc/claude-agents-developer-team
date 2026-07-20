@@ -29,7 +29,7 @@ from typing import Any
 
 import httpx
 
-from . import config, selfops
+from . import config, db, selfops
 
 SANDBOX_DIR = selfops.LIVE_TREE / ".sandbox"
 TREE = SANDBOX_DIR / "tree"
@@ -44,6 +44,40 @@ BOOT_TIMEOUT = 60
 def _sh(*cmd: str, cwd: Path | None = None, timeout: int = 120):
     return subprocess.run(cmd, cwd=str(cwd or selfops.LIVE_TREE),
                           capture_output=True, text=True, timeout=timeout)
+
+
+# Never copied into a sandbox: build output and dependency trees (huge, and
+# rebuilt anyway), and anything holding real state or secrets.
+SKIP = {".git", ".sandbox", "node_modules", ".venv", "venv", "env", "__pycache__",
+        ".pytest_cache", ".mypy_cache", ".tox", "dist", "build", ".next",
+        "workspaces", "previews", "deployments", ".claude"}
+
+
+def snapshot(src: Path, dest: Path) -> tuple[bool, str]:
+    """Copy a working tree exactly as it is on disk, uncommitted work included.
+
+    A git worktree can only ever show you a commit. That is the wrong tool for
+    "does this change work?", because the change you want to try is usually the
+    one still sitting in an agent's workspace — unpushed, sometimes uncommitted.
+    Requiring a commit first turns a 10-second check into a round trip, which is
+    exactly the loop a QA role needs to be fast.
+    """
+    if not src.exists():
+        return False, f"{src} does not exist"
+    shutil.rmtree(dest, ignore_errors=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copytree(src, dest, symlinks=True,
+                        ignore=shutil.ignore_patterns(*SKIP, "*.db", "*.db-*", "*.sock"))
+    except Exception as e:
+        return False, f"could not copy the tree: {e}"
+    return True, "copied the working tree as-is"
+
+
+def _dirty(root: Path) -> int:
+    """How many files differ from HEAD — what a snapshot captures and a ref cannot."""
+    r = _sh("git", "status", "--porcelain", cwd=root)
+    return len([ln for ln in r.stdout.splitlines() if ln.strip()])
 
 
 def _free_port() -> int:
@@ -158,21 +192,83 @@ def _wait_healthy(port: int, proc: subprocess.Popen) -> tuple[bool, str]:
     return False, f"no healthy response within {BOOT_TIMEOUT}s"
 
 
-def start(ref: str) -> dict[str, Any]:
-    """Boot the candidate build at `ref`. Replaces any existing sandbox."""
-    if not ref or not ref.replace("/", "").replace("-", "").replace("_", "").replace(".", "").isalnum():
-        return {"ok": False, "error": f"refusing to use {ref!r} as a git ref"}
+def _safe_ref(ref: str) -> bool:
+    return bool(ref) and all(c.isalnum() or c in "/-_." for c in ref) and ".." not in ref
+
+
+def sources() -> list[dict[str, Any]]:
+    """Everywhere a candidate build can come from, most immediate first."""
+    out: list[dict[str, Any]] = [{
+        "id": "live", "kind": "live", "label": "This working tree — as it is now",
+        "detail": (f"{_dirty(selfops.LIVE_TREE)} uncommitted change(s) included"
+                   if _dirty(selfops.LIVE_TREE) else "currently identical to HEAD"),
+    }]
+    # A worker's checkout: the fastest thing to try, because it is where an agent's
+    # work actually lives before it is pushed anywhere.
+    ws = config.WORKSPACES_DIR
+    if ws.exists():
+        import re as _re
+        for d in sorted(ws.iterdir(), key=lambda d: d.stat().st_mtime, reverse=True):
+            repo = d / "repo"
+            if not repo.is_dir():
+                continue
+            m = _re.match(r"task-(\d+)", d.name)
+            t = db.get_task(int(m.group(1))) if m else None
+            if not t:
+                continue
+            out.append({"id": f"workspace:{d.name}", "kind": "workspace", "path": str(repo),
+                        "label": f"Agent workspace — #{t['seq']} {t['role']}",
+                        "detail": f"{t['title'][:60]} · {_dirty(repo)} uncommitted"})
+            if len(out) > 8:
+                break
+    for b in branches()[:12]:
+        out.append({"id": f"ref:{b['ref']}", "kind": "ref", "ref": b["ref"],
+                    "label": f"Branch — {b['name']}",
+                    "detail": f"{b['subject']} ({b['when']})"})
+    return out
+
+
+def start(source: str) -> dict[str, Any]:
+    """Boot a candidate build. `source` is an id from sources().
+
+    Three shapes, and the first two are the point: you should not have to commit
+    anything to find out whether a change works.
+    """
     stop()
     SANDBOX_DIR.mkdir(exist_ok=True)
-
-    # A worktree, so the live tree stays exactly where it is.
     shutil.rmtree(TREE, ignore_errors=True)
     _sh("git", "worktree", "prune")
-    r = _sh("git", "worktree", "add", "--detach", str(TREE), ref)
-    if r.returncode != 0:
-        return {"ok": False, "error": f"could not check out {ref}: {r.stderr[-300:]}"}
-    head = _sh("git", "rev-parse", "--short", "HEAD", cwd=TREE).stdout.strip()
-    subject = _sh("git", "log", "-1", "--pretty=%s", cwd=TREE).stdout.strip()
+
+    kind, _, rest = source.partition(":")
+    if kind == "live":
+        ok, note = snapshot(selfops.LIVE_TREE, TREE)
+        if not ok:
+            return {"ok": False, "error": note}
+        origin, dirty = "this working tree", _dirty(selfops.LIVE_TREE)
+    elif kind == "workspace":
+        if "/" in rest or ".." in rest:
+            return {"ok": False, "error": f"refusing {rest!r} as a workspace name"}
+        src = config.WORKSPACES_DIR / rest / "repo"
+        ok, note = snapshot(src, TREE)
+        if not ok:
+            return {"ok": False, "error": note}
+        origin, dirty = f"agent workspace {rest}", _dirty(src)
+    elif kind == "ref":
+        if not _safe_ref(rest):
+            return {"ok": False, "error": f"refusing to use {rest!r} as a git ref"}
+        r = _sh("git", "worktree", "add", "--detach", str(TREE), rest)
+        if r.returncode != 0:
+            return {"ok": False, "error": f"could not check out {rest}: {r.stderr[-300:]}"}
+        origin, dirty = f"branch {rest}", 0
+    else:
+        return {"ok": False, "error": f"unknown source {source!r}"}
+
+    if not (TREE / "conductor" / "app" / "main.py").exists():
+        return {"ok": False, "error": "that source does not look like a devteam checkout "
+                                      "— conductor/app/main.py is missing"}
+    head = _sh("git", "rev-parse", "--short", "HEAD", cwd=TREE).stdout.strip() or "(no git)"
+    subject = _sh("git", "log", "-1", "--pretty=%s", cwd=TREE).stdout.strip() or origin
+    ref = source
 
     DB.unlink(missing_ok=True)          # a fresh database every time, by design
     port = _free_port()
@@ -193,11 +289,11 @@ def start(ref: str) -> dict[str, Any]:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception:
             pass
-        return {"ok": False, "error": note, "log_tail": tail_log(), "ref": ref}
+        return {"ok": False, "error": note, "log_tail": tail_log(), "ref": source}
 
     st = {"pid": proc.pid, "port": port, "ref": ref, "commit": head,
-          "subject": subject, "url": f"http://127.0.0.1:{port}/",
-          "started_at": time.time()}
+          "subject": subject, "origin": origin, "dirty": dirty,
+          "url": f"http://127.0.0.1:{port}/", "started_at": time.time()}
     PID_FILE.write_text(json.dumps(st, indent=2))
     return {"ok": True, **st}
 

@@ -200,6 +200,26 @@ def _log(project_id: int, line: str) -> None:
         f.write(f"[{time.strftime('%H:%M:%S')}] {line}\n")
 
 
+async def sync_from_workspace(project_id: int, workspace: str) -> tuple[bool, str]:
+    """Take the code from an agent's own checkout, uncommitted work included.
+
+    Deploying only from `main` means a change cannot be tried until it has been
+    committed, pushed, reviewed and merged — so the first time anyone runs it is
+    after it has already shipped. A QA role needs the opposite loop: run what the
+    agent has right now, find the problem, send it back within the same sprint.
+    """
+    from . import sandbox
+    if "/" in workspace or ".." in workspace:
+        return False, f"refusing {workspace!r} as a workspace name"
+    src = config.WORKSPACES_DIR / workspace / "repo"
+    ok, note = sandbox.snapshot(src, workdir(project_id))
+    if not ok:
+        return False, note
+    dirty = sandbox._dirty(src)
+    return True, (f"copied {workspace} as it is on disk"
+                  + (f" ({dirty} uncommitted change(s))" if dirty else ""))
+
+
 async def sync_code(project_id: int) -> tuple[bool, str]:
     """Fresh checkout of the default branch — deployments always use latest main."""
     from . import github_client
@@ -268,13 +288,18 @@ def stop(project_id: int) -> str:
     return "stopped"
 
 
-async def deploy_local(project_id: int) -> dict[str, Any]:
-    """Build and run the app as a subprocess on its own port."""
+async def deploy_local(project_id: int, workspace: str = "") -> dict[str, Any]:
+    """Build and run the app as a subprocess on its own port.
+
+    `workspace` runs an agent's checkout instead of the merged default branch, so
+    work can be exercised before it is committed.
+    """
     stop(project_id)
     log_path(project_id).parent.mkdir(parents=True, exist_ok=True)
     log_path(project_id).write_text("")
 
-    ok, note = await sync_code(project_id)
+    ok, note = (await sync_from_workspace(project_id, workspace) if workspace
+                else await sync_code(project_id))
     _log(project_id, note)
     if not ok:
         return {"ok": False, "error": note}
