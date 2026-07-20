@@ -662,3 +662,11 @@ pre.dim, .dim { color: var(--dim); }
 #chatForm input { flex: 1; padding: 10px 12px; }
 #chatUnread { margin-left: 5px; padding: 1px 6px; border-radius: 9px; font-size: 10.5px;
   background: var(--accent); color: #fff; }
+
+/* Autonomy is a live control, not a label — you can change your mind mid-run. */
+.mode-toggle { font: inherit; color: inherit; background: var(--card-2);
+  border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px;
+  cursor: pointer; font-size: 11px; transition: background .12s, border-color .12s; }
+.mode-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.mode-toggle.auton { background: var(--accent-soft); border-color: #c9c2f0; color: var(--accent); }
+.mode-toggle:disabled { opacity: .5; cursor: default; }

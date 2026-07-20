@@ -1379,7 +1379,14 @@ function renderCommand(p) {
         <div class="node manager ${busy ? "busy" : ""}">
           <div class="who">👔 Manager</div>
           <div class="name">${escapeHtml(mgrModel)}</div>
-          <div class="sub">${mode} · ${tasks.length} on the team</div>
+          <div class="sub">
+            <button class="mode-toggle ${p.autonomy === "autonomous" ? "auton" : ""}"
+              id="autonomyBtn"
+              title="${p.autonomy === "autonomous"
+                ? "Full autonomy: decides everything itself. Click to start checking with you."
+                : "Checks with you on the important calls. Click to give it full autonomy."}">
+              ${p.autonomy === "autonomous" ? "⚡ full autonomy" : "🧑‍💼 checks with you"}</button>
+            · ${tasks.length} on the team</div>
         </div>
         ${bubbleHtml("Manager says", managerThought)}
         ${bubbleHtml("thinking", managerThinking, "thinking")}
@@ -1404,6 +1411,32 @@ function renderCommand(p) {
   });
   el.querySelectorAll(".agent").forEach((a) =>
     a.addEventListener("click", () => showTask(Number(a.dataset.task))));
+  const ab = $("#autonomyBtn");
+  if (ab) ab.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    const now = lastProject && lastProject.autonomy === "autonomous";
+    const next = now ? "supervised" : "autonomous";
+    const msg = next === "autonomous"
+      ? "Give the manager FULL AUTONOMY?\n\nIt will stop asking you to approve things — "
+        + "including merges and finishing — and decide for itself. Any question it is "
+        + "currently waiting on gets answered by its own judgement.\n\n"
+        + "You can switch back at any time."
+      : "Put the manager back under SUPERVISION?\n\nIt will check with you before "
+        + "merging substantial work, before finishing, and on real product decisions.";
+    if (!confirm(msg)) return;
+    ab.disabled = true;
+    try {
+      const r = await api(`/api/projects/${currentProject}/autonomy`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ autonomy: next }),
+      });
+      toast(r.autonomy === "autonomous"
+        ? "Full autonomy — it will stop asking and decide for itself."
+        : "Supervised — it will check with you on the important calls.");
+      refreshBoard();
+    } catch (e) { alert(e.message); ab.disabled = false; }
+  });
+
   const bossNode = $("#bossNode");
   if (bossNode) bossNode.addEventListener("click", () => {
     $("#taskDetail").innerHTML = `

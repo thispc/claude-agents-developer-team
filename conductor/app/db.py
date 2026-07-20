@@ -315,6 +315,10 @@ def delete_table(table_id: int) -> None:
     _execute("DELETE FROM roundtables WHERE id=?", (table_id,))
 
 
+def set_project_autonomy(project_id: int, autonomy: str) -> None:
+    _execute("UPDATE projects SET autonomy=? WHERE id=?", (autonomy, project_id))
+
+
 def set_project_budget(project_id: int, budget_usd: float) -> None:
     _execute("UPDATE projects SET budget_usd=? WHERE id=?", (budget_usd, project_id))
 

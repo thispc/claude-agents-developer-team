@@ -539,3 +539,41 @@ def test_the_platforms_own_project_cannot_be_deleted(root_client, fresh_db):
     pid = selfops.ensure_project(owner_id=1)
     r = root_client.delete(f"/api/projects/{pid}")
     assert r.status_code == 400
+
+
+# ---- autonomy is changeable mid-run ---------------------------------------
+
+def test_autonomy_can_be_flipped_after_the_run_started(root_client, fresh_db):
+    p = make_project(owner_id=1, autonomy="supervised", status="running")
+    r = root_client.post(f"/api/projects/{p}/autonomy", json={"autonomy": "autonomous"})
+    assert r.status_code == 200 and r.json()["changed"] is True
+    assert db.get_project(p)["autonomy"] == "autonomous"
+    # the running manager's system prompt is already fixed, so it must be told in-band
+    assert any("FULL AUTONOMY" in d for d in db.take_directives(p))
+
+
+def test_going_autonomous_unblocks_a_project_waiting_on_a_question(root_client, fresh_db):
+    """The point of the switch: you got tired of being asked. A pending question
+    must not keep the project parked on hold."""
+    p = make_project(owner_id=1, autonomy="supervised", status="hold")
+    db.ask_question(p, "Which database?", ["postgres", "sqlite"])
+    root_client.post(f"/api/projects/{p}/autonomy", json={"autonomy": "autonomous"})
+    assert db.get_project(p)["status"] == "running"
+    assert db.pending_question(p) is None
+
+
+def test_switching_back_to_supervised_tells_the_manager(root_client, fresh_db):
+    p = make_project(owner_id=1, autonomy="autonomous")
+    root_client.post(f"/api/projects/{p}/autonomy", json={"autonomy": "supervised"})
+    assert db.get_project(p)["autonomy"] == "supervised"
+    assert any("SUPERVISED" in d for d in db.take_directives(p))
+
+
+def test_autonomy_is_owner_guarded_and_idempotent(root_client, make_user, fresh_db):
+    p = make_project(owner_id=1, autonomy="supervised")
+    _uid, other = make_user("meddler")
+    assert other.post(f"/api/projects/{p}/autonomy",
+                      json={"autonomy": "autonomous"}).status_code == 404
+    r = root_client.post(f"/api/projects/{p}/autonomy", json={"autonomy": "supervised"})
+    assert r.json()["changed"] is False          # no spurious directive
+    assert db.take_directives(p) == []

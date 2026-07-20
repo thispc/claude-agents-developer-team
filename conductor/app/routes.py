@@ -90,6 +90,10 @@ class BuildFromBlueprint(BaseModel):
     manager_model: str = ""
 
 
+class Autonomy(BaseModel):
+    autonomy: str          # supervised | autonomous
+
+
 class Directive(BaseModel):
     text: str
 
@@ -808,6 +812,40 @@ def delete_table(table_id: int, request: Request) -> dict:
     owned_table(table_id, request)
     db.delete_table(table_id)
     return {"ok": True}
+
+
+@router.post("/api/projects/{project_id}/autonomy")
+def set_autonomy(project_id: int, body: Autonomy, request: Request) -> dict:
+    """Change how much rope the manager has, mid-run.
+
+    The manager's behavioural gates read this live, so a running session changes
+    behaviour immediately. Its *system prompt* was fixed when the session started,
+    though, so we also tell it in-band — otherwise its instructions would contradict
+    how the platform is now treating it.
+    """
+    p = owned_project(project_id, request)
+    mode = "autonomous" if body.autonomy == "autonomous" else "supervised"
+    if p["autonomy"] == mode:
+        return {"ok": True, "autonomy": mode, "changed": False}
+    db.set_project_autonomy(project_id, mode)
+    if mode == "autonomous":
+        db.add_directive(project_id,
+            "AUTONOMY CHANGED: you now have FULL AUTONOMY. Stop asking me to approve "
+            "things — decide yourself, including merges and finishing. Only interrupt "
+            "me if you are genuinely, unrecoverably blocked. If a question of yours is "
+            "pending, answer it yourself with your best judgement and note the "
+            "assumption you made.")
+        db.abandon_questions(project_id)      # don't leave it blocked on a question
+        if p["status"] == "hold":
+            db.set_project_status(project_id, "running")
+    else:
+        db.add_directive(project_id,
+            "AUTONOMY CHANGED: you are now SUPERVISED. Check with me before merging "
+            "substantial work and before finishing, and whenever there is a real "
+            "product or scope decision — give me 2-4 concrete options. Do not ask "
+            "about routine mechanics.")
+    bus.emit(project_id, None, "boss", "autonomy_changed", {"autonomy": mode})
+    return {"ok": True, "autonomy": mode, "changed": True}
 
 
 @router.get("/api/projects/{project_id}/events")
