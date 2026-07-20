@@ -47,11 +47,11 @@ PORT = int(os.environ.get("E2E_PORT", "8123"))
 TIMEOUT = int(os.environ.get("E2E_TIMEOUT", "600"))
 BASE = f"http://localhost:{PORT}"
 
-pytestmark = pytest.mark.skipif(
+pytestmark = [pytest.mark.live, pytest.mark.skipif(
     not (LIVE and (ANTHROPIC or OAUTH) and GH_TOKEN and GH_REPO),
     reason="live e2e is opt-in: set E2E_LIVE=1 and E2E_ANTHROPIC_KEY/E2E_OAUTH_TOKEN, "
            "E2E_GITHUB_TOKEN, E2E_GITHUB_REPO",
-)
+)]
 
 
 def _wait_port(port, timeout=30):
