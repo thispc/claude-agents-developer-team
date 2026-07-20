@@ -479,6 +479,23 @@ async def run_manager(project_id: int) -> None:
     # The manager's character is the biggest lever on the whole team: it decides who
     # gets recruited, how hard the work is reviewed, and what ships. Let the boss set it.
     system_prompt = config.load_role_prompt("manager")
+    if project.get("is_self"):
+        system_prompt += (
+            "\n\n## You are working on this platform itself\n\n"
+            "This repository is the devteam platform — the very application running "
+            "you and your team right now. Treat every change as production surgery:\n"
+            "- Prefer the smallest change that fixes the issue. Reject work that "
+            "refactors unrelated code, however tempting.\n"
+            "- Never let anyone modify `devteam.db`, `.env`, or `workspaces/` — those "
+            "are live state, not source.\n"
+            "- Require evidence that the app still starts before you merge. A worker "
+            "claiming 'it works' is not enough; the report must show the import or "
+            "start command and its output.\n"
+            "- A broken merge here takes down the platform for everyone. When in doubt, "
+            "request changes rather than merging.\n"
+            "- The boss deploys separately, so merging is safe; it does not restart "
+            "anything by itself."
+        )
     persona = (project.get("manager_persona") or "").strip()
     if persona:
         system_prompt += ("\n\n## Additional character instructions from your boss "

@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS projects (
     owner_id INTEGER NOT NULL DEFAULT 0,          -- whose credentials the agents use
     manager_model TEXT NOT NULL DEFAULT '',       -- '' = server default
     manager_persona TEXT NOT NULL DEFAULT '',     -- extra character instructions
+    is_self INTEGER NOT NULL DEFAULT 0,           -- this row is the platform's own codebase
     cost_usd REAL NOT NULL DEFAULT 0,
     summary TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL
@@ -113,6 +114,7 @@ def init() -> None:
         "ALTER TABLE tasks ADD COLUMN pinned_model TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE tasks ADD COLUMN compete INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE tasks ADD COLUMN seq INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE projects ADD COLUMN is_self INTEGER NOT NULL DEFAULT 0",
     ):
         try:
             _conn.execute(stmt)
@@ -157,6 +159,11 @@ def create_project(name: str, brief: str, repo: str, budget_usd: float,
          autonomy, manager_model, manager_persona, owner_id, time.time()),
     )
     return cur.lastrowid
+
+
+def set_project_self(project_id: int, is_self: bool = True) -> None:
+    """Mark the row that represents this platform's own codebase."""
+    _execute("UPDATE projects SET is_self=? WHERE id=?", (1 if is_self else 0, project_id))
 
 
 def inc_runs(project_id: int) -> int:

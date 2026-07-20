@@ -4,7 +4,8 @@ from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSoc
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from . import auth, bus, config, db, github_client, manager, planner, preview, scheduler
+from . import (auth, blockers, bus, config, db, github_client, manager, planner, preview,
+               scheduler, selfops)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -336,6 +337,85 @@ def model_health(request: Request) -> dict:
 def launcher_looks_rate_limited(text: str) -> bool:
     from .launcher import looks_rate_limited
     return looks_rate_limited(text)
+
+
+@router.get("/api/projects/{project_id}/blockers")
+def get_blockers(project_id: int, request: Request) -> dict:
+    """Everything currently standing in the way of this project."""
+    owned_project(project_id, request)
+    return blockers.summary(project_id)
+
+
+# --- the platform working on itself (root only) ---
+
+def _root(request: Request) -> dict:
+    u = current_user(request)
+    if not u["is_root"]:
+        raise HTTPException(403, "only the root operator can work on the platform itself")
+    return u
+
+
+@router.get("/api/self")
+def self_status(request: Request) -> dict:
+    u = _root(request)
+    pid = selfops.ensure_project(u["id"])
+    st = selfops.can_redeploy()
+    tasks = db.list_tasks(pid)
+    return {"project_id": pid, "repo": st["repo"], "head": st["head"],
+            "can_redeploy": st["ok"], "blocked_reasons": st["reasons"],
+            "last_deploy": st["last_deploy"],
+            "open_issues": [
+                {"seq": t["seq"], "id": t["id"], "title": t["title"], "status": t["status"],
+                 "pr": t["pr_number"], "issue": t["issue_number"]}
+                for t in tasks if t["status"] != "done"],
+            "shipped": [
+                {"seq": t["seq"], "title": t["title"], "pr": t["pr_number"]}
+                for t in tasks if t["status"] == "done"][-10:]}
+
+
+class SelfIssue(BaseModel):
+    title: str
+    body: str
+    severity: str = "bug"
+
+
+@router.post("/api/self/issue")
+async def self_issue(payload: SelfIssue, request: Request) -> dict:
+    u = _root(request)
+    if not payload.title.strip() or not payload.body.strip():
+        raise HTTPException(400, "describe the issue and give it a title")
+    pid = selfops.ensure_project(u["id"])
+    res = await selfops.file_issue(pid, payload.title.strip(), payload.body.strip(),
+                                   payload.severity)
+    # The manager plans the fix. If one is already running it picks the issue up as
+    # a directive on its next decision point, so we must not start a second session.
+    if pid not in _manager_tasks or _manager_tasks[pid].done():
+        _manager_tasks[pid] = asyncio.get_event_loop().create_task(manager.run_manager(pid))
+        res["manager"] = "started"
+    else:
+        res["manager"] = "already running — the issue was handed to it"
+    return {"project_id": pid, **res}
+
+
+@router.post("/api/self/redeploy")
+async def self_redeploy(request: Request, force: bool = False) -> dict:
+    _root(request)
+    res = selfops.redeploy(force=force)
+    if res.get("ok"):
+        bus.emit(0, None, "system", "self_redeploy",
+                 {"from": res["from"]["commit"], "to": res["to"]["commit"]})
+        # Give the response time to reach the browser before the process is replaced.
+        asyncio.get_event_loop().call_later(1.5, selfops.restart_process)
+    return res
+
+
+@router.post("/api/self/rollback")
+async def self_rollback(request: Request) -> dict:
+    _root(request)
+    res = selfops.rollback()
+    if res.get("ok"):
+        asyncio.get_event_loop().call_later(1.5, selfops.restart_process)
+    return res
 
 
 @router.get("/api/notifications")

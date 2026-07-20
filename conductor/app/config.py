@@ -45,6 +45,8 @@ ESCALATION_MODEL = _env("ESCALATION_MODEL", "claude-sonnet-5")
 
 GITHUB_TOKEN = _env("GITHUB_TOKEN")
 GITHUB_REPO = _env("GITHUB_REPO")
+# The repo holding this platform's own code. Blank = derive from the git remote.
+SELF_REPO = _env("SELF_REPO")
 
 CONDUCTOR_URL = _env("CONDUCTOR_URL", "http://localhost:8000")
 WORKER_TOKEN = _env("WORKER_TOKEN", "dev-token")

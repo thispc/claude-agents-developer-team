@@ -173,9 +173,11 @@ function renderHome(projects) {
       : "—";
     const active = !["done", "failed", "cancelled"].includes(p.status);
     const canRestart = ["failed", "review", "cancelled"].includes(p.status);
+    if (p.is_self) tr.className = "self-row";
     tr.innerHTML = `
       <td>${p.id}</td>
-      <td class="pname">${escapeHtml(p.name)}</td>
+      <td class="pname">${escapeHtml(p.name)}${p.is_self
+        ? ` <span class="self-tag" title="This project is the platform you are using right now">⟲ this platform</span>` : ""}</td>
       <td>${repoCell}</td>
       <td><span class="pill ${cls}">${label}</span></td>
       <td>${p.task_count ?? "—"}</td>
@@ -238,12 +240,14 @@ function setHash(h) {
 function switchView(view, skipHash) {
   document.querySelectorAll(".vchip").forEach((c) =>
     c.classList.toggle("active", c.dataset.v === view));
-  for (const id of ["command", "board", "dag", "artifacts", "agents"])
+  for (const id of ["command", "board", "dag", "artifacts", "agents", "blockers", "self"])
     $("#" + id).hidden = id !== view;
   if (view === "dag") renderDag(lastTasks);
   if (view === "command" && lastProject) renderCommand(lastProject);
   if (view === "artifacts") renderArtifacts(true);
   if (view === "agents") { agentsSig = ""; renderAgents(); }
+  if (view === "blockers") { blockersSig = ""; renderBlockers(); }
+  if (view === "self") renderSelf();
   if (!skipHash && currentProject)
     setHash(`#/p/${currentProject}${view !== "command" ? "/" + view : ""}`);
 }
@@ -279,6 +283,221 @@ function idOfSeq(n) {
 }
 function depLabels(deps) { return deps.map((d) => "#" + seqOf(d)); }
 
+// --- The platform working on itself. Root raises an issue against this repo,
+// --- the team fixes it on a branch, and root deploys the merged result.
+let selfInfo = null;
+
+async function renderSelf() {
+  const el = $("#self");
+  if (!el) return;
+  let d;
+  try { d = await api("/api/self"); } catch { el.innerHTML = "<p class='empty'>Only the root operator can work on the platform itself.</p>"; return; }
+  selfInfo = d;
+  const h = d.head || {};
+  const dep = d.last_deploy || {};
+  el.innerHTML = `
+    <div class="self-banner">
+      <div class="self-i">⟲</div>
+      <div>
+        <h2>This is the platform itself</h2>
+        <p>Issues you raise here become real work on <b>${escapeHtml(d.repo || "this repo")}</b> —
+        the code running this page. Your team fixes it on a branch and opens a PR;
+        nothing reaches the live app until you deploy it.</p>
+      </div>
+    </div>
+
+    <div class="self-grid">
+      <div class="self-card">
+        <h3>Running right now</h3>
+        <div class="kv"><span>commit</span><code>${escapeHtml(h.commit || "?")}</code></div>
+        <div class="kv"><span>branch</span><code>${escapeHtml(h.branch || "?")}</code></div>
+        <div class="kv"><span>message</span><span>${escapeHtml(trim(h.subject || "", 70))}</span></div>
+        <div class="kv"><span>local edits</span><span>${h.dirty === "yes"
+          ? "<b class='warn-t'>uncommitted changes present</b>" : "none — clean"}</span></div>
+        ${dep.deployed ? `<div class="kv"><span>last deploy</span><span>${escapeHtml(dep.deployed)}
+          (rollback to ${escapeHtml(dep.rollback_to || "—")})</span></div>` : ""}
+      </div>
+
+      <div class="self-card">
+        <h3>Deploy</h3>
+        ${d.can_redeploy
+          ? `<p>The live tree is clean and no agents are mid-run. Deploying pulls the
+             merged code and restarts this app on it.</p>`
+          : `<p class="warn-t">Not safe to deploy right now:</p>
+             <ul class="why">${(d.blocked_reasons || []).map((r) => `<li>${escapeHtml(r)}</li>`).join("")}</ul>`}
+        <div class="self-acts">
+          <button id="deployBtn" class="primary" ${d.can_redeploy ? "" : "disabled"}>⬆ Pull &amp; restart</button>
+          ${dep.rollback_to ? `<button id="rollbackBtn" class="danger">↩ Roll back to ${escapeHtml(dep.rollback_to)}</button>` : ""}
+        </div>
+        <p class="hint">The new code must import cleanly or the deploy is refused and reverted automatically.</p>
+      </div>
+    </div>
+
+    <div class="self-card">
+      <h3>Raise an issue against this platform</h3>
+      <form id="selfIssueForm">
+        <label>What's wrong (or what should be better)
+          <input name="title" required placeholder="e.g. Agents tab loses scroll position" autocomplete="off"></label>
+        <label>Details <span class="hint">steps to reproduce, what you expected, which page</span>
+          <textarea name="body" rows="5" required placeholder="Be specific — this becomes the spec a worker builds against."></textarea></label>
+        <label>Kind
+          <select name="severity">
+            <option value="bug">Bug — something is broken</option>
+            <option value="improvement">Improvement — it works but could be better</option>
+            <option value="urgent">Urgent — breaking the platform right now</option>
+          </select></label>
+        <p id="selfErr" class="form-error" hidden></p>
+        <button type="submit" class="primary">🔧 Put the team on it</button>
+        <p class="hint">Your manager plans the fix, assigns it, and reviews the PR.
+        Nothing reaches the running app until you deploy it above.</p>
+      </form>
+    </div>
+
+    <div class="self-card">
+      <h3>Open work on the platform</h3>
+      ${(d.open_issues || []).length ? `<table class="self-table">
+        <thead><tr><th>#</th><th>Issue</th><th>Status</th><th>PR</th></tr></thead>
+        <tbody>${d.open_issues.map((t) => `<tr>
+          <td>#${t.seq}</td><td>${escapeHtml(t.title)}</td>
+          <td><span class="pill ${t.status === "failed" ? "crit" : "warn"}">${t.status}</span></td>
+          <td>${t.pr ? `<a target="_blank" href="https://github.com/${d.repo}/pull/${t.pr}">#${t.pr}</a>` : "—"}</td>
+        </tr>`).join("")}</tbody></table>` : "<p class='empty'>Nothing open. The platform has no self-reported issues.</p>"}
+      ${(d.shipped || []).length ? `<h4>Shipped</h4><ul class="shipped">${
+        d.shipped.map((t) => `<li>#${t.seq} ${escapeHtml(t.title)}${
+          t.pr ? ` — PR #${t.pr}` : ""}</li>`).join("")}</ul>` : ""}
+    </div>`;
+
+  const form = $("#selfIssueForm");
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = new FormData(form);
+    const btn = form.querySelector("button[type=submit]");
+    btn.disabled = true; btn.textContent = "briefing the team…";
+    try {
+      const r = await api("/api/self/issue", { method: "POST",
+        body: JSON.stringify({ title: f.get("title"), body: f.get("body"),
+                               severity: f.get("severity") }) });
+      openProject(r.project_id, "command");
+    } catch (e) {
+      $("#selfErr").hidden = false; $("#selfErr").textContent = String(e.message || e);
+      btn.disabled = false; btn.textContent = "🔧 Put the team on it";
+    }
+  });
+
+  const dbtn = $("#deployBtn");
+  if (dbtn) dbtn.addEventListener("click", async () => {
+    if (!confirm("Pull the merged code and restart the platform?\n\n"
+      + "This app will be unavailable for a few seconds. If the new code fails to "
+      + "import it is reverted automatically.")) return;
+    dbtn.disabled = true; dbtn.textContent = "deploying…";
+    const r = await api("/api/self/redeploy", { method: "POST" });
+    if (!r.ok) { alert("Deploy refused: " + r.error); dbtn.disabled = false;
+                 dbtn.textContent = "⬆ Pull & restart"; return; }
+    waitForRestart(`Deployed ${r.to.commit} — ${r.to.subject}`);
+  });
+  const rbtn = $("#rollbackBtn");
+  if (rbtn) rbtn.addEventListener("click", async () => {
+    if (!confirm("Roll the platform back to the previous commit and restart?")) return;
+    const r = await api("/api/self/rollback", { method: "POST" });
+    if (!r.ok) { alert("Rollback failed: " + r.error); return; }
+    waitForRestart("Rolled back — reconnecting…");
+  });
+}
+
+// The server replaces its own process, so poll until it answers again.
+function waitForRestart(msg) {
+  const el = $("#self");
+  el.innerHTML = `<div class="self-restart"><div class="spinner"></div>
+    <h2>${escapeHtml(msg)}</h2><p>Waiting for the platform to come back up…</p></div>`;
+  let tries = 0;
+  const t = setInterval(async () => {
+    tries++;
+    try {
+      const r = await fetch("/api/me", { credentials: "same-origin" });
+      if (r.ok) { clearInterval(t); location.reload(); }
+    } catch { /* still down */ }
+    if (tries > 60) { clearInterval(t);
+      el.querySelector("p").textContent =
+        "It hasn't come back. Check the server logs — the previous commit is recorded for rollback."; }
+  }, 2000);
+}
+
+function ago(ts) {
+  const m = Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
+}
+
+// --- Blockers: every current obstacle on this project, with the fix for each. ---
+let blockersSig = "";
+
+async function renderBlockers() {
+  const el = $("#blockers");
+  if (!el || !currentProject) return;
+  let data;
+  try { data = await api(`/api/projects/${currentProject}/blockers`); } catch { return; }
+  const items = data.blockers || [];
+
+  // Badge on the tab is always updated, even when the tab isn't open.
+  const badge = $("#blockerCount");
+  if (badge) {
+    badge.hidden = items.length === 0;
+    badge.textContent = data.critical || items.length;
+    badge.className = data.critical ? "crit" : "warn";
+  }
+  if (el.hidden) return;
+
+  const sig = JSON.stringify(items.map((b) => [b.kind, b.task_id, b.title]));
+  if (sig === blockersSig) return;   // don't repaint an unchanged list
+  blockersSig = sig;
+
+  if (!items.length) {
+    el.innerHTML = `<div class="bl-clear"><div class="bl-clear-i">✓</div>
+      <h3>Nothing is blocking this project</h3>
+      <p>No failed work, no unanswered questions, no capacity or credential problems.</p></div>`;
+    return;
+  }
+  const label = { critical: "Stopping the project", warning: "Slowing it down", info: "Worth knowing" };
+  el.innerHTML = `
+    <div class="bl-head">
+      <h2>🚧 Blockers</h2>
+      <div class="bl-tally">${data.critical
+        ? `<span class="pill crit">${data.critical} stopping work</span>` : ""}
+        ${data.warning ? `<span class="pill warn">${data.warning} slowing it down</span>` : ""}</div>
+    </div>
+    ${items.map((b) => `
+      <div class="bl-card ${b.severity}">
+        <div class="bl-top">
+          <span class="pill ${b.severity === "critical" ? "crit" : "warn"}">${label[b.severity]}</span>
+          ${b.since ? `<span class="bl-since">${ago(b.since)}</span>` : ""}
+        </div>
+        <h3>${escapeHtml(b.title)}</h3>
+        <p class="bl-detail">${escapeHtml(b.detail)}</p>
+        ${b.fix ? `<p class="bl-fix"><b>What clears it:</b> ${escapeHtml(b.fix)}</p>` : ""}
+        <div class="bl-acts">
+          ${b.task_id ? `<button data-blview="${b.task_id}">Open task #${b.task_seq}</button>` : ""}
+          ${b.action === "retry" ? `<button data-blretry="${b.task_id}" class="primary">↻ Re-run it</button>` : ""}
+          ${b.action === "settings" ? `<button data-blset="1" class="primary">Open settings</button>` : ""}
+          ${b.action === "answer" ? `<button data-blask="1" class="primary">Answer the manager</button>` : ""}
+        </div>
+      </div>`).join("")}`;
+
+  el.querySelectorAll("[data-blview]").forEach((btn) =>
+    btn.addEventListener("click", () => showTask(Number(btn.dataset.blview))));
+  el.querySelectorAll("[data-blretry]").forEach((btn) =>
+    btn.addEventListener("click", async () => {
+      btn.disabled = true; btn.textContent = "re-running…";
+      await api(`/api/tasks/${btn.dataset.blretry}/retry`, { method: "POST" });
+      blockersSig = ""; renderBlockers();
+    }));
+  el.querySelectorAll("[data-blset]").forEach((btn) =>
+    btn.addEventListener("click", () => $("#settingsBtn").click()));
+  el.querySelectorAll("[data-blask]").forEach((btn) =>
+    btn.addEventListener("click", () => switchView("command")));
+}
+
 let lastTasks = [];
 let lastProject = null;
 
@@ -295,6 +514,9 @@ async function refreshBoard() {
   let p;
   try { p = await api(`/api/projects/${currentProject}`); } catch { return; }
   lastTasks = p.tasks;
+  const st = $("#selfTab");
+  if (st) st.hidden = !p.is_self;
+  renderBlockers();          // keeps the 🚧 badge honest even when the tab is closed
   currentRepo = p.repo || "";
   lastProject = p;
   if (!$("#dag").hidden) renderDag(p.tasks);
