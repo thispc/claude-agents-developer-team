@@ -758,21 +758,47 @@ async function renderArtifacts() {
 }
 
 // --- AGENTS TAB: the actual machines ----------------------------------------
+// The pane re-renders on every event; remember which log is open (and its text)
+// so it survives the re-render instead of vanishing.
+let openLogTask = null;
+let openLogText = "";
+
+async function loadMachineLogs(taskId) {
+  openLogTask = Number(taskId);
+  const box = $("#machineLogs");
+  if (box) { box.hidden = false; box.textContent = openLogText || "loading…"; }
+  try {
+    const r = await api(`/api/tasks/${taskId}/machine-logs`);
+    openLogText = `— ${r.source} · task #${taskId} —\n\n${r.logs}`;
+  } catch (e) { openLogText = String(e.message); }
+  const b = $("#machineLogs");
+  if (b && openLogTask === Number(taskId)) {
+    const atBottom = b.scrollHeight - b.scrollTop - b.clientHeight < 40;
+    b.textContent = openLogText;
+    if (atBottom) b.scrollTop = b.scrollHeight;   // keep tailing if already at the end
+  }
+}
+
 async function renderAgents() {
   const el = $("#agents");
   if (el.hidden) return;
   let a;
   try { a = await api("/api/agents"); }
   catch (e) { el.innerHTML = `<div class="pane"><p class="dim">${escapeHtml(e.message)}</p></div>`; return; }
-  const rows = (a.agents || []).map((g) => `
-    <tr>
+  const row = (g, live) => `
+    <tr class="${live ? "live" : "past"}">
       <td><span class="role">${escapeHtml(g.role)}</span></td>
-      <td>${escapeHtml(g.title)}</td>
-      <td><code>${escapeHtml(g.ref)}</code></td>
+      <td>${escapeHtml(trim(g.title, 46))}<div class="hint">${escapeHtml(g.project || "")}</div></td>
+      <td>${live ? `<code>${escapeHtml(g.ref)}</code>` : `<span class="pill">${escapeHtml(g.status)}</span>`}</td>
       <td>${escapeHtml(g.model)}</td>
-      <td>${Math.floor(g.uptime_s / 60)}m ${g.uptime_s % 60}s</td>
+      <td>${live ? `${Math.floor(g.uptime_s / 60)}m ${g.uptime_s % 60}s` : "—"}</td>
       <td><button data-logs="${g.task_id}">logs</button></td>
-    </tr>`).join("");
+    </tr>`;
+  const rows = (a.agents || []).map((g) => row(g, true)).join("")
+    + ((a.finished || []).length
+      ? `<tr class="sep"><td colspan="6">Recently finished — logs still available</td></tr>`
+        + a.finished.map((g) => row(g, false)).join("")
+      : "");
   el.innerHTML = `
     <div class="pane">
       <h2>🖥 Machines</h2>
@@ -782,17 +808,25 @@ async function renderAgents() {
         <thead><tr><th>Role</th><th>Task</th><th>${a.mode === "k8s" ? "Pod / Job" : "Process"}</th><th>Model</th><th>Uptime</th><th></th></tr></thead>
         <tbody>${rows || '<tr><td colspan="6" class="dim">No agents running right now.</td></tr>'}</tbody>
       </table>
-      <pre id="machineLogs" hidden></pre>
+      <div class="logs-head" ${openLogTask ? "" : "hidden"}>
+        <span>Machine logs — task #${openLogTask || ""}</span>
+        <button id="closeLogsBtn">close</button>
+      </div>
+      <pre id="machineLogs" ${openLogTask ? "" : "hidden"}>${escapeHtml(openLogText)}</pre>
     </div>`;
   el.querySelectorAll("[data-logs]").forEach((b) =>
-    b.addEventListener("click", async () => {
-      const box = $("#machineLogs");
-      box.hidden = false; box.textContent = "loading…";
-      try {
-        const r = await api(`/api/tasks/${b.dataset.logs}/machine-logs`);
-        box.textContent = `— ${r.source} —\n\n${r.logs}`;
-      } catch (e) { box.textContent = e.message; }
+    b.addEventListener("click", () => {
+      openLogText = "";                       // switching agents: start fresh
+      openLogTask = Number(b.dataset.logs);
+      renderAgents();                         // re-render, which fetches the logs
     }));
+  const closeBtn = $("#closeLogsBtn");
+  if (closeBtn) closeBtn.addEventListener("click", () => {
+    openLogTask = null; openLogText = "";
+    renderAgents();
+  });
+  // Keep the open log tailing live rather than freezing at first fetch.
+  if (openLogTask) loadMachineLogs(openLogTask);
 }
 
 // --- artifacts / public link ------------------------------------------------

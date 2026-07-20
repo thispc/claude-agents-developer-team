@@ -371,3 +371,10 @@ pre.dim, .dim { color: var(--dim); }
 .bell-opts button { font-size: 12px; padding: 7px 10px; text-align: left; }
 .bell-opts button:hover { border-color: var(--warn); color: var(--warn); }
 .bell-opts .link { background: none; border: none; color: var(--accent); text-align: left; padding: 4px 0; }
+
+.logs-head { display: flex; align-items: center; justify-content: space-between; margin-top: 16px; font-size: 11px; text-transform: uppercase; letter-spacing: .7px; color: var(--faint); font-weight: 650; }
+.logs-head button { padding: 4px 10px; font-size: 11px; }
+#machineLogs { margin-top: 6px; }
+.agents-table tr.sep td { background: var(--card-2); font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--faint); font-weight: 650; padding: 8px 10px; }
+.agents-table tr.past { opacity: .78; }
+.agents-table tr.live code { background: var(--accent-soft); color: var(--accent); }

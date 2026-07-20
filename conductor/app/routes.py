@@ -189,9 +189,23 @@ def list_agents() -> dict:
             "status": t["status"] if t else "gone",
             "location": info.get("workdir", ""),
         })
+    live_ids = {a["task_id"] for a in agents}
+    # Agents that already finished still matter — you want their logs afterwards, so
+    # list recent ones too instead of letting them disappear when the machine stops.
+    finished = []
+    for p in db.list_projects()[:6]:
+        for t in db.list_tasks(p["id"]):
+            if t["id"] not in live_ids and t["model"] and t["attempts"] > 0:
+                finished.append({
+                    "task_id": t["id"], "kind": "finished", "ref": "—",
+                    "role": t["role"], "model": t["model"], "title": t["title"],
+                    "project_id": p["id"], "project": p["name"],
+                    "uptime_s": 0, "status": t["status"], "location": "",
+                })
+    finished.sort(key=lambda a: -a["task_id"])
     return {"mode": config.LAUNCHER, "namespace": config.K8S_NAMESPACE,
             "max_parallel": config.MAX_CONCURRENT_WORKERS,
-            "running": len(agents), "agents": agents}
+            "running": len(agents), "agents": agents, "finished": finished[:15]}
 
 
 @router.get("/api/tasks/{task_id}/machine-logs")
