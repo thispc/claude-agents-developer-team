@@ -913,6 +913,7 @@ function renderEvent(e) {
   if (e.source === "manager" && e.kind === "message") cls += " mgrmsg";
   if (e.kind === "boss_question") cls += " question";
   if (e.source === "boss") cls += " bossmsg";
+  if (e.kind === "boss_reply") cls += " bossreply";
   if (e.kind === "rate_limited" || e.kind === "reassigned") cls += " ratelimit";
   // Scaling / routing machinery — surfaced on its own tab so the boss can audit
   // exactly when a model was upscaled, swapped, or a contest was run.
@@ -943,6 +944,10 @@ function renderEvent(e) {
       else if (e.kind === "changes_requested") text = `↩ Sent back for changes: ${obj.feedback || ""}`;
       else if (e.kind === "project_finished") text = `🏁 Project ${obj.status}`;
       else if (e.kind === "rate_limited") text = `⏳ ${obj.model || "a model"} hit a rate limit — the manager will move this work`;
+      else if (e.kind === "boss_reply") {
+        text = `💬 Answering you: ${obj.message}`
+          + (obj.running && obj.running.length ? `\n\nRunning right now: ${obj.running.join("; ")}` : "");
+      }
       else if (e.kind === "reassigned") text = `🔄 Moved to ${obj.model}: ${obj.reason || ""}`;
       else if (e.kind === "dispatched") text = `🚀 ${obj.role} started on ${obj.model}`
         + (obj.attempt > 1 ? ` — attempt ${obj.attempt}${obj.attempt >= 3 ? " (upscaled model)" : ""}` : "");

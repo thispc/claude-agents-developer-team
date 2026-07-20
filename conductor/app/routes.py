@@ -1040,7 +1040,15 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
         if all(r["status"] in ("pushed", "failed") for r in rivals):
             ok = [r for r in rivals if r["status"] == "pushed"]
             if ok:
-                db.update_task(body.task_id, status="review")
+                # Write a digest onto the TASK as well. get_report reads task.report,
+                # and a contest used to leave it empty — so a manager that called
+                # get_report saw "(no report yet)", concluded nothing was delivered,
+                # and sent perfectly good rival work back again and again.
+                digest = (f"CONTEST: {len(ok)} of {len(rivals)} rivals delivered. "
+                          f"Use compare_work to judge them, then pick_winner.\n\n" +
+                          "\n\n".join(f"--- rival #{r['idx']} ({r['model']}) [{r['status']}] ---\n"
+                                       f"{(r['report'] or '')[:1500]}" for r in rivals))
+                db.update_task(body.task_id, status="review", report=digest)
                 bus.emit(body.project_id, body.task_id, "system", "contest_ready",
                          {"rivals": len(rivals), "finished_ok": len(ok)})
             else:

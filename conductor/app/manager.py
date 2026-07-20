@@ -204,8 +204,14 @@ def build_team_server(project_id: int):
                 break
             directives = db.take_directives(project_id)
             if directives:
-                note = "MESSAGE(S) FROM THE BOSS (the user) — treat as high priority:\n" + \
-                    "\n".join(f"- {d}" for d in directives)
+                note = ("MESSAGE(S) FROM THE BOSS (the user) — STOP and handle these "
+                        "before anything else:\n" +
+                        "\n".join(f"- {d}" for d in directives) +
+                        "\n\nIf any of that is a QUESTION, your very next action must be "
+                        "reply_to_boss with a real answer — which task is running, on "
+                        "which model, how long it has been going, what it is waiting on. "
+                        "Leaving the boss unanswered is not acceptable; they cannot see "
+                        "what you can.")
                 break
             now = {t["id"]: t["status"] for t in db.list_tasks(project_id)}
             changed = [tid for tid, s in now.items() if before.get(tid) != s]
@@ -258,6 +264,30 @@ def build_team_server(project_id: int):
         db.set_project_status(project_id, "running")
         return _text("No answer within 60 minutes; use your best judgment and proceed.")
 
+    @tool("reply_to_boss",
+          "Answer the boss directly. Use this the moment a MESSAGE FROM THE BOSS "
+          "asks you anything — especially 'why is this taking so long'. Give the "
+          "real status: what is running, on which model, for how long, what it is "
+          "waiting on, and what you are doing about it. Never leave a question "
+          "unanswered.",
+          {"message": str})
+    async def reply_to_boss(args: dict[str, Any]) -> dict[str, Any]:
+        msg = str(args.get("message", "")).strip()
+        if not msg:
+            return _text("error: say something")
+        # Attach the facts so the answer is checkable, not a vibe.
+        import time as _t
+        now = _t.time()
+        live = []
+        for t in db.list_tasks(project_id):
+            if t["status"] in ("queued", "running"):
+                mins = int((now - t["updated_at"]) / 60)
+                live.append(f"#{t['seq']} {t['role']} on {t['model'] or '?'} "
+                            f"({t['status']}, {mins}m, attempt {t['attempts']})")
+        bus.emit(project_id, None, "manager", "boss_reply",
+                 {"message": msg, "running": live})
+        return _text("Delivered to the boss. Carry on.")
+
     @tool("get_report", "Read the final report a team member produced for a task. Check "
           "the end for an ESCALATION: section — that is a request for extra tasks.",
           {"task_id": int})
@@ -265,6 +295,18 @@ def build_team_server(project_id: int):
         t = db.resolve_task(project_id, int(args["task_id"]))
         if not t:
             return _text("error: no such task")
+        # A contest's work lives on the rival rows, not on the task. Returning
+        # "(no report yet)" here made managers believe nothing had been built.
+        rivals = db.list_contenders(t["id"])
+        if rivals and not (t["report"] or "").strip():
+            lines = [f"This task ran as a CONTEST with {len(rivals)} rival attempts. "
+                     f"Their work is below; judge it with compare_work and pick_winner.",
+                     ""]
+            for r in rivals:
+                lines.append(f"--- rival #{r['idx']} ({r['model']}) [{r['status']}] "
+                             f"branch {r['branch']} ---")
+                lines.append((r["report"] or "(no report)")[:1500])
+            return _text("\n".join(lines))
         return _text(t["report"] or "(no report yet)")
 
     @tool("request_changes", "Send a task back to its team member with specific feedback. "
@@ -420,7 +462,7 @@ def build_team_server(project_id: int):
 
     return create_sdk_mcp_server(
         name="team", version="1.0.0",
-        tools=[create_tasks, add_tasks, status, wait, ask_boss, get_report,
+        tools=[create_tasks, add_tasks, status, wait, ask_boss, reply_to_boss, get_report,
                request_changes, reassign_task, compare_work, pick_winner,
                accept_task, merge_pr, finish],
     )
@@ -428,8 +470,8 @@ def build_team_server(project_id: int):
 
 MANAGER_TOOLS = [f"mcp__team__{n}" for n in
                  ("create_tasks", "add_tasks", "status", "wait", "ask_boss",
-                  "get_report", "request_changes", "reassign_task", "compare_work",
-                  "pick_winner", "accept_task", "merge_pr", "finish")]
+                  "reply_to_boss", "get_report", "request_changes", "reassign_task",
+                  "compare_work", "pick_winner", "accept_task", "merge_pr", "finish")]
 
 BUILTIN_TOOLS_OFF = ["Bash", "Read", "Write", "Edit", "Glob", "Grep",
                      "WebSearch", "WebFetch", "Task", "NotebookEdit", "TodoWrite"]

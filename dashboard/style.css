@@ -618,3 +618,7 @@ pre.dim, .dim { color: var(--dim); }
 .mode-cost { display: inline-block !important; margin-top: 0 !important; font-size: 11px !important;
   background: var(--soft); padding: 1px 7px; border-radius: 8px; color: var(--muted); }
 @media (max-width: 900px) { .mode-row { grid-template-columns: 1fr; } }
+
+/* The manager answering the boss — never buried, never filtered out. */
+.ev.bossreply { border-left: 3px solid var(--accent); background: var(--accent-soft); }
+.ev.bossreply .src { color: var(--accent); font-weight: 650; }
