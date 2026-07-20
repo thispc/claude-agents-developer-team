@@ -7,6 +7,17 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div id="loginScreen" hidden>
+  <form id="loginForm">
+    <h1>dev<span>team</span></h1>
+    <p class="login-sub">Sign in to run your AI team</p>
+    <label>Username <input name="username" value="root" autocomplete="username"></label>
+    <label>Password <input name="password" type="password" autocomplete="current-password"></label>
+    <p id="loginError" class="form-error" hidden></p>
+    <button type="submit" class="primary">Sign in</button>
+  </form>
+</div>
+
 <header>
   <h1 id="homeLink">dev<span>team</span></h1>
   <select id="projectSelect" title="Select project" hidden></select>
@@ -15,6 +26,8 @@
   <div id="authBadge" class="badge">auth: …</div>
   <div id="costBadge" class="badge" hidden>—</div>
   <div id="statusBadge" class="badge" hidden>—</div>
+  <button id="settingsBtn" title="Your GitHub & API keys">⚙</button>
+  <button id="logoutBtn" title="Sign out">⏻</button>
   <button id="artifactsBtn" hidden title="Repo, PRs, and the public link">📦 Artifacts</button>
   <button id="restartBtn" hidden title="Re-run the manager on this project">↻ Restart manager</button>
   <button id="cancelBtn" class="danger" hidden>Cancel</button>
@@ -64,6 +77,25 @@
     </form>
   </section>
 </main>
+
+<dialog id="settingsDialog">
+  <form id="settingsForm" class="task-detail-wrap">
+    <h2>⚙ Your settings</h2>
+    <p class="hint" id="settingsWho"></p>
+    <label>GitHub token <span class="hint" id="ghState"></span>
+      <input name="github_token" type="password" placeholder="github_pat_… (leave blank to keep current)"></label>
+    <label>Anthropic API key <span class="hint" id="keyState"></span>
+      <input name="anthropic_api_key" type="password" placeholder="sk-ant-… (optional — blank uses the server's subscription)"></label>
+    <p class="hint">Your credentials are stored per user on the server and never sent back to the browser.
+      Full GitHub OAuth ("Authorize once") is the next step — for now paste a fine-grained token
+      with Contents, Issues and Pull requests read/write.</p>
+    <p id="settingsError" class="form-error" hidden></p>
+    <div class="actions">
+      <button type="button" id="closeSettingsBtn">Close</button>
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="approvalDialog">
   <div class="approval-wrap">
@@ -127,8 +159,9 @@
       <label>Your idea <span class="hint">describe what you want and what “done” looks like — any domain</span>
         <textarea name="brief" rows="7" required
           placeholder="Describe your idea in plain words. e.g. 'Build a weather app that shows a 7-day forecast for my location' — or 'Design a blueprint for a two-stage reusable rocket'. The manager reads this and assembles the right team."></textarea></label>
-      <label>GitHub repo <span class="hint">owner/repo — created automatically (private) if it doesn't exist; blank uses the default</span>
-        <input name="repo" placeholder="owner/repo" autocomplete="off"></label>
+      <label>GitHub repo <span class="hint">pick one of yours, or type a new name — created privately if it doesn't exist</span>
+        <input name="repo" list="repoList" placeholder="owner/repo" autocomplete="off">
+        <datalist id="repoList"></datalist></label>
       <p id="formError" class="form-error" hidden></p>
       <div class="actions">
         <button type="button" id="closeDialogBtn">Cancel</button>
@@ -169,6 +202,26 @@
           <div><b>⚡ Full autonomy <em>(bypass — hands off)</em></b><span>The manager decides everything and only interrupts you if truly stuck. Fast, but you won't be asked to approve.</span></div>
         </label>
       </div>
+      <h3 class="ctl-h">Who is your manager?</h3>
+      <div class="nums">
+        <label>Manager's brain <span class="hint">stronger = better judgment</span>
+          <select name="manager_model">
+            <option value="">Sonnet 5 (default, balanced)</option>
+            <option value="claude-opus-4-8">Opus 4.8 (most capable)</option>
+            <option value="claude-fable-5">Fable 5 (deepest reasoning)</option>
+            <option value="claude-haiku-4-5">Haiku 4.5 (fast &amp; cheap)</option>
+          </select></label>
+        <label>Character <span class="hint">shapes who they hire &amp; how hard they review</span>
+          <select id="personaPreset">
+            <option value="">Skeptical &amp; evidence-driven (default)</option>
+            <option value="ruthless">Ruthless perfectionist</option>
+            <option value="shipper">Pragmatic shipper</option>
+            <option value="researcher">Deep researcher</option>
+            <option value="custom">Custom…</option>
+          </select></label>
+      </div>
+      <textarea name="manager_persona" id="personaText" rows="3" hidden
+        placeholder="Describe your manager's character, standards, and how they should hire and review…"></textarea>
       <details class="advanced">
         <summary>Advanced limits</summary>
         <div class="nums">

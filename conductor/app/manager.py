@@ -361,9 +361,16 @@ async def run_manager(project_id: int) -> None:
         "Plan the work, run your team, and ship it. This may be a restarted session: "
         "call status first, and only create_tasks if none exist yet."
     )
+    # The manager's character is the biggest lever on the whole team: it decides who
+    # gets recruited, how hard the work is reviewed, and what ships. Let the boss set it.
+    system_prompt = config.load_role_prompt("manager")
+    persona = (project.get("manager_persona") or "").strip()
+    if persona:
+        system_prompt += ("\n\n## Additional character instructions from your boss "
+                          "(these take precedence)\n\n" + persona)
     options = ClaudeAgentOptions(
-        system_prompt=config.load_role_prompt("manager"),
-        model=config.LEAD_MODEL,
+        system_prompt=system_prompt,
+        model=(project.get("manager_model") or "").strip() or config.LEAD_MODEL,
         max_turns=config.LEAD_MAX_TURNS,
         mcp_servers={"team": build_team_server(project_id)},
         allowed_tools=MANAGER_TOOLS,

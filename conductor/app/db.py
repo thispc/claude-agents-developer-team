@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS projects (
     runs_used INTEGER NOT NULL DEFAULT 0,
     team TEXT NOT NULL DEFAULT '[]',   -- recruited roster: [{role, count, model}]
     autonomy TEXT NOT NULL DEFAULT 'supervised',  -- supervised | autonomous
+    manager_model TEXT NOT NULL DEFAULT '',       -- '' = server default
+    manager_persona TEXT NOT NULL DEFAULT '',     -- extra character instructions
     cost_usd REAL NOT NULL DEFAULT 0,
     summary TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL
@@ -86,6 +88,8 @@ def init() -> None:
         "ALTER TABLE tasks ADD COLUMN origin TEXT NOT NULL DEFAULT 'initial'",
         "ALTER TABLE projects ADD COLUMN team TEXT NOT NULL DEFAULT '[]'",
         "ALTER TABLE projects ADD COLUMN autonomy TEXT NOT NULL DEFAULT 'supervised'",
+        "ALTER TABLE projects ADD COLUMN manager_model TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN manager_persona TEXT NOT NULL DEFAULT ''",
     ):
         try:
             _conn.execute(stmt)
@@ -112,12 +116,13 @@ def _rows(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
 
 def create_project(name: str, brief: str, repo: str, budget_usd: float,
                    max_workers: int, max_runs: int = 40, team: list | None = None,
-                   autonomy: str = "supervised") -> int:
+                   autonomy: str = "supervised", manager_model: str = "",
+                   manager_persona: str = "") -> int:
     cur = _execute(
         "INSERT INTO projects (name, brief, repo, budget_usd, max_workers, max_runs, team, "
-        "autonomy, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        "autonomy, manager_model, manager_persona, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (name, brief, repo, budget_usd, max_workers, max_runs, json.dumps(team or []),
-         autonomy, time.time()),
+         autonomy, manager_model, manager_persona, time.time()),
     )
     return cur.lastrowid
 

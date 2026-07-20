@@ -4,13 +4,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import bus, config, db, manager, scheduler
+from . import auth, bus, config, db, manager, scheduler
 from .routes import router, _manager_tasks
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    auth.init()   # seeds the root superuser from .env on first run
     loop = asyncio.get_event_loop()
     bus.set_loop(loop)
     config.WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)

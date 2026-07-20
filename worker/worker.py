@@ -13,6 +13,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -78,6 +79,10 @@ def setup_repo() -> Path:
         raise RuntimeError(f"git clone failed: {r.stderr[-500:]}")
     sh("git", "config", "user.email", "devteam-bot@users.noreply.github.com", cwd=repo_dir)
     sh("git", "config", "user.name", f"devteam {ROLE} agent", cwd=repo_dir)
+    # Large pushes over HTTP can fail with "RPC failed; HTTP 400 ... unexpected
+    # disconnect" unless the buffer is raised.
+    sh("git", "config", "http.postBuffer", "524288000", cwd=repo_dir)
+    sh("git", "config", "http.version", "HTTP/1.1", cwd=repo_dir)
     # Reuse the branch on re-runs (request_changes), else create it.
     if sh("git", "checkout", BRANCH, cwd=repo_dir).returncode != 0:
         sh("git", "checkout", "-b", BRANCH, cwd=repo_dir)
@@ -92,10 +97,19 @@ def commit_and_push(repo_dir: Path) -> tuple[bool, str]:
         pass
     if not REPO:
         return True, "no remote configured; changes remain in workspace"
-    pushed = sh("git", "push", "-u", "origin", BRANCH, cwd=repo_dir)
-    if pushed.returncode != 0:
-        return False, f"git push failed: {pushed.stderr[-500:]}"
-    return True, f"pushed branch {BRANCH}"
+    # Push can fail transiently (HTTP 400 / disconnect) — retry before giving up,
+    # otherwise completed work gets thrown away.
+    last_err = ""
+    for attempt in range(3):
+        pushed = sh("git", "push", "-u", "origin", BRANCH, cwd=repo_dir)
+        if pushed.returncode == 0:
+            return True, f"pushed branch {BRANCH}"
+        last_err = (pushed.stderr or pushed.stdout)[-400:]
+        if "up-to-date" in last_err or "up to date" in last_err:
+            return True, f"branch {BRANCH} already up to date"
+        emit("push_retry", f"attempt {attempt + 1} failed: {last_err[-200:]}")
+        time.sleep(3 * (attempt + 1))
+    return False, f"git push failed after 3 attempts: {last_err}"
 
 
 def build_prompt() -> str:

@@ -16,6 +16,88 @@ async function api(path, opts) {
 }
 
 let authMode = "none";
+let me = { signed_in: false };
+
+// --- sign-in / settings -----------------------------------------------------
+const PERSONAS = {
+  "": "",
+  ruthless: "You are a ruthless perfectionist. Nothing ships unless it is genuinely excellent. " +
+    "Reject work that is merely adequate, demand rigorous evidence for every claim, and hire " +
+    "specialists rather than generalists. You would rather do another round than ship something mediocre.",
+  shipper: "You are a pragmatic shipper. Bias hard toward a working end-to-end result over " +
+    "polish. Keep the team small, cut scope aggressively when it protects the deadline, and " +
+    "accept good-enough work that demonstrably functions. Still verify it actually runs.",
+  researcher: "You are a deep researcher. Before building, make sure the approach is sound — " +
+    "have the team investigate, compare options, and document findings with sources. Hire " +
+    "analytical specialists, insist on reasoning and evidence, and challenge unsupported assumptions hard.",
+};
+
+async function loadMe() {
+  try { me = await api("/api/me"); } catch { me = { signed_in: false }; }
+  $("#loginScreen").hidden = !!me.signed_in;
+  document.querySelector("header").hidden = !me.signed_in;
+  if (!me.signed_in) { $("#home").hidden = true; $("main").hidden = true; }
+  return me.signed_in;
+}
+
+$("#loginForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const err = $("#loginError");
+  err.hidden = true;
+  try {
+    await api("/api/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: f.get("username"), password: f.get("password") }),
+    });
+    await boot();
+  } catch (e) { err.textContent = e.message; err.hidden = false; }
+});
+
+$("#logoutBtn").addEventListener("click", async () => {
+  await api("/api/logout", { method: "POST" });
+  location.reload();
+});
+
+$("#settingsBtn").addEventListener("click", async () => {
+  await loadMe();
+  const s = me.settings || {};
+  $("#settingsWho").textContent = `Signed in as ${me.username}${me.is_root ? " (root)" : ""}`;
+  $("#ghState").textContent = s.github_token_set ? "— currently set ✓" : "— not set";
+  $("#keyState").textContent = s.anthropic_api_key_set ? "— currently set ✓" : "— not set";
+  $("#settingsError").hidden = true;
+  $("#settingsForm").reset();
+  $("#settingsDialog").showModal();
+});
+$("#closeSettingsBtn").addEventListener("click", () => $("#settingsDialog").close());
+$("#settingsForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = new FormData(ev.target);
+  const body = {};
+  if (f.get("github_token")) body.github_token = f.get("github_token");
+  if (f.get("anthropic_api_key")) body.anthropic_api_key = f.get("anthropic_api_key");
+  try {
+    await api("/api/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    $("#settingsDialog").close();
+    loadMe();
+  } catch (e) { $("#settingsError").textContent = e.message; $("#settingsError").hidden = false; }
+});
+
+async function loadRepos() {
+  try {
+    const r = await api("/api/github/repos");
+    $("#repoList").innerHTML = r.repos.map((x) => `<option value="${x.full_name}">`).join("");
+  } catch { /* no token yet — the field still accepts a typed name */ }
+}
+
+$("#personaPreset").addEventListener("change", (e) => {
+  const t = $("#personaText");
+  if (e.target.value === "custom") { t.hidden = false; t.value = ""; t.focus(); }
+  else { t.hidden = true; t.value = PERSONAS[e.target.value] || ""; }
+});
 const taskCost = (t) => (authMode === "subscription" ? "" : ` · $${t.cost_usd.toFixed(2)}`);
 
 async function loadHealth() {
@@ -753,6 +835,8 @@ $("#newProjectForm").addEventListener("submit", async (ev) => {
         name: f.get("name"), brief: f.get("brief"), repo: f.get("repo"),
         max_workers: Number(f.get("max_workers")) || 3, max_runs: Number(f.get("max_runs")) || 40,
         team: readRoster(), autonomy: f.get("autonomy") || "supervised",
+        manager_model: f.get("manager_model") || "",
+        manager_persona: f.get("manager_persona") || "",
       }),
     });
     dialog.close();
@@ -766,12 +850,14 @@ $("#newProjectForm").addEventListener("submit", async (ev) => {
   }
 });
 
-(async () => {
+async function boot() {
+  if (!(await loadMe())) return;      // show login screen until signed in
   await loadHealth();
+  loadRepos();
   showHome();
-  connectWs();
-  // Ask once for notification permission so approval requests can push.
+  if (!ws) connectWs();
   if (window.Notification && Notification.permission === "default")
     setTimeout(() => Notification.requestPermission(), 1500);
-})();
+}
+boot();
 setInterval(() => { if (currentProject) refreshBoard(); else loadProjects(); }, 10000);

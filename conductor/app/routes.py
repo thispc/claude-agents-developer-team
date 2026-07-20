@@ -4,7 +4,7 @@ from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSoc
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from . import bus, config, db, github_client, manager, planner, preview, scheduler
+from . import auth, bus, config, db, github_client, manager, planner, preview, scheduler
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -25,10 +25,27 @@ class NewProject(BaseModel):
     max_runs: int = 0
     team: list[TeamMember] = []
     autonomy: str = "supervised"
+    manager_model: str = ""
+    manager_persona: str = ""
 
 
 class BriefOnly(BaseModel):
     brief: str
+
+
+class Login(BaseModel):
+    username: str
+    password: str
+
+
+class Settings(BaseModel):
+    github_token: str | None = None
+    anthropic_api_key: str | None = None
+
+
+class NewRepo(BaseModel):
+    name: str
+    private: bool = True
 
 
 class NewTask(BaseModel):
@@ -72,6 +89,71 @@ class WorkerReport(BaseModel):
     cost_usd: float = 0
 
 
+# --- auth & per-user settings ------------------------------------------------
+
+def current_user(request: Request) -> dict:
+    u = auth.user_for_token(request.cookies.get("devteam_session"))
+    if not u:
+        raise HTTPException(401, "not signed in")
+    return u
+
+
+@router.post("/api/login")
+def login(body: Login, response: Response) -> dict:
+    u = auth.verify(body.username, body.password)
+    if not u:
+        raise HTTPException(401, "wrong username or password")
+    token = auth.start_session(u["id"])
+    response.set_cookie("devteam_session", token, httponly=True, samesite="lax", max_age=30 * 86400)
+    return {"username": u["username"], "is_root": bool(u["is_root"])}
+
+
+@router.post("/api/logout")
+def logout(request: Request, response: Response) -> dict:
+    auth.end_session(request.cookies.get("devteam_session"))
+    response.delete_cookie("devteam_session")
+    return {"ok": True}
+
+
+@router.get("/api/me")
+def me(request: Request) -> dict:
+    u = auth.user_for_token(request.cookies.get("devteam_session"))
+    if not u:
+        return {"signed_in": False}
+    s = auth.get_settings(u)
+    return {"signed_in": True, "username": u["username"], "is_root": bool(u["is_root"]),
+            "settings": auth.redacted(s)}
+
+
+@router.post("/api/settings")
+def save_settings(body: Settings, request: Request) -> dict:
+    u = current_user(request)
+    auth.save_settings(u["id"], body.model_dump(exclude_none=True))
+    return auth.redacted(auth.get_settings(auth.get_user(u["id"])))
+
+
+@router.get("/api/github/repos")
+async def list_my_repos(request: Request) -> dict:
+    """The signed-in user's repos, for the project picker."""
+    u = current_user(request)
+    token = auth.get_settings(u).get("github_token", "")
+    if not token:
+        raise HTTPException(400, "no GitHub token set — add one in Settings")
+    return {"repos": await github_client.list_user_repos(token)}
+
+
+@router.post("/api/github/repos")
+async def create_my_repo(body: NewRepo, request: Request) -> dict:
+    u = current_user(request)
+    token = auth.get_settings(u).get("github_token", "")
+    if not token:
+        raise HTTPException(400, "no GitHub token set — add one in Settings")
+    ok, result = await github_client.create_user_repo(token, body.name, body.private)
+    if not ok:
+        raise HTTPException(400, result)
+    return {"repo": result}
+
+
 @router.get("/api/health")
 def health() -> dict:
     return {"ok": True, "launcher": config.LAUNCHER, "auth": config.auth_mode(),
@@ -103,6 +185,8 @@ async def create_project(body: NewProject) -> dict:
         body.max_workers or config.MAX_CONCURRENT_WORKERS,
         body.max_runs or config.MAX_AGENT_RUNS,
         team=team, autonomy=autonomy,
+        manager_model=body.manager_model.strip(),
+        manager_persona=body.manager_persona.strip(),
     )
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
     # Make sure the target repo exists before the team tries to clone it. This is

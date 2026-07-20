@@ -70,6 +70,34 @@ async def repo_exists(repo: str) -> bool:
         raise
 
 
+async def list_user_repos(token: str) -> list[dict]:
+    """Repos the given token can push to — for the project repo picker."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.get(
+            f"{API}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator",
+            headers={"Authorization": f"Bearer {token}",
+                     "Accept": "application/vnd.github+json",
+                     "X-GitHub-Api-Version": "2022-11-28"})
+        resp.raise_for_status()
+        return [{"full_name": r["full_name"], "private": r["private"],
+                 "updated_at": r.get("updated_at", "")}
+                for r in resp.json() if r.get("permissions", {}).get("push")]
+
+
+async def create_user_repo(token: str, name: str, private: bool = True) -> tuple[bool, str]:
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{API}/user/repos",
+            headers={"Authorization": f"Bearer {token}",
+                     "Accept": "application/vnd.github+json",
+                     "X-GitHub-Api-Version": "2022-11-28"},
+            json={"name": name, "private": private, "auto_init": True,
+                  "description": "Created by devteam"})
+        if resp.status_code >= 300:
+            return False, f"{resp.status_code}: {resp.text[:200]}"
+        return True, resp.json()["full_name"]
+
+
 async def list_prs(repo: str) -> list[dict]:
     data = await _request("GET", f"/repos/{repo}/pulls?state=all&per_page=30")
     return [{"number": p["number"], "title": p["title"], "state": p["state"],
