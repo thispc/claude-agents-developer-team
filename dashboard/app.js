@@ -1108,7 +1108,20 @@ async function renderArtifacts(force) {
     <div class="pane">
       <h2>${escapeHtml(a.project)}</h2>
       <p class="brief">${escapeHtml(a.brief)}</p>
-      <div class="demo-row">${demo}</div>
+      <div class="run-cards">
+        <div class="run-card">
+          <h4>📄 Static preview</h4>
+          <p class="run-why">Serves the built files only. Fast, sandboxed — but any
+             call the app makes to its own backend will 404.</p>
+          <div class="demo-row">${demo}</div>
+        </div>
+        <div class="run-card primary-card" id="fullDeployCard">
+          <h4>🚀 Full deployment</h4>
+          <p class="run-why">Builds the latest main and <b>runs the real app</b> —
+             backend, API routes and all.</p>
+          <div id="deployBody"><span class="hint">checking…</span></div>
+        </div>
+      </div>
       ${a.conclusion ? `<h3>Conclusion</h3><div class="conclusion">${escapeHtml(a.conclusion)}</div>` : ""}
       <h3>What the team did</h3>
       <div class="work-list">${work || '<p class="dim">No work yet.</p>'}</div>
@@ -1119,12 +1132,82 @@ async function renderArtifacts(force) {
          &nbsp; <span class="hint">branches: ${(a.branches || []).length}</span></p>
     </div>`;
 
+  renderDeploy();
+
   const bp = $("#buildPreviewBtn");
   if (bp) bp.addEventListener("click", async () => {
     const label = bp.textContent;
     bp.disabled = true; bp.textContent = "Pulling latest…";
     try { await api(`/api/projects/${currentProject}/preview`, { method: "POST" }); renderArtifacts(true); }
     catch (e) { alert(e.message); bp.disabled = false; bp.textContent = label; }
+  });
+}
+
+// --- Full deployment: build and run the real app, backend included ----------
+async function renderDeploy() {
+  const box = $("#deployBody");
+  if (!box || !currentProject) return;
+  let d;
+  try { d = await api(`/api/projects/${currentProject}/deploy`); }
+  catch (e) { box.innerHTML = `<span class="hint">${escapeHtml(e.message)}</span>`; return; }
+
+  const spec = d.spec || {};
+  const modeNote = d.default_mode === "k8s"
+    ? "deploys as a pod on the cluster"
+    : "runs locally on its own port";
+
+  if (d.live) {
+    box.innerHTML = `
+      <div class="live-row">
+        <span class="pill ok">live</span>
+        <a class="demo-btn" href="${d.live.url}" target="_blank">▶ Open the running app</a>
+        <button id="redeployBtn">↻ Rebuild &amp; restart</button>
+        <button id="stopDeployBtn" class="danger">■ Stop</button>
+      </div>
+      <p class="hint">${escapeHtml(d.live.url)} · ${escapeHtml(d.live.kind)} ·
+         up ${Math.floor(d.live.uptime / 60)}m${d.live.uptime % 60}s</p>
+      ${d.log ? `<details><summary>Build &amp; runtime log</summary><pre class="deploy-log">${
+        escapeHtml(d.log)}</pre></details>` : ""}`;
+  } else {
+    const runnable = spec.kind && !["static", "unknown", "node-static"].includes(spec.kind);
+    box.innerHTML = `
+      ${spec.kind ? `<p class="detected"><b>Detected:</b> ${escapeHtml(spec.kind)} —
+         ${escapeHtml(spec.why || "")}</p>` : ""}
+      <button id="deployAppBtn" class="primary" ${spec.kind && !runnable ? "disabled" : ""}>
+        🚀 Build &amp; deploy${d.default_mode === "k8s" ? " to the cluster" : ""}</button>
+      <span class="hint">${modeNote}</span>
+      ${spec.kind && !runnable
+        ? `<p class="hint warn-t">Nothing to run — this project is ${escapeHtml(spec.kind)}.
+           The static preview is the right tool for it.</p>` : ""}
+      ${d.log ? `<details><summary>Last build log</summary><pre class="deploy-log">${
+        escapeHtml(d.log)}</pre></details>` : ""}`;
+  }
+
+  const go = $("#deployAppBtn") || $("#redeployBtn");
+  if (go) go.addEventListener("click", async () => {
+    const label = go.textContent;
+    go.disabled = true;
+    go.textContent = "building… (first build can take a minute)";
+    try {
+      const r = await api(`/api/projects/${currentProject}/deploy`, { method: "POST" });
+      if (!r.ok) {
+        box.innerHTML = `<p class="deploy-err"><b>Deploy failed:</b> ${escapeHtml(r.error || "unknown")}</p>
+          ${r.log ? `<pre class="deploy-log">${escapeHtml(r.log)}</pre>` : ""}
+          <button id="deployAppBtn" class="primary">↻ Try again</button>`;
+        const again = $("#deployAppBtn");
+        if (again) again.addEventListener("click", () => renderDeploy());
+        return;
+      }
+      artifactsSig = ""; renderDeploy();
+    } catch (e) {
+      alert(e.message); go.disabled = false; go.textContent = label;
+    }
+  });
+  const stop = $("#stopDeployBtn");
+  if (stop) stop.addEventListener("click", async () => {
+    stop.disabled = true;
+    await api(`/api/projects/${currentProject}/deploy`, { method: "DELETE" });
+    renderDeploy();
   });
 }
 

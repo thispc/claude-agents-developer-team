@@ -4,8 +4,8 @@ from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSoc
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from . import (auth, blockers, bus, config, db, github_client, manager, planner, preview,
-               scheduler, selfops)
+from . import (auth, blockers, bus, config, db, deploy, github_client, manager, planner,
+               preview, scheduler, selfops)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -337,6 +337,28 @@ def model_health(request: Request) -> dict:
 def launcher_looks_rate_limited(text: str) -> bool:
     from .launcher import looks_rate_limited
     return looks_rate_limited(text)
+
+
+@router.get("/api/projects/{project_id}/deploy")
+def deploy_status(project_id: int, request: Request) -> dict:
+    owned_project(project_id, request)
+    return deploy.status(project_id)
+
+
+@router.post("/api/projects/{project_id}/deploy")
+async def deploy_app(project_id: int, request: Request, mode: str = "") -> dict:
+    """Build and run the project's real app — backend included."""
+    owned_project(project_id, request)
+    mode = mode or ("k8s" if config.LAUNCHER == "k8s" else "local")
+    if mode == "k8s":
+        return await deploy.deploy_k8s(project_id)
+    return await deploy.deploy_local(project_id)
+
+
+@router.delete("/api/projects/{project_id}/deploy")
+def undeploy_app(project_id: int, request: Request) -> dict:
+    owned_project(project_id, request)
+    return {"status": deploy.stop(project_id)}
 
 
 @router.get("/api/projects/{project_id}/blockers")
