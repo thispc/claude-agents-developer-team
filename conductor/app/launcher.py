@@ -96,6 +96,26 @@ def handoff_context(task: dict) -> str:
             "you match their contracts and don't redo their work.\n\n" + "\n\n".join(parts))
 
 
+def prior_attempt(task: dict) -> str:
+    """What the previous attempt on THIS task got done before it stopped.
+
+    A retry used to start cold: the only context it received was manager feedback,
+    which a run that died on a session limit never has. So the agent re-derived
+    everything it had already worked out, and the expensive part of the work was
+    paid for twice. The branch carried the committed files, but not the reasoning.
+
+    On the mars-rover run six of eight agent runs were retries of this kind.
+    """
+    if not task.get("attempts") or not (task.get("report") or "").strip():
+        return ""
+    why = ("Your previous attempt was cut short by a capacity limit, not by a "
+           "mistake" if looks_rate_limited(task.get("report", ""))
+           else "Your previous attempt did not finish")
+    return (f"{why}. This is what it reported before stopping — the branch already "
+            f"has whatever it committed, so CONTINUE from here rather than starting "
+            f"over:\n\n{task['report'][:4000]}")
+
+
 def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
     auth = owner_credentials(project)
     return {
@@ -109,6 +129,7 @@ def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
         "TASK_TITLE": task["title"],
         "TASK_DESCRIPTION": task["description"],
         "TASK_FEEDBACK": task.get("feedback", ""),
+        "PRIOR_ATTEMPT": prior_attempt(task),
         "BRANCH": task["branch"],
         "REPO": project["repo"],
         "GITHUB_TOKEN": owner_github_token(project),
@@ -125,7 +146,14 @@ def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
 
 
 # Strong signals: their presence alone means we were throttled.
-RATE_LIMIT_MARKERS = ("rate limit", "rate_limit", "overloaded",
+#
+# "session limit" earns its place the hard way. Anthropic's subscription message is
+# "You've hit your session limit · resets 3pm", which matched none of the others —
+# so two deaths that were purely capacity got classified as QUALITY failures and
+# sent the task up the escalation ladder. On the mars-rover run that burned four
+# retries and the manager had to reassign by hand, writing "both prior attempts
+# died on a session/rate limit (not a quality failure)".
+RATE_LIMIT_MARKERS = ("rate limit", "rate_limit", "overloaded", "session limit",
                       "usage limit", "too many requests", "retry-after")
 # Weak signals: a task's own output can legitimately contain these (a tester
 # reporting an HTTP 429, code mentioning a quota). Only count them alongside a
@@ -230,6 +258,14 @@ def pick_model(task: dict, project: dict | None = None) -> str:
             if m != prev and not cooldown_left(m):
                 return m
     if task["attempts"] >= 2:
+        # Escalate RELATIVE to whatever just failed. Returning a fixed model made
+        # this a no-op whenever the recruited roster had already assigned that
+        # model: the mars-rover run "escalated" sonnet-5 to sonnet-5, spending a
+        # retry without changing anything about the attempt.
+        prev = task.get("model") or ""
+        if prev in FALLBACK_ORDER:
+            nxt = FALLBACK_ORDER.index(prev) + 1
+            return FALLBACK_ORDER[nxt] if nxt < len(FALLBACK_ORDER) else prev
         return config.ESCALATION_MODEL
     if project:
         import json
