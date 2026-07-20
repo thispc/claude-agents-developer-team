@@ -282,8 +282,25 @@ def build_team_server(project_id: int):
             assert isinstance(opts, list)
         except Exception:
             opts = []
+
+        def _opt_text(o) -> str:
+            """A choice the boss can actually read on a button.
+
+            Models legitimately answer with structured options like
+            {"label": "Merge & proceed", "detail": "..."} — flatten them here, once,
+            so the stored row and the broadcast event never disagree.
+            """
+            if isinstance(o, dict):
+                label = o.get("label") or o.get("option") or o.get("title") or ""
+                detail = o.get("detail") or o.get("description") or o.get("why") or ""
+                if label and detail:
+                    return f"{label} — {detail}"
+                return str(label or detail or json.dumps(o, ensure_ascii=False))
+            return str(o)
+
+        opts = [_opt_text(o)[:400] for o in opts][:4]
         db.abandon_questions(project_id)   # a new question supersedes any older one
-        qid = db.ask_question(project_id, args["question"], [str(o) for o in opts][:4])
+        qid = db.ask_question(project_id, args["question"], opts)
         prev_status = project().get("status", "running")
         db.set_project_status(project_id, "hold")  # surfaces as "on hold" in the UI
         bus.emit(project_id, None, "manager", "boss_question",

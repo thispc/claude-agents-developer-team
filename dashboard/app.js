@@ -837,7 +837,7 @@ function renderChat() {
       return `<div class="cmsg mgr"><div class="cbubble cask">
         <b>Needs your decision</b><br>${escapeHtml(obj.question || obj.text || "")}
         ${(obj.options || []).length ? `<div class="copts">${
-          obj.options.map((o) => escapeHtml(o)).join(" · ")}</div>` : ""}
+          obj.options.map((o) => escapeHtml(optText(o))).join(" · ")}</div>` : ""}
         <div class="chint">Answer it on the Command tab or in the bell.</div></div>
         <div class="cmeta">manager · ${when}</div></div>`;
     }
@@ -873,6 +873,20 @@ function updateChatUnread() {
 
 // snake_case role names are long. Offer the browser a break point after each
 // underscore so they wrap as WORDS rather than mid-syllable.
+// An option may arrive as a plain string, or as {label, detail} from a model that
+// answered structurally. Never let a raw object reach the DOM.
+function optText(o) {
+  if (o && typeof o === "object") {
+    const label = o.label || o.option || o.title || "";
+    const detail = o.detail || o.description || o.why || "";
+    return label && detail ? `${label} — ${detail}` : (label || detail || JSON.stringify(o));
+  }
+  const s = String(o ?? "");
+  // legacy rows stored Python reprs like "{'label': 'x', 'detail': 'y'}"
+  const m = s.match(/^\{'label':\s*'([^']*)'/);
+  return m ? m[1] : s;
+}
+
 function wrapRole(role) {
   return escapeHtml(String(role || "")).replace(/_/g, "_<wbr>");
 }
@@ -1271,7 +1285,7 @@ function renderCommand(p) {
       <div class="qtext">${escapeHtml(pendingQ.text)}</div>
       <div class="qbtns">
         ${(pendingQ.options || []).map((o, i) =>
-          `<button data-qopt="${i}">${escapeHtml(o)}</button>`).join("")}
+          `<button data-qopt="${i}">${escapeHtml(optText(o))}</button>`).join("")}
       </div>
       <div class="qreply">
         <input id="askReply" placeholder="…or tell the manager what to do in your own words">
@@ -1456,7 +1470,7 @@ function renderCommand(p) {
         answerQuestion(pendingQ.id, $("#askReply").value);
         return;
       }
-      answerQuestion(pendingQ.id, pendingQ.options[Number(b.dataset.qopt)]);
+      answerQuestion(pendingQ.id, optText(pendingQ.options[Number(b.dataset.qopt)]));
     }));
   const reply = el.querySelector("#askReply");
   if (reply) reply.addEventListener("keydown", (ev) => {
@@ -1966,14 +1980,15 @@ async function refreshBell() {
         <div class="bell-q">${escapeHtml(trim(it.question, 220))}</div>
         <div class="bell-opts">
           ${(it.options || []).slice(0, 4).map((o, i) =>
-            `<button data-q="${it.question_id}" data-opt="${i}">${escapeHtml(trim(o, 60))}</button>`).join("")}
+            `<button data-q="${it.question_id}" data-opt="${i}"
+               title="${escapeHtml(optText(o))}">${escapeHtml(trim(optText(o), 60))}</button>`).join("")}
           <button class="link" data-open="${it.project_id}">Open project →</button>
         </div>
       </div>`).join("");
   panel.querySelectorAll("[data-opt]").forEach((b) =>
     b.addEventListener("click", async () => {
       const item = n.items.find((x) => String(x.question_id) === b.dataset.q);
-      await answerQuestion(Number(b.dataset.q), item.options[Number(b.dataset.opt)]);
+      await answerQuestion(Number(b.dataset.q), optText(item.options[Number(b.dataset.opt)]));
       refreshBell();
     }));
   panel.querySelectorAll("[data-open]").forEach((b) =>

@@ -577,3 +577,42 @@ def test_autonomy_is_owner_guarded_and_idempotent(root_client, make_user, fresh_
     r = root_client.post(f"/api/projects/{p}/autonomy", json={"autonomy": "supervised"})
     assert r.json()["changed"] is False          # no spurious directive
     assert db.take_directives(p) == []
+
+
+# ---- structured question options must never reach the UI as objects -------
+
+def test_structured_options_are_flattened_for_the_boss(fresh_db, monkeypatch):
+    """A model may answer with [{"label":..,"detail":..}]. Stored row and broadcast
+    event must agree, and neither may contain an object — the browser renders that
+    as literal "[object Object]"."""
+    import asyncio, json as _json
+    from app import manager
+    p = make_project(owner_id=1, autonomy="autonomous")   # autonomous = no blocking wait
+    manager.build_team_server(p)
+    ask = manager.HANDLERS[p]["handlers"]["ask_boss"]
+    opts = _json.dumps([
+        {"label": "Merge & proceed", "detail": "Approve the concept."},
+        {"label": "Add a rigor task", "detail": "Re-derive independently first."},
+        "A plain string option",
+    ])
+    # answer it immediately so ask_boss returns rather than polling
+    async def run():
+        task = asyncio.create_task(ask({"question": "How to proceed?", "options_json": opts}))
+        await asyncio.sleep(0.2)
+        q = db.pending_question(p)
+        assert q is not None
+        db.answer_question(q["id"], "Merge & proceed")
+        return await task
+    asyncio.run(run())
+
+    stored = _json.loads(db._rows(
+        "SELECT options FROM inbox WHERE project_id=? AND kind='question' ORDER BY id DESC",
+        (p,))[0]["options"])
+    assert all(isinstance(o, str) for o in stored), stored
+    assert stored[0].startswith("Merge & proceed —"), stored[0]
+    assert "{'label'" not in stored[0], "leaked a Python repr"
+    assert stored[2] == "A plain string option"
+
+    ev = [e for e in db.list_events(p) if e["kind"] == "boss_question"][-1]
+    emitted = _json.loads(ev["payload"])["options"]
+    assert emitted == stored, "the event and the stored row disagree again"
