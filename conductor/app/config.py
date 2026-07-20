@@ -79,6 +79,9 @@ PROJECT_BUDGET_USD = float(_env("PROJECT_BUDGET_USD", "5.0"))
 # Primary safety rail: max total agent runs (worker dispatches) per project.
 # This is the meaningful cap on a subscription, where dollar cost is not billed.
 MAX_AGENT_RUNS = int(_env("MAX_AGENT_RUNS", "40"))
+# How long a FULL-AUTONOMY manager waits for an answer before deciding for itself.
+# Overnight runs cannot afford to lose an hour per question to a sleeping boss.
+AUTONOMOUS_QUESTION_GRACE = int(_env("AUTONOMOUS_QUESTION_GRACE", "300"))
 
 AGENTS_DIR = Path(_env("AGENTS_DIR", str(ROOT / "agents")))
 DASHBOARD_DIR = Path(_env("DASHBOARD_DIR", str(ROOT / "dashboard")))

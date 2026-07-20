@@ -24,6 +24,9 @@ async def lifespan(app: FastAPI):
     ghosts = launcher.sweep_orphans()
     if ghosts:
         print(f"[startup] released {ghosts} task(s) orphaned by the previous run")
+    cooled = launcher.load_cooldowns()
+    if cooled:
+        print(f"[startup] restored {cooled} model cooldown(s) from the last run")
     pruned = launcher.prune_workspaces()
     if pruned:
         print(f"[startup] pruned {pruned} old worker workspace(s)")

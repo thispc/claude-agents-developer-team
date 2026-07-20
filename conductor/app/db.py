@@ -93,6 +93,13 @@ CREATE TABLE IF NOT EXISTS turns (
     ts REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_turns_table ON turns(table_id, id);
+-- Rate-limit cooldowns, persisted. Held only in memory before, so every restart
+-- forgot which models were throttled and immediately hammered them again.
+CREATE TABLE IF NOT EXISTS model_cooldown (
+    model TEXT PRIMARY KEY,
+    until_ts REAL NOT NULL,
+    reason TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL,
@@ -265,6 +272,19 @@ def add_turn(table_id: int, seat_id: int | None, phase: str, rnd: int,
 
 def list_turns(table_id: int) -> list[dict]:
     return _rows("SELECT * FROM turns WHERE table_id=? ORDER BY id", (table_id,))
+
+
+def set_cooldown(model: str, until_ts: float, reason: str = "") -> None:
+    _execute("INSERT INTO model_cooldown (model, until_ts, reason) VALUES (?,?,?) "
+             "ON CONFLICT(model) DO UPDATE SET until_ts=excluded.until_ts, "
+             "reason=excluded.reason",
+             (model, until_ts, reason[:300]))
+
+
+def load_cooldowns() -> dict[str, float]:
+    """Live cooldowns, expired ones dropped."""
+    _execute("DELETE FROM model_cooldown WHERE until_ts < ?", (time.time(),))
+    return {r["model"]: r["until_ts"] for r in _rows("SELECT * FROM model_cooldown")}
 
 
 def set_project_budget(project_id: int, budget_usd: float) -> None:

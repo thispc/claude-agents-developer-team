@@ -242,7 +242,13 @@ def build_team_server(project_id: int):
         db.set_project_status(project_id, "hold")  # surfaces as "on hold" in the UI
         bus.emit(project_id, None, "manager", "boss_question",
                  {"id": qid, "question": args["question"], "options": opts})
-        deadline = time.time() + 3600
+        # An unattended overnight run cannot afford to stall an hour on a question
+        # nobody is awake to answer. With full autonomy the boss already said
+        # "decide for me", so wait a short grace period and then proceed on your own
+        # judgement, recording the assumption so it is auditable.
+        autonomous = (project().get("autonomy") == "autonomous")
+        grace = config.AUTONOMOUS_QUESTION_GRACE if autonomous else 3600
+        deadline = time.time() + grace
         while time.time() < deadline:
             if project().get("status") == "cancelled":
                 return _text("project cancelled while awaiting your answer; call finish.")
@@ -262,7 +268,17 @@ def build_team_server(project_id: int):
                 return _text(reply)
             await asyncio.sleep(4)
         db.set_project_status(project_id, "running")
-        return _text("No answer within 60 minutes; use your best judgment and proceed.")
+        db.abandon_questions(project_id)      # don't leave a dead modal on the dashboard
+        mins = int(grace / 60)
+        bus.emit(project_id, None, "manager", "proceeded_without_answer",
+                 {"question": args["question"], "waited_minutes": mins})
+        if autonomous:
+            return _text(
+                f"No answer in {mins} min and you have FULL AUTONOMY — do not ask again. "
+                f"Decide it yourself now, pick the option you judge best, and say in your "
+                f"next message which assumption you made so the boss can audit it later. "
+                f"An unattended run must keep moving.")
+        return _text(f"No answer within {mins} minutes; use your best judgment and proceed.")
 
     @tool("reply_to_boss",
           "Answer the boss directly. Use this the moment a MESSAGE FROM THE BOSS "

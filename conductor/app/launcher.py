@@ -148,6 +148,16 @@ def looks_rate_limited(text: str) -> bool:
 COOLDOWN: dict[str, float] = {}
 
 
+def load_cooldowns() -> int:
+    """Restore throttle state at startup. Without this every restart forgot which
+    models were rate limited and dispatched straight back onto them."""
+    try:
+        COOLDOWN.update(db.load_cooldowns())
+    except Exception:
+        return 0
+    return len(COOLDOWN)
+
+
 def note_rate_limit(model: str, text: str) -> float | None:
     """Extract when a throttled model becomes usable again.
 
@@ -180,6 +190,10 @@ def note_rate_limit(model: str, text: str) -> float | None:
         seconds = 300      # nothing parseable: assume a short cooldown, clearly labelled
     until = _t.time() + seconds
     COOLDOWN[model] = until
+    try:
+        db.set_cooldown(model, until, text[:200])   # survive a restart
+    except Exception:
+        pass
     return until
 
 
@@ -480,6 +494,17 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
         return f"error: project for task {task_id} not found"
     if project["status"] == "cancelled":
         return "error: project is cancelled"
+    # If every candidate model is in cooldown, don't spend an attempt hammering a
+    # throttled one — leave the task planned and let the scheduler retry after the
+    # soonest window opens. This is what lets an overnight run ride out a limit.
+    if all(cooldown_left(m) > 0 for m in FALLBACK_ORDER):
+        soonest = min(cooldown_left(m) for m in FALLBACK_ORDER)
+        bus.emit(task["project_id"], task_id, "system", "waiting_on_cooldown",
+                 {"seconds": soonest,
+                  "models": {m: cooldown_left(m) for m in FALLBACK_ORDER}})
+        return (f"waiting: every model is rate limited; the soonest is usable again "
+                f"in {soonest}s — task stays planned and will dispatch then")
+
     creds = owner_credentials(project)
     if not any(creds.get(k) for k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")) \
             and project.get("owner_id"):

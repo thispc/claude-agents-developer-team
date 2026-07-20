@@ -106,16 +106,36 @@ def commit_and_push(repo_dir: Path) -> tuple[bool, str]:
     # Push can fail transiently (HTTP 400 / disconnect) — retry before giving up,
     # otherwise completed work gets thrown away.
     last_err = ""
-    for attempt in range(3):
+    for attempt in range(4):
         pushed = sh("git", "push", "-u", "origin", BRANCH, cwd=repo_dir)
         if pushed.returncode == 0:
             return True, f"pushed branch {BRANCH}"
         last_err = (pushed.stderr or pushed.stdout)[-400:]
-        if "up-to-date" in last_err or "up to date" in last_err:
+        low = last_err.lower()
+        if "up-to-date" in low or "up to date" in low:
             return True, f"branch {BRANCH} already up to date"
+
+        # Non-fast-forward: someone else advanced this branch while we worked (a
+        # re-dispatch, or a rival on the same ref). Throwing the work away is the
+        # worst answer — rebase our commits on top of theirs and push again.
+        if "fast-forward" in low or "fetch first" in low or "rejected" in low:
+            emit("push_retry", f"attempt {attempt + 1}: remote moved ahead; rebasing")
+            sh("git", "fetch", "origin", BRANCH, cwd=repo_dir)
+            reb = sh("git", "rebase", f"origin/{BRANCH}", cwd=repo_dir)
+            if reb.returncode != 0:
+                # Conflicting histories — keep ours rather than lose the session.
+                sh("git", "rebase", "--abort", cwd=repo_dir)
+                emit("push_retry", "rebase conflicted; keeping our version")
+                forced = sh("git", "push", "--force-with-lease", "-u", "origin", BRANCH,
+                            cwd=repo_dir)
+                if forced.returncode == 0:
+                    return True, f"pushed branch {BRANCH} (force-with-lease after conflict)"
+                last_err = (forced.stderr or forced.stdout)[-400:]
+            continue          # retry the plain push immediately after a clean rebase
+
         emit("push_retry", f"attempt {attempt + 1} failed: {last_err[-200:]}")
         time.sleep(3 * (attempt + 1))
-    return False, f"git push failed after 3 attempts: {last_err}"
+    return False, f"git push failed after 4 attempts: {last_err}"
 
 
 CONSULT_MODEL = os.environ.get("CONSULT_MODEL", "claude-sonnet-5")

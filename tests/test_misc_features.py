@@ -130,3 +130,37 @@ def test_list_events_tailing_still_returns_what_is_new(fresh_db):
     ids = [db.add_event(p, None, "system", "tick", {"n": i})["id"] for i in range(10)]
     tail = db.list_events(p, after_id=ids[4])
     assert [json.loads(e["payload"])["n"] for e in tail] == [5, 6, 7, 8, 9]
+
+
+# ---- all-day unattended running -------------------------------------------
+
+def test_cooldowns_survive_a_restart(fresh_db):
+    """In-memory only, every restart forgot which models were throttled and
+    dispatched straight back onto them."""
+    launcher.COOLDOWN.clear()
+    launcher.note_rate_limit("claude-haiku-4-5", "rate_limit; retry-after: 120")
+    launcher.COOLDOWN.clear()                 # simulate the process dying
+    assert launcher.load_cooldowns() == 1
+    assert launcher.cooldown_left("claude-haiku-4-5") > 60
+    db._execute("DELETE FROM model_cooldown")
+    launcher.COOLDOWN.clear()
+
+
+def test_all_models_cooling_holds_the_task_instead_of_burning_an_attempt(fresh_db):
+    """An overnight run should ride out a limit, not spend attempts against it."""
+    import asyncio, time as _t
+    launcher.COOLDOWN.clear()
+    for m in launcher.FALLBACK_ORDER:
+        launcher.COOLDOWN[m] = _t.time() + 90
+    p = make_project(owner_id=1)
+    t = make_task(p)
+    out = asyncio.run(launcher.dispatch_task(t))
+    assert "waiting" in out and "rate limited" in out
+    assert db.get_task(t)["status"] == "planned"     # still dispatchable later
+    assert db.get_task(t)["attempts"] == 0           # attempt not consumed
+    launcher.COOLDOWN.clear()
+
+
+def test_autonomous_grace_is_short_enough_for_an_overnight_run():
+    """A full-autonomy manager must not lose an hour to a sleeping boss."""
+    assert config.AUTONOMOUS_QUESTION_GRACE <= 900
