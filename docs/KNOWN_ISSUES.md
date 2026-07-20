@@ -1,9 +1,12 @@
 # Known issues
 
+**Status after the 2026-07-20 fix pass:** issues 4, 6, 8, 10, 11, 12, 13, 14,
+15, 16, 17 are fixed (see the commit "fix 11 known bugs…"), plus two new ones
+found by a security probe (suggest-team and model-health were anonymous — fixed).
+Still open: 2, 3, 5, 7, 9, 18 below.
+
 Bugs found and confirmed but **not fixed**, worst first. Each one says what
 actually happens, why, and the concrete fix.
-
----
 
 ## 1. ~~Tasks stay "running" forever~~ — FIXED
 
@@ -55,7 +58,7 @@ change since the docker branch already exists; make it the default whenever
 
 ---
 
-## 4. The static preview answers API calls with HTML
+## 4. [FIXED] The static preview answers API calls with HTML
 
 **Confirmed:** `GET /preview/11/api/weather?location=x` returns **HTTP 200** and
 the body is `<!DOCTYPE html>`.
@@ -90,7 +93,7 @@ cleanup job is needed.
 
 ---
 
-## 6. Nothing ever removes a k8s deployment
+## 6. [FIXED] Nothing ever removes a k8s deployment
 
 **Why:** `deploy.stop()` only handles the local subprocess. There is no
 `kubectl delete`, so every k8s deploy leaves its Deployment, Service and Ingress
@@ -118,7 +121,7 @@ next port — the health check already detects "exited immediately".
 
 ---
 
-## 8. Nothing prunes worker workspaces
+## 8. [FIXED] Nothing prunes worker workspaces
 
 **Confirmed:** `workspaces/` is **1.2 GB** of old repo clones, one per task
 attempt, kept forever.
@@ -160,7 +163,7 @@ whose Jobs are still genuinely running.
 `ACTIVE` entries whose Job is gone, and fail tasks whose Job completed without a
 report. Make `sweep_orphans` skip tasks whose Job still exists when `LAUNCHER=k8s`.
 
-## 10. "429" in a task's own report reroutes it forever
+## 10. [FIXED] "429" in a task's own report reroutes it forever
 
 `RATE_LIMIT_MARKERS` includes the bare strings `"429"` and `"quota"`, and
 `pick_model` tests them against `task["report"]`. A tester task that legitimately
@@ -172,7 +175,7 @@ The stale report is never cleared on rework, so it persists.
 co-occurring signal (`rate_limit`, `overloaded`, `retry-after`), and clear
 `report` when a task is re-dispatched.
 
-## 11. Rival branches are reused between contests
+## 11. [FIXED] Rival branches are reused between contests
 
 Rivals always use `task/<id>-c<i>`. `clear_contenders` deletes the rows but not
 the git branches, and the worker checks out an existing branch — so a second
@@ -181,7 +184,7 @@ contest's rival #1 inherits the previous contest's losing code.
 **Fix:** include the attempt number in the branch (`task/<id>-a<n>-c<i>`), or
 delete the remote branches when clearing contenders.
 
-## 12. A recruited role with a space silently loses its model
+## 12. [FIXED] A recruited role with a space silently loses its model
 
 The manager normalises roles to `lower-kebab`, but the recruited roster stores
 snake_case. "Propulsion Engineer" → `propulsion-engineer` never matches the
@@ -192,7 +195,7 @@ too, since it only applies to roles found in `roles.json`.
 **Fix:** normalise both sides through one helper, and apply the parallelism cap
 from the roster as well.
 
-## 13. `accept_task` doesn't restart the scheduler
+## 13. [FIXED] `accept_task` doesn't restart the scheduler
 
 Every other mutating manager tool calls `scheduler.ensure()`. If the scheduler
 task has exited, accepting a task never restarts dispatching and its dependents
@@ -200,7 +203,7 @@ never run.
 
 **Fix:** one line — call `scheduler.ensure(project_id)`.
 
-## 14. A dispatch that throws kills the scheduler permanently
+## 14. [FIXED] A dispatch that throws kills the scheduler permanently
 
 `await launcher.dispatch_task(...)` is unguarded in the scheduler loop. A k8s API
 error or a subprocess failure escapes, kills the loop task, and nothing restarts
@@ -211,7 +214,7 @@ retrieved, so it is never logged either. `inc_runs` and `attempts+1` also happen
 **Fix:** wrap the dispatch in try/except, emit the failure as an event, and move
 the counter increments after a successful launch.
 
-## 15. The worker discards its work when the session errors
+## 15. [FIXED] The worker discards its work when the session errors
 
 On any session exception the worker reports `failed` and returns **without
 pushing**, so everything already written to the checkout is lost — and the retry
@@ -220,7 +223,7 @@ clones a fresh workspace. This is what lost the cart-and-checkout work.
 **Fix:** commit and push whatever exists before reporting the failure; the branch
 is reviewable even if incomplete.
 
-## 16. Prompt files contradict the code
+## 16. [FIXED] Prompt files contradict the code
 
 - `agents/manager.md` still says "your team members (backend, frontend, tester)"
   though roles are now fully dynamic, and still frames decisions around spending
@@ -235,7 +238,7 @@ is reviewable even if incomplete.
 **Fix:** these are the manager's actual instructions, so drift here changes
 behaviour. Re-read `manager.md` against `manager.py` and correct all four.
 
-## 17. Sessions never expire
+## 17. [FIXED] Sessions never expire
 
 `sessions` has no expiry column and nothing deletes rows except explicit logout.
 Every cookie ever issued is valid forever.
