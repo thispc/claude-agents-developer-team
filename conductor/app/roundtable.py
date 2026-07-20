@@ -45,6 +45,10 @@ def _seat_system(seat: dict, brief: str, skeptic: bool) -> str:
         base += f"YOUR PERSPECTIVE:\n{persona}\n\n"
     base += (
         "House rules:\n"
+        "- START with one line, on its own, of the form `GIST: <your point in at most "
+        "16 words>`. A person is watching this conversation live and reads only the "
+        "GIST lines; write it as a sentence you would actually say out loud, not a "
+        "label. Then give the detail below it.\n"
         "- Be concrete. Name technologies, structures, sequences — not adjectives.\n"
         "- Short. Under 250 words. Padding is not thinking.\n"
         "- Disagreeing well is more useful than agreeing. Never agree merely to "

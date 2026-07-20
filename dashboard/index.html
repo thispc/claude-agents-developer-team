@@ -50,33 +50,32 @@
   <!-- Three ways in, stated as what they DO. "Plan" and "Develop" both sounded
        like planning, so it was never obvious which one you wanted. Shape grows a
        rough idea; Build runs the real pipeline; Improve turns the team on itself. -->
-  <div class="modes">
-    <button class="mode-card" id="modeBuild">
-      <span class="mode-ico">🏗</span>
-      <span class="mode-name">Build a project</span>
-      <span class="mode-desc">Hire a team and ship it. Tasks, branches, PRs, verified
+  <div class="entries">
+    <button class="entry-card feature" id="modeBuild">
+      <span class="entry-ico">🏗</span>
+      <span class="entry-name">Build a project</span>
+      <span class="entry-desc">Hire a team and ship it. Tasks, branches, PRs, verified
         merges — over as many sprints as you ask for.</span>
-      <span class="mode-go">Start building →</span>
+      <span class="entry-go">Start building →</span>
     </button>
-    <button class="mode-card" id="modeShape">
-      <span class="mode-ico">🧠</span>
-      <span class="mode-name">Shape an idea</span>
-      <span class="mode-desc">A round table of models from different providers argues a
+    <button class="entry-card" id="modeShape">
+      <span class="entry-ico">🧠</span>
+      <span class="entry-name">Shape an idea</span>
+      <span class="entry-desc">A round table of models from different providers argues a
         half-formed idea into a blueprint. Hand it straight to Build.</span>
-      <span class="mode-go">Open the table →</span>
+      <span class="entry-go">Open the table →</span>
     </button>
-    <button class="mode-card" id="modeImprove" hidden>
-      <span class="mode-ico">⟲</span>
-      <span class="mode-name">Improve devteam</span>
-      <span class="mode-desc">Point the team at this platform's own codebase. File an
+    <button class="entry-card" id="modeImprove" hidden>
+      <span class="entry-ico">⟲</span>
+      <span class="entry-name">Improve devteam</span>
+      <span class="entry-desc">Point the team at this platform's own codebase. File an
         issue, let it fix itself, review the PR, redeploy.</span>
-      <span class="mode-go">Open self-repair →</span>
+      <span class="entry-go">Open self-repair →</span>
     </button>
   </div>
 
   <div class="home-head">
     <h2>Your projects</h2>
-    <button id="homeNewBtn" class="primary">+ New project</button>
   </div>
   <table id="projectsTable">
     <thead><tr><th>#</th><th>Name</th><th>Repo</th><th>Status</th><th>Tasks</th><th>Usage</th><th>Actions</th></tr></thead>
@@ -138,6 +137,7 @@
   <div id="planStage" hidden>
     <div class="stage-head">
       <span id="phasePill" class="pill">…</span>
+      <span id="phaseProgress" class="round-progress" hidden></span>
       <span id="phaseNote" class="hint"></span>
     </div>
     <div id="circleWrap"><div id="circle"></div></div>
@@ -389,7 +389,7 @@
       <div class="nums">
         <label>Sprints <span class="hint">1 = a single pass</span>
           <input name="sprints" type="number" min="1" max="20" value="1"></label>
-        <label>Agent-run cap <span class="hint">raise this for multi-sprint runs</span>
+        <label>Agent-run cap <span class="hint">scales with sprints automatically</span>
           <input name="max_runs" type="number" min="5" max="400" value="40"></label>
       </div>
       <h3 class="ctl-h">Who is your manager?</h3>

@@ -730,18 +730,31 @@ async def create_project(body: NewProject, request: Request) -> dict:
     repo = body.repo or config.GITHUB_REPO
     team = [m.model_dump() for m in body.team]
     autonomy = "autonomous" if body.autonomy == "autonomous" else "supervised"
+    sprints = max(1, min(20, body.sprints or 1))
+    # A run cap sized for one pass starves a multi-sprint run: it stops somewhere
+    # inside sprint 2 with the product half-built, which looks like the team giving
+    # up rather than hitting a guard rail. Scale it with the cycles asked for, but
+    # only when the boss left the cap at its default — an explicit number is a
+    # decision, not an oversight.
+    runs = body.max_runs or config.MAX_AGENT_RUNS
+    scaled = runs <= config.MAX_AGENT_RUNS and sprints > 1
+    if scaled:
+        runs = min(400, runs * sprints)
     project_id = db.create_project(
         body.name, body.brief, repo,
         body.budget_usd or config.PROJECT_BUDGET_USD,
         body.max_workers or config.MAX_CONCURRENT_WORKERS,
-        body.max_runs or config.MAX_AGENT_RUNS,
+        runs,
         team=team, autonomy=autonomy,
         manager_model=body.manager_model.strip(),
         manager_persona=body.manager_persona.strip(),
         owner_id=(owner["id"] if owner else 0),
-        sprints=max(1, min(20, body.sprints or 1)),
+        sprints=sprints,
     )
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
+    if scaled:
+        bus.emit(project_id, None, "system", "run_cap_scaled",
+                 {"runs": runs, "sprints": sprints})
     # Make sure the target repo exists before the team tries to clone it. This is
     # why manual repo creation is unnecessary — the token creates a private repo.
     if repo and github_client.enabled(repo):

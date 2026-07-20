@@ -272,3 +272,19 @@ def test_diverge_mode_warns_about_MIXING_not_sameness():
     # diverge: exactly inverted
     assert roundtable.homogeneity_warning(same, "diverge") == ""
     assert "quality dominates diversity" in roundtable.homogeneity_warning(mixed, "diverge")
+
+
+# ---- the table has to be followable while it is happening ------------------
+
+def test_seats_are_told_to_lead_with_a_one_line_gist():
+    """Three 250-word essays landing at once is not a conversation you can follow.
+    The live circle shows only these lines."""
+    sysmsg = roundtable._seat_system(
+        {"name": "A", "persona": ""}, "build a thing", skeptic=False)
+    assert "GIST:" in sysmsg
+    assert "16 words" in sysmsg
+
+
+def test_the_skeptic_still_gets_the_skeptic_brief():
+    s = roundtable._seat_system({"name": "A", "persona": ""}, "x", skeptic=True)
+    assert "SKEPTIC" in s and "GIST:" in s

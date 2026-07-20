@@ -325,8 +325,11 @@ function showHome(skipHash) {
   const pl = $("#plan"); if (pl) pl.hidden = true;
   if (!skipHash) setHash("#/");
   currentProject = null;
+  // Fall back to is_root when the server predates may_self_repair — otherwise the
+  // tile silently vanishes for the one account that definitely has the right.
   const improve = $("#modeImprove");
-  if (improve) improve.hidden = !(me && me.may_self_repair);
+  const mayFix = me && (me.may_self_repair ?? me.is_root);
+  if (improve) improve.hidden = !mayFix;
   $("#home").hidden = false;
   $("main").hidden = true;
   // The whole project bar goes away with the project — none of it means anything
@@ -725,25 +728,108 @@ function renderModSelect() {
 
 // ---- the circle ----------------------------------------------------------
 
-function renderCircle(seatInfo, activeIds, phase) {
+// --- the table as a conversation, not a log --------------------------------
+// Turns arrive from the poll in batches of whole 250-word essays, which is
+// unreadable while it is happening. Each seat opens with a `GIST:` line, and the
+// circle plays those back one speaker at a time so the round can be followed at
+// a glance. The full text stays one click away.
+
+let tableState = null;       // last payload from /api/tables/:id
+let seenTurns = new Set();   // turn ids already played
+let speechQueue = [];        // turns waiting to be played
+let speechTimer = null;
+let bubbles = {};            // seat id (or "mod") -> {text, phase, ok}
+let speaking = null;
+
+function gistOf(text) {
+  const t = (text || "").trim();
+  const m = t.match(/^[ \t]*GIST:[ \t]*(.+)$/im);
+  if (m) return m[1].trim().slice(0, 160);
+  // No GIST line (an older turn, or the model ignored the rule) — the first
+  // sentence is a decent stand-in and still beats showing the whole essay.
+  const first = t.split("\n").find((l) => l.trim()) || "";
+  const stop = first.search(/[.!?](\s|$)/);
+  return (stop > 0 ? first.slice(0, stop + 1) : first).trim().slice(0, 160) || "…";
+}
+
+function seatAngles(n) {
+  return Array.from({ length: n }, (_, i) => (i / n) * 2 * Math.PI - Math.PI / 2);
+}
+
+function renderCircle(seatInfo, phase) {
   const el = $("#circle");
+  if (!el) return;
   const n = seatInfo.length;
-  const R = 40;   // % radius inside the square wrapper
+  const R = 38;
+  const angs = seatAngles(n);
   el.innerHTML = seatInfo.map((s, i) => {
-    const ang = (i / n) * 2 * Math.PI - Math.PI / 2;
-    const x = 50 + R * Math.cos(ang), y = 50 + R * Math.sin(ang);
-    const state = activeIds.includes(s.id) ? "speaking" : (s.done ? "done" : "");
+    const x = 50 + R * Math.cos(angs[i]), y = 50 + R * Math.sin(angs[i]);
+    const isSpeaking = String(speaking) === String(s.id);
+    const state = isSpeaking ? "speaking" : (s.done ? "done" : "");
+    const b = bubbles[s.id];
+    // Push the bubble outward from the centre so it never covers another seat.
+    const side = Math.cos(angs[i]) >= 0 ? "right" : "left";
+    const bubble = b ? `<div class="sn-bubble ${side} ${b.ok ? "" : "bad"}"
+        data-full="${escapeHtml(s.id)}">${escapeHtml(b.text)}</div>` : "";
     return `<div class="seat-node ${state} prov-${s.provider}"
         style="left:${x}%; top:${y}%" data-seat="${s.id}" title="${escapeHtml(s.model)}">
+      <div class="sn-dot">${escapeHtml((s.name || "?").slice(0, 1).toUpperCase())}</div>
       <div class="sn-name">${escapeHtml(s.name)}</div>
       <div class="sn-model">${escapeHtml(providerLabel(s.provider))}</div>
       ${s.skeptic ? `<span class="sn-badge" title="Holds the standing skeptic brief">skeptic</span>` : ""}
+      ${bubble}
     </div>`;
   }).join("") + `
     <div class="mod-node ${phase === "synthesis" ? "speaking" : ""}">
       <div class="sn-name">Moderator</div>
       <div class="sn-model">${phase === "synthesis" ? "writing the blueprint…" : "listening"}</div>
     </div>`;
+  // Clicking a bubble opens that seat's full turn in the transcript.
+  el.querySelectorAll(".sn-bubble").forEach((b) =>
+    b.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const tr = $("#turnDetails");
+      if (tr) { tr.open = true; tr.scrollIntoView({ behavior: "smooth", block: "nearest" }); }
+    }));
+}
+
+function seatInfoFrom(t) {
+  const spoken = {};
+  (t.turns || []).forEach((x) => { if (x.seat_id) spoken[x.seat_id] = x; });
+  return (t.seats || []).map((s, i) => ({
+    id: s.id, name: s.name, provider: s.provider, model: s.model,
+    skeptic: i === (t.seats || []).length - 1,
+    done: !!spoken[s.id],
+  }));
+}
+
+function paintTable() {
+  const t = tableState;
+  if (!t) return;
+  const phase = (t.turns || []).slice(-1)[0]?.phase || "propose";
+  renderCircle(seatInfoFrom(t), t.status === "running" ? phase : "");
+}
+
+/** Play new turns one speaker at a time so it reads as a conversation. */
+function playTurns(t) {
+  const fresh = (t.turns || []).filter((x) => !seenTurns.has(x.id));
+  fresh.forEach((x) => seenTurns.add(x.id));
+  speechQueue.push(...fresh);
+  if (speechTimer) return;
+  const step = () => {
+    const x = speechQueue.shift();
+    if (!x) { speechTimer = null; speaking = null; paintTable(); return; }
+    if (x.phase === "synthesis") { speaking = "mod"; } else {
+      // A new round starts a clean slate — old gists belong to the last round.
+      if (bubbles.__phase && bubbles.__phase !== x.phase) bubbles = {};
+      bubbles.__phase = x.phase;
+      bubbles[x.seat_id] = { text: gistOf(x.text), phase: x.phase, ok: x.ok };
+      speaking = x.seat_id;
+    }
+    paintTable();
+    speechTimer = setTimeout(step, 1200);
+  };
+  speechTimer = setTimeout(step, 80);
 }
 
 const PHASE_NOTE = {
@@ -791,17 +877,20 @@ async function pollTable(id) {
     let t;
     try { t = await api(`/api/tables/${id}`); } catch { return; }
     currentTable = id;
-    const spoken = {};
-    (t.turns || []).forEach((x) => { if (x.seat_id) spoken[x.seat_id] = x; });
+    tableState = t;
     const lastPhase = (t.turns || []).slice(-1)[0]?.phase || "propose";
-    const info = (t.seats || []).map((s, i) => ({
-      id: s.id, name: s.name, provider: s.provider, model: s.model,
-      skeptic: i === t.seats.length - 1,
-      done: !!spoken[s.id],
-    }));
-    renderCircle(info, [], t.status === "running" ? lastPhase : "");
+    playTurns(t);              // animates the circle; paintTable does the drawing
+    paintTable();
+    const spokenN = (t.turns || []).filter((x) => x.phase === lastPhase).length;
+    const seatN = (t.seats || []).length;
     $("#phasePill").textContent = t.status === "done" ? "blueprint ready"
-      : t.status === "failed" ? "failed" : `round ${({propose:1,critique:2,revise:3,synthesis:4})[lastPhase] || 1} · ${lastPhase}`;
+      : t.status === "failed" ? "failed"
+      : `round ${({ propose: 1, critique: 2, revise: 3, synthesis: 4 })[lastPhase] || 1} · ${lastPhase}`;
+    const prog = $("#phaseProgress");
+    if (prog) {
+      prog.hidden = t.status !== "running" || lastPhase === "synthesis";
+      prog.textContent = `${Math.min(spokenN, seatN)} of ${seatN} have spoken`;
+    }
     $("#phaseNote").textContent = t.status === "running" ? (PHASE_NOTE[lastPhase] || "") : "";
     renderTurns(t);
     if (t.status === "done" || t.status === "failed") {
@@ -819,18 +908,23 @@ function renderTurns(t) {
   const sig = (t.turns || []).map((x) => x.id).join(",");
   if (el.dataset.sig === sig) return;      // don't repaint unchanged
   el.dataset.sig = sig;
-  el.innerHTML = (t.turns || []).map((x) => {
+  // Collapsed by design: the circle is how you follow the conversation, and this
+  // is the record you open when a gist makes you want the argument behind it.
+  const rows = (t.turns || []).filter((x) => x.phase !== "synthesis").map((x) => {
     const s = byId[x.seat_id];
     const who = s ? s.name : "Moderator";
-    if (x.phase === "synthesis") return "";
+    const body = (x.text || "").replace(/^[ \t]*GIST:[ \t]*.+\n?/im, "").trim();
     return `<div class="turn ${x.ok ? "" : "turn-bad"} phase-${x.phase}">
       <div class="turn-head"><b>${escapeHtml(who)}</b>
         <span class="pill">${escapeHtml(x.phase)}</span>
         ${s ? `<span class="hint">${escapeHtml(providerLabel(s.provider))} · ${escapeHtml(s.model)}</span>` : ""}</div>
-      <div class="turn-body">${escapeHtml(x.text)}</div>
+      <div class="turn-gist">${escapeHtml(gistOf(x.text))}</div>
+      <div class="turn-body">${escapeHtml(body || x.text)}</div>
     </div>`;
   }).join("");
-  el.scrollTop = el.scrollHeight;
+  el.innerHTML = `<details id="turnDetails"><summary>Full transcript
+      <span class="hint">${(t.turns || []).length} turns</span></summary>
+    <div class="turn-list">${rows}</div></details>`;
 }
 
 function renderBlueprint(t) {
@@ -2240,7 +2334,6 @@ $("#whyCircle").addEventListener("click", (e) => {
     + "\u2022 3-6 seats. Past ~7, deliberation degrades.\n\n"
     + "See docs/ROUNDTABLE_DESIGN.md for the papers.");
 });
-$("#homeNewBtn").addEventListener("click", openDialog);
 $("#backToBriefBtn").addEventListener("click", () => showStep(1));
 $("#backToTeamBtn").addEventListener("click", () => showStep(2));
 $("#addRoleBtn").addEventListener("click", () =>
