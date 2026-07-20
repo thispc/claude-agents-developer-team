@@ -405,3 +405,6 @@ pre.dim, .dim { color: var(--dim); }
 .health-row .hs.strained { color: var(--warn); }
 .health-row .hs.throttled { color: var(--bad); }
 .health-note { display: block; margin-top: 8px; font-style: italic; }
+.health-row .bar i.cooling { background: var(--bad); }
+.health-row .hs.cooling { color: var(--bad); }
+.quota-box { background: var(--good-soft); border: 1px solid #bfe6cd; border-radius: 9px; padding: 10px 12px; font-size: 12.5px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 3px; }

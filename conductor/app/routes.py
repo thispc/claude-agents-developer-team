@@ -226,8 +226,45 @@ def machine_logs(task_id: int) -> dict:
     return {"source": "local process (event stream)", "logs": "\n".join(lines) or "no output yet"}
 
 
+def _api_key_quota(api_key: str) -> list[dict]:
+    """Real remaining capacity, straight from Anthropic's rate-limit headers.
+
+    Only possible with an API key: every response carries
+    anthropic-ratelimit-{requests,tokens}-{limit,remaining,reset}. We use the free
+    count_tokens endpoint so the probe costs nothing. Subscriptions have no
+    equivalent endpoint, so this returns [] for them.
+    """
+    try:
+        import anthropic
+    except Exception:
+        return []
+    out = []
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        raw = client.messages.with_raw_response.count_tokens(
+            model=config.WORKER_MODEL,
+            messages=[{"role": "user", "content": "quota probe"}],
+        )
+        h = raw.headers
+        def num(name):
+            v = h.get(name)
+            return int(v) if v and v.isdigit() else None
+        out.append({
+            "scope": "account",
+            "requests_limit": num("anthropic-ratelimit-requests-limit"),
+            "requests_remaining": num("anthropic-ratelimit-requests-remaining"),
+            "requests_reset": h.get("anthropic-ratelimit-requests-reset"),
+            "tokens_limit": num("anthropic-ratelimit-tokens-limit"),
+            "tokens_remaining": num("anthropic-ratelimit-tokens-remaining"),
+            "tokens_reset": h.get("anthropic-ratelimit-tokens-reset"),
+        })
+    except Exception:
+        return []
+    return [o for o in out if o.get("requests_limit") or o.get("tokens_limit")]
+
+
 @router.get("/api/model-health")
-def model_health() -> dict:
+def model_health(request: Request) -> dict:
     """Observed health per model, from OUR OWN signals — recent successes vs
     rate-limit/overload hits. Anthropic exposes no remaining-quota API, so this
     reports what we can actually measure, never a fabricated 'percent left'."""
@@ -254,10 +291,24 @@ def model_health() -> dict:
         s["state"] = "throttled" if throttle_rate >= 0.5 else (
             "strained" if throttle_rate > 0 else "healthy")
         out.append(s)
+    from .launcher import cooldown_left
+    for s in out:
+        s["cooldown_s"] = cooldown_left(s["model"])
+        if s["cooldown_s"]:
+            s["state"] = "cooling"
     out.sort(key=lambda x: x["model"])
-    return {"models": out, "window_hours": 6,
-            "note": "Observed from this app's own runs. Anthropic does not expose "
-                    "remaining subscription quota to any client."}
+
+    # Exact remaining capacity IS available on API keys (rate-limit headers).
+    u = auth.user_for_token(request.cookies.get("devteam_session"))
+    key = (auth.get_settings(u).get("anthropic_api_key") if u else "") or config.ANTHROPIC_API_KEY
+    quota = _api_key_quota(key) if key else []
+
+    note = ("Exact remaining requests/tokens read from Anthropic's rate-limit headers."
+            if quota else
+            "Subscription mode: Anthropic publishes no remaining-quota endpoint, so this "
+            "shows observed throttling from this app's own runs plus the real retry-after "
+            "window whenever a limit is actually hit.")
+    return {"models": out, "window_hours": 6, "quota": quota, "note": note}
 
 
 def launcher_looks_rate_limited(text: str) -> bool:
@@ -635,10 +686,13 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
     _check_token(x_worker_token)
     status = "pushed" if body.status == "pushed" else "failed"
     task = db.get_task(body.task_id)
-    from .launcher import looks_rate_limited
+    from .launcher import looks_rate_limited, note_rate_limit, cooldown_left
     if status == "failed" and looks_rate_limited(body.report):
+        model = (task.get("model") if task else "") or ""
+        note_rate_limit(model, body.report)      # capture the real retry-after
         bus.emit(body.project_id, body.task_id, "system", "rate_limited",
-                 {"model": task.get("model") if task else "", "detail": body.report[:300]})
+                 {"model": model, "cooldown_s": cooldown_left(model),
+                  "detail": body.report[:300]})
     db.update_task(body.task_id, status=status, report=body.report,
                    cost_usd=(task["cost_usd"] if task else 0) + body.cost_usd)
     db.add_project_cost(body.project_id, body.cost_usd)

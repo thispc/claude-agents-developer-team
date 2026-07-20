@@ -123,6 +123,58 @@ def looks_rate_limited(text: str) -> bool:
     return any(m in t for m in RATE_LIMIT_MARKERS)
 
 
+# model -> unix timestamp when it should be usable again (from real retry-after /
+# reset values the API gives us on a 429). Empty until something actually throttles.
+COOLDOWN: dict[str, float] = {}
+
+
+def note_rate_limit(model: str, text: str) -> float | None:
+    """Extract when a throttled model becomes usable again.
+
+    The API tells us this on a 429 — 'retry-after: 60', a reset timestamp, or a
+    'try again at ...' message. Capturing it beats guessing.
+    """
+    import re
+    import time as _t
+    from datetime import datetime, timezone
+    t = (text or "")
+    seconds = None
+    m = re.search(r"retry[- ]after[\"':\s]+(\d+)", t, re.I)
+    if m:
+        seconds = int(m.group(1))
+    if seconds is None:
+        m = re.search(r"try again in (\d+)\s*(second|minute|hour)", t, re.I)
+        if m:
+            mult = {"second": 1, "minute": 60, "hour": 3600}[m.group(2).lower()]
+            seconds = int(m.group(1)) * mult
+    if seconds is None:
+        # e.g. "resets at 2026-07-20T18:00:00Z" / "limit resets 6pm"
+        m = re.search(r"(?:reset|available|try again)[^0-9]{0,20}(\d{4}-\d{2}-\d{2}T[\d:]+)", t, re.I)
+        if m:
+            try:
+                when = datetime.fromisoformat(m.group(1)).replace(tzinfo=timezone.utc)
+                seconds = max(0, int(when.timestamp() - _t.time()))
+            except Exception:
+                seconds = None
+    if seconds is None:
+        seconds = 300      # nothing parseable: assume a short cooldown, clearly labelled
+    until = _t.time() + seconds
+    COOLDOWN[model] = until
+    return until
+
+
+def cooldown_left(model: str) -> int:
+    import time as _t
+    until = COOLDOWN.get(model)
+    if not until:
+        return 0
+    left = int(until - _t.time())
+    if left <= 0:
+        COOLDOWN.pop(model, None)
+        return 0
+    return left
+
+
 # Models a throttled task can be moved to, cheapest/most-available first.
 FALLBACK_ORDER = ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"]
 
@@ -134,12 +186,12 @@ def pick_model(task: dict, project: dict | None = None) -> str:
     # The manager (or auto-fallback) pinned a specific model for this task.
     if task.get("model"):
         return task["model"]
-    # Previous attempt died on a rate limit — move to a different model rather than
-    # hammering the same constrained one.
+    # Previous attempt died on a rate limit — move to a model that is not still in
+    # its cooldown window rather than hammering the throttled one.
     if task["attempts"] >= 1 and looks_rate_limited(task.get("report", "")):
         prev = task.get("model") or config.WORKER_MODEL
         for m in FALLBACK_ORDER:
-            if m != prev:
+            if m != prev and not cooldown_left(m):
                 return m
     if task["attempts"] >= 2:
         return config.ESCALATION_MODEL

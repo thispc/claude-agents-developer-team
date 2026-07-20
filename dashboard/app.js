@@ -951,13 +951,25 @@ async function renderModelHealth() {
   let h;
   try { h = await api("/api/model-health"); } catch { return; }
   if (!h.models.length) { box.innerHTML = ""; return; }
-  box.innerHTML = `<div class="health-title">Model capacity — observed over the last ${h.window_hours}h</div>` +
+  const mmss = (s) => s >= 3600 ? `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`
+    : s >= 60 ? `${Math.floor(s/60)}m ${s%60}s` : `${s}s`;
+  // Exact numbers when Anthropic gives them to us (API keys), observed health otherwise.
+  const quota = (h.quota || []).map((q) => `
+    <div class="quota-box">
+      ${q.requests_limit ? `<div>Requests left: <b>${q.requests_remaining}</b> / ${q.requests_limit}
+        ${q.requests_reset ? `· resets ${escapeHtml(String(q.requests_reset))}` : ""}</div>` : ""}
+      ${q.tokens_limit ? `<div>Tokens left: <b>${q.tokens_remaining}</b> / ${q.tokens_limit}
+        ${q.tokens_reset ? `· resets ${escapeHtml(String(q.tokens_reset))}` : ""}</div>` : ""}
+    </div>`).join("");
+  box.innerHTML = `<div class="health-title">Model capacity — last ${h.window_hours}h</div>` + quota +
     h.models.map((m) => `
       <div class="health-row">
         <span class="hm">${escapeHtml(m.model.replace("claude-", ""))}</span>
-        <span class="bar"><i class="${m.state}" style="width:${m.health}%"></i></span>
-        <span class="hs ${m.state}">${m.state}</span>
-        <span class="hint">${m.ok}/${m.runs} runs clean${m.throttled ? ` · ${m.throttled} throttled` : ""}</span>
+        <span class="bar"><i class="${m.state}" style="width:${m.cooldown_s ? 8 : m.health}%"></i></span>
+        <span class="hs ${m.state}">${m.cooldown_s ? "cooling" : m.state}</span>
+        <span class="hint">${m.cooldown_s
+          ? `usable again in ${mmss(m.cooldown_s)}`
+          : `${m.ok}/${m.runs} runs clean${m.throttled ? ` · ${m.throttled} throttled` : ""}`}</span>
       </div>`).join("") +
     `<div class="hint health-note">${escapeHtml(h.note)}</div>`;
 }
