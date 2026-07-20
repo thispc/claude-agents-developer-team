@@ -167,3 +167,68 @@ def test_no_cycle_on_linear_dag(fresh_db):
     b = make_task(p)
     db.update_task(b, deps=__import__("json").dumps([a]))
     assert scheduler.has_cycle(p) == []
+
+
+# ---- PR opening is idempotent (worker may open its own) --------------------
+
+def test_auto_open_pr_adopts_a_pr_the_worker_already_opened(fresh_db, monkeypatch):
+    """A worker with Bash can open its own PR. The scheduler must adopt its number,
+    not fail — otherwise the PR exists but merge_pr has nothing to merge."""
+    import asyncio
+    from app import github_client, scheduler
+
+    p = make_project(repo="owner/repo")
+    t = make_task(p, status="pushed")
+    db.update_task(t, branch="task/1")
+
+    monkeypatch.setattr(github_client, "enabled", lambda repo: True)
+    monkeypatch.setattr(github_client, "find_pr_for_branch",
+                        _async(lambda repo, branch: 42))
+    # create_pr must NOT be called when one already exists
+    called = {"create": False}
+
+    async def _boom(*a, **k):
+        called["create"] = True
+        raise AssertionError("create_pr should not run when a PR already exists")
+    monkeypatch.setattr(github_client, "create_pr", _boom)
+
+    asyncio.run(scheduler._auto_open_pr(db.get_project(p), db.get_task(t)))
+    fresh = db.get_task(t)
+    assert fresh["pr_number"] == 42, "existing PR was not adopted"
+    assert fresh["status"] == "review"
+    assert called["create"] is False
+
+
+def test_auto_open_pr_adopts_after_losing_a_race(fresh_db, monkeypatch):
+    """create_pr fails with 'already exists' -> re-check and adopt, not fail."""
+    import asyncio
+    from app import github_client, scheduler
+
+    p = make_project(repo="owner/repo")
+    t = make_task(p, status="pushed")
+    db.update_task(t, branch="task/2")
+
+    lookups = {"n": 0}
+
+    async def _find(repo, branch):
+        lookups["n"] += 1
+        return None if lookups["n"] == 1 else 77   # appears only on the re-check
+
+    async def _create(*a, **k):
+        raise RuntimeError("422 A pull request already exists for owner:task/2")
+
+    monkeypatch.setattr(github_client, "enabled", lambda repo: True)
+    monkeypatch.setattr(github_client, "find_pr_for_branch", _find)
+    monkeypatch.setattr(github_client, "create_pr", _create)
+    monkeypatch.setattr(github_client, "default_branch", _async(lambda repo: "main"))
+
+    asyncio.run(scheduler._auto_open_pr(db.get_project(p), db.get_task(t)))
+    fresh = db.get_task(t)
+    assert fresh["pr_number"] == 77, "raced PR was not adopted"
+    assert fresh["status"] == "review"
+
+
+def _async(fn):
+    async def _inner(*a, **k):
+        return fn(*a, **k)
+    return _inner

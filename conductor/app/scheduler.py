@@ -126,6 +126,15 @@ async def _auto_open_pr(project: dict, task: dict) -> None:
         db.update_task(task["id"], status="review")
         bus.emit(project["id"], task["id"], "scheduler", "ready_for_review", {})
         return
+    # A worker has Bash and may have opened its own PR already. Adopt it rather
+    # than racing it — otherwise the PR exists but we never store its number, so
+    # merge_pr has nothing to merge and the UI shows no link.
+    existing = await github_client.find_pr_for_branch(repo, task["branch"])
+    if existing:
+        db.update_task(task["id"], pr_number=existing, status="review")
+        bus.emit(project["id"], task["id"], "scheduler", "pr_opened",
+                 {"pr": existing, "adopted": True})
+        return
     try:
         base = await github_client.default_branch(repo)
         body = (task["report"] or "")[:1500]
@@ -136,7 +145,14 @@ async def _auto_open_pr(project: dict, task: dict) -> None:
         db.update_task(task["id"], pr_number=n, status="review")
         bus.emit(project["id"], task["id"], "scheduler", "pr_opened", {"pr": n})
     except Exception as e:
-        # Branch may have no diff, or PR already exists — hand to the lead either way.
+        # Lost a race, or the branch has no diff. Check once more before giving up:
+        # "a pull request already exists" means there IS one to adopt.
+        raced = await github_client.find_pr_for_branch(repo, task["branch"])
+        if raced:
+            db.update_task(task["id"], pr_number=raced, status="review")
+            bus.emit(project["id"], task["id"], "scheduler", "pr_opened",
+                     {"pr": raced, "adopted": True})
+            return
         db.update_task(task["id"], status="review")
         bus.emit(project["id"], task["id"], "scheduler", "pr_open_failed", str(e)[:300])
 

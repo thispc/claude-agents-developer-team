@@ -47,6 +47,22 @@ async def create_pr(repo: str, head: str, base: str, title: str, body: str) -> i
     return data["number"]
 
 
+async def find_pr_for_branch(repo: str, branch: str) -> int | None:
+    """The open PR for this branch, if one already exists.
+
+    A worker with Bash can open its own PR before the scheduler gets there. The
+    PR then exists but we never recorded its number, so merge_pr had nothing to
+    merge and the UI showed no link. Looking it up makes opening idempotent.
+    """
+    owner = repo.split("/")[0]
+    try:
+        data = await _request(
+            "GET", f"/repos/{repo}/pulls?head={owner}:{branch}&state=open&per_page=5")
+    except Exception:
+        return None
+    return data[0]["number"] if data else None
+
+
 async def merge_pr(repo: str, number: int) -> bool:
     try:
         await _request("PUT", f"/repos/{repo}/pulls/{number}/merge", json={"merge_method": "squash"})
