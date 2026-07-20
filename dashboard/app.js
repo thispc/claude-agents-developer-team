@@ -73,36 +73,119 @@ $("#logoutBtn").addEventListener("click", async () => {
   location.reload();
 });
 
+// Faint grey "— currently set ✓" read as decoration next to the label. A chip
+// reads as state. Note it still only means "stored" — "works" needs a Check.
+function paintCredChips(s) {
+  const chip = (id, isSet) => {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = isSet ? "saved" : "not set";
+    el.className = "chip " + (isSet ? "ok" : "off");
+  };
+  chip("#ghState", s.github_token_set);
+  chip("#keyState", s.anthropic_api_key_set);
+  chip("#subState", s.claude_oauth_token_set);
+  chip("#oaState", s.openai_api_key_set);
+  chip("#gmState", s.gemini_api_key_set);
+}
+
 $("#settingsBtn").addEventListener("click", async () => {
   await loadMe();
-  const s = me.settings || {};
   $("#settingsWho").textContent = `Signed in as ${me.username}${me.is_root ? " (root)" : ""}`;
-  $("#ghState").textContent = s.github_token_set ? "— currently set ✓" : "— not set";
-  const oa = $("#oaState"), gm = $("#gmState");
-  if (oa) oa.textContent = s.openai_api_key_set ? "— currently set ✓" : "— not set";
-  if (gm) gm.textContent = s.gemini_api_key_set ? "— currently set ✓" : "— not set";
-  $("#keyState").textContent = s.anthropic_api_key_set ? "— currently set ✓" : "— not set";
-  $("#subState").textContent = s.claude_oauth_token_set ? "— currently set ✓" : "— not set";
+  paintCredChips(me.settings || {});
   $("#settingsError").hidden = true;
   $("#settingsForm").reset();
+  // Last visit's verdicts are stale the moment the dialog reopens.
+  document.querySelectorAll("#settingsForm .check-result").forEach((el) => {
+    el.hidden = true;
+    el.textContent = "";
+  });
   $("#settingsDialog").showModal();
 });
 $("#closeSettingsBtn").addEventListener("click", () => $("#settingsDialog").close());
+$("#closeSettingsX").addEventListener("click", () => $("#settingsDialog").close());
+
+// --- live credential verification ------------------------------------------
+// "saved" only ever meant "we stored the characters you typed". A retired model,
+// a Google project without billing, a GitHub token missing a scope and an expired
+// subscription token all looked identical to a working setup — and you found out
+// hours later when a project died. These check for real, on the spot.
+
+function showCheck(kind, state, detail, hint) {
+  const el = document.querySelector(`[data-result="${kind}"]`);
+  if (!el) return;
+  el.hidden = false;
+  el.className = "check-result " + state;
+  const icon = state === "ok" ? "✓" : state === "bad" ? "✕" : "…";
+  el.innerHTML = `${icon} ${escapeHtml(detail)}` +
+    (hint ? `<span class="why">${escapeHtml(hint)}</span>` : "");
+}
+
+async function verifyCred(kind) {
+  const input = document.querySelector(`#settingsForm [name="${kind}"]`);
+  const btn = document.querySelector(`[data-check="${kind}"]`);
+  const typed = (input && input.value.trim()) || "";
+  showCheck(kind, "working", typed ? "checking what you entered…"
+                                   : "checking the saved credential…");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api("/api/settings/verify", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, value: typed }),
+    });
+    showCheck(kind, r.ok ? "ok" : "bad", r.detail || "", r.hint || "");
+    return r.ok;
+  } catch (e) {
+    showCheck(kind, "bad", e.message || "the check could not run");
+    return false;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+document.querySelectorAll("[data-check]").forEach((b) =>
+  b.addEventListener("click", () => verifyCred(b.dataset.check)));
 $("#settingsForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const f = new FormData(ev.target);
+  // Send every credential the form carries. This used to name three fields by
+  // hand, so the OpenAI and Gemini inputs were decorative: you could paste a key,
+  // hit Save, get a success, and have it silently dropped on the floor.
   const body = {};
-  if (f.get("github_token")) body.github_token = f.get("github_token");
-  if (f.get("anthropic_api_key")) body.anthropic_api_key = f.get("anthropic_api_key");
-  if (f.get("claude_oauth_token")) body.claude_oauth_token = f.get("claude_oauth_token");
+  for (const [k, v] of f.entries()) {
+    const val = (v || "").trim();
+    if (val) body[k] = val;
+  }
+  const submitBtn = ev.target.querySelector("button[type=submit]");
   try {
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Saving…"; }
     await api("/api/settings", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    $("#settingsDialog").close();
-    loadMe().then(loadRepos);   // token may have just been added
-  } catch (e) { $("#settingsError").textContent = e.message; $("#settingsError").hidden = false; }
+    await loadMe();
+    paintCredChips(me.settings || {});
+    loadRepos();                       // a GitHub token may have just been added
+
+    const kinds = Object.keys(body);
+    if (!kinds.length) { $("#settingsDialog").close(); return; }
+    // Verify before the user walks away believing a broken key is fine. Saving
+    // still succeeds either way — a key can be valid while the provider is having
+    // a bad minute, and refusing to store it would be the wrong call.
+    if (submitBtn) submitBtn.textContent = "Verifying…";
+    const results = await Promise.all(kinds.map(verifyCred));
+    if (results.every(Boolean)) {
+      toast("Credentials saved and verified");
+      setTimeout(() => $("#settingsDialog").close(), 1200);
+    } else {
+      toast("Saved, but some credentials did not verify");
+    }
+  } catch (e) {
+    $("#settingsError").textContent = e.message;
+    $("#settingsError").hidden = false;
+  } finally {
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Save & verify"; }
+  }
 });
 
 async function loadRepos() {
@@ -227,15 +310,31 @@ function renderHome(projects) {
     }));
 }
 
+// The platform working on itself. /api/self creates-or-returns the row for this
+// repo, so there is nothing for the user to set up first.
+async function openSelfRepair() {
+  try {
+    const d = await api("/api/self");
+    openProject(d.project_id, "self");
+  } catch (e) {
+    toast(e.message || "self-repair is not available on this account");
+  }
+}
+
 function showHome(skipHash) {
   const pl = $("#plan"); if (pl) pl.hidden = true;
   if (!skipHash) setHash("#/");
   currentProject = null;
+  const improve = $("#modeImprove");
+  if (improve) improve.hidden = !(me && me.may_self_repair);
   $("#home").hidden = false;
   $("main").hidden = true;
-  $("#projectSelect").hidden = true;
+  // The whole project bar goes away with the project — none of it means anything
+  // on the home screen, which is why it never belonged in the global header.
+  $("#projectBar").hidden = true;
   $("#costBadge").hidden = true;
   $("#statusBadge").hidden = true;
+  $("#sprintBadge").hidden = true;
   $("#restartBtn").hidden = true;
   $("#cancelBtn").hidden = true;
   loadProjects();
@@ -244,7 +343,7 @@ function showHome(skipHash) {
 function openProject(id, view, skipHash) {
   $("#home").hidden = true;
   $("main").hidden = false;
-  $("#projectSelect").hidden = false;
+  $("#projectBar").hidden = false;
   currentProject = Number(id);
   // Must finish before selectProject sets .value, or the assignment lands on an
   // empty <select> and is silently dropped (the dropdown then shows the wrong project).
@@ -499,6 +598,7 @@ const PERSONA_PRESETS = [
 
 async function openPlan() {
   $("#home").hidden = true; $("main").hidden = true; $("#plan").hidden = false;
+  $("#projectBar").hidden = true;
   $("#planSetup").hidden = false; $("#planStage").hidden = true;
   $("#blueprintPanel").hidden = true;
   setHash("#/plan");
@@ -1004,6 +1104,16 @@ async function refreshBoard() {
     $("#costBadge").textContent = `$${p.cost_usd.toFixed(2)} / $${p.budget_usd.toFixed(2)} · ${runs} runs`;
     $("#costBadge").title = "Estimated API spend / budget cap. Authoritative balance is at console.anthropic.com.";
   }
+  // Which delivery cycle we're in. Only shown when there's more than one, so a
+  // one-shot project doesn't carry sprint vocabulary it never uses.
+  const sb = $("#sprintBadge");
+  if (sb) {
+    const total = p.sprints ?? 1;
+    sb.hidden = total <= 1;
+    sb.textContent = `sprint ${p.sprint ?? 1}/${total}`;
+    sb.title = `The manager plans and ships ${total} cycles on its own, deciding each ` +
+      "sprint's scope itself. It only stops for you if it's genuinely blocked.";
+  }
   const badge = $("#statusBadge");
   badge.hidden = false;
   badge.textContent = STATUS_LABEL[p.status] || p.status;
@@ -1047,6 +1157,10 @@ function escapeHtml(s) {
 
 function renderEvent(e) {
   if (e.project_id !== currentProject) return;
+  // Legacy 'answer' events are the manager echoing what the boss had just said,
+  // so every boss message appeared twice — once as typed, once prefixed "The boss
+  // replied: ". The emit is gone; this hides the ones already in the history.
+  if (e.kind === "answer") return;
   const div = document.createElement("div");
   let cls = e.source.startsWith("worker") ? "worker" : e.source;
   if (e.source === "scheduler") cls = "system";
@@ -2071,8 +2185,9 @@ const openDialog = () => {
 $("#projectSelect").addEventListener("change", (e) => selectProject(e.target.value));
 $("#homeLink").addEventListener("click", () => showHome());
 $("#homeLink").style.cursor = "pointer";
-$("#newProjectBtn").addEventListener("click", openDialog);
-$("#homePlanBtn").addEventListener("click", openPlan);
+$("#modeBuild").addEventListener("click", openDialog);
+$("#modeShape").addEventListener("click", openPlan);
+$("#modeImprove").addEventListener("click", openSelfRepair);
 $("#planBackBtn").addEventListener("click", () => {
   clearInterval(tablePoll); $("#plan").hidden = true; showHome();
 });
@@ -2231,6 +2346,7 @@ $("#newProjectForm").addEventListener("submit", async (ev) => {
         team: readRoster(), autonomy: f.get("autonomy") || "supervised",
         manager_model: f.get("manager_model") || "",
         manager_persona: f.get("manager_persona") || "",
+        sprints: Number(f.get("sprints")) || 1,
       }),
     });
     dialog.close();

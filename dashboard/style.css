@@ -251,6 +251,37 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 380px; gap: 16px; padd
 #directiveForm { display: flex; gap: 8px; margin-top: 10px; }
 #directiveForm input { flex: 1; }
 
+/* ---------- project bar ---------- */
+/* Everything scoped to one project. It used to sit in the global header beside
+   Settings and Sign out, so "8/40 agent runs used" read like an account-wide
+   quota rather than one project's guard rail. */
+#projectBar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 20px; background: var(--card-2);
+  border-bottom: 1px solid var(--line);
+}
+#projectBar select { max-width: 320px; font-weight: 550; }
+#projectBar .badge { font-size: 11.5px; }
+#sprintBadge { background: var(--accent-soft); color: var(--accent); border-color: #c9d0f7; }
+
+/* ---------- the three ways in ---------- */
+.modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+         gap: 14px; margin-bottom: 26px; }
+.mode-card {
+  display: flex; flex-direction: column; gap: 7px; align-items: flex-start;
+  text-align: left; padding: 20px; border-radius: 14px;
+  background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow);
+  min-width: 0;                     /* or long words push the grid wider than the page */
+}
+.mode-card:hover { border-color: var(--accent); box-shadow: var(--shadow-lg);
+                   transform: translateY(-2px); background: var(--card); }
+.mode-ico { font-size: 21px; line-height: 1; }
+.mode-name { font-size: 15px; font-weight: 620; letter-spacing: -.2px; color: var(--text); }
+.mode-desc { font-size: 12.5px; color: var(--dim); line-height: 1.55; font-weight: 400; }
+.mode-go { margin-top: 5px; font-size: 12px; font-weight: 600; color: var(--accent); }
+.ctl-sub { font-size: 12.5px; color: var(--dim); line-height: 1.6; max-width: 74ch;
+           margin: -4px 0 10px; }
+
 /* ---------- dialogs ---------- */
 /* margin:auto is what centres a <dialog>; the global reset above wipes it, which
    is why dialogs were sticking to the top-left. Restore it explicitly. */
@@ -267,6 +298,91 @@ dialog textarea { resize: vertical; min-height: 96px; line-height: 1.55; }
 .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 4px; }
 .actions button { padding: 9px 18px; }
 .form-error { color: var(--bad); font-size: 12.5px; background: var(--bad-soft); border: 1px solid #f4c9c6; border-radius: 8px; padding: 9px 11px; }
+
+/* ---------- settings dialog ---------- */
+/* This was white inputs on a white sheet separated by a #e3e6ec hairline —
+   technically present, visually absent, and the "is it set?" state was faint
+   grey text that read as decoration. The body now sits on a tinted surface so
+   each field reads as a distinct, fillable thing, and state is a real badge. */
+.settings-dlg { width: min(560px, 94vw); }
+.settings-dlg form { padding: 0; gap: 0; }
+
+.settings-dlg .dlg-head {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 20px 24px 16px; background: var(--card);
+  border-bottom: 1px solid var(--line); border-radius: 16px 16px 0 0;
+}
+.dlg-sub { font-size: 12px; color: var(--dim); margin-top: 3px; }
+.icon-x { margin-left: auto; border: none; background: none; color: var(--faint);
+          font-size: 14px; padding: 4px 8px; border-radius: 8px; line-height: 1; }
+.icon-x:hover { background: var(--soft); color: var(--text); border: none; }
+
+.settings-dlg .dlg-body {
+  padding: 18px 24px 22px; background: var(--bg);
+  display: flex; flex-direction: column; gap: 14px;
+  max-height: 62vh; overflow-y: auto;
+}
+.dlg-lede { font-size: 12.5px; color: var(--dim); line-height: 1.55; }
+
+.cred-group {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 15px 16px 16px; display: flex; flex-direction: column; gap: 12px;
+}
+.cred-head { display: flex; gap: 10px; align-items: flex-start; }
+.cred-icon { color: var(--accent); font-size: 12px; line-height: 1.5; }
+.cred-head h3 { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.cred-head p { font-size: 11.5px; color: var(--faint); margin-top: 2px; line-height: 1.45; }
+
+.settings-dlg .field { display: flex; flex-direction: column; gap: 6px; }
+.field-top { display: flex; align-items: center; gap: 8px;
+             font-size: 12.5px; font-weight: 550; color: var(--text); }
+/* the global `dialog label` rule turns labels into dim flex columns — these are
+   inline field names sitting in a row, so opt out of all of it */
+.settings-dlg .field-top label { display: inline; color: inherit; font: inherit;
+                                 gap: 0; cursor: pointer; }
+.settings-dlg .field input {
+  font-family: var(--mono); font-size: 12.5px;
+  background: var(--card-2); border: 1px solid #d3d8e2; padding: 10px 12px;
+}
+.settings-dlg .field input:hover { border-color: #b9c0cd; }
+.settings-dlg .field input:focus { background: #fff; border-color: var(--accent); }
+.settings-dlg .field input::placeholder { color: #aeb5c1; }
+.field-hint { font-size: 11.5px; color: var(--dim); line-height: 1.5; }
+.field-hint code { font-family: var(--mono); font-size: 11px; background: var(--soft);
+                   border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+
+/* "Check" proves the key works now, instead of finding out hours later when a
+   project dies. Kept quiet until hovered — it's a tool, not the main action. */
+.check-btn { margin-left: auto; font-size: 11px; padding: 3px 10px; border-radius: 7px;
+             color: var(--dim); background: var(--soft); border: 1px solid var(--line); }
+.check-btn:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.check-btn:disabled { opacity: .55; cursor: wait; }
+
+.check-result { font-size: 11.5px; line-height: 1.5; border-radius: 8px;
+                padding: 8px 10px; border: 1px solid transparent; }
+.check-result.ok      { color: var(--good); background: var(--good-soft); border-color: #bfe6cd; }
+.check-result.bad     { color: var(--bad);  background: var(--bad-soft);  border-color: #f4c9c6; }
+.check-result.working { color: var(--dim);  background: var(--soft);      border-color: var(--line); }
+.check-result .why { display: block; margin-top: 4px; color: var(--dim); }
+
+.chip { font-style: normal; font-size: 10px; font-weight: 600; letter-spacing: .4px;
+        text-transform: uppercase; padding: 2px 7px; border-radius: 999px;
+        border: 1px solid transparent; }
+.chip.ok  { color: var(--good); background: var(--good-soft); border-color: #bfe6cd; }
+.chip.off { color: var(--faint); background: var(--soft); border-color: var(--line); }
+
+/* the two Claude options are alternatives, not a checklist — say so visually */
+.or-rule { display: flex; align-items: center; gap: 10px; color: var(--faint);
+           font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px; }
+.or-rule::before, .or-rule::after { content: ""; flex: 1; height: 1px; background: var(--line-soft); }
+
+.settings-dlg .dlg-foot {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 24px; background: var(--card);
+  border-top: 1px solid var(--line); border-radius: 0 0 16px 16px;
+}
+.foot-note { font-size: 11.5px; color: var(--faint); }
+.settings-dlg .dlg-foot .actions { margin-top: 0; margin-left: auto; }
 
 /* wizard */
 .wizard-steps { display: flex; gap: 6px; }

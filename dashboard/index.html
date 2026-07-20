@@ -21,28 +21,61 @@
   </form>
 </div>
 
+<!-- Global only. Anything scoped to one project lives in #projectBar below —
+     mixing "8/40 runs on this project" in with Settings and Sign out made
+     project state read as if it applied to the whole account. -->
 <header>
   <h1 id="homeLink">dev<span>team</span></h1>
-  <select id="projectSelect" title="Select project" hidden></select>
-  <button id="newProjectBtn">+ New project</button>
   <div class="spacer"></div>
-  <div id="authBadge" class="badge">auth: …</div>
-  <div id="costBadge" class="badge" hidden>—</div>
-  <div id="statusBadge" class="badge" hidden>—</div>
+  <div id="authBadge" class="badge" title="Which credentials your agents run on">auth: …</div>
   <div class="bell-wrap">
     <button id="bellBtn" title="Requests waiting on you">🔔<span id="bellCount" hidden>0</span></button>
     <div id="bellPanel" hidden></div>
   </div>
   <button id="settingsBtn" title="Your GitHub & API keys">⚙</button>
   <button id="logoutBtn" title="Sign out">⏻</button>
-  <button id="restartBtn" hidden title="Re-run the manager on this project">↻ Restart manager</button>
-  <button id="cancelBtn" class="danger" hidden>Cancel</button>
 </header>
 
+<div id="projectBar" hidden>
+  <select id="projectSelect" title="Switch project"></select>
+  <div id="statusBadge" class="badge" hidden>—</div>
+  <div id="sprintBadge" class="badge" hidden title="Delivery cycle">—</div>
+  <div id="costBadge" class="badge" hidden>—</div>
+  <div class="spacer"></div>
+  <button id="restartBtn" hidden title="Re-run the manager on this project">↻ Restart manager</button>
+  <button id="cancelBtn" class="danger" hidden>Cancel</button>
+</div>
+
 <section id="home">
+  <!-- Three ways in, stated as what they DO. "Plan" and "Develop" both sounded
+       like planning, so it was never obvious which one you wanted. Shape grows a
+       rough idea; Build runs the real pipeline; Improve turns the team on itself. -->
+  <div class="modes">
+    <button class="mode-card" id="modeBuild">
+      <span class="mode-ico">🏗</span>
+      <span class="mode-name">Build a project</span>
+      <span class="mode-desc">Hire a team and ship it. Tasks, branches, PRs, verified
+        merges — over as many sprints as you ask for.</span>
+      <span class="mode-go">Start building →</span>
+    </button>
+    <button class="mode-card" id="modeShape">
+      <span class="mode-ico">🧠</span>
+      <span class="mode-name">Shape an idea</span>
+      <span class="mode-desc">A round table of models from different providers argues a
+        half-formed idea into a blueprint. Hand it straight to Build.</span>
+      <span class="mode-go">Open the table →</span>
+    </button>
+    <button class="mode-card" id="modeImprove" hidden>
+      <span class="mode-ico">⟲</span>
+      <span class="mode-name">Improve devteam</span>
+      <span class="mode-desc">Point the team at this platform's own codebase. File an
+        issue, let it fix itself, review the PR, redeploy.</span>
+      <span class="mode-go">Open self-repair →</span>
+    </button>
+  </div>
+
   <div class="home-head">
-    <h2>Projects</h2>
-    <button id="homePlanBtn">🧠 Plan it first</button>
+    <h2>Your projects</h2>
     <button id="homeNewBtn" class="primary">+ New project</button>
   </div>
   <table id="projectsTable">
@@ -169,33 +202,96 @@
   </section>
 </main>
 
-<dialog id="settingsDialog">
-  <form id="settingsForm" class="task-detail-wrap">
-    <h2>⚙ Your settings</h2>
-    <p class="hint" id="settingsWho"></p>
-    <label>GitHub token <span class="hint" id="ghState"></span>
-      <input name="github_token" type="password" placeholder="github_pat_… (leave blank to keep current)"></label>
-    <label>Anthropic API key <span class="hint" id="keyState"></span>
-      <input name="anthropic_api_key" type="password" placeholder="sk-ant-… (pay-per-token API billing)"></label>
-    <label>…or Claude subscription token <span class="hint" id="subState"></span>
-      <input name="claude_oauth_token" type="password" placeholder="run `claude setup-token` and paste it here"></label>
-    <p class="hint">Use <b>one</b> of the two. The subscription token runs agents on your own
-      Claude Pro/Max plan at no per-token cost; the API key bills your Anthropic account.</p>
-    <h3 class="set-h">Other providers <span class="hint">— for Plan mode's round table</span></h3>
-    <p class="hint">Mixing providers is what makes a round table outperform asking one
-      model once, so a key here buys real quality, not just variety.</p>
-    <label>OpenAI API key <span class="hint" id="oaState"></span>
-      <input name="openai_api_key" type="password" placeholder="sk-… (GPT-5, o3)"></label>
-    <label>Google Gemini API key <span class="hint" id="gmState"></span>
-      <input name="gemini_api_key" type="password" placeholder="AIza… (Gemini 2.5)"></label>
-    <p class="hint">Your credentials are stored per user on the server and never sent back to the browser.
-      Full GitHub OAuth ("Authorize once") is the next step — for now paste a fine-grained token
-      with Contents, Issues and Pull requests read/write.</p>
-    <p id="settingsError" class="form-error" hidden></p>
-    <div class="actions">
-      <button type="button" id="closeSettingsBtn">Close</button>
-      <button type="submit" class="primary">Save</button>
+<dialog id="settingsDialog" class="settings-dlg">
+  <form id="settingsForm">
+    <header class="dlg-head">
+      <div>
+        <h2>Your credentials</h2>
+        <p class="dlg-sub" id="settingsWho"></p>
+      </div>
+      <button type="button" id="closeSettingsX" class="icon-x" aria-label="Close">✕</button>
+    </header>
+
+    <div class="dlg-body">
+      <p class="dlg-lede">Your agents run on <b>your</b> keys — never the operator's. Everything
+        here is stored per user on the server and is never sent back to the browser.</p>
+
+      <section class="cred-group">
+        <div class="cred-head"><span class="cred-icon">◆</span>
+          <div><h3>Claude</h3><p>Runs the manager and every worker. You need one of these two.</p></div>
+        </div>
+        <div class="field">
+          <span class="field-top"><label for="subInput">Subscription token</label>
+            <em id="subState" class="chip"></em>
+            <button type="button" class="check-btn" data-check="claude_oauth_token">Check</button></span>
+          <input id="subInput" name="claude_oauth_token" type="password" autocomplete="off"
+                 spellcheck="false" placeholder="sk-ant-oat01-…">
+          <span class="field-hint">Recommended. Run <code>claude setup-token</code> and paste the result —
+            agents then run on your own Pro/Max plan at no per-token cost.</span>
+          <span class="check-result" data-result="claude_oauth_token" hidden></span>
+        </div>
+        <div class="or-rule"><span>or</span></div>
+        <div class="field">
+          <span class="field-top"><label for="keyInput">API key</label>
+            <em id="keyState" class="chip"></em>
+            <button type="button" class="check-btn" data-check="anthropic_api_key">Check</button></span>
+          <input id="keyInput" name="anthropic_api_key" type="password" autocomplete="off"
+                 spellcheck="false" placeholder="sk-ant-api03-…">
+          <span class="field-hint">Bills your Anthropic account per token.</span>
+          <span class="check-result" data-result="anthropic_api_key" hidden></span>
+        </div>
+      </section>
+
+      <section class="cred-group">
+        <div class="cred-head"><span class="cred-icon">◈</span>
+          <div><h3>GitHub</h3><p>Where branches, pull requests and issues are created.</p></div>
+        </div>
+        <div class="field">
+          <span class="field-top"><label for="ghInput">Access token</label>
+            <em id="ghState" class="chip"></em>
+            <button type="button" class="check-btn" data-check="github_token">Check</button></span>
+          <input id="ghInput" name="github_token" type="password" autocomplete="off"
+                 spellcheck="false" placeholder="github_pat_… or ghp_…">
+          <span class="field-hint">A fine-grained token with <b>Contents</b>, <b>Issues</b> and
+            <b>Pull requests</b> set to read/write.</span>
+          <span class="check-result" data-result="github_token" hidden></span>
+        </div>
+      </section>
+
+      <section class="cred-group">
+        <div class="cred-head"><span class="cred-icon">◇</span>
+          <div><h3>Other providers</h3><p>Seats at Plan mode's round table. Optional.</p></div>
+        </div>
+        <div class="field">
+          <span class="field-top"><label for="oaInput">OpenAI</label>
+            <em id="oaState" class="chip"></em>
+            <button type="button" class="check-btn" data-check="openai_api_key">Check</button></span>
+          <input id="oaInput" name="openai_api_key" type="password" autocomplete="off"
+                 spellcheck="false" placeholder="sk-…">
+          <span class="check-result" data-result="openai_api_key" hidden></span>
+        </div>
+        <div class="field">
+          <span class="field-top"><label for="gmInput">Google Gemini</label>
+            <em id="gmState" class="chip"></em>
+            <button type="button" class="check-btn" data-check="gemini_api_key">Check</button></span>
+          <input id="gmInput" name="gemini_api_key" type="password" autocomplete="off"
+                 spellcheck="false" placeholder="AIza…">
+          <span class="check-result" data-result="gemini_api_key" hidden></span>
+        </div>
+        <span class="field-hint">A second provider is what lets the table disagree for real
+          reasons instead of echoing one model.</span>
+      </section>
+
+      <p id="settingsError" class="form-error" hidden></p>
     </div>
+
+    <footer class="dlg-foot">
+      <span class="foot-note">Blank keeps the current value. Saving verifies what you entered.</span>
+      <div class="actions">
+        <button type="button" id="closeSettingsBtn">Cancel</button>
+        <button type="submit" class="primary">Save &amp; verify</button>
+      </div>
+    </footer>
   </form>
 </dialog>
 
@@ -285,6 +381,17 @@
           <div><b>⚡ Full autonomy <em>(bypass — hands off)</em></b><span>The manager decides everything and only interrupts you if truly stuck. Fast, but you won't be asked to approve.</span></div>
         </label>
       </div>
+      <h3 class="ctl-h">How many sprints should it run?</h3>
+      <p class="ctl-sub">One sprint = decide what to build, build it, verify it, ship it.
+        After each one the manager reviews what exists, decides for itself what the
+        product still needs, and starts the next — <b>without asking you</b>. Ask for
+        several and you come back to a finished product, not a first draft.</p>
+      <div class="nums">
+        <label>Sprints <span class="hint">1 = a single pass</span>
+          <input name="sprints" type="number" min="1" max="20" value="1"></label>
+        <label>Agent-run cap <span class="hint">raise this for multi-sprint runs</span>
+          <input name="max_runs" type="number" min="5" max="400" value="40"></label>
+      </div>
       <h3 class="ctl-h">Who is your manager?</h3>
       <div class="nums">
         <label>Manager's brain <span class="hint">stronger = better judgment</span>
@@ -309,7 +416,6 @@
         <summary>Advanced limits</summary>
         <div class="nums">
           <label>Max agents at once <input name="max_workers" type="number" min="1" max="8" value="3"></label>
-          <label>Agent-run cap <input name="max_runs" type="number" min="5" max="200" value="40"></label>
         </div>
       </details>
       <p id="formError3" class="form-error" hidden></p>
