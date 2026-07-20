@@ -341,14 +341,39 @@ def build_team_server(project_id: int):
         if not rivals:
             return _text("that task was not run as a contest; use get_report instead.")
         t = db.get_task(task_id)
+        # Only judge attempts that actually delivered. Selection over a pool that
+        # includes failures measurably underperforms — filter first, then judge.
+        usable = [r for r in rivals if r["status"] == "pushed" and (r["report"] or "").strip()]
+        dropped = [r for r in rivals if r not in usable]
+        if not usable:
+            return _text("no rival produced usable work; every attempt failed. "
+                         "Use request_changes or reassign_task rather than picking a winner.")
+
+        # Judges are measurably sensitive to the ORDER candidates appear in, and
+        # they favour output from their own model family. So shuffle the running
+        # order and withhold which model wrote which attempt: the judgement should
+        # come from the work, not from the byline or the position.
+        import random as _random
+        shown = list(usable)
+        _random.shuffle(shown)
+
         parts = [f"Contest for task {_t['seq'] if _t else task_id}: {_t['title'] if _t else ''}",
-                 f"Acceptance criteria were:\n{(t or {}).get('description', '')[:1500]}", ""]
-        for r in rivals:
+                 f"Acceptance criteria were:\n{(t or {}).get('description', '')[:1500]}",
+                 "",
+                 "The attempts below are in random order and the authoring model is "
+                 "deliberately withheld. Judge the work itself against the criteria.",
+                 ""]
+        for r in shown:
             parts.append(
-                f"===== RIVAL #{r['idx']} — model {r['model']} — branch {r['branch']} "
-                f"— {r['status']} =====\n{(r['report'] or '(no report)')[:4000]}")
-        parts.append("\nPick one with pick_winner(task_id, rival_idx, reason). If a loser had "
-                     "a good idea the winner missed, say so in the reason — it becomes feedback.")
+                f"===== ATTEMPT #{r['idx']} — branch {r['branch']} =====\n"
+                f"{(r['report'] or '(no report)')[:6000]}")
+        if dropped:
+            parts.append("\n(Not shown, because they delivered nothing: " +
+                         ", ".join(f"#{r['idx']} [{r['status']}]" for r in dropped) + ")")
+        parts.append("\nPick one with pick_winner(task_id, rival_idx, reason) using the "
+                     "ATTEMPT # shown above. Judge against the acceptance criteria, not on "
+                     "which report reads better. If a loser had a good idea the winner "
+                     "missed, say so in the reason — it becomes feedback.")
         return _text("\n\n".join(parts))
 
     @tool("pick_winner", "Declare which rival attempt wins a contest. Its branch becomes the "

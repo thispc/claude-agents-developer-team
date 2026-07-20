@@ -74,6 +74,12 @@ escalation never fires for that task again.
 
 ### Contests
 
+Judging is **blind and shuffled**: attempts are shown in random order with the
+authoring model withheld, and attempts that delivered nothing are filtered out
+before judging. All three are deliberate — LLM judges are measurably sensitive to
+candidate ordering, favour output from their own model family, and selection over
+a pool containing failures underperforms plain majority voting.
+
 A task created with `compete: 2` (or 3) launches N rivals on branches
 `task/<id>-c1`, `-c2`… each on a different model. When all report, the manager
 sees them side by side (`compare_work`) and picks one (`pick_winner`); the

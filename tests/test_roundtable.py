@@ -254,3 +254,21 @@ def test_synthesis_prompt_guards_against_fact_attrition():
     assert "round 1" in s
     assert "disappear" in s or "dropped" in s
     assert "silence is not refutation" in s
+
+
+# ---- the guidance inverts between the two modes ---------------------------
+
+def test_diverge_mode_warns_about_MIXING_not_sameness():
+    """Diverge is Mixture-of-Agents, where Self-MoA (best model sampled N times)
+    beat mixed-model MoA. So in diverge, variety is what deserves the warning —
+    the opposite of debate mode."""
+    mixed = [{"provider": "anthropic", "model": "opus"},
+             {"provider": "openai", "model": "gpt"},
+             {"provider": "google", "model": "gem"}]
+    same = [{"provider": "anthropic", "model": "opus"} for _ in range(3)]
+    # debate: mixing is good, sameness is warned
+    assert roundtable.homogeneity_warning(mixed, "debate") == ""
+    assert roundtable.homogeneity_warning(same, "debate") != ""
+    # diverge: exactly inverted
+    assert roundtable.homogeneity_warning(same, "diverge") == ""
+    assert "quality dominates diversity" in roundtable.homogeneity_warning(mixed, "diverge")

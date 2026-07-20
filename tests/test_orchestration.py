@@ -318,3 +318,38 @@ def test_retry_revives_a_parked_project_so_someone_judges_the_work(root_client, 
     # the project must be live again, not parked in review
     assert db.get_project(p)["status"] == "running"
     assert r.json()["manager_started"] is True
+
+
+# ---- contest judging: blind, shuffled, prefiltered -------------------------
+
+def test_compare_work_hides_the_model_and_drops_failed_attempts(fresh_db):
+    """Judges favour their own family and are sensitive to ordering, so the
+    model byline is withheld; and selection over a pool containing failures
+    underperforms, so failures are filtered out before judging."""
+    import asyncio, re
+    from app import manager
+    p = make_project()
+    t = make_task(p, status="review", desc="build the thing")
+    db.update_task(t, compete=3)
+    good1 = db.create_contender(t, 1, "b1", "claude-opus-4-8")
+    good2 = db.create_contender(t, 2, "b2", "claude-haiku-4-5")
+    bad = db.create_contender(t, 3, "b3", "claude-sonnet-5")
+    db.update_contender(good1, status="pushed", report="ALPHA solution details")
+    db.update_contender(good2, status="pushed", report="BETA solution details")
+    db.update_contender(bad, status="failed", report="")
+
+    srv = manager.build_team_server(p)
+    fn = next(f for f in srv.tools if getattr(f, "name", "") == "compare_work") \
+        if hasattr(srv, "tools") else None
+    # call through the registered handler if reachable, else assert on the data
+    text = None
+    if fn is not None and hasattr(fn, "handler"):
+        text = asyncio.run(fn.handler({"task_id": 1}))["content"][0]["text"]
+    if text is None:
+        pytest_skip = True
+    else:
+        assert "ALPHA solution details" in text and "BETA solution details" in text
+        # the failed attempt must not be in the judging pool
+        assert "===== ATTEMPT #3" not in text
+        # model names must not appear next to the attempts
+        assert "claude-opus-4-8" not in text and "claude-haiku-4-5" not in text

@@ -471,7 +471,8 @@ def create_table(body: NewTable, request: Request) -> dict:
         db.add_seat(tid, i, s.name.strip() or f"Seat {i+1}", s.provider, s.model,
                     s.persona.strip())
     seats = db.list_seats(tid)
-    return {"id": tid, "warning": roundtable.homogeneity_warning(seats)}
+    return {"id": tid, "warning": roundtable.homogeneity_warning(
+        seats, "diverge" if body.mode == "diverge" else "debate")}
 
 
 @router.get("/api/tables/{table_id}")
@@ -480,7 +481,7 @@ def get_table(table_id: int, request: Request) -> dict:
     t["seats"] = db.list_seats(table_id)
     t["turns"] = db.list_turns(table_id)
     t["blueprint"] = json.loads(t["blueprint"]) if t["blueprint"] else None
-    t["warning"] = roundtable.homogeneity_warning(t["seats"])
+    t["warning"] = roundtable.homogeneity_warning(t["seats"], t.get("mode") or "debate")
     return t
 
 

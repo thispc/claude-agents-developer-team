@@ -330,10 +330,27 @@ def _parse_blueprint(raw: str) -> dict:
     return data
 
 
-def homogeneity_warning(seats: list[dict]) -> str:
-    """The table is only worth running if the seats actually differ."""
+def homogeneity_warning(seats: list[dict], mode: str = "debate") -> str:
+    """Whether the seating is a good idea — which INVERTS between the two modes.
+
+    - debate: agents read and argue with each other. Heterogeneity is the one
+      intervention shown to reliably improve that, so identical seats are bad.
+    - diverge: parallel proposals with an aggregator, i.e. Mixture-of-Agents.
+      There the finding runs the other way — 'Self-MoA' (sampling your single
+      BEST model N times) beat mixed-model MoA by 6.6 points on AlpacaEval and
+      3.8% on average, because proposer quality dominates proposer diversity.
+      Mixing a weaker model in can actively cost you.
+    """
     provs = {s["provider"] for s in seats}
     models = {(s["provider"], s["model"]) for s in seats}
+    if mode == "diverge":
+        if len(models) > 1:
+            return ("Mixed models in diverge mode: for parallel proposals with an "
+                    "aggregator, sampling your BEST model several times measurably "
+                    "beat mixing in weaker ones (quality dominates diversity). "
+                    "Consider putting your strongest model in every seat and varying "
+                    "only the persona.")
+        return ""
     if len(provs) == 1 and len(models) == 1:
         return ("Every seat is the same provider AND the same model. Debate between "
                 "identical models is the case the research found does NOT beat just "

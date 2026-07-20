@@ -119,6 +119,41 @@ every chair is not the win it feels like either.
 
 ---
 
+## The advice inverts between the two modes
+
+This is the least obvious thing on the page, and it caught me out.
+
+**Debate mode** is multi-agent debate, where heterogeneity is the one lever shown
+to reliably help. Identical seats are the bad case.
+
+**Diverge mode** is not debate at all — parallel proposals plus an aggregator is
+**Mixture-of-Agents**. And there the evidence runs the *other way*:
+[Self-MoA](https://arxiv.org/abs/2502.00674) — sampling the single **best** model
+N times and aggregating — beat mixed-model MoA by **6.6 points on AlpacaEval 2.0
+and 3.8% on average**, because proposer *quality* dominates proposer *diversity*.
+Mixing a weaker model in can actively cost you. Mixed MoA only won on a synthetic
+task mixture where you knew in advance which specialist to route to.
+
+So the seat advice flips:
+
+| Mode | What to put in the seats |
+|---|---|
+| Debate | Different providers/models. Identical seats are the refuted case. |
+| Diverge | Your **strongest** model in every seat, varying only the persona. |
+
+Both the API and the UI now warn accordingly, and they warn about opposite things.
+
+A caution on diversity generally: [Nine Judges, Two Effective
+Votes](https://arxiv.org/html/2605.29800) found nine frontier judges from seven
+families supplied only ~2.18 *effective* independent votes (mean pairwise error
+correlation 0.391). A "diverse" panel is far less diverse than it looks.
+
+**The experiment worth running:** your round table against Self-MoA — N samples
+from your best model, same moderator, same total tokens. If diverse seats do not
+beat that, the seats are costing you quality.
+
+---
+
 ## The arrangement, and the evidence for each rule
 
 ### 1. Round one is silent and independent

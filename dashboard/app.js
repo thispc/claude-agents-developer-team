@@ -571,10 +571,23 @@ function updateSeatWarning() {
   const w = $("#seatWarn");
   const provs = new Set(seats.map((s) => s.provider));
   const combos = new Set(seats.map((s) => s.provider + "/" + s.model));
+  const mode = (document.querySelector("input[name=tmode]:checked") || {}).value || "debate";
   let msg = "";
-  if (seats.length > 6) msg = `${seats.length} seats — deliberation degrades past about 6.`;
-  else if (combos.size === 1) msg = "Every seat is the same model. That is the case research found does NOT beat asking one model once.";
-  else if (provs.size === 1) msg = "All seats share one provider. Mixing providers is what measurably improves this.";
+  if (seats.length > 6) {
+    msg = `${seats.length} seats — deliberation degrades past about 6.`;
+  } else if (mode === "diverge") {
+    // Parallel proposals + aggregator is Mixture-of-Agents, where the evidence
+    // runs the OPPOSITE way to debate: sampling your best model repeatedly beat
+    // mixing in weaker ones. So here, variety is the thing to warn about.
+    if (combos.size > 1)
+      msg = "Diverge mode: sampling your BEST model several times measurably beat "
+          + "mixing weaker ones (quality dominates diversity). Consider one strong "
+          + "model in every seat, varying only the persona.";
+  } else if (combos.size === 1) {
+    msg = "Every seat is the same model. That is the case research found does NOT beat asking one model once.";
+  } else if (provs.size === 1) {
+    msg = "All seats share one provider. Mixing providers is what measurably improves this.";
+  }
   w.hidden = !msg; w.textContent = msg;
 }
 
@@ -1892,6 +1905,8 @@ $("#addSeatBtn").addEventListener("click", () => {
   seats.push({ uid: ++seatSeq, name: preset[0], provider: prov, model, persona: preset[1] });
   renderSeats();
 });
+document.querySelectorAll("input[name=tmode]").forEach((r) =>
+  r.addEventListener("change", updateSeatWarning));
 $("#startTableBtn").addEventListener("click", startTable);
 $("#whyCircle").addEventListener("click", (e) => {
   e.preventDefault();
