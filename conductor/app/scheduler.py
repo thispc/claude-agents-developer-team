@@ -105,8 +105,13 @@ def has_cycle(project_id: int) -> list[int]:
 
 def ensure(project_id: int) -> None:
     t = _schedulers.get(project_id)
-    if t is None or t.done():
-        _schedulers[project_id] = asyncio.get_event_loop().create_task(_run(project_id))
+    if t is not None and not t.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return   # no event loop (e.g. called from a sync context) — nothing to schedule
+    _schedulers[project_id] = loop.create_task(_run(project_id))
 
 
 def stop(project_id: int) -> None:

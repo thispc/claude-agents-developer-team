@@ -36,14 +36,22 @@ def _broadcast(event: dict) -> None:
 def emit(project_id: int, task_id: int | None, source: str, kind: str, payload: Any) -> dict:
     """Persist an event and broadcast it. Safe to call from any thread."""
     event = db.add_event(project_id, task_id, source, kind, payload)
-    if _loop is not None:
-        _loop.call_soon_threadsafe(_broadcast, event)
+    _safe_broadcast(event)
     return event
+
+
+def _safe_broadcast(event: dict) -> None:
+    """Best-effort broadcast; the persisted event is already the source of truth."""
+    if _loop is None or _loop.is_closed():
+        return
+    try:
+        _loop.call_soon_threadsafe(_broadcast, event)
+    except RuntimeError:
+        pass   # loop shutting down
 
 
 def emit_state(kind: str, data: dict) -> None:
     """Broadcast a non-persisted state refresh hint (e.g. task status changed)."""
     event = {"id": 0, "project_id": data.get("project_id", 0), "task_id": data.get("task_id"),
              "source": "system", "kind": kind, "payload": json.dumps(data), "ts": 0}
-    if _loop is not None:
-        _loop.call_soon_threadsafe(_broadcast, event)
+    _safe_broadcast(event)
