@@ -244,21 +244,31 @@ def list_tasks(project_id: int) -> list[dict]:
     return _rows("SELECT * FROM tasks WHERE project_id=? ORDER BY id", (project_id,))
 
 
-def _validate_sql_identifiers(fields: dict[str, Any]) -> None:
-    """Validate all field names against strict SQL identifier pattern.
+# update_task()/update_contender() splice their **fields keys directly into the SQL
+# text (only the values are parameterized), so the keys must be restricted to an
+# explicit whitelist of real column names before they ever reach a query string —
+# an f-string interpolation of an arbitrary key would otherwise be a SQL injection
+# vector. These are exactly the columns the call sites across the codebase pass
+# (grep for `db.update_task(` / `db.update_contender(`).
+_TASK_FIELDS = {
+    "title", "description", "deps", "status", "model", "pinned_model", "compete",
+    "branch", "issue_number", "pr_number", "attempts", "feedback", "report",
+    "cost_usd", "updated_at",
+}
+_CONTENDER_FIELDS = {"status", "report"}
 
-    Raises ValueError if any key is not a valid SQL identifier (pattern: ^[A-Za-z_][A-Za-z0-9_]*$).
-    """
-    import re
-    pattern = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+def _validate_fields(fields: dict[str, Any], allowed: set[str]) -> None:
+    """Raise ValueError if any key isn't in the column whitelist. Must run before
+    any SQL is built/executed."""
     for k in fields:
-        if not pattern.match(k):
+        if k not in allowed:
             raise ValueError(f"invalid field name: {k!r}")
 
 
 def update_task(task_id: int, **fields: Any) -> None:
-    _validate_sql_identifiers(fields)
     fields["updated_at"] = time.time()
+    _validate_fields(fields, _TASK_FIELDS)
     cols = ", ".join(f"{k}=?" for k in fields)
     _execute(f"UPDATE tasks SET {cols} WHERE id=?", (*fields.values(), task_id))
 
@@ -385,7 +395,7 @@ def get_contender(contender_id: int) -> dict | None:
 
 
 def update_contender(contender_id: int, **fields: Any) -> None:
-    _validate_sql_identifiers(fields)
+    _validate_fields(fields, _CONTENDER_FIELDS)
     cols = ", ".join(f"{k}=?" for k in fields)
     _execute(f"UPDATE contenders SET {cols} WHERE id=?", (*fields.values(), contender_id))
 
