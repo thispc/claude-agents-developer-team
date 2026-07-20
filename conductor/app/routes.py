@@ -1,9 +1,10 @@
 import asyncio
 
-from fastapi import APIRouter, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from . import bus, config, db, github_client, manager, planner, scheduler
+from . import bus, config, db, github_client, manager, planner, preview, scheduler
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -192,6 +193,40 @@ async def get_artifacts(project_id: int) -> dict:
     return out
 
 
+@router.post("/api/projects/{project_id}/preview")
+async def build_preview(project_id: int) -> dict:
+    """Sync the project's static site into our own preview host → viewable at /preview/{id}/."""
+    if not db.get_project(project_id):
+        raise HTTPException(404, "no such project")
+    ok, note = await preview.sync(project_id)
+    if not ok:
+        raise HTTPException(400, note)
+    bus.emit(project_id, None, "boss", "preview_ready", {"url": f"/preview/{project_id}/"})
+    return {"url": f"/preview/{project_id}/"}
+
+
+@router.get("/preview/{project_id}/{path:path}")
+def serve_preview(project_id: int, path: str) -> Response:
+    """Serve the built static site read-only. Sandboxed: static files only, and a CSP
+    keeps the previewed app from touching the control-plane API."""
+    root = preview.preview_root(project_id)
+    if root is None:
+        raise HTTPException(404, "not previewed yet — click Preview in Artifacts first")
+    target = (root / (path or "index.html")).resolve()
+    if not str(target).startswith(str(root.resolve())):  # path-traversal guard
+        raise HTTPException(403, "forbidden")
+    if target.is_dir():
+        target = target / "index.html"
+    if not target.is_file():
+        target = root / "index.html"  # SPA fallback
+    # Sandbox the previewed app: it may run its own JS, but it can't call our API
+    # (same-origin fetch to /api is blocked) and can't be embedded elsewhere.
+    csp = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; " \
+          "connect-src https: http:; frame-ancestors 'self'"
+    return FileResponse(target, headers={"Content-Security-Policy": csp,
+                                         "X-Devteam-Preview": str(project_id)})
+
+
 @router.post("/api/projects/{project_id}/publish")
 async def publish_artifacts(project_id: int) -> dict:
     """Enable GitHub Pages → a public link named after the repo/project."""
@@ -293,6 +328,10 @@ def edit_task(task_id: int, body: EditTask) -> dict:
         fields["deps"] = db.json.dumps([d for d in body.depends_on if d in valid])
     if fields:
         db.update_task(task_id, **fields)
+        cycle = scheduler.has_cycle(t["project_id"])
+        if cycle:  # reject the edit — a DAG must stay acyclic
+            db.update_task(task_id, deps=t["deps"])  # revert dependency change
+            raise HTTPException(400, f"that dependency would create a cycle: {cycle}")
     bus.emit(t["project_id"], task_id, "boss", "task_edited", {"fields": list(fields)})
     return {"ok": True}
 

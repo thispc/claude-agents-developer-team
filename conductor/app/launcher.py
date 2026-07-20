@@ -68,10 +68,10 @@ class LocalLauncher:
 
     async def _reap(self, proc, task: dict) -> None:
         code = await proc.wait()
-        # The worker's /internal/report is the source of truth. If the process
-        # exited but the task is still queued/running, no report arrived — treat
-        # it as failed regardless of exit code (the scheduler will retry; a
-        # branch it already pushed is reused on the next attempt).
+        # The worker's /internal/report is the source of truth. Grace period: the
+        # report POST can land a moment after the process exits, so wait before
+        # declaring failure to avoid a spurious "died without reporting".
+        await asyncio.sleep(3)
         fresh = db.get_task(task["id"])
         if fresh and fresh["status"] in ("queued", "running"):
             db.update_task(task["id"], status="failed",

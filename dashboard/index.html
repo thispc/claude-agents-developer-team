@@ -132,10 +132,16 @@
     <!-- Step 2: recruit the team -->
     <div id="step2" class="wizard-step" hidden>
       <h2>Recruit your team <span class="step-tag">Step 2 of 2 · Hiring</span></h2>
-      <p class="recruit-note" id="recruitNote">Suggested from your brief — hire, fire, or add whoever you want.</p>
-      <div id="roster"></div>
-      <datalist id="rolesList"></datalist>
-      <button type="button" id="addRoleBtn" class="add-role">+ Add a role</button>
+      <div id="ingest" hidden>
+        <div class="ingest-msg" id="ingestMsg">Reading your idea…</div>
+        <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
+      </div>
+      <div id="rosterWrap" hidden>
+        <p class="recruit-note" id="recruitNote">Suggested from your brief — hire, fire, or add whoever you want.</p>
+        <div id="roster"></div>
+        <datalist id="rolesList"></datalist>
+        <button type="button" id="addRoleBtn" class="add-role">+ Add a role</button>
+      </div>
       <p id="formError2" class="form-error" hidden></p>
       <div class="actions">
         <button type="button" id="backToBriefBtn">← Back</button>

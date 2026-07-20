@@ -208,7 +208,11 @@ function renderEvent(e) {
     const obj = JSON.parse(e.payload);
     if (typeof obj === "object" && obj !== null) {
       if (e.kind === "tool_use") text = `→ ${obj.tool || ""} ${JSON.stringify(obj.input || obj).slice(0, 300)}`;
-      else if (e.kind === "report") text = `[${obj.status}] cost $${(obj.cost_usd || 0).toFixed(2)}\n${obj.summary || ""}`;
+      else if (e.kind === "report") {
+        // On subscription there's no per-token charge — the $ figure is meaningless, so omit it.
+        const cost = authMode === "subscription" ? "" : ` · est. $${(obj.cost_usd || 0).toFixed(2)}`;
+        text = `[${obj.status}]${cost}\n${obj.summary || ""}`;
+      } else if (e.kind === "result" && authMode === "subscription") text = "(turn complete)";
       else text = JSON.stringify(obj);
     }
   } catch { /* plain text payload */ }
@@ -230,9 +234,30 @@ function connectWs() {
     if (currentProject) { renderEvent(e); refreshBoard(); }
     else loadProjects();  // on the home page, keep the table live
     if (e.kind === "boss_question" || e.kind === "answered") refreshQuestion();
+    if (e.kind === "boss_question") notifyBoss(e);
+    if (e.kind === "project_finished") notify("Project finished", `Project #${e.project_id} is done.`);
     if (["project_created", "project_finished", "project_cancelled", "boss_question"].includes(e.kind)) loadProjects();
   };
   ws.onclose = () => setTimeout(connectWs, 2000);
+}
+
+// --- push notifications -----------------------------------------------------
+function notify(title, body) {
+  try {
+    if (window.Notification && Notification.permission === "granted")
+      new Notification(title, { body, icon: "" });
+  } catch { /* not supported */ }
+}
+function notifyBoss(e) {
+  let q = "";
+  try { q = JSON.parse(e.payload).question || ""; } catch { /* */ }
+  notify("👔 Manager needs your decision", q.slice(0, 140));
+  // also flash the tab title until focused
+  const orig = document.title;
+  document.title = "🔔 Needs you — " + orig;
+  window.addEventListener("focus", function once() {
+    document.title = orig; window.removeEventListener("focus", once);
+  });
 }
 
 // --- boss controls ----------------------------------------------------------
@@ -449,9 +474,23 @@ async function showArtifacts() {
        <p class="hint">Enables GitHub Pages. Works when the built site's index.html is at the repo root or /docs.</p>`;
   $("#artifactsBody").innerHTML = `
     <div class="art-repo">📁 <a href="${a.repo_url}" target="_blank">${escapeHtml(a.repo || "no repo")}</a></div>
+    <div class="preview-box">
+      <button id="previewBtn">▶ Preview the app here</button>
+      <span class="hint">runs the built static site under this app, sandboxed</span>
+    </div>
     ${publicLink}
     <h3>Pull requests</h3><ul class="art-list">${prs || "<li class='dim'>none yet</li>"}</ul>
     <h3>Branches</h3><div class="art-branches">${(a.branches || []).map((b) => `<span class="tag">${escapeHtml(b)}</span>`).join("") || "<span class='dim'>none</span>"}</div>`;
+  const prev = $("#previewBtn");
+  if (prev) prev.addEventListener("click", async () => {
+    prev.disabled = true; prev.textContent = "Building preview…";
+    try {
+      const r = await api(`/api/projects/${currentProject}/preview`, { method: "POST" });
+      window.open(r.url, "_blank");
+      prev.textContent = "▶ Preview the app here";
+    } catch (e) { alert(e.message); prev.textContent = "▶ Preview the app here"; }
+    finally { prev.disabled = false; }
+  });
   const pub = $("#publishBtn");
   if (pub) pub.addEventListener("click", async () => {
     pub.disabled = true; pub.textContent = "Publishing…";
@@ -607,6 +646,29 @@ $("#backToBriefBtn").addEventListener("click", () => showStep(1));
 $("#addRoleBtn").addEventListener("click", () =>
   renderRoster(readRoster().concat([{ role: knownRoles[0] || "backend", count: 1, model: "worker" }])));
 
+const INGEST_STEPS = [
+  "Reading your idea…", "Understanding the scope…", "Identifying the skills needed…",
+  "Deciding how many of each role…", "Assembling your A-team…",
+];
+let ingestTimer = null;
+function runIngestAnimation() {
+  const bar = $("#progressBar"), msg = $("#ingestMsg");
+  let i = 0, pct = 8;
+  bar.style.width = pct + "%";
+  msg.textContent = INGEST_STEPS[0];
+  clearInterval(ingestTimer);
+  ingestTimer = setInterval(() => {
+    pct = Math.min(pct + Math.random() * 14, 92);   // creep toward 92, finish on response
+    bar.style.width = pct + "%";
+    i = Math.min(i + 1, INGEST_STEPS.length - 1);
+    msg.textContent = INGEST_STEPS[i];
+  }, 700);
+}
+function finishIngest() {
+  clearInterval(ingestTimer);
+  $("#progressBar").style.width = "100%";
+}
+
 $("#toRecruitBtn").addEventListener("click", async () => {
   const form = $("#newProjectForm");
   const err = $("#formError");
@@ -614,25 +676,31 @@ $("#toRecruitBtn").addEventListener("click", async () => {
   if (!form.name.value.trim() || !form.brief.value.trim()) {
     err.textContent = "Project name and brief are required."; err.hidden = false; return;
   }
-  const btn = $("#toRecruitBtn");
-  btn.disabled = true; btn.textContent = "Sizing up the work…";
-  $("#recruitNote").textContent = "Sizing up your brief…";
   showStep(2);
-  renderRoster([]);
+  $("#ingest").hidden = false;      // show progress, hide roster until ingested
+  $("#rosterWrap").hidden = true;
+  runIngestAnimation();
+  let team, roles;
   try {
     const res = await api("/api/suggest-team", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ brief: form.brief.value }),
     });
-    knownRoles = [...new Set([...(res.known_roles || knownRoles), ...res.team.map((m) => m.role)])];
-    renderRoster(res.team.length ? res.team : [{ role: "backend", count: 1, model: "worker" }]);
-    $("#recruitNote").textContent = "Suggested from your brief — hire, fire, bump the count, or add whoever you want.";
+    team = res.team.length ? res.team : [{ role: "backend", count: 1, model: "worker" }];
+    roles = res.known_roles || knownRoles;
+    $("#recruitNote").textContent = "Your manager sized up the idea and drafted this team — hire, fire, bump counts, or add anyone.";
   } catch (e) {
-    renderRoster([{ role: "backend", count: 1, model: "worker" }, { role: "tester", count: 1, model: "worker" }]);
+    team = [{ role: "backend", count: 1, model: "worker" }, { role: "tester", count: 1, model: "worker" }];
+    roles = knownRoles;
     $("#recruitNote").textContent = "Couldn't auto-suggest — here's a default team to edit.";
-  } finally {
-    btn.disabled = false; btn.textContent = "Recruit team →";
   }
+  finishIngest();
+  knownRoles = [...new Set([...roles, ...team.map((m) => m.role)])];
+  setTimeout(() => {   // let the bar hit 100% before revealing
+    $("#ingest").hidden = true;
+    $("#rosterWrap").hidden = false;
+    renderRoster(team);
+  }, 450);
 });
 $("#closeDialogBtn").addEventListener("click", () => dialog.close());
 dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
@@ -682,5 +750,8 @@ $("#newProjectForm").addEventListener("submit", async (ev) => {
   await loadHealth();
   showHome();
   connectWs();
+  // Ask once for notification permission so approval requests can push.
+  if (window.Notification && Notification.permission === "default")
+    setTimeout(() => Notification.requestPermission(), 1500);
 })();
 setInterval(() => { if (currentProject) refreshBoard(); else loadProjects(); }, 10000);

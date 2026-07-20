@@ -29,6 +29,39 @@ STUCK_SECONDS = int(config._env("WORKER_STUCK_SECONDS", "1800"))
 _schedulers: dict[int, asyncio.Task] = {}
 
 
+def has_cycle(project_id: int) -> list[int]:
+    """Return a task cycle in the project's DAG if one exists (else empty list).
+    Keeps the graph valid without needing a graph database — the DAG is small."""
+    tasks = db.list_tasks(project_id)
+    deps = {t["id"]: json.loads(t["deps"] or "[]") for t in tasks}
+    WHITE, GREY, BLACK = 0, 1, 2
+    color = {tid: WHITE for tid in deps}
+    stack: list[int] = []
+
+    def visit(u: int) -> list[int]:
+        color[u] = GREY
+        stack.append(u)
+        for v in deps.get(u, []):
+            if v not in color:
+                continue
+            if color[v] == GREY:  # back-edge → cycle
+                return stack[stack.index(v):] + [v]
+            if color[v] == WHITE:
+                found = visit(v)
+                if found:
+                    return found
+        color[u] = BLACK
+        stack.pop()
+        return []
+
+    for tid in deps:
+        if color[tid] == WHITE:
+            found = visit(tid)
+            if found:
+                return found
+    return []
+
+
 def ensure(project_id: int) -> None:
     t = _schedulers.get(project_id)
     if t is None or t.done():

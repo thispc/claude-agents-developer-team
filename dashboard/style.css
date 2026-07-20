@@ -146,6 +146,12 @@ button.primary:disabled { opacity: .55; cursor: wait; }
 .roster-row .r-role:focus { outline: none; border-color: var(--accent); }
 .roster-row .r-fire { background: var(--panel2); color: var(--bad); border-radius: 7px; padding: 8px; }
 .roster-row .r-fire:hover { border-color: var(--bad); }
+#ingest { padding: 24px 4px; }
+.ingest-msg { font-size: 13px; color: var(--accent); margin-bottom: 12px; text-align: center; }
+.progress { height: 8px; background: var(--panel2); border-radius: 999px; overflow: hidden; }
+.progress-bar { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), #93c5fd); transition: width .5s ease; }
+.preview-box { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.preview-box button { padding: 8px 14px; border-radius: 8px; }
 .add-role { align-self: flex-start; background: var(--panel2); border-style: dashed; padding: 7px 14px; border-radius: 8px; }
 .add-role:hover { border-color: var(--accent); color: var(--accent); }
 @media (max-width: 1000px) { main { grid-template-columns: 1fr; } #board { grid-template-columns: repeat(2, 1fr); } }

@@ -6,5 +6,6 @@ venv/
 *.db
 *.sqlite3
 workspaces/
+previews/
 .DS_Store
 node_modules/
