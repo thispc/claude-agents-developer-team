@@ -201,7 +201,8 @@ function renderHome(projects) {
     }));
 }
 
-function showHome() {
+function showHome(skipHash) {
+  if (!skipHash) setHash("#/");
   currentProject = null;
   $("#home").hidden = false;
   $("main").hidden = true;
@@ -213,12 +214,45 @@ function showHome() {
   loadProjects();
 }
 
-function openProject(id) {
+function openProject(id, view, skipHash) {
   $("#home").hidden = true;
   $("main").hidden = false;
   $("#projectSelect").hidden = false;
+  if (view) switchView(view, true);
+  if (!skipHash) setHash(`#/p/${id}${view && view !== "command" ? "/" + view : ""}`);
   selectProject(id);
 }
+
+// --- URL routing: the address bar reflects where you are, so refresh (and the
+// browser back button) keep your place instead of dumping you on the home page.
+let suppressHash = false;
+function setHash(h) {
+  if (location.hash === h) return;
+  suppressHash = true;
+  location.hash = h;
+  setTimeout(() => { suppressHash = false; }, 0);
+}
+
+function switchView(view, skipHash) {
+  document.querySelectorAll(".vchip").forEach((c) =>
+    c.classList.toggle("active", c.dataset.v === view));
+  for (const id of ["command", "board", "dag", "artifacts", "agents"])
+    $("#" + id).hidden = id !== view;
+  if (view === "dag") renderDag(lastTasks);
+  if (view === "command" && lastProject) renderCommand(lastProject);
+  if (view === "artifacts") renderArtifacts(true);
+  if (view === "agents") { agentsSig = ""; renderAgents(); }
+  if (!skipHash && currentProject)
+    setHash(`#/p/${currentProject}${view !== "command" ? "/" + view : ""}`);
+}
+
+function route() {
+  if (suppressHash) return;
+  const m = location.hash.match(/^#\/p\/(\d+)(?:\/(\w+))?/);
+  if (m) openProject(Number(m[1]), m[2] || "command", true);
+  else showHome(true);
+}
+window.addEventListener("hashchange", route);
 
 async function selectProject(id) {
   currentProject = Number(id);
@@ -800,7 +834,9 @@ async function renderAgents() {
   const el = $("#agents");
   if (el.hidden) return;
   let a;
-  try { a = await api("/api/agents"); }
+  // Scope to the project you're looking at — otherwise other projects' agents show up here.
+  const scope = currentProject ? `?project_id=${currentProject}` : "";
+  try { a = await api("/api/agents" + scope); }
   catch (e) { el.innerHTML = `<div class="pane"><p class="dim">${escapeHtml(e.message)}</p></div>`; return; }
 
   const row = (g, live) => `
@@ -980,18 +1016,7 @@ $("#addTaskForm").addEventListener("submit", async (ev) => {
 });
 
 document.querySelectorAll(".vchip").forEach((chip) =>
-  chip.addEventListener("click", () => {
-    document.querySelectorAll(".vchip").forEach((c) => c.classList.remove("active"));
-    chip.classList.add("active");
-    const v = chip.dataset.v;
-    for (const id of ["command", "board", "dag", "artifacts", "agents"])
-      $("#" + id).hidden = id !== v;
-    if (v === "dag") renderDag(lastTasks);
-    if (v === "command" && lastProject) renderCommand(lastProject);
-    if (v === "artifacts") renderArtifacts();
-    if (v === "agents") renderAgents();
-  }),
-);
+  chip.addEventListener("click", () => switchView(chip.dataset.v)));
 
 // --- notification centre -----------------------------------------------------
 async function refreshBell() {
@@ -1220,7 +1245,7 @@ async function boot() {
   if (!(await loadMe())) return;      // show login screen until signed in
   await loadHealth();
   loadRepos();
-  showHome();
+  route();                    // restore whatever the URL points at
   refreshBell();
   setInterval(refreshBell, 20000);
   if (!ws) connectWs();

@@ -172,13 +172,15 @@ async def create_my_repo(body: NewRepo, request: Request) -> dict:
 
 
 @router.get("/api/agents")
-def list_agents() -> dict:
-    """Live infrastructure: every worker machine currently running, plus how work is
-    being executed (local processes vs Kubernetes Jobs)."""
+def list_agents(project_id: int | None = None) -> dict:
+    """Live infrastructure: worker machines currently running, plus how work is being
+    executed (local processes vs Kubernetes Jobs). Scoped to one project when given."""
     from . import launcher as lx
     import time as _t
     agents = []
     for task_id, info in list(lx.ACTIVE.items()):
+        if project_id is not None and info["project_id"] != project_id:
+            continue
         t = db.get_task(task_id)
         p = db.get_project(info["project_id"])
         agents.append({
@@ -193,7 +195,9 @@ def list_agents() -> dict:
     # Agents that already finished still matter — you want their logs afterwards, so
     # list recent ones too instead of letting them disappear when the machine stops.
     finished = []
-    for p in db.list_projects()[:6]:
+    scope = ([db.get_project(project_id)] if project_id is not None
+             else db.list_projects()[:6])
+    for p in [x for x in scope if x]:
         for t in db.list_tasks(p["id"]):
             if t["id"] not in live_ids and t["model"] and t["attempts"] > 0:
                 finished.append({
