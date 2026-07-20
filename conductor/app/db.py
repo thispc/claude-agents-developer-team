@@ -266,6 +266,19 @@ def answer_question(qid: int, answer: str) -> None:
     _execute("UPDATE inbox SET answer=?, status='answered' WHERE id=?", (answer, qid))
 
 
+def abandon_questions(project_id: int | None = None) -> int:
+    """Mark pending questions as abandoned — nobody is waiting on them anymore.
+    Called when a manager session ends/restarts, when a project stops, and when a
+    new question supersedes older ones. Without this, a question from a dead
+    session stays 'pending' forever and the dashboard keeps re-raising it."""
+    if project_id is None:
+        cur = _execute("UPDATE inbox SET status='abandoned' WHERE kind='question' AND status='pending'")
+    else:
+        cur = _execute("UPDATE inbox SET status='abandoned' WHERE kind='question' "
+                       "AND status='pending' AND project_id=?", (project_id,))
+    return cur.rowcount
+
+
 def pending_question(project_id: int) -> dict | None:
     rows = _rows(
         "SELECT * FROM inbox WHERE project_id=? AND kind='question' AND status='pending' ORDER BY id DESC LIMIT 1",

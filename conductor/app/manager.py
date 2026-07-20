@@ -204,6 +204,7 @@ def build_team_server(project_id: int):
             assert isinstance(opts, list)
         except Exception:
             opts = []
+        db.abandon_questions(project_id)   # a new question supersedes any older one
         qid = db.ask_question(project_id, args["question"], [str(o) for o in opts][:4])
         prev_status = project().get("status", "running")
         db.set_project_status(project_id, "hold")  # surfaces as "on hold" in the UI
@@ -408,9 +409,12 @@ async def run_manager(project_id: int) -> None:
         # Surface the model/API's own words (e.g. "Credit balance is too low")
         # instead of the SDK's generic wrapper message.
         detail = last_text or str(e)
+        db.abandon_questions(project_id)   # nothing is waiting on them now
         bus.emit(project_id, None, "manager", "error", detail)
         db.set_project_status(project_id, "failed", f"manager session failed: {detail[:400]}")
         return
+    finally:
+        db.abandon_questions(project_id)   # session over — clear any unanswered ask
 
     # If the manager ended without calling finish, flag for human review.
     fresh = db.get_project(project_id)

@@ -218,6 +218,14 @@ async function selectProject(id) {
 let lastTasks = [];
 let lastProject = null;
 
+// Events can arrive many times a second; coalesce refreshes so we don't hammer
+// the API (and re-run question checks) on every single one.
+let refreshTimer = null;
+function scheduleRefresh() {
+  if (refreshTimer) return;
+  refreshTimer = setTimeout(() => { refreshTimer = null; refreshBoard(); }, 600);
+}
+
 async function refreshBoard() {
   if (!currentProject) return;
   let p;
@@ -327,7 +335,7 @@ function connectWs() {
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onmessage = (m) => {
     const e = JSON.parse(m.data);
-    if (currentProject) { noteActivity(e); renderEvent(e); refreshBoard(); }
+    if (currentProject) { noteActivity(e); renderEvent(e); scheduleRefresh(); }
     else loadProjects();  // on the home page, keep the table live
     if (e.kind === "boss_question" || e.kind === "answered") refreshQuestion();
     if (e.kind === "boss_question") notifyBoss(e);
@@ -358,6 +366,8 @@ function notifyBoss(e) {
 
 // --- boss controls ----------------------------------------------------------
 let currentQuestionId = null;
+const dismissedQuestions = new Set();   // never auto-reopen one the boss closed
+
 async function refreshQuestion() {
   if (!currentProject) return;
   let q;
@@ -370,8 +380,9 @@ async function refreshQuestion() {
     return;
   }
   pendingQ = { id: q.id, text: q.question, options: q.options || [] };
-  if (lastProject) renderCommand(lastProject);   // show it inline in the Command view too
-  if (currentQuestionId === q.id && dlg.open) return;  // already showing it
+  if (lastProject) renderCommand(lastProject);   // always visible inline as an ask-card
+  if (dlg.open) return;                          // don't stack modals
+  if (dismissedQuestions.has(q.id)) return;      // boss closed it — respect that
   currentQuestionId = q.id;
   $("#approvalQ").textContent = q.question;
   const box = $("#approvalOpts");
@@ -384,8 +395,14 @@ async function refreshQuestion() {
     box.appendChild(b);
   }
   $("#approvalCustom").value = "";
-  if (!dlg.open) dlg.showModal();
+  try { dlg.showModal(); } catch { /* already open */ }
 }
+
+// Closing the modal (Esc or the close button) means "not now" — keep the inline
+// ask-card, but stop popping the modal for this question.
+$("#approvalDialog").addEventListener("close", () => {
+  if (currentQuestionId) dismissedQuestions.add(currentQuestionId);
+});
 
 async function answerQuestion(qid, answer) {
   if (!answer || !answer.trim()) return;
@@ -396,6 +413,7 @@ async function answerQuestion(qid, answer) {
   currentQuestionId = null;
   $("#approvalDialog").close();
 }
+$("#approvalLater").addEventListener("click", () => $("#approvalDialog").close());
 $("#approvalSend").addEventListener("click", () =>
   answerQuestion(currentQuestionId, $("#approvalCustom").value));
 $("#approvalCustom").addEventListener("keydown", (e) => {

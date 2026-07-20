@@ -238,6 +238,7 @@ async def cancel_project(project_id: int) -> dict:
     if not project:
         raise HTTPException(404, "no such project")
     db.set_project_status(project_id, "cancelled")
+    db.abandon_questions(project_id)
     scheduler.stop(project_id)
     t = _manager_tasks.get(project_id)
     if t and not t.done():

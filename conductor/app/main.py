@@ -15,6 +15,9 @@ async def lifespan(app: FastAPI):
     loop = asyncio.get_event_loop()
     bus.set_loop(loop)
     config.WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
+    # No manager session survives a restart, so any question still marked pending
+    # has no waiter — clear them so the dashboard doesn't re-raise dead questions.
+    db.abandon_questions()
     # Resume any project that was mid-flight when the conductor last stopped, so a
     # restart (deploy, crash) doesn't strand a running project without its manager.
     for p in db.list_projects():
