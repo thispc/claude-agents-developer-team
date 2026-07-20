@@ -414,3 +414,19 @@ pre.dim, .dim { color: var(--dim); }
 .rival.lost { opacity: .55; text-decoration: line-through; }
 .rival.failed { color: var(--bad); border-color: var(--bad); }
 .rival.pushed { color: var(--warn); border-color: var(--warn); }
+
+/* Decisions view: only scaling/routing decisions, so the boss can see the machinery. */
+#feed[data-verbosity="decisions"] .ev { display: none; }
+#feed[data-verbosity="decisions"] .ev.decision { display: block; }
+.ev.decision { border-color: var(--boss); background: #faf7ff; }
+.ev.decision .src { color: var(--boss); }
+.node.boss { cursor: pointer; }
+.node.boss:hover { border-color: var(--boss); }
+.node .more { font-size: 10.5px; color: var(--boss); margin-top: 6px; opacity: .8; }
+
+/* Needs-attention: the reason a project isn't really done, stated plainly. */
+.attn-card { border: 1px solid #e0a800; background: #fffaf0; border-radius: 10px;
+  padding: 14px 16px; margin-bottom: 14px; }
+.attn-card .bl { font-weight: 650; color: #a06a00; margin-bottom: 6px; }
+.attn-card .qtext { color: var(--fg); line-height: 1.5; }
+.attn-card .qbtns { margin-top: 10px; }

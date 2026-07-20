@@ -386,6 +386,17 @@ def build_team_server(project_id: int):
           "short shipping summary.", {"status": str, "summary": str})
     async def finish(args: dict[str, Any]) -> dict[str, Any]:
         s = "done" if args.get("status") == "done" else "failed"
+        # Guard: 'done' must mean the work actually landed. A failed task means part
+        # of the product is missing, which is how broken builds get signed off.
+        if s == "done":
+            stuck = [t for t in db.list_tasks(project_id)
+                     if t["status"] in ("failed", "planned", "queued", "running", "pushed", "review")]
+            if stuck:
+                lines = "; ".join(f"#{t['id']} {t['role']} is {t['status']}" for t in stuck[:6])
+                return _text(
+                    f"REFUSED: you cannot finish as done while work is outstanding — {lines}. "
+                    "Rework or reassign the failed ones, close the verified ones with "
+                    "accept_task/merge_pr, or finish with status 'failed' and explain.")
         db.set_project_status(project_id, s, args.get("summary", ""))
         bus.emit(project_id, None, "manager", "project_finished", {"status": s})
         return _text(f"project marked {s}. You can stop now.")

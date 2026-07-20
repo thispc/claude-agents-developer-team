@@ -218,6 +218,8 @@ function openProject(id, view, skipHash) {
   $("#home").hidden = true;
   $("main").hidden = false;
   $("#projectSelect").hidden = false;
+  currentProject = Number(id);
+  loadProjects();      // on a direct URL open, the dropdown was never filled
   if (view) switchView(view, true);
   if (!skipHash) setHash(`#/p/${id}${view && view !== "command" ? "/" + view : ""}`);
   selectProject(id);
@@ -351,6 +353,12 @@ function renderEvent(e) {
   if (e.kind === "boss_question") cls += " question";
   if (e.source === "boss") cls += " bossmsg";
   if (e.kind === "rate_limited" || e.kind === "reassigned") cls += " ratelimit";
+  // Scaling / routing machinery — surfaced on its own tab so the boss can audit
+  // exactly when a model was upscaled, swapped, or a contest was run.
+  if (["dispatched", "rate_limited", "reassigned", "contest_started", "contest_ready",
+       "winner_picked", "rival_finished", "worker_stalled", "worker_died",
+       "dag_blocked", "reopened", "needs_attention", "consult"].includes(e.kind))
+    cls += " decision";
   // Simple mode hides mechanical chatter; these are the "noise" kinds.
   if (["result", "agent_status", "dispatched", "repo_ready", "resumed_after_restart",
        "task_edited", "push_retry"].includes(e.kind)) cls += " sys-noise";
@@ -375,6 +383,16 @@ function renderEvent(e) {
       else if (e.kind === "project_finished") text = `🏁 Project ${obj.status}`;
       else if (e.kind === "rate_limited") text = `⏳ ${obj.model || "a model"} hit a rate limit — the manager will move this work`;
       else if (e.kind === "reassigned") text = `🔄 Moved to ${obj.model}: ${obj.reason || ""}`;
+      else if (e.kind === "dispatched") text = `🚀 ${obj.role} started on ${obj.model}`
+        + (obj.attempt > 1 ? ` — attempt ${obj.attempt}${obj.attempt >= 3 ? " (upscaled model)" : ""}` : "");
+      else if (e.kind === "contest_started") text = `🥊 Contest: ${obj.rivals} rivals on the same task — ${(obj.detail || []).join(", ")}`;
+      else if (e.kind === "contest_ready") text = `🥊 All ${obj.rivals} rivals finished (${obj.finished_ok} usable) — manager judging`;
+      else if (e.kind === "winner_picked") text = `🏆 Rival #${obj.rival} (${obj.model}) won: ${obj.reason || ""}`;
+      else if (e.kind === "worker_stalled") text = `⚠️ Agent stalled after ${obj.idle_seconds}s — restarting it`;
+      else if (e.kind === "worker_died") text = `⚠️ Agent exited without reporting (code ${obj.exit_code})`;
+      else if (e.kind === "dag_blocked") text = `🚧 Blocked: tasks ${(obj.blocked_tasks||[]).join(", ")} waiting on failed ${(obj.failed_deps||[]).join(", ")}`;
+      else if (e.kind === "reopened") text = `↩ Reopened: ${obj.reason || ""}`;
+      else if (e.kind === "needs_attention") text = `❗ ${obj.reason} — ${obj.tasks || ""}`;
       else text = JSON.stringify(obj);
     }
   } catch { /* plain text payload */ }
@@ -533,6 +551,14 @@ function renderCommand(p) {
   const mgrModel = p.manager_model || "Sonnet 5";
   const mode = p.autonomy === "autonomous" ? "full autonomy" : "checks with you";
 
+  // "Needs attention" must state the actual story, not just colour a badge.
+  const attnHtml = (["review", "failed"].includes(p.status) && p.summary) ? `
+    <div class="attn-card">
+      <div class="bl">❗ Needs your attention</div>
+      <div class="qtext">${escapeHtml(p.summary)}</div>
+      <div class="qbtns"><button data-attn="fix">Tell the manager to fix it</button></div>
+    </div>` : "";
+
   const askHtml = pendingQ ? `
     <div class="ask-card">
       <div class="bl">👔 Your manager needs a decision</div>
@@ -596,7 +622,7 @@ function renderCommand(p) {
 
   const GROUPS = [
     ["working", "⚡ Working right now", "these are running in parallel"],
-    ["review", "🔍 Waiting on the manager", "work submitted — being reviewed"],
+    ["review", "🔍 Needs attention", "submitted for review, or failed and not yet redone"],
     ["ready", "▶ Ready to start", "unblocked, waiting for a free slot"],
     ["blocked", "⏳ Blocked on teammates", "waiting for the work they build on"],
     ["done", "✅ Finished", ""],
@@ -627,11 +653,13 @@ function renderCommand(p) {
 
   el.innerHTML = `
     <div class="chain">
+      ${attnHtml}
       ${askHtml}
-      <div class="node boss">
+      <div class="node boss" id="bossNode" title="Click to read your full request">
         <div class="who">👑 Boss</div>
         <div class="name">${escapeHtml(me.username || "You")}</div>
         <div class="sub">${escapeHtml(trim(p.brief, 90))}</div>
+        <div class="more">click to read the full request →</div>
       </div>
       <div class="connector"></div>
       <div class="node-row">
@@ -648,8 +676,27 @@ function renderCommand(p) {
       ${agents || '<div class="empty">Assembling the team…</div>'}
     </div>`;
 
+  const attnBtn = el.querySelector("[data-attn]");
+  if (attnBtn) attnBtn.addEventListener("click", () => {
+    const inp = $("#directiveInput");
+    inp.value = `This is not done: ${p.summary} Please redo the failed work and only finish when it actually works.`;
+    inp.focus();
+  });
   el.querySelectorAll(".agent").forEach((a) =>
     a.addEventListener("click", () => showTask(Number(a.dataset.task))));
+  const bossNode = $("#bossNode");
+  if (bossNode) bossNode.addEventListener("click", () => {
+    $("#taskDetail").innerHTML = `
+      <div class="who" style="color:var(--boss)">👑 YOUR REQUEST</div>
+      <h2>${escapeHtml(p.name)}</h2>
+      <div class="meta">${escapeHtml(p.repo || "no repo")} · manager: ${
+        escapeHtml(p.manager_model || "Sonnet 5")} · ${
+        p.autonomy === "autonomous" ? "full autonomy" : "checks with you"}</div>
+      <h3>What you asked for</h3><pre>${escapeHtml(p.brief)}</pre>
+      ${p.summary ? `<h3>Where it stands</h3><pre>${escapeHtml(p.summary)}</pre>` : ""}`;
+    $("#editTaskBtn").hidden = true;
+    $("#taskDialog").showModal();
+  });
   el.querySelectorAll("[data-qopt]").forEach((b) =>
     b.addEventListener("click", () => {
       if (b.dataset.qopt === "send") {

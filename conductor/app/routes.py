@@ -100,6 +100,25 @@ def current_user(request: Request) -> dict:
     return u
 
 
+def can_see(project: dict, user: dict) -> bool:
+    """Projects are private to their owner. The root/operator account can see all
+    (it owns the server); legacy projects with no owner belong to root."""
+    if user["is_root"]:
+        return True
+    return project.get("owner_id") == user["id"]
+
+
+def owned_project(project_id: int, request: Request) -> dict:
+    """Fetch a project only if the signed-in user is allowed to see it."""
+    u = current_user(request)
+    p = db.get_project(project_id)
+    if not p:
+        raise HTTPException(404, "no such project")
+    if not can_see(p, u):
+        raise HTTPException(404, "no such project")     # don't leak existence
+    return p
+
+
 @router.post("/api/login")
 def login(body: Login, response: Response) -> dict:
     u = auth.verify(body.username, body.password)
@@ -320,11 +339,12 @@ def launcher_looks_rate_limited(text: str) -> bool:
 
 
 @router.get("/api/notifications")
-def notifications() -> dict:
-    """Everything waiting on the boss, across all projects — for the bell menu."""
+def notifications(request: Request) -> dict:
+    """Everything waiting on the boss, across THEIR projects — for the bell menu."""
+    u = current_user(request)
     items = []
     for p in db.list_projects():
-        if p["status"] in ("cancelled",):
+        if not can_see(p, u) or p["status"] in ("cancelled",):
             continue
         q = db.pending_question(p["id"])
         if q:
@@ -391,15 +411,17 @@ async def create_project(body: NewProject, request: Request) -> dict:
 
 
 @router.get("/api/projects")
-def list_projects() -> list[dict]:
-    projects = db.list_projects()
+def list_projects(request: Request) -> list[dict]:
+    u = current_user(request)
+    projects = [p for p in db.list_projects() if can_see(p, u)]
     for p in projects:
         p["task_count"] = len(db.list_tasks(p["id"]))
     return projects
 
 
 @router.get("/api/projects/{project_id}")
-def get_project(project_id: int) -> dict:
+def get_project(project_id: int, request: Request) -> dict:
+    owned_project(project_id, request)
     if scheduler.reconcile_status(project_id):   # keeps 'done' honest
         project = db.get_project(project_id)
         if project and not (_manager_tasks.get(project_id) and not _manager_tasks[project_id].done()):
@@ -458,16 +480,15 @@ async def cancel_project(project_id: int) -> dict:
 
 
 @router.get("/api/projects/{project_id}/events")
-def get_events(project_id: int, after: int = 0) -> list[dict]:
+def get_events(project_id: int, request: Request, after: int = 0) -> list[dict]:
+    owned_project(project_id, request)
     return db.list_events(project_id, after_id=after)
 
 
 @router.get("/api/projects/{project_id}/artifacts")
-async def get_artifacts(project_id: int) -> dict:
+async def get_artifacts(project_id: int, request: Request) -> dict:
     """Everything the project produced: repo, branches, PRs, and the public site URL."""
-    project = db.get_project(project_id)
-    if not project:
-        raise HTTPException(404, "no such project")
+    project = owned_project(project_id, request)
     repo = project["repo"]
     tasks = db.list_tasks(project_id)
     # A plain-language record of what the team actually did, per task.
@@ -560,8 +581,9 @@ def send_directive(project_id: int, body: Directive) -> dict:
 
 
 @router.get("/api/projects/{project_id}/question")
-def get_pending_question(project_id: int) -> dict:
+def get_pending_question(project_id: int, request: Request) -> dict:
     """The manager's open question for the boss, if any."""
+    owned_project(project_id, request)
     q = db.pending_question(project_id)
     if not q:
         return {"question": None}

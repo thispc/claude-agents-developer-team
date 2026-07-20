@@ -32,17 +32,40 @@ _schedulers: dict[int, asyncio.Task] = {}
 UNFINISHED = ("planned", "queued", "running", "pushed", "review")
 
 
+def outstanding(project_id: int) -> dict:
+    """What is still not finished on this project, in plain terms."""
+    tasks = db.list_tasks(project_id)
+    return {
+        "unfinished": [t for t in tasks if t["status"] in UNFINISHED],
+        "failed": [t for t in tasks if t["status"] == "failed"],
+    }
+
+
 def reconcile_status(project_id: int) -> bool:
-    """A project is only 'done' when no work is outstanding. If tasks remain (e.g. the
-    boss added one after the manager finished), put it back to work and return True."""
+    """A project is only 'done' when nothing is outstanding — including failures.
+
+    Shipping 'done' while a task sits failed is how a broken app gets approved: the
+    work never landed, but the status said otherwise. A failed task keeps the project
+    in 'review' (needs attention) with the reason named.
+    """
     p = db.get_project(project_id)
     if not p or p["status"] not in ("done", "failed", "review"):
         return False
-    if any(t["status"] in UNFINISHED for t in db.list_tasks(project_id)):
+    o = outstanding(project_id)
+    if o["unfinished"]:
         db.set_project_status(project_id, "running")
         bus.emit(project_id, None, "system", "reopened",
-                 {"reason": "outstanding tasks remain"})
+                 {"reason": f"{len(o['unfinished'])} task(s) still unfinished"})
         ensure(project_id)
+        return True
+    if o["failed"] and p["status"] == "done":
+        names = ", ".join(f"#{t['id']} {t['role']} ({t['title'][:40]})" for t in o["failed"])
+        db.set_project_status(project_id, "review",
+                              f"Cannot be done: {len(o['failed'])} task(s) failed and were "
+                              f"never completed — {names}. The delivered app is missing "
+                              f"that work.")
+        bus.emit(project_id, None, "system", "needs_attention",
+                 {"reason": "failed tasks were never completed", "tasks": names})
         return True
     return False
 
