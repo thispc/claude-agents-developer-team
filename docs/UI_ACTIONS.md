@@ -21,6 +21,8 @@ Legend: 💸 spends tokens · 🤖 starts an agent · 🛑 stops an agent ·
 | **status badge** | same | Project status. Hover for the reason (`summary`). |
 | **🔔 bell** | `GET /notifications` | Pending manager questions across your projects. Answering one 💸 unblocks that manager immediately. |
 | **⚙ settings** | `GET /me`, `POST /settings` | Stores *your* GitHub token and AI credentials. Your agents run on these — never the operator's. |
+| **Check** (per credential) 🌐 | `POST /settings/verify` | Makes the smallest real call that proves the credential works: GitHub `/user`, a 1-token Claude message, an OpenAI model list, a Gemini completion on both flash and pro tiers. Checks what you typed, or the stored value if the box is empty. |
+| **Save & verify** 🌐 | `POST /settings`, then `POST /settings/verify` per entered key | Saves first, then verifies each credential you entered and shows the verdict inline. Saving succeeds either way — a key can be valid while its provider is having a bad minute. Closes itself only if everything verified. |
 | **⏻ logout** | `POST /logout` | Ends the session, reloads. |
 | **↻ Restart manager** 💸🤖 | `POST /projects/{id}/restart` | Only for failed/review/cancelled. Sets status `planning` and starts a **fresh manager session**. Existing tasks are kept. |
 | **Cancel** ⚠️🛑🌐 | `POST /projects/{id}/cancel` | Sets status `cancelled`, stops the scheduler, aborts the manager session, **kills every running agent** (unpushed work is lost), marks their tasks failed, and closes open GitHub issues. Tells you how many agents it stopped. |
