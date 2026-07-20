@@ -585,6 +585,10 @@ function renderCommand(p) {
       </div>
       <div class="title">${escapeHtml(t.title)}</div>
       <div class="doing">${escapeHtml(trim(doing, 150))}</div>
+      ${(t.rivals || []).length ? `<div class="rivals">🥊 contest: ${
+        t.rivals.map((r) => `<span class="rival ${r.status}">#${r.idx} ${
+          escapeHtml((r.model || "").replace("claude-", ""))} · ${r.status}</span>`).join("")
+      }</div>` : ""}
       <div class="deps">🧠 ${escapeHtml(modelLabel)}${t.attempts > 1 ? ` · attempt ${t.attempts}` : ""}
         ${deps.length ? ` · after ${deps.map((d) => "#" + d).join(", ")}` : ""}</div>
     </div>`;

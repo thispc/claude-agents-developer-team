@@ -82,6 +82,9 @@ def build_team_server(project_id: int):
                 continue
             task_id = db.create_task(project_id, role, item["title"], item["description"],
                                      origin=origin)
+            compete = item.get("compete")
+            if isinstance(compete, int) and compete > 1:
+                db.update_task(task_id, compete=min(compete, 3))
             created_ids.append(task_id)
         for item, task_id in zip(items, created_ids):
             if task_id is None:
@@ -115,8 +118,11 @@ def build_team_server(project_id: int):
 
     @tool("create_tasks", "Create the project's initial task DAG in one call. Pass a JSON "
           "array of objects with keys: role (backend|frontend|tester), title, description, "
-          "and depends_on (array of 0-based indices of OTHER tasks in this same array that "
-          "must be merged first). Descriptions must be fully self-contained specs. The "
+          "depends_on (array of 0-based indices of OTHER tasks in this same array that "
+          "must be merged first), and optionally compete: 2 or 3 to run that many RIVAL "
+          "attempts at the task in parallel (each on its own branch, ideally different "
+          "models) which you then judge with compare_work + pick_winner. "
+          "Descriptions must be fully self-contained specs. The "
           "scheduler then dispatches tasks automatically as dependencies merge — you never "
           "dispatch anything yourself.", {"tasks_json": str})
     async def create_tasks(args: dict[str, Any]) -> dict[str, Any]:
@@ -269,6 +275,50 @@ def build_team_server(project_id: int):
         return _text(f"task {task_id} queued for rework; the scheduler will re-dispatch it. "
                      "Call wait for the result.")
 
+    @tool("compare_work", "For a task you ran as a contest (compete > 1), see every rival's "
+          "attempt side by side — their model, branch, and full report — so you can judge "
+          "which one actually delivered. Judge against the task's acceptance criteria, not "
+          "which report reads nicer.", {"task_id": int})
+    async def compare_work(args: dict[str, Any]) -> dict[str, Any]:
+        task_id = int(args["task_id"])
+        rivals = db.list_contenders(task_id)
+        if not rivals:
+            return _text("that task was not run as a contest; use get_report instead.")
+        t = db.get_task(task_id)
+        parts = [f"Contest for task {task_id}: {t['title'] if t else ''}",
+                 f"Acceptance criteria were:\n{(t or {}).get('description', '')[:1500]}", ""]
+        for r in rivals:
+            parts.append(
+                f"===== RIVAL #{r['idx']} — model {r['model']} — branch {r['branch']} "
+                f"— {r['status']} =====\n{(r['report'] or '(no report)')[:4000]}")
+        parts.append("\nPick one with pick_winner(task_id, rival_idx, reason). If a loser had "
+                     "a good idea the winner missed, say so in the reason — it becomes feedback.")
+        return _text("\n\n".join(parts))
+
+    @tool("pick_winner", "Declare which rival attempt wins a contest. Its branch becomes the "
+          "task's branch and goes to PR; the others are discarded. Give the reason you chose "
+          "it (and anything from a loser worth folding in).",
+          {"task_id": int, "rival_idx": int, "reason": str})
+    async def pick_winner(args: dict[str, Any]) -> dict[str, Any]:
+        task_id = int(args["task_id"])
+        idx = int(args["rival_idx"])
+        rivals = db.list_contenders(task_id)
+        winner = next((r for r in rivals if r["idx"] == idx), None)
+        if not winner:
+            return _text(f"error: no rival #{idx} on task {task_id}")
+        if winner["status"] != "pushed":
+            return _text(f"error: rival #{idx} did not finish successfully; pick one that did")
+        for r in rivals:
+            db.update_contender(r["id"], status="won" if r["id"] == winner["id"] else "lost")
+        # Promote the winning branch, then let the normal PR flow take over.
+        db.update_task(task_id, branch=winner["branch"], status="pushed",
+                       model=winner["model"], report=winner["report"])
+        bus.emit(project_id, task_id, "manager", "winner_picked",
+                 {"rival": idx, "model": winner["model"], "reason": args.get("reason", "")})
+        scheduler.ensure(project_id)
+        return _text(f"rival #{idx} ({winner['model']}) wins task {task_id}; its branch "
+                     f"{winner['branch']} goes to PR. Others discarded.")
+
     @tool("reassign_task", "Pull a task off its current agent and re-run it on a different "
           "model — use when a model is rate-limited/overloaded, when cheap work needs a "
           "stronger brain, or when an expensive model is overkill. Valid models: "
@@ -343,14 +393,15 @@ def build_team_server(project_id: int):
     return create_sdk_mcp_server(
         name="team", version="1.0.0",
         tools=[create_tasks, add_tasks, status, wait, ask_boss, get_report,
-               request_changes, reassign_task, accept_task, merge_pr, finish],
+               request_changes, reassign_task, compare_work, pick_winner,
+               accept_task, merge_pr, finish],
     )
 
 
 MANAGER_TOOLS = [f"mcp__team__{n}" for n in
                  ("create_tasks", "add_tasks", "status", "wait", "ask_boss",
-                  "get_report", "request_changes", "reassign_task", "accept_task",
-                  "merge_pr", "finish")]
+                  "get_report", "request_changes", "reassign_task", "compare_work",
+                  "pick_winner", "accept_task", "merge_pr", "finish")]
 
 BUILTIN_TOOLS_OFF = ["Bash", "Read", "Write", "Edit", "Glob", "Grep",
                      "WebSearch", "WebFetch", "Task", "NotebookEdit", "TodoWrite"]

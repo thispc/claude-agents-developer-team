@@ -408,3 +408,9 @@ pre.dim, .dim { color: var(--dim); }
 .health-row .bar i.cooling { background: var(--bad); }
 .health-row .hs.cooling { color: var(--bad); }
 .quota-box { background: var(--good-soft); border: 1px solid #bfe6cd; border-radius: 9px; padding: 10px 12px; font-size: 12.5px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 3px; }
+.rivals { margin-top: 8px; font-size: 11px; color: var(--dim); display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.rival { border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; font-family: var(--mono); font-size: 10.5px; }
+.rival.won { color: var(--good); border-color: var(--good); background: var(--good-soft); }
+.rival.lost { opacity: .55; text-decoration: line-through; }
+.rival.failed { color: var(--bad); border-color: var(--bad); }
+.rival.pushed { color: var(--warn); border-color: var(--warn); }

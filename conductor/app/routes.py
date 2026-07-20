@@ -88,6 +88,7 @@ class WorkerReport(BaseModel):
     status: str  # pushed | failed
     report: str
     cost_usd: float = 0
+    contender_id: int = 0
 
 
 # --- auth & per-user settings ------------------------------------------------
@@ -178,13 +179,15 @@ def list_agents(project_id: int | None = None) -> dict:
     from . import launcher as lx
     import time as _t
     agents = []
-    for task_id, info in list(lx.ACTIVE.items()):
+    for key, info in list(lx.ACTIVE.items()):
         if project_id is not None and info["project_id"] != project_id:
             continue
+        task_id = info.get("task_id", key)
         t = db.get_task(task_id)
         p = db.get_project(info["project_id"])
         agents.append({
-            "task_id": task_id, "kind": info["kind"], "ref": info["ref"],
+            "task_id": task_id, "rival": info.get("rival", ""),
+            "kind": info["kind"], "ref": info["ref"],
             "role": info["role"], "model": info["model"], "title": info.get("title", ""),
             "project_id": info["project_id"], "project": p["name"] if p else "",
             "uptime_s": int(_t.time() - info["started_at"]),
@@ -405,7 +408,11 @@ def get_project(project_id: int) -> dict:
     project = db.get_project(project_id)
     if not project:
         raise HTTPException(404, "no such project")
-    project["tasks"] = db.list_tasks(project_id)
+    tasks = db.list_tasks(project_id)
+    for t in tasks:
+        if t.get("compete"):
+            t["rivals"] = db.list_contenders(t["id"])
+    project["tasks"] = tasks
     return project
 
 
@@ -686,6 +693,29 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
     _check_token(x_worker_token)
     status = "pushed" if body.status == "pushed" else "failed"
     task = db.get_task(body.task_id)
+
+    # A rival attempt reports into its own row; the task only advances once every
+    # rival is in, and then it goes to the manager to judge — not straight to a PR.
+    if body.contender_id:
+        db.update_contender(body.contender_id, status=status, report=body.report[:12000])
+        db.add_project_cost(body.project_id, body.cost_usd)
+        rivals = db.list_contenders(body.task_id)
+        c = db.get_contender(body.contender_id)
+        bus.emit(body.project_id, body.task_id, f"rival {c['idx'] if c else '?'}",
+                 "rival_finished", {"status": status, "model": c["model"] if c else "",
+                                    "summary": body.report[:800]})
+        if all(r["status"] in ("pushed", "failed") for r in rivals):
+            ok = [r for r in rivals if r["status"] == "pushed"]
+            if ok:
+                db.update_task(body.task_id, status="review")
+                bus.emit(body.project_id, body.task_id, "system", "contest_ready",
+                         {"rivals": len(rivals), "finished_ok": len(ok)})
+            else:
+                db.update_task(body.task_id, status="failed",
+                               report="all rival attempts failed:\n\n" +
+                                      "\n\n".join(f"[#{r['idx']} {r['model']}] {r['report'][:800]}"
+                                                  for r in rivals))
+        return {"ok": True}
     from .launcher import looks_rate_limited, note_rate_limit, cooldown_left
     if status == "failed" and looks_rate_limited(body.report):
         model = (task.get("model") if task else "") or ""

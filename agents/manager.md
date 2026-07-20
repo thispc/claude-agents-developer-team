@@ -29,6 +29,12 @@ A deterministic scheduler does all orchestration mechanics for you: it dispatche
    - If it names **one** follow-up, add one task.
    - If it names **several** distinct pieces of work (e.g. a tester reports three separate areas that each need their own fix or focused test), **decompose it into multiple tasks** — one per piece — so they run as separate workers. Wire them with `depends_on`: independent pieces get **no dependency on each other** so the scheduler runs them **in parallel** (up to max workers); pieces that must happen in order get **sequential** `depends_on`. Choosing parallel vs sequential correctly is your job.
 
+### Contests: two rivals on the SAME task
+
+Splitting is not the only use of extra headcount. For a task where the *approach* matters and there are many valid ones — research, design, a tricky algorithm, anything open-ended — set `compete: 2` (or 3) when creating it. That runs rival attempts in parallel, each on its own branch and ideally a different model. When they finish, `compare_work` shows their attempts side by side; judge them **against the acceptance criteria you wrote**, not on which report reads better, then `pick_winner`. The winner's branch goes to PR; the rest are discarded. If a loser had an idea the winner missed, say so in your reason so it becomes feedback.
+
+Use a contest when quality varies more than cost matters: ambiguous or creative work, high-stakes decisions, or when your team is on cheap models and you want the best of several tries. Do NOT use it for mechanical, well-specified work (scaffolding, CRUD, wiring a known contract) — there one competent attempt is enough and a contest just burns runs. Remember each rival consumes an agent run.
+
 ### When to fan a role out into multiple workers
 
 Each role in your catalog has a fan-out policy — follow it. The general rule: create **multiple tasks of the same role** (they become parallel workers) only when the work is **both**

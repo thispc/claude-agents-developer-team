@@ -212,10 +212,14 @@ ACTIVE: dict[int, dict] = {}
 
 
 class LocalLauncher:
-    async def launch(self, task: dict, project: dict) -> None:
-        model = pick_model(task, project)
+    async def launch(self, task: dict, project: dict, contender_id: int | None = None,
+                     label: str = "") -> None:
+        model = task.get("model") or pick_model(task, project)
         env = _worker_env(task, project, model)
-        workdir = config.WORKSPACES_DIR / f"task-{task['id']}-a{task['attempts']}"
+        if contender_id:
+            env["CONTENDER_ID"] = str(contender_id)
+        suffix = f"-{label}" if label else ""
+        workdir = config.WORKSPACES_DIR / f"task-{task['id']}-a{task['attempts']}{suffix}"
         workdir.mkdir(parents=True, exist_ok=True)
         import os
         import time as _t
@@ -224,15 +228,24 @@ class LocalLauncher:
             env={**os.environ, **env, "WORKDIR": str(workdir)},
             cwd=str(workdir),
         )
-        ACTIVE[task["id"]] = {"kind": "process", "ref": f"pid {proc.pid}",
+        ACTIVE[f"{task['id']}{suffix}"] = {"kind": "process", "ref": f"pid {proc.pid}",
                               "role": task["role"], "model": model,
                               "project_id": task["project_id"], "started_at": _t.time(),
-                              "workdir": str(workdir), "title": task["title"]}
-        asyncio.get_event_loop().create_task(self._reap(proc, task))
+                              "workdir": str(workdir), "title": task["title"],
+                              "task_id": task["id"], "rival": label}
+        asyncio.get_event_loop().create_task(
+            self._reap(proc, task, f"{task['id']}{suffix}", contender_id))
 
-    async def _reap(self, proc, task: dict) -> None:
+    async def _reap(self, proc, task: dict, key=None, contender_id: int | None = None) -> None:
         code = await proc.wait()
-        ACTIVE.pop(task["id"], None)
+        ACTIVE.pop(key if key is not None else task["id"], None)
+        await asyncio.sleep(3)
+        if contender_id:      # a rival that died without reporting just loses
+            c = db.get_contender(contender_id)
+            if c and c["status"] == "running":
+                db.update_contender(contender_id, status="failed",
+                                    report=f"attempt exited (code {code}) without reporting")
+            return
         # The worker's /internal/report is the source of truth. Grace period: the
         # report POST can land a moment after the process exits, so wait before
         # declaring failure to avoid a spurious "died without reporting".
@@ -255,16 +268,20 @@ class K8sLauncher:
         self.batch = client.BatchV1Api()
         self.client = client
 
-    async def launch(self, task: dict, project: dict) -> None:
+    async def launch(self, task: dict, project: dict, contender_id: int | None = None,
+                     label: str = "") -> None:
         import time as _t
-        model = pick_model(task, project)
+        model = task.get("model") or pick_model(task, project)
         env = _worker_env(task, project, model)
+        if contender_id:
+            env["CONTENDER_ID"] = str(contender_id)
         k = self.client
-        name = f"devteam-worker-{task['id']}-a{task['attempts']}"
-        ACTIVE[task["id"]] = {"kind": "k8s-job", "ref": name, "role": task["role"],
+        suffix = f"-{label}" if label else ""
+        name = f"devteam-worker-{task['id']}-a{task['attempts']}{suffix}"
+        ACTIVE[f"{task['id']}{suffix}"] = {"kind": "k8s-job", "ref": name, "role": task["role"],
                               "model": model, "project_id": task["project_id"],
                               "started_at": _t.time(), "workdir": config.K8S_NAMESPACE,
-                              "title": task["title"]}
+                              "title": task["title"], "task_id": task["id"], "rival": label}
         job = k.V1Job(
             metadata=k.V1ObjectMeta(
                 name=name,
@@ -355,6 +372,28 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
     # manager can reason about who is on what.
     db.update_task(task_id, status="queued", attempts=task["attempts"] + 1, model=model)
     task = db.get_task(task_id)
+
+    # --- competitive mode: N rivals attack the same task at once ---------------
+    n = int(task.get("compete") or 0)
+    if n > 1:
+        n = min(n, 3)
+        db.clear_contenders(task_id)
+        # Deliberately vary the model across rivals when we can: two different
+        # models disagree in more useful ways than two runs of the same one.
+        models = [model] + [m for m in FALLBACK_ORDER if m != model and not cooldown_left(m)]
+        launched = []
+        for i in range(1, n + 1):
+            cm = models[(i - 1) % len(models)] if models else model
+            branch = f"task/{task_id}-c{i}"
+            cid = db.create_contender(task_id, i, branch, cm)
+            rival = {**task, "branch": branch, "model": cm}
+            await get_launcher().launch(rival, project, contender_id=cid, label=f"c{i}")
+            launched.append(f"#{i} on {cm}")
+        bus.emit(task["project_id"], task_id, source, "contest_started",
+                 {"rivals": n, "detail": launched, "title": task["title"]})
+        return (f"dispatched {n} rival attempts at task {task_id} "
+                f"({', '.join(launched)}); the manager judges them when they finish.")
+
     await get_launcher().launch(task, project)
     bus.emit(task["project_id"], task_id, source, "dispatched",
              {"role": task["role"], "title": task["title"], "model": model,

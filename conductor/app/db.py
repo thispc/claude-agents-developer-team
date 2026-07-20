@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     origin TEXT NOT NULL DEFAULT 'initial',   -- initial | runtime (added mid-project)
     model TEXT NOT NULL DEFAULT '',           -- model used for the LAST run (informational)
     pinned_model TEXT NOT NULL DEFAULT '',    -- explicit manager override; wins over auto-selection
+    compete INTEGER NOT NULL DEFAULT 0,       -- >1 = run N rival attempts, manager picks the winner
     branch TEXT NOT NULL DEFAULT '',
     issue_number INTEGER,
     pr_number INTEGER,
@@ -76,6 +77,19 @@ CREATE TABLE IF NOT EXISTS inbox (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_project ON inbox(project_id, status);
+-- Rival attempts at ONE task. Each works on its own branch; the manager judges them
+-- and promotes a single winner, so parallel attempts never clobber each other.
+CREATE TABLE IF NOT EXISTS contenders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    idx INTEGER NOT NULL,                     -- 1..N, shown to the boss as "A/B"
+    branch TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'running',   -- running | pushed | failed | won | lost
+    report TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_contenders_task ON contenders(task_id);
 """
 
 
@@ -96,6 +110,7 @@ def init() -> None:
         "ALTER TABLE projects ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE tasks ADD COLUMN model TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE tasks ADD COLUMN pinned_model TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE tasks ADD COLUMN compete INTEGER NOT NULL DEFAULT 0",
     ):
         try:
             _conn.execute(stmt)
@@ -296,3 +311,31 @@ def pending_question(project_id: int) -> dict | None:
         (project_id,),
     )
     return rows[0] if rows else None
+
+
+# --- contenders (rival attempts at one task) ---
+
+def create_contender(task_id: int, idx: int, branch: str, model: str) -> int:
+    cur = _execute(
+        "INSERT INTO contenders (task_id, idx, branch, model, created_at) VALUES (?,?,?,?,?)",
+        (task_id, idx, branch, model, time.time()),
+    )
+    return cur.lastrowid
+
+
+def list_contenders(task_id: int) -> list[dict]:
+    return _rows("SELECT * FROM contenders WHERE task_id=? ORDER BY idx", (task_id,))
+
+
+def get_contender(contender_id: int) -> dict | None:
+    rows = _rows("SELECT * FROM contenders WHERE id=?", (contender_id,))
+    return rows[0] if rows else None
+
+
+def update_contender(contender_id: int, **fields: Any) -> None:
+    cols = ", ".join(f"{k}=?" for k in fields)
+    _execute(f"UPDATE contenders SET {cols} WHERE id=?", (*fields.values(), contender_id))
+
+
+def clear_contenders(task_id: int) -> None:
+    _execute("DELETE FROM contenders WHERE task_id=?", (task_id,))

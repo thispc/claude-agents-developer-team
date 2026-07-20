@@ -60,9 +60,13 @@ def emit(kind: str, payload: str) -> None:
                               "source": SOURCE, "kind": kind, "payload": payload[:4000]})
 
 
+CONTENDER_ID = int(os.environ.get("CONTENDER_ID", "0") or 0)
+
+
 def report(status: str, text: str, cost: float) -> None:
     post("/internal/report", {"project_id": PROJECT_ID, "task_id": TASK_ID,
-                              "status": status, "report": text[:12000], "cost_usd": cost})
+                              "status": status, "report": text[:12000], "cost_usd": cost,
+                              "contender_id": CONTENDER_ID})
 
 
 def sh(*cmd: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
