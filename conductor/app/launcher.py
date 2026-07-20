@@ -548,6 +548,12 @@ def get_launcher():
 
 async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
     """Shared dispatch path (used by the DAG scheduler)."""
+    # A sandboxed candidate build must not be able to spend a run, touch a repo or
+    # load a credential — so the mock engine intercepts before any of that happens,
+    # not inside the worker where a bug could still slip past.
+    if config.DEMO_MODE:
+        from . import demo
+        return await demo.simulate(task_id)
     task = db.get_task(task_id)
     if not task:
         return f"error: task {task_id} not found"

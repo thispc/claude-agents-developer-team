@@ -50,12 +50,21 @@ def test_but_it_is_still_reachable_directly(root_client, fresh_db):
     assert root_client.get(f"/api/projects/{pid}").status_code == 200
 
 
-def test_leaving_the_self_project_closes_the_self_view():
-    """Switching project left the tab on screen showing the platform's data under
-    another project's name."""
+def test_self_repair_is_a_page_not_a_tab_on_someone_elses_project():
+    """As a tab it lingered after switching project, showing the platform's data
+    under another project's name. It is now its own page off the landing tile."""
+    html = (DASH / "index.html").read_text()
     js = (DASH / "app.js").read_text()
-    block = js.split('const st = $("#selfTab");', 1)[1][:400]
-    assert "switchView(\"command\")" in block
+    assert 'id="selfTab"' not in html, "the tab chip is back"
+    assert 'data-v="self"' not in html
+    assert 'id="selfPage"' in html
+    assert '#/improve' in js, "the page has no route of its own"
+
+
+def test_opening_a_project_hides_the_self_repair_page():
+    js = (DASH / "app.js").read_text()
+    block = js.split("function openProject(", 1)[1][:300]
+    assert '$("#selfPage")' in block and "hidden = true" in block
 
 
 # ---- the ticket is refined before anyone works on it ----------------------

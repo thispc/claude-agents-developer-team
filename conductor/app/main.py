@@ -35,6 +35,9 @@ async def lifespan(app: FastAPI):
         print(f"[startup] removed {stale} expired session(s)")
     # Resume any project that was mid-flight when the conductor last stopped, so a
     # restart (deploy, crash) doesn't strand a running project without its manager.
+    if config.DEMO_MODE:
+        from . import demo
+        demo.seed()          # an empty sandbox has no screens worth checking
     for p in db.list_projects():
         scheduler.reconcile_status(p["id"])   # a 'done' project with pending work reopens
         p = db.get_project(p["id"]) or p

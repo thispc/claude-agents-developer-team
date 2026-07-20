@@ -79,6 +79,12 @@ WORKER_TOKEN = _env("WORKER_TOKEN", "dev-token")
 DB_PATH = str(Path(_env("DB_PATH", "devteam.db")) if Path(_env("DB_PATH", "devteam.db")).is_absolute()
               else ROOT / _env("DB_PATH", "devteam.db"))
 
+# A sandboxed candidate build of THIS platform runs with DEMO_MODE=1: no real
+# agent sessions, no credentials, no GitHub, seeded data instead. It exists so a
+# self-repair PR can be clicked through before it is deployed over the live app.
+# Never set this on a real instance — it makes the platform pretend to work.
+DEMO_MODE = _env("DEMO_MODE") == "1"
+
 LAUNCHER = _env("LAUNCHER", "local")  # local | k8s
 WORKER_IMAGE = _env("WORKER_IMAGE", "devteam-worker:latest")
 K8S_NAMESPACE = _env("K8S_NAMESPACE", "devteam")

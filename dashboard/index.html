@@ -147,6 +147,18 @@
   <div id="blueprintPanel" hidden></div>
 </section>
 
+<section id="selfPage" hidden>
+  <div class="plan-head">
+    <div>
+      <h2>⟲ Improve devteam</h2>
+      <p class="plan-sub">The platform working on its own codebase — raise it, let the
+        team fix it, try the result in a sandbox, then deploy.</p>
+    </div>
+    <button id="selfBackBtn">← Back to projects</button>
+  </div>
+  <div id="self"></div>
+</section>
+
 <main hidden>
   <div id="left">
     <div class="view-toggle">
@@ -157,7 +169,6 @@
       <button class="chip vchip" data-v="agents">🖥 Agents</button>
       <button class="chip vchip" data-v="chat">💬 Manager<span id="chatUnread" hidden>0</span></button>
       <button class="chip vchip" data-v="blockers">🚧 Blockers<span id="blockerCount" hidden>0</span></button>
-      <button class="chip vchip" data-v="self" id="selfTab" hidden>⟲ Self-repair</button>
       <div class="vspacer"></div>
       <button id="addTaskBtn" class="chip" title="Add a task yourself">+ Add task</button>
     </div>
@@ -176,7 +187,6 @@
       </form>
     </section>
     <section id="blockers" hidden></section>
-    <section id="self" hidden></section>
     <section id="dag" hidden><svg id="dagSvg" xmlns="http://www.w3.org/2000/svg"></svg></section>
     <section id="board" hidden>
     <div class="col" data-col="planned"><h2>Planned</h2><div class="cards"></div></div>

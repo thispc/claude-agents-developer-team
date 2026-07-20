@@ -313,17 +313,70 @@ function renderHome(projects) {
 
 // The platform working on itself. /api/self creates-or-returns the row for this
 // repo, so there is nothing for the user to set up first.
-async function openSelfRepair() {
-  try {
-    const d = await api("/api/self");
-    openProject(d.project_id, "self");
-  } catch (e) {
-    toast(e.message || "self-repair is not available on this account");
+async function renderSandbox() {
+  const el = $("#sandboxBody");
+  if (!el) return;
+  let d;
+  try { d = await api("/api/self/sandbox"); }
+  catch (e) { el.innerHTML = `<p class="empty">${escapeHtml(e.message || e)}</p>`; return; }
+
+  if (d.running) {
+    const mins = Math.max(0, Math.round((Date.now() / 1000 - d.started_at) / 60));
+    el.innerHTML = `
+      <div class="sbx live">
+        <div class="sbx-head"><span class="sbx-dot"></span>
+          <b>Sandbox running</b><span class="hint">${escapeHtml(d.ref)} · ${escapeHtml(d.commit)} · up ${mins}m</span></div>
+        <p class="sbx-sub">${escapeHtml(d.subject || "")}</p>
+        <div class="sbx-actions">
+          <a class="btn-like primary" href="${escapeHtml(d.url)}" target="_blank" rel="noopener">↗ Open the sandbox</a>
+          <button id="sbxStop" class="danger">Stop &amp; clean up</button>
+        </div>
+        <p class="hint">Sign in there as <code>root</code> / <code>sandbox</code>. It has
+          its own database seeded with demo data — nothing you do in it touches this app.</p>
+      </div>`;
+    $("#sbxStop").addEventListener("click", async () => {
+      const b = $("#sbxStop"); b.disabled = true; b.textContent = "stopping…";
+      try { await api("/api/self/sandbox", { method: "DELETE" }); } catch (e) { toast(String(e.message || e)); }
+      renderSandbox();
+    });
+    return;
   }
+
+  const opts = (d.branches || []).map((b) =>
+    `<option value="${escapeHtml(b.ref)}">${escapeHtml(b.name)} — ${escapeHtml(b.subject)} (${escapeHtml(b.when)})</option>`).join("");
+  el.innerHTML = `
+    ${d.died ? `<p class="form-error">The last sandbox exited on its own.
+       <details><summary>log</summary><pre class="sbx-log">${escapeHtml(d.log_tail || "")}</pre></details></p>` : ""}
+    <div class="sbx-start">
+      <label>Branch to try <select id="sbxRef">${opts || "<option value=''>no branches found</option>"}</select></label>
+      <button id="sbxStart" class="primary">▶ Boot the sandbox</button>
+    </div>`;
+  $("#sbxStart").addEventListener("click", async () => {
+    const ref = $("#sbxRef").value;
+    if (!ref) return;
+    const b = $("#sbxStart"); b.disabled = true; b.textContent = "booting…";
+    try {
+      await api("/api/self/sandbox", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ref }) });
+      toast("Sandbox is up");
+    } catch (e) { toast(String(e.message || e)); }
+    renderSandbox();
+  });
+}
+
+async function openSelfRepair(skipHash) {
+  $("#home").hidden = true; $("main").hidden = true;
+  const pl = $("#plan"); if (pl) pl.hidden = true;
+  $("#projectBar").hidden = true;
+  $("#selfPage").hidden = false;
+  if (!skipHash) setHash("#/improve");
+  currentProject = null;
+  await renderSelf();
 }
 
 function showHome(skipHash) {
   const pl = $("#plan"); if (pl) pl.hidden = true;
+  const sp = $("#selfPage"); if (sp) sp.hidden = true;
   if (!skipHash) setHash("#/");
   currentProject = null;
   // Fall back to is_root when the server predates may_self_repair — otherwise the
@@ -345,6 +398,7 @@ function showHome(skipHash) {
 }
 
 function openProject(id, view, skipHash) {
+  const sp = $("#selfPage"); if (sp) sp.hidden = true;
   $("#home").hidden = true;
   $("main").hidden = false;
   $("#projectBar").hidden = false;
@@ -395,6 +449,7 @@ function route() {
     }
     return;
   }
+  if (location.hash.startsWith("#/improve")) { openSelfRepair(true); return; }
   const m = location.hash.match(/^#\/p\/(\d+)(?:\/(\w+))?/);
   if (m) openProject(Number(m[1]), m[2] || "command", true);
   else showHome(true);
@@ -514,6 +569,15 @@ async function renderSelf() {
       </form>
     </div>
 
+    <div class="self-card" id="sandboxCard">
+      <h3>Try it before it goes live</h3>
+      <p class="hint">A diff tells you the code is plausible. Only running it tells you
+        the app still works. This boots the candidate build beside the live one — its
+        own database, no credentials, agents simulated — so you can click through the
+        fix before deploying it over the app you are using.</p>
+      <div id="sandboxBody" class="sandbox-body"><p class="hint">loading…</p></div>
+    </div>
+
     <div class="self-card">
       <h3>Open work on the platform</h3>
       ${(d.open_issues || []).length ? `<table class="self-table">
@@ -527,6 +591,8 @@ async function renderSelf() {
         d.shipped.map((t) => `<li>#${t.seq} ${escapeHtml(t.title)}${
           t.pr ? ` — PR #${t.pr}` : ""}</li>`).join("")}</ul>` : ""}
     </div>`;
+
+  renderSandbox();
 
   const form = $("#selfIssueForm");
 
@@ -1257,14 +1323,8 @@ async function refreshBoard() {
   let p;
   try { p = await api(`/api/projects/${currentProject}`); } catch { return; }
   lastTasks = p.tasks;
-  const st = $("#selfTab");
-  if (st) {
-    st.hidden = !p.is_self;
-    // Switching to a normal project while the Self-repair view was open left the
-    // tab on screen and the panel showing the platform's data under someone
-    // else's project name.
-    if (st.hidden && !$("#self").hidden) switchView("command");
-  }
+  // Self-repair is its own page now, reached from the landing tile — it is not a
+  // tab on an ordinary project, which is what let it linger after switching.
   renderBlockers();          // keeps the 🚧 badge honest even when the tab is closed
   currentRepo = p.repo || "";
   lastProject = p;
@@ -2412,7 +2472,8 @@ $("#homeLink").addEventListener("click", () => showHome());
 $("#homeLink").style.cursor = "pointer";
 $("#modeBuild").addEventListener("click", openDialog);
 $("#modeShape").addEventListener("click", openPlan);
-$("#modeImprove").addEventListener("click", openSelfRepair);
+$("#modeImprove").addEventListener("click", () => openSelfRepair());
+$("#selfBackBtn").addEventListener("click", () => showHome());
 $("#planBackBtn").addEventListener("click", () => {
   clearInterval(tablePoll); $("#plan").hidden = true; showHome();
 });

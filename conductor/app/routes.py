@@ -7,7 +7,8 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from . import (auth, blockers, bus, config, credcheck, db, deploy, github_client, launcher,
-               manager, planner, preview, providers, roundtable, scheduler, selfops)
+               manager, planner, preview, providers, roundtable, sandbox, scheduler,
+               selfops)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -680,6 +681,37 @@ async def self_issue(payload: SelfIssue, request: Request) -> dict:
     else:
         res["manager"] = "already running — the issue was handed to it"
     return {"project_id": pid, **res}
+
+
+class SandboxReq(BaseModel):
+    ref: str
+
+
+@router.get("/api/self/sandbox")
+def sandbox_status(request: Request) -> dict:
+    _root(request)
+    return {**sandbox.status(), "branches": sandbox.branches()}
+
+
+@router.post("/api/self/sandbox")
+def sandbox_start(body: SandboxReq, request: Request) -> dict:
+    """Boot the candidate build beside the live one so it can be clicked through.
+
+    A diff says the code is plausible; only running it says the app still works.
+    """
+    _root(request)
+    res = sandbox.start(body.ref.strip())
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error", "the sandbox would not start"))
+    bus.emit(0, None, "system", "sandbox_started",
+             {"ref": res["ref"], "commit": res["commit"], "port": res["port"]})
+    return res
+
+
+@router.delete("/api/self/sandbox")
+def sandbox_stop(request: Request) -> dict:
+    _root(request)
+    return sandbox.stop()
 
 
 @router.post("/api/self/redeploy")

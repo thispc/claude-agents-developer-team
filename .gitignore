@@ -13,3 +13,6 @@ node_modules/
 # local build/run artifacts of deployed projects
 deployments/
 .devteam-deploy.json
+
+# sandbox worktree + throwaway db for trying a self-repair build
+.sandbox/

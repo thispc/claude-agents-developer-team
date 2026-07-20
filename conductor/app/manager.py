@@ -723,6 +723,10 @@ async def run_manager(project_id: int) -> None:
     project = db.get_project(project_id)
     if not project:
         return
+    if config.DEMO_MODE:      # sandbox: no real session, no tokens, no decisions
+        bus.emit(project_id, None, "manager", "agent_status",
+                 {"status": "simulated (sandbox build)"})
+        return
     bus.emit(project_id, None, "manager", "agent_status", {"status": "starting"})
 
     roster = json.loads(project.get("team") or "[]")
