@@ -381,3 +381,27 @@ pre.dim, .dim { color: var(--dim); }
 
 /* Log pane: fixed height so opening/closing it never shifts the table above it. */
 #machineLogs { height: 340px; max-height: 340px; overflow-y: auto; overscroll-behavior: contain; }
+
+/* ---------- team grouping ---------- */
+.group { width: 100%; margin-bottom: 18px; }
+.group-head { display: flex; align-items: center; gap: 9px; justify-content: center; margin-bottom: 10px; }
+.glabel { font-size: 12px; font-weight: 650; color: var(--text); }
+.gcount { font-size: 11px; background: var(--card-2); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; color: var(--dim); }
+.gnote { font-size: 11px; color: var(--faint); }
+.blocked-note { font-size: 11px; color: var(--warn); background: var(--warn-soft); border-radius: 7px; padding: 5px 8px; margin-top: 7px; }
+
+/* ---------- model health ---------- */
+#modelHealth { margin: 14px 0 6px; }
+.health-title { font-size: 10.5px; text-transform: uppercase; letter-spacing: .7px; color: var(--faint); font-weight: 650; margin-bottom: 8px; }
+.health-row { display: grid; grid-template-columns: 130px 1fr 90px auto; gap: 10px; align-items: center; font-size: 12px; margin-bottom: 6px; }
+.health-row .hm { font-family: var(--mono); font-size: 11.5px; }
+.health-row .bar { height: 8px; background: var(--line-soft); border-radius: 999px; overflow: hidden; }
+.health-row .bar i { display: block; height: 100%; border-radius: 999px; }
+.health-row .bar i.healthy { background: var(--good); }
+.health-row .bar i.strained { background: var(--warn); }
+.health-row .bar i.throttled { background: var(--bad); }
+.health-row .hs { font-size: 11px; font-weight: 600; }
+.health-row .hs.healthy { color: var(--good); }
+.health-row .hs.strained { color: var(--warn); }
+.health-row .hs.throttled { color: var(--bad); }
+.health-note { display: block; margin-top: 8px; font-style: italic; }

@@ -103,6 +103,9 @@ def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
         "REPO": project["repo"],
         "GITHUB_TOKEN": owner_github_token(project),
         "MODEL": model,
+        # Teammate a stuck worker can consult (always a capable model, even when the
+        # worker itself is a cheap one — that is the point).
+        "CONSULT_MODEL": config.ESCALATION_MODEL,
         # If the last attempt died by running out of turns, give the retry more room
         # instead of failing the same way again.
         "MAX_TURNS": str(config.WORKER_MAX_TURNS_RETRY

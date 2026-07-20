@@ -226,6 +226,45 @@ def machine_logs(task_id: int) -> dict:
     return {"source": "local process (event stream)", "logs": "\n".join(lines) or "no output yet"}
 
 
+@router.get("/api/model-health")
+def model_health() -> dict:
+    """Observed health per model, from OUR OWN signals — recent successes vs
+    rate-limit/overload hits. Anthropic exposes no remaining-quota API, so this
+    reports what we can actually measure, never a fabricated 'percent left'."""
+    import time as _t
+    window = _t.time() - 6 * 3600
+    stats: dict[str, dict] = {}
+    for p in db.list_projects()[:12]:
+        for t in db.list_tasks(p["id"]):
+            m = t.get("model")
+            if not m or t["updated_at"] < window:
+                continue
+            s = stats.setdefault(m, {"model": m, "runs": 0, "ok": 0, "throttled": 0})
+            s["runs"] += 1
+            if t["status"] in ("done", "pushed", "review"):
+                s["ok"] += 1
+            if launcher_looks_rate_limited(t.get("report", "")):
+                s["throttled"] += 1
+    out = []
+    for s in stats.values():
+        # Health = how much of this model's recent work got through untroubled.
+        throttle_rate = s["throttled"] / max(s["runs"], 1)
+        health = max(0, min(100, round((1 - throttle_rate) * 100)))
+        s["health"] = health
+        s["state"] = "throttled" if throttle_rate >= 0.5 else (
+            "strained" if throttle_rate > 0 else "healthy")
+        out.append(s)
+    out.sort(key=lambda x: x["model"])
+    return {"models": out, "window_hours": 6,
+            "note": "Observed from this app's own runs. Anthropic does not expose "
+                    "remaining subscription quota to any client."}
+
+
+def launcher_looks_rate_limited(text: str) -> bool:
+    from .launcher import looks_rate_limited
+    return looks_rate_limited(text)
+
+
 @router.get("/api/notifications")
 def notifications() -> dict:
     """Everything waiting on the boss, across all projects — for the bell menu."""

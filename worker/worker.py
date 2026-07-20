@@ -23,7 +23,9 @@ from claude_agent_sdk import (
     ResultMessage,
     TextBlock,
     ToolUseBlock,
+    create_sdk_mcp_server,
     query,
+    tool,
 )
 
 TASK_ID = int(os.environ["TASK_ID"])
@@ -112,6 +114,53 @@ def commit_and_push(repo_dir: Path) -> tuple[bool, str]:
     return False, f"git push failed after 3 attempts: {last_err}"
 
 
+CONSULT_MODEL = os.environ.get("CONSULT_MODEL", "claude-sonnet-5")
+
+
+def build_helper_server():
+    """Lets a worker ask a more capable teammate for help instead of grinding alone.
+
+    This is the collaboration primitive: a cheap model doing the work can escalate a
+    *question* (not the whole task) to a stronger model, get a concrete answer, and
+    carry on. Two heads on one task, without two agents fighting over the same files.
+    """
+
+    @tool("ask_teammate",
+          "Ask a senior teammate for help when you are stuck, unsure of an approach, "
+          "or hitting the same error repeatedly. Include everything they need: what "
+          "you're trying to do, what you tried, the exact error, and the relevant code. "
+          "They cannot see your screen. Returns their advice.",
+          {"question": str, "context": str})
+    async def ask_teammate(args: dict) -> dict:
+        question = str(args.get("question", ""))[:4000]
+        ctx = str(args.get("context", ""))[:8000]
+        emit("consult", f"asked a senior teammate: {question[:200]}")
+        prompt = (
+            f"A {ROLE} on your team is stuck and asked for your help.\n\n"
+            f"THEIR TASK: {TITLE}\n\nTHEIR QUESTION:\n{question}\n\n"
+            f"WHAT THEY'VE GOT (code / errors / attempts):\n{ctx}\n\n"
+            "Give a direct, concrete answer they can act on immediately: the specific fix, "
+            "the exact code, or the precise next step. No pleasantries, no restating their "
+            "problem. If they're on the wrong track, say so plainly and give the right one."
+        )
+        answer = ""
+        try:
+            async for msg in query(prompt=prompt, options=ClaudeAgentOptions(
+                    model=CONSULT_MODEL, max_turns=1,
+                    disallowed_tools=["Bash", "Write", "Edit", "Task", "TodoWrite"],
+                    permission_mode="bypassPermissions")):
+                if isinstance(msg, AssistantMessage):
+                    for b in msg.content:
+                        if isinstance(b, TextBlock):
+                            answer += b.text
+        except Exception as e:
+            answer = f"(your teammate could not be reached: {e}; use your best judgement)"
+        emit("consult_reply", answer[:1500])
+        return {"content": [{"type": "text", "text": answer or "(no answer)"}]}
+
+    return create_sdk_mcp_server(name="team", version="1.0.0", tools=[ask_teammate])
+
+
 def build_prompt() -> str:
     parts = [f"# Task {TASK_ID}: {TITLE}", "", DESCRIPTION]
     handoff = os.environ.get("HANDOFF_CONTEXT", "")
@@ -156,7 +205,9 @@ async def run() -> None:
         model=MODEL,
         max_turns=MAX_TURNS,
         cwd=str(repo_dir),
-        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep",
+                       "mcp__team__ask_teammate"],
+        mcp_servers={"team": build_helper_server()},
         permission_mode="bypassPermissions",
         env={"GIT_TERMINAL_PROMPT": "0"},
     )

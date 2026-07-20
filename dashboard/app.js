@@ -550,7 +550,18 @@ function renderCommand(p) {
   const bubbleHtml = (label, text, cls) => text
     ? `<div class="bubble ${cls || ""}"><div class="bl">${label}</div>${escapeHtml(trim(text, 420))}</div>` : "";
 
-  const agents = tasks.map((t) => {
+  // Group the team the way a person reads it: who's working now, who is blocked and
+  // on what, who's finished. A lone "waiting" card next to a busy one is confusing.
+  const doneIds = new Set(tasks.filter((t) => t.status === "done").map((t) => t.id));
+  const groupOf = (t) => {
+    if (["queued", "running"].includes(t.status)) return "working";
+    if (["pushed", "review"].includes(t.status)) return "review";
+    if (t.status === "done") return "done";
+    if (t.status === "failed") return "review";
+    let d = []; try { d = JSON.parse(t.deps || "[]"); } catch { /* */ }
+    return d.some((x) => !doneIds.has(x)) ? "blocked" : "ready";
+  };
+  const card = (t) => {
     let deps = []; try { deps = JSON.parse(t.deps || "[]"); } catch { /* */ }
     const doing = agentActivity[t.id] || (t.status === "planned"
       ? "Waiting for their turn." : t.status === "done" ? "Finished and handed in."
@@ -577,6 +588,37 @@ function renderCommand(p) {
       <div class="deps">🧠 ${escapeHtml(modelLabel)}${t.attempts > 1 ? ` · attempt ${t.attempts}` : ""}
         ${deps.length ? ` · after ${deps.map((d) => "#" + d).join(", ")}` : ""}</div>
     </div>`;
+  };
+
+  const GROUPS = [
+    ["working", "⚡ Working right now", "these are running in parallel"],
+    ["review", "🔍 Waiting on the manager", "work submitted — being reviewed"],
+    ["ready", "▶ Ready to start", "unblocked, waiting for a free slot"],
+    ["blocked", "⏳ Blocked on teammates", "waiting for the work they build on"],
+    ["done", "✅ Finished", ""],
+  ];
+  const agents = GROUPS.map(([key, label, note]) => {
+    const inGroup = tasks.filter((t) => groupOf(t) === key);
+    if (!inGroup.length) return "";
+    const blockedNote = (t) => {
+      let d = []; try { d = JSON.parse(t.deps || "[]"); } catch { /* */ }
+      const waiting = d.filter((x) => !doneIds.has(x));
+      const names = waiting.map((id) => {
+        const dep = tasks.find((x) => x.id === id);
+        return dep ? dep.role : "#" + id;
+      });
+      return names.length ? `waiting for ${names.join(" & ")}` : "";
+    };
+    return `<div class="group">
+      <div class="group-head"><span class="glabel">${label}</span>
+        <span class="gcount">${inGroup.length}</span>
+        ${note ? `<span class="gnote">${note}</span>` : ""}</div>
+      <div class="agents">${inGroup.map((t) => {
+        const bn = key === "blocked" ? blockedNote(t) : "";
+        return card(t).replace('<div class="deps">',
+          bn ? `<div class="blocked-note">${escapeHtml(bn)}</div><div class="deps">` : '<div class="deps">');
+      }).join("")}</div>
+    </div>`;
   }).join("");
 
   el.innerHTML = `
@@ -599,7 +641,7 @@ function renderCommand(p) {
       </div>
       <div class="fan"></div>
       <div class="section-label">The team</div>
-      <div class="agents">${agents || '<div class="empty">Assembling the team…</div>'}</div>
+      ${agents || '<div class="empty">Assembling the team…</div>'}
     </div>`;
 
   el.querySelectorAll(".agent").forEach((a) =>
@@ -861,6 +903,7 @@ async function renderAgents() {
       <div class="pane" id="agentsShell">
         <h2>\ud83d\udda5 Machines</h2>
         <p class="hint" id="agentsMode"></p>
+        <div id="modelHealth"></div>
         <table class="agents-table">
           <thead><tr><th>Role</th><th>Task</th><th id="refCol">Process</th><th>Model</th><th>Uptime</th><th></th></tr></thead>
           <tbody id="agentsBody"></tbody>
@@ -897,6 +940,26 @@ async function renderAgents() {
       }));
   }
   if (openLogTask) loadMachineLogs(openLogTask);   // keep tailing, scroll preserved
+  renderModelHealth();
+}
+
+// Honest capacity view: Anthropic exposes no remaining-quota API, so this shows how
+// this app's own recent runs on each model fared (throttled vs clean).
+async function renderModelHealth() {
+  const box = $("#modelHealth");
+  if (!box) return;
+  let h;
+  try { h = await api("/api/model-health"); } catch { return; }
+  if (!h.models.length) { box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="health-title">Model capacity — observed over the last ${h.window_hours}h</div>` +
+    h.models.map((m) => `
+      <div class="health-row">
+        <span class="hm">${escapeHtml(m.model.replace("claude-", ""))}</span>
+        <span class="bar"><i class="${m.state}" style="width:${m.health}%"></i></span>
+        <span class="hs ${m.state}">${m.state}</span>
+        <span class="hint">${m.ok}/${m.runs} runs clean${m.throttled ? ` · ${m.throttled} throttled` : ""}</span>
+      </div>`).join("") +
+    `<div class="hint health-note">${escapeHtml(h.note)}</div>`;
 }
 
 // --- artifacts / public link ------------------------------------------------
