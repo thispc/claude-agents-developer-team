@@ -366,43 +366,23 @@ function notifyBoss(e) {
 
 // --- boss controls ----------------------------------------------------------
 let currentQuestionId = null;
-const dismissedQuestions = new Set();   // never auto-reopen one the boss closed
 
 async function refreshQuestion() {
   if (!currentProject) return;
   let q;
   try { q = await api(`/api/projects/${currentProject}/question`); } catch { return; }
-  const dlg = $("#approvalDialog");
   if (!q.question) {
-    currentQuestionId = null; pendingQ = null;
-    if (dlg.open) dlg.close();
-    if (lastProject) renderCommand(lastProject);
-    return;
+    currentQuestionId = null;
+    pendingQ = null;
+  } else {
+    currentQuestionId = q.id;
+    pendingQ = { id: q.id, text: q.question, options: q.options || [] };
   }
-  pendingQ = { id: q.id, text: q.question, options: q.options || [] };
-  if (lastProject) renderCommand(lastProject);   // always visible inline as an ask-card
-  if (dlg.open) return;                          // don't stack modals
-  if (dismissedQuestions.has(q.id)) return;      // boss closed it — respect that
-  currentQuestionId = q.id;
-  $("#approvalQ").textContent = q.question;
-  const box = $("#approvalOpts");
-  box.innerHTML = "";
-  for (const opt of q.options || []) {
-    const b = document.createElement("button");
-    b.className = "approval-opt";
-    b.textContent = opt;
-    b.addEventListener("click", () => answerQuestion(q.id, opt));
-    box.appendChild(b);
-  }
-  $("#approvalCustom").value = "";
-  try { dlg.showModal(); } catch { /* already open */ }
+  // Questions are shown INLINE in the Command view (the amber ask-card).
+  // No popup: modals covered the org chart and felt intrusive.
+  if (lastProject) renderCommand(lastProject);
 }
 
-// Closing the modal (Esc or the close button) means "not now" — keep the inline
-// ask-card, but stop popping the modal for this question.
-$("#approvalDialog").addEventListener("close", () => {
-  if (currentQuestionId) dismissedQuestions.add(currentQuestionId);
-});
 
 async function answerQuestion(qid, answer) {
   if (!answer || !answer.trim()) return;
@@ -411,14 +391,9 @@ async function answerQuestion(qid, answer) {
     body: JSON.stringify({ answer }),
   });
   currentQuestionId = null;
-  $("#approvalDialog").close();
+  pendingQ = null;
+  if (lastProject) renderCommand(lastProject);
 }
-$("#approvalLater").addEventListener("click", () => $("#approvalDialog").close());
-$("#approvalSend").addEventListener("click", () =>
-  answerQuestion(currentQuestionId, $("#approvalCustom").value));
-$("#approvalCustom").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") answerQuestion(currentQuestionId, e.target.value);
-});
 
 // --- task detail panel ------------------------------------------------------
 let editTaskTarget = null;
@@ -501,12 +476,15 @@ function renderCommand(p) {
 
   const askHtml = pendingQ ? `
     <div class="ask-card">
-      <div class="bl">⏸ Your manager needs a decision</div>
+      <div class="bl">👔 Your manager needs a decision</div>
       <div class="qtext">${escapeHtml(pendingQ.text)}</div>
       <div class="qbtns">
         ${(pendingQ.options || []).map((o, i) =>
           `<button data-qopt="${i}">${escapeHtml(o)}</button>`).join("")}
-        <button data-qopt="custom">✍ Reply in my own words</button>
+      </div>
+      <div class="qreply">
+        <input id="askReply" placeholder="…or tell the manager what to do in your own words">
+        <button class="primary" data-qopt="send">Send</button>
       </div>
     </div>` : "";
 
@@ -556,9 +534,16 @@ function renderCommand(p) {
     a.addEventListener("click", () => showTask(Number(a.dataset.task))));
   el.querySelectorAll("[data-qopt]").forEach((b) =>
     b.addEventListener("click", () => {
-      if (b.dataset.qopt === "custom") { $("#approvalDialog").showModal(); return; }
+      if (b.dataset.qopt === "send") {
+        answerQuestion(pendingQ.id, $("#askReply").value);
+        return;
+      }
       answerQuestion(pendingQ.id, pendingQ.options[Number(b.dataset.qopt)]);
     }));
+  const reply = el.querySelector("#askReply");
+  if (reply) reply.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") answerQuestion(pendingQ.id, ev.target.value);
+  });
 }
 
 // Track what each agent is doing, in plain language, from the event stream.

@@ -155,9 +155,11 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 380px; gap: 16px; padd
 }
 .ask-card .bl { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--warn); font-weight: 700; }
 .ask-card .qtext { font-size: 14.5px; margin: 8px 0 12px; line-height: 1.5; }
-.ask-card .qbtns { display: flex; flex-wrap: wrap; gap: 8px; }
-.ask-card .qbtns button { background: #fff; font-size: 13px; }
+.ask-card .qbtns { display: flex; flex-direction: column; gap: 8px; }
+.ask-card .qbtns button { background: #fff; font-size: 13px; text-align: left; padding: 11px 14px; }
 .ask-card .qbtns button:hover { border-color: var(--warn); color: var(--warn); }
+.ask-card .qreply { display: flex; gap: 8px; margin-top: 10px; }
+.ask-card .qreply input { flex: 1; background: #fff; }
 
 /* agents grid */
 .agents { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; width: 100%; }
@@ -234,7 +236,9 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 380px; gap: 16px; padd
 #directiveForm input { flex: 1; }
 
 /* ---------- dialogs ---------- */
-dialog { background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 16px; padding: 0; width: min(620px, 94vw); box-shadow: 0 24px 64px rgba(16,24,40,.24); }
+/* margin:auto is what centres a <dialog>; the global reset above wipes it, which
+   is why dialogs were sticking to the top-left. Restore it explicitly. */
+dialog { margin: auto; background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 16px; padding: 0; width: min(620px, 94vw); box-shadow: 0 24px 64px rgba(16,24,40,.24); }
 dialog::backdrop { background: rgba(16,24,40,.45); backdrop-filter: blur(3px); }
 dialog form, .task-detail-wrap, .approval-wrap { display: flex; flex-direction: column; gap: 14px; padding: 26px; }
 dialog h2 { font-size: 17px; font-weight: 650; letter-spacing: -.2px; }
