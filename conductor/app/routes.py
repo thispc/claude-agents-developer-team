@@ -193,15 +193,21 @@ async def create_my_repo(body: NewRepo, request: Request) -> dict:
 
 
 @router.get("/api/agents")
-def list_agents(project_id: int | None = None) -> dict:
+def list_agents(request: Request, project_id: int | None = None) -> dict:
     """Live infrastructure: worker machines currently running, plus how work is being
     executed (local processes vs Kubernetes Jobs). Scoped to one project when given."""
     from . import launcher as lx
     import time as _t
+    user = current_user(request)
+    if project_id is not None:
+        owned_project(project_id, request)
     agents = []
     for key, info in list(lx.ACTIVE.items()):
         if project_id is not None and info["project_id"] != project_id:
             continue
+        owner = db.get_project(info["project_id"])
+        if not owner or not can_see(owner, user):
+            continue        # never surface another user's machines
         task_id = info.get("task_id", key)
         t = db.get_task(task_id)
         p = db.get_project(info["project_id"])
@@ -359,6 +365,17 @@ async def deploy_app(project_id: int, request: Request, mode: str = "") -> dict:
 def undeploy_app(project_id: int, request: Request) -> dict:
     owned_project(project_id, request)
     return {"status": deploy.stop(project_id)}
+
+
+@router.post("/api/tasks/{task_id}/kill")
+def kill_agent(task_id: int, request: Request) -> dict:
+    """Stop the agent(s) working on one task, right now."""
+    t = db.get_task(task_id)
+    if not t:
+        raise HTTPException(404, "no such task")
+    owned_project(t["project_id"], request)
+    notes = launcher.kill_task(task_id, "stopped by the boss from the Agents tab")
+    return {"ok": True, "stopped": len(notes), "detail": notes}
 
 
 @router.get("/api/projects/{project_id}/blockers")
@@ -558,16 +575,19 @@ async def restart_project(project_id: int) -> dict:
 
 
 @router.post("/api/projects/{project_id}/cancel")
-async def cancel_project(project_id: int) -> dict:
-    project = db.get_project(project_id)
-    if not project:
-        raise HTTPException(404, "no such project")
+async def cancel_project(project_id: int, request: Request) -> dict:
+    project = owned_project(project_id, request)
     db.set_project_status(project_id, "cancelled")
     db.abandon_questions(project_id)
     scheduler.stop(project_id)
     t = _manager_tasks.get(project_id)
     if t and not t.done():
         t.cancel()  # aborts the manager session immediately instead of at its next wait
+    # Stopping the scheduler only stops NEW work. The workers already running are
+    # separate processes/Jobs: without this they keep going, keep spending tokens,
+    # and their tasks stay 'running' forever because the only thing that clears
+    # that status is a report from a worker nobody is listening to any more.
+    killed = launcher.kill_project(project_id, "project was cancelled by the boss")
     # Close this project's still-open GitHub issues so they don't linger as orphans.
     repo = project["repo"]
     if github_client.enabled(repo):
@@ -577,8 +597,8 @@ async def cancel_project(project_id: int) -> dict:
                     await github_client.close_issue(repo, task["issue_number"])
                 except Exception:
                     pass
-    bus.emit(project_id, None, "system", "project_cancelled", {})
-    return {"ok": True}
+    bus.emit(project_id, None, "system", "project_cancelled", {"agents_stopped": len(killed)})
+    return {"ok": True, "agents_stopped": len(killed), "detail": killed}
 
 
 @router.get("/api/projects/{project_id}/events")

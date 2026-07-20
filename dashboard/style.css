@@ -507,3 +507,10 @@ pre.dim, .dim { color: var(--dim); }
 .deploy-err { color: #b02a2a; font-size: 13px; line-height: 1.5; }
 .run-card details summary { font-size: 12px; color: var(--muted); cursor: pointer; margin-top: 9px; }
 @media (max-width: 950px) { .run-cards { grid-template-columns: 1fr; } }
+
+/* Confirmation of something that already happened — never blocks the page. */
+#toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(12px);
+  background: #23232b; color: #fff; padding: 11px 18px; border-radius: 9px; font-size: 13px;
+  opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 90;
+  box-shadow: 0 6px 22px rgba(0,0,0,.22); }
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }

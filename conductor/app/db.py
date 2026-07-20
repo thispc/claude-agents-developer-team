@@ -366,6 +366,13 @@ def list_contenders(task_id: int) -> list[dict]:
     return _rows("SELECT * FROM contenders WHERE task_id=? ORDER BY idx", (task_id,))
 
 
+def list_running_contenders(project_id: int) -> list[dict]:
+    """Rival attempts still marked running on a project — used when killing it."""
+    return _rows(
+        "SELECT c.* FROM contenders c JOIN tasks t ON t.id = c.task_id "
+        "WHERE t.project_id=? AND c.status='running'", (project_id,))
+
+
 def get_contender(contender_id: int) -> dict | None:
     rows = _rows("SELECT * FROM contenders WHERE id=?", (contender_id,))
     return rows[0] if rows else None

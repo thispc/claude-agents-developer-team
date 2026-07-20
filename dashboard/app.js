@@ -422,6 +422,20 @@ function waitForRestart(msg) {
   }, 2000);
 }
 
+// Brief, non-blocking confirmation of something that already happened.
+function toast(msg) {
+  let el = $("#toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.classList.remove("show"), 4000);
+}
+
 function ago(ts) {
   const m = Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
   if (m < 1) return "just now";
@@ -1256,7 +1270,8 @@ async function renderAgents() {
       <td>${live ? `<code>${escapeHtml(g.ref)}</code>` : `<span class="pill">${escapeHtml(g.status)}</span>`}</td>
       <td>${escapeHtml(g.model)}</td>
       <td>${live ? `${Math.floor(g.uptime_s / 60)}m ${g.uptime_s % 60}s` : "\u2014"}</td>
-      <td><button data-logs="${g.task_id}">logs</button></td>
+      <td><button data-logs="${g.task_id}">logs</button>${live
+        ? ` <button class="danger" data-kill="${g.task_id}" title="Stop this agent now">\u25a0 stop</button>` : ""}</td>
     </tr>`;
   const rows = (a.agents || []).map((g) => row(g, true)).join("")
     + ((a.finished || []).length
@@ -1297,6 +1312,14 @@ async function renderAgents() {
     $("#refCol").textContent = a.mode === "k8s" ? "Pod / Job" : "Process";
     $("#agentsBody").innerHTML = rows ||
       '<tr><td colspan="6" class="dim">No agents running right now.</td></tr>';
+    $("#agentsBody").querySelectorAll("[data-kill]").forEach((b) =>
+      b.addEventListener("click", async () => {
+        if (!confirm("Stop this agent now?\n\nIts task is marked failed and any "
+          + "unpushed work is lost. You can re-run the task afterwards.")) return;
+        b.disabled = true; b.textContent = "stopping\u2026";
+        await api(`/api/tasks/${b.dataset.kill}/kill`, { method: "POST" });
+        agentsSig = ""; renderAgents(); refreshBoard();
+      }));
     $("#agentsBody").querySelectorAll("[data-logs]").forEach((b) =>
       b.addEventListener("click", () => {
         openLogText = ""; openLogTask = Number(b.dataset.logs);
@@ -1644,8 +1667,13 @@ $("#toRecruitBtn").addEventListener("click", async () => {
 $("#closeDialogBtn").addEventListener("click", () => dialog.close());
 dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
 $("#cancelBtn").addEventListener("click", async () => {
-  if (currentProject && confirm("Cancel this project?"))
-    await api(`/api/projects/${currentProject}/cancel`, { method: "POST" });
+  if (!currentProject) return;
+  if (!confirm("Cancel this project?\n\nEvery agent still working on it is stopped "
+    + "immediately, their unpushed work is lost, and open GitHub issues are closed."))
+    return;
+  const r = await api(`/api/projects/${currentProject}/cancel`, { method: "POST" });
+  if (r.agents_stopped) toast(`Cancelled — stopped ${r.agents_stopped} running agent(s).`);
+  refreshBoard();
 });
 $("#restartBtn").addEventListener("click", async () => {
   if (!currentProject) return;

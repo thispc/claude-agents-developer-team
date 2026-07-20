@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, bus, config, db, manager, scheduler
+from . import auth, bus, config, db, launcher, manager, scheduler
 from .routes import router, _manager_tasks
 
 
@@ -18,6 +18,12 @@ async def lifespan(app: FastAPI):
     # No manager session survives a restart, so any question still marked pending
     # has no waiter — clear them so the dashboard doesn't re-raise dead questions.
     db.abandon_questions()
+    # Same reasoning for workers: a worker is a child of this process, so anything
+    # still marked running belongs to a conductor that no longer exists. Left alone
+    # it shows in the Agents tab forever as something you cannot kill.
+    ghosts = launcher.sweep_orphans()
+    if ghosts:
+        print(f"[startup] released {ghosts} task(s) orphaned by the previous run")
     # Resume any project that was mid-flight when the conductor last stopped, so a
     # restart (deploy, crash) doesn't strand a running project without its manager.
     for p in db.list_projects():

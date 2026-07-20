@@ -9,6 +9,9 @@ Both pass the same env contract to worker/worker.py.
 """
 
 import asyncio
+import os
+import signal
+import subprocess
 import sys
 
 from . import config, db, bus
@@ -229,6 +232,7 @@ class LocalLauncher:
             cwd=str(workdir),
         )
         ACTIVE[f"{task['id']}{suffix}"] = {"kind": "process", "ref": f"pid {proc.pid}",
+                              "pid": proc.pid, "proc": proc,
                               "role": task["role"], "model": model,
                               "project_id": task["project_id"], "started_at": _t.time(),
                               "workdir": str(workdir), "title": task["title"],
@@ -256,6 +260,88 @@ class LocalLauncher:
                            report=f"worker process exited (code {code}) without posting a report")
             bus.emit(task["project_id"], task["id"], "system", "worker_died",
                      {"exit_code": code})
+
+
+def _terminate(entry: dict) -> str:
+    """Actually stop one running agent. Returns a human-readable outcome."""
+    if entry.get("kind") == "process":
+        proc = entry.get("proc")
+        pid = entry.get("pid")
+        try:
+            if proc is not None and proc.returncode is None:
+                proc.kill()          # SIGKILL: the SDK ignores SIGTERM mid-request
+            elif pid:
+                os.kill(pid, signal.SIGKILL)
+            return f"killed pid {pid}"
+        except ProcessLookupError:
+            return f"pid {pid} had already exited"
+        except Exception as e:
+            return f"could not kill pid {pid}: {e}"
+    if entry.get("kind") == "k8s-job":
+        name = entry.get("ref", "")
+        r = subprocess.run(["kubectl", "delete", "job", name, "-n", config.K8S_NAMESPACE,
+                            "--ignore-not-found"], capture_output=True, text=True)
+        return f"deleted job {name}" if r.returncode == 0 else \
+               f"could not delete job {name}: {r.stderr.strip()[:120]}"
+    return "unknown agent kind"
+
+
+def kill_task(task_id: int, reason: str = "stopped by the boss") -> list[str]:
+    """Stop every agent working on one task (including rival contenders)."""
+    notes = []
+    for key, entry in list(ACTIVE.items()):
+        if entry.get("task_id") != task_id:
+            continue
+        notes.append(_terminate(entry))
+        ACTIVE.pop(key, None)
+    t = db.get_task(task_id)
+    if t and t["status"] in ("queued", "running"):
+        db.update_task(task_id, status="failed", report=reason)
+        bus.emit(t["project_id"], task_id, "system", "agent_killed",
+                 {"reason": reason, "detail": "; ".join(notes)})
+    return notes
+
+
+def kill_project(project_id: int, reason: str) -> list[str]:
+    """Stop every agent on a project and stop lying about task status.
+
+    Cancelling a project used to leave its workers running — they kept burning
+    tokens and their tasks sat 'running' forever, because the only thing that
+    ever cleared that status was a report from the worker we had abandoned.
+    """
+    notes = []
+    for key, entry in list(ACTIVE.items()):
+        if entry.get("project_id") != project_id:
+            continue
+        notes.append(_terminate(entry))
+        ACTIVE.pop(key, None)
+    for t in db.list_tasks(project_id):
+        if t["status"] in ("queued", "running"):
+            db.update_task(t["id"], status="failed", report=reason)
+    for c in db.list_running_contenders(project_id):
+        db.update_contender(c["id"], status="failed", report=reason)
+    if notes:
+        bus.emit(project_id, None, "system", "agents_killed",
+                 {"count": len(notes), "reason": reason, "detail": "; ".join(notes)})
+    return notes
+
+
+def sweep_orphans() -> int:
+    """A worker cannot outlive the conductor that spawned it.
+
+    So at startup, any task still marked running/queued is by definition a ghost
+    from a previous process. Left alone they show up forever as agents you cannot
+    kill, and as blockers promising a watchdog that will never come.
+    """
+    n = 0
+    for p in db.list_projects():
+        for t in db.list_tasks(p["id"]):
+            if t["status"] in ("queued", "running"):
+                db.update_task(t["id"], status="failed",
+                               report="the conductor restarted while this was running, "
+                                      "so the agent was lost; re-run the task to continue")
+                n += 1
+    return n
 
 
 class K8sLauncher:
