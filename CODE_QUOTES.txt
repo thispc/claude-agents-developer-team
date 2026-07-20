@@ -1,0 +1,78 @@
+================================================================================
+EXACT CODE QUOTES FROM CONDUCTOR/APP/DB.PY
+Identifier Validation Fix - Lines 247-390
+================================================================================
+
+VALIDATION FUNCTION (Lines 247-256):
+================================================================================
+
+def _validate_sql_identifiers(fields: dict[str, Any]) -> None:
+    """Validate all field names against strict SQL identifier pattern.
+
+    Raises ValueError if any key is not a valid SQL identifier (pattern: ^[A-Za-z_][A-Za-z0-9_]*$).
+    """
+    import re
+    pattern = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+    for k in fields:
+        if not pattern.match(k):
+            raise ValueError(f"invalid field name: {k!r}")
+
+
+UPDATE_TASK FUNCTION (Lines 259-263):
+================================================================================
+
+def update_task(task_id: int, **fields: Any) -> None:
+    _validate_sql_identifiers(fields)
+    fields["updated_at"] = time.time()
+    cols = ", ".join(f"{k}=?" for k in fields)
+    _execute(f"UPDATE tasks SET {cols} WHERE id=?", (*fields.values(), task_id))
+
+
+UPDATE_CONTENDER FUNCTION (Lines 387-390):
+================================================================================
+
+def update_contender(contender_id: int, **fields: Any) -> None:
+    _validate_sql_identifiers(fields)
+    cols = ", ".join(f"{k}=?" for k in fields)
+    _execute(f"UPDATE contenders SET {cols} WHERE id=?", (*fields.values(), contender_id))
+
+
+KEY VALIDATION DETAILS:
+================================================================================
+
+Pattern used: ^[A-Za-z_][A-Za-z0-9_]*$
+
+This pattern:
+  - Requires first character to be: letter (A-Z, a-z) OR underscore (_)
+  - Allows following characters to be: letter OR digit (0-9) OR underscore
+  - Rejects identifiers starting with digits
+  - Rejects identifiers with spaces, hyphens, dots, semicolons, or any other special chars
+  - Raises ValueError for ANY non-matching field name BEFORE SQL is executed
+
+Examples of valid identifiers (accepted):
+  - status
+  - report
+  - feedback
+  - attempts
+  - _private
+  - field_123
+  - CamelCase
+
+Examples of invalid identifiers (rejected with ValueError):
+  - status; DROP TABLE tasks; --
+  - 123invalid
+  - status-field
+  - status.other
+  - status field
+  - status@domain
+  - (empty string)
+
+Call sequence in both functions:
+  1. _validate_sql_identifiers(fields)  ← FIRST - validates all keys
+  2. fields["updated_at"] = time.time()  ← (only in update_task)
+  3. cols = ", ".join(...)              ← Builds SQL string
+  4. _execute(f"UPDATE ...")            ← LAST - executes validated SQL
+
+This ensures validation happens BEFORE any SQL construction or execution.
+
+================================================================================

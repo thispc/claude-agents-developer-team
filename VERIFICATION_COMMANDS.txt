@@ -1,0 +1,166 @@
+================================================================================
+VERIFICATION COMMANDS FOR DB.PY IDENTIFIER VALIDATION FIX
+================================================================================
+
+Date: July 20, 2026
+Repository: thispc/claude-agents-developer-team
+Branch: main (commit a423eb4)
+
+================================================================================
+1. APP STARTUP VERIFICATION
+================================================================================
+
+Command executed:
+  PYTHONPATH=conductor \
+  ANTHROPIC_API_KEY=sk-test-key \
+  GITHUB_TOKEN=github_pat_test \
+  ROOT_PASSWORD=testpass \
+  DB_PATH=/tmp/test_db_startup.db \
+  python -m uvicorn app.main:app --port 8001
+
+Output (startup log):
+  INFO:     Started server process [30961]
+  INFO:     Waiting for application startup.
+  INFO:     Application startup complete.
+  INFO:     Uvicorn running on http://127.0.0.1:8001 (Press CTRL+C to quit)
+
+HTTP Response Test:
+  curl -s http://localhost:8001/
+  Response: 200 OK
+  Content: Dashboard HTML (<!DOCTYPE html>...</html>)
+
+Result: ✅ PASS - Server starts successfully and responds to HTTP requests
+
+================================================================================
+2. CODE INSPECTION VERIFICATION
+================================================================================
+
+File: conductor/app/db.py
+
+Validation function (lines 247-256):
+---
+def _validate_sql_identifiers(fields: dict[str, Any]) -> None:
+    """Validate all field names against strict SQL identifier pattern.
+
+    Raises ValueError if any key is not a valid SQL identifier (pattern: ^[A-Za-z_][A-Za-z0-9_]*$).
+    """
+    import re
+    pattern = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+    for k in fields:
+        if not pattern.match(k):
+            raise ValueError(f"invalid field name: {k!r}")
+---
+
+update_task() function (lines 259-263):
+---
+def update_task(task_id: int, **fields: Any) -> None:
+    _validate_sql_identifiers(fields)
+    fields["updated_at"] = time.time()
+    cols = ", ".join(f"{k}=?" for k in fields)
+    _execute(f"UPDATE tasks SET {cols} WHERE id=?", (*fields.values(), task_id))
+---
+
+update_contender() function (lines 387-390):
+---
+def update_contender(contender_id: int, **fields: Any) -> None:
+    _validate_sql_identifiers(fields)
+    cols = ", ".join(f"{k}=?" for k in fields)
+    _execute(f"UPDATE contenders SET {cols} WHERE id=?", (*fields.values(), contender_id))
+---
+
+Result: ✅ PASS - Both functions call validation before SQL execution
+
+Validation pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+- First character: [A-Za-z_] (letter or underscore)
+- Remaining: [A-Za-z0-9_]* (letter, digit, or underscore)
+
+Result: ✅ PASS - Pattern matches requirement
+
+================================================================================
+3. INLINE PYTHON VALIDATION TEST
+================================================================================
+
+Test database: /tmp/temporary_test_db.sqlite (not the real devteam.db)
+
+Test sequence:
+1. db.init() - Initialize database
+2. Create project - ✓ Success
+3. Create task - ✓ Success  
+4. update_task(id, status='queued') - ✓ Success (valid field)
+5. update_task(id, **{'x; DROP TABLE tasks;--': 'y'}) - ✓ Raised ValueError
+6. Verify tasks table intact - ✓ Table still accessible
+7. Create contender - ✓ Success
+8. update_contender(id, status='pushed') - ✓ Success (valid field)
+9. update_contender(id, **{'x; DROP TABLE contenders;--': 'y'}) - ✓ Raised ValueError
+10. Verify contenders table intact - ✓ Table still accessible
+
+Test script: test_final_verification.py
+
+Sample test execution output:
+---
+--- REQUIREMENT 2: Invalid identifiers must be rejected with ValueError ---
+
+Testing invalid identifiers in update_task():
+
+✓ PASS: Invalid identifier 'status; DROP TABLE tasks; --' correctly rejected with ValueError
+✓ PASS: Invalid identifier 'status) ; UPDATE tasks SET' correctly rejected with ValueError
+✓ PASS: Invalid identifier 'status'; DROP TABLE' correctly rejected with ValueError
+✓ PASS: Invalid identifier '123invalid' correctly rejected with ValueError
+✓ PASS: Invalid identifier 'status-field' correctly rejected with ValueError
+✓ PASS: Invalid identifier 'status field' correctly rejected with ValueError
+✓ PASS: Invalid identifier '' correctly rejected with ValueError
+✓ PASS: Invalid identifier 'status.other' correctly rejected with ValueError
+✓ PASS: Invalid identifier 'status@domain' correctly rejected with ValueError
+✓ PASS: Invalid identifier 'status[0]' correctly rejected with ValueError
+---
+
+Total test results: 27 passed, 0 failed
+
+Result: ✅ PASS - All validation tests passed
+
+================================================================================
+4. SUMMARY OF REQUIREMENTS
+================================================================================
+
+Requirement 1: App still starts
+  Status: ✅ PASS
+  Command: PYTHONPATH=conductor python -m uvicorn app.main:app --port 8000
+  Result: Server starts, initializes, and responds with HTTP 200
+
+Requirement 2: Code inspection
+  Status: ✅ PASS
+  Finding: _validate_sql_identifiers() function added (lines 247-256)
+  Finding: update_task() calls validation (line 260)
+  Finding: update_contender() calls validation (line 388)
+  Finding: Pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+
+Requirement 3: Validation test
+  Status: ✅ PASS
+  Test type: SQL injection with invalid identifiers
+  Sample payload: 'status; DROP TABLE tasks; --'
+  Result: ValueError raised, tables intact
+  Coverage: 10 invalid patterns tested in each function
+
+Requirement 4: Database integrity
+  Status: ✅ PASS
+  Test: Create task, attempt injection, verify record still accessible
+  Result: No corruption, all data preserved
+
+================================================================================
+CONCLUSION
+================================================================================
+
+✅ VERIFICATION: PASS
+
+The db.py identifier-validation fix has been successfully implemented and
+verified. All four verification requirements are met:
+
+1. Application starts without errors
+2. Validation code is present in both update_task() and update_contender()
+3. Invalid identifiers are properly rejected with ValueError
+4. Database integrity is preserved against injection attempts
+
+The fix is production-ready and provides comprehensive protection against
+SQL injection via identifier manipulation.
+
+================================================================================

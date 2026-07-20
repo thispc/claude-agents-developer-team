@@ -1,0 +1,11 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: devteam
+nodes:
+- role: control-plane
+  extraPortMappings:          # so an app's NodePort is reachable from the host
+  - containerPort: 30080
+    hostPort: 30080
+    protocol: TCP
+- role: worker                # two workers, like a small DOKS pool
+- role: worker
