@@ -414,6 +414,17 @@ async def run_manager(project_id: int) -> None:
         permission_mode="bypassPermissions",
     )
 
+    # Make sure the target repo exists before the team tries to clone it. Projects
+    # created before auto-create (or whose repo was deleted) would otherwise ask the
+    # boss about a missing repo on every restart instead of just fixing it.
+    if project["repo"] and github_client.enabled(project["repo"]):
+        try:
+            ok, note = await github_client.ensure_repo(project["repo"])
+            if ok and "created" in note:
+                bus.emit(project_id, None, "system", "repo_ready", note)
+        except Exception as e:
+            bus.emit(project_id, None, "system", "repo_error", str(e)[:200])
+
     if db.list_tasks(project_id):  # restarted project with an existing DAG
         scheduler.ensure(project_id)
 
