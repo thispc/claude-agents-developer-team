@@ -53,15 +53,20 @@ def _sanitize(items: list, brief: str) -> list[dict]:
 
 
 async def suggest_team(brief: str) -> list[dict]:
-    known = ", ".join(_known_roles())
     prompt = (
-        "You are a staffing planner for an autonomous software team. Given a project brief, "
-        "propose the starting team as a JSON array of objects with keys: role (lowercase, "
-        f"e.g. one of [{known}] or a new role name you invent if the work needs it), count "
-        "(how many of that role, 1-4), and model ('worker' = cheap/fast for routine work, "
-        "'lead' = stronger/pricier for hard design or research). Recruit more of a role only "
-        "when the work has independent parallelizable parts. Always include at least one tester. "
-        "Keep the team lean and appropriate to the brief. Output ONLY the JSON array.\n\n"
+        "You are an expert staffing planner. Given ANY project brief — software, hardware, "
+        "research, design, writing, a rocket blueprint, a business plan, anything — assemble "
+        "the ideal team to execute it. Invent whatever specialist roles the domain actually "
+        "needs; do NOT default to software roles unless the project is software. For a rocket "
+        "you might staff propulsion_engineer, structures_engineer, avionics_engineer; for a "
+        "novel, plot_architect, prose_writer, editor; for software, backend, frontend, tester.\n\n"
+        "Return ONLY a JSON array of objects with keys: role (lowercase snake_case), count "
+        "(1-4; use >1 only when the work has independent parallelizable parts), and model "
+        "('worker' = cheap/fast for routine or well-defined work, 'lead' = stronger/pricier for "
+        "hard design, deep reasoning, or research). Assign the stronger model to the roles doing "
+        "the hardest thinking, the cheap model to routine execution. Include a review/verify "
+        "role appropriate to the domain (tester for software, reviewer/editor otherwise). Keep "
+        "the team lean and appropriate.\n\n"
         f"Brief:\n{brief}"
     )
     try:

@@ -57,10 +57,6 @@
         <button class="chip" data-f="worker">Team</button>
       </div>
     </div>
-    <div id="askBanner" hidden>
-      <div class="ask-q" id="askText"></div>
-      <div class="ask-opts" id="askOpts"></div>
-    </div>
     <div id="events"></div>
     <form id="directiveForm" title="Message your manager — delivered at their next decision point">
       <input id="directiveInput" placeholder="Message the manager (e.g. 'add dark mode', 'skip tests, ship it')…" autocomplete="off">
@@ -68,6 +64,18 @@
     </form>
   </section>
 </main>
+
+<dialog id="approvalDialog">
+  <div class="approval-wrap">
+    <div class="approval-badge">👔 Your manager needs a decision</div>
+    <div class="approval-q" id="approvalQ"></div>
+    <div class="approval-opts" id="approvalOpts"></div>
+    <div class="approval-custom">
+      <input id="approvalCustom" placeholder="…or tell the manager what to do in your own words">
+      <button type="button" id="approvalSend" class="primary">Send</button>
+    </div>
+  </div>
+</dialog>
 
 <dialog id="taskDialog">
   <div class="task-detail-wrap">
@@ -106,38 +114,37 @@
 
 <dialog id="newProjectDialog">
   <form id="newProjectForm" novalidate>
-    <!-- Step 1: the brief -->
+    <div class="wizard-steps">
+      <span class="wstep active" data-s="1">1 · Your idea</span>
+      <span class="wstep" data-s="2">2 · Your team</span>
+      <span class="wstep" data-s="3">3 · Go</span>
+    </div>
+
+    <!-- Step 1: the idea -->
     <div id="step1" class="wizard-step">
-      <h2>New project <span class="step-tag">Step 1 of 2 · The brief</span></h2>
       <label>Project name
-        <input name="name" required placeholder="todo-app" autocomplete="off"></label>
-      <label>GitHub repo <span class="hint">owner/repo — created automatically (private) if it doesn't exist; blank uses the server default</span>
-        <input name="repo" placeholder="owner/repo" autocomplete="off"></label>
-      <label>Brief <span class="hint">what to build, the stack, and what “done” means</span>
+        <input name="name" required placeholder="e.g. weather-app or mars-lander-blueprint" autocomplete="off"></label>
+      <label>Your idea <span class="hint">describe what you want and what “done” looks like — any domain</span>
         <textarea name="brief" rows="7" required
-          placeholder="Build a URL shortener. FastAPI backend in api/ with POST /shorten and GET /{code}. Static frontend in web/. Done = tester verifies the round-trip."></textarea></label>
-      <div class="nums">
-        <label>Max agents working at once <span class="hint">parallelism</span>
-          <input name="max_workers" type="number" min="1" max="8" value="3"></label>
-        <label>Agent-run cap <span class="hint">runaway guard</span>
-          <input name="max_runs" type="number" min="5" max="200" value="40"></label>
-      </div>
+          placeholder="Describe your idea in plain words. e.g. 'Build a weather app that shows a 7-day forecast for my location' — or 'Design a blueprint for a two-stage reusable rocket'. The manager reads this and assembles the right team."></textarea></label>
+      <label>GitHub repo <span class="hint">owner/repo — created automatically (private) if it doesn't exist; blank uses the default</span>
+        <input name="repo" placeholder="owner/repo" autocomplete="off"></label>
       <p id="formError" class="form-error" hidden></p>
       <div class="actions">
         <button type="button" id="closeDialogBtn">Cancel</button>
-        <button type="button" id="toRecruitBtn" class="primary">Recruit team →</button>
+        <button type="button" id="toRecruitBtn" class="primary">Assemble my team →</button>
       </div>
     </div>
 
-    <!-- Step 2: recruit the team -->
+    <!-- Step 2: the team -->
     <div id="step2" class="wizard-step" hidden>
-      <h2>Recruit your team <span class="step-tag">Step 2 of 2 · Hiring</span></h2>
       <div id="ingest" hidden>
         <div class="ingest-msg" id="ingestMsg">Reading your idea…</div>
         <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
       </div>
       <div id="rosterWrap" hidden>
-        <p class="recruit-note" id="recruitNote">Suggested from your brief — hire, fire, or add whoever you want.</p>
+        <p class="recruit-note" id="recruitNote">Your manager sized up the idea and drafted this team. Hire, fire, change counts or models, add anyone.</p>
+        <div class="roster-head"><span>Role</span><span>How many</span><span>Model</span><span></span></div>
         <div id="roster"></div>
         <datalist id="rolesList"></datalist>
         <button type="button" id="addRoleBtn" class="add-role">+ Add a role</button>
@@ -145,7 +152,34 @@
       <p id="formError2" class="form-error" hidden></p>
       <div class="actions">
         <button type="button" id="backToBriefBtn">← Back</button>
-        <button type="submit" id="createBtn" class="primary">Hire team &amp; start ▶</button>
+        <button type="button" id="toGoBtn" class="primary">Set control →</button>
+      </div>
+    </div>
+
+    <!-- Step 3: control level + go -->
+    <div id="step3" class="wizard-step" hidden>
+      <h3 class="ctl-h">How much control does your manager have?</h3>
+      <div class="autonomy-cards">
+        <label class="acard">
+          <input type="radio" name="autonomy" value="supervised" checked>
+          <div><b>🧑‍💼 Keep me in the loop</b><span>The manager asks you before merging important work and before finishing. You approve the big calls.</span></div>
+        </label>
+        <label class="acard danger-card">
+          <input type="radio" name="autonomy" value="autonomous">
+          <div><b>⚡ Full autonomy <em>(bypass — hands off)</em></b><span>The manager decides everything and only interrupts you if truly stuck. Fast, but you won't be asked to approve.</span></div>
+        </label>
+      </div>
+      <details class="advanced">
+        <summary>Advanced limits</summary>
+        <div class="nums">
+          <label>Max agents at once <input name="max_workers" type="number" min="1" max="8" value="3"></label>
+          <label>Agent-run cap <input name="max_runs" type="number" min="5" max="200" value="40"></label>
+        </div>
+      </details>
+      <p id="formError3" class="form-error" hidden></p>
+      <div class="actions">
+        <button type="button" id="backToTeamBtn">← Back</button>
+        <button type="submit" id="createBtn" class="primary">🚀 Hire team &amp; start</button>
       </div>
     </div>
   </form>

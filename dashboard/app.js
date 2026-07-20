@@ -261,37 +261,43 @@ function notifyBoss(e) {
 }
 
 // --- boss controls ----------------------------------------------------------
+let currentQuestionId = null;
 async function refreshQuestion() {
   if (!currentProject) return;
   let q;
   try { q = await api(`/api/projects/${currentProject}/question`); } catch { return; }
-  const banner = $("#askBanner");
-  if (!q.question) { banner.hidden = true; return; }
-  banner.hidden = false;
-  $("#askText").textContent = "⏸ Manager needs your call: " + q.question;
-  const box = $("#askOpts");
+  const dlg = $("#approvalDialog");
+  if (!q.question) { currentQuestionId = null; if (dlg.open) dlg.close(); return; }
+  if (currentQuestionId === q.id && dlg.open) return;  // already showing it
+  currentQuestionId = q.id;
+  $("#approvalQ").textContent = q.question;
+  const box = $("#approvalOpts");
   box.innerHTML = "";
   for (const opt of q.options || []) {
     const b = document.createElement("button");
+    b.className = "approval-opt";
     b.textContent = opt;
     b.addEventListener("click", () => answerQuestion(q.id, opt));
     box.appendChild(b);
   }
-  const custom = document.createElement("input");
-  custom.placeholder = "or type your own answer + Enter";
-  custom.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && custom.value.trim()) answerQuestion(q.id, custom.value.trim());
-  });
-  box.appendChild(custom);
+  $("#approvalCustom").value = "";
+  if (!dlg.open) dlg.showModal();
 }
 
 async function answerQuestion(qid, answer) {
+  if (!answer || !answer.trim()) return;
   await api(`/api/questions/${qid}/answer`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ answer }),
   });
-  $("#askBanner").hidden = true;
+  currentQuestionId = null;
+  $("#approvalDialog").close();
 }
+$("#approvalSend").addEventListener("click", () =>
+  answerQuestion(currentQuestionId, $("#approvalCustom").value));
+$("#approvalCustom").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") answerQuestion(currentQuestionId, e.target.value);
+});
 
 // --- task detail panel ------------------------------------------------------
 let editTaskTarget = null;
@@ -633,18 +639,33 @@ function renderRoster(members) {
 
 const dialog = $("#newProjectDialog");
 function showStep(n) {
-  $("#step1").hidden = n !== 1;
-  $("#step2").hidden = n !== 2;
+  [1, 2, 3].forEach((i) => { $("#step" + i).hidden = i !== n; });
+  document.querySelectorAll(".wstep").forEach((w) =>
+    w.classList.toggle("active", Number(w.dataset.s) <= n));
 }
-const openDialog = () => { $("#formError").hidden = true; showStep(1); dialog.showModal(); };
+const openDialog = () => {
+  $("#newProjectForm").reset();
+  ["#formError", "#formError2", "#formError3"].forEach((s) => ($(s).hidden = true));
+  $("#roster").innerHTML = "";
+  showStep(1);
+  dialog.showModal();
+};
 $("#projectSelect").addEventListener("change", (e) => selectProject(e.target.value));
 $("#homeLink").addEventListener("click", showHome);
 $("#homeLink").style.cursor = "pointer";
 $("#newProjectBtn").addEventListener("click", openDialog);
 $("#homeNewBtn").addEventListener("click", openDialog);
 $("#backToBriefBtn").addEventListener("click", () => showStep(1));
+$("#backToTeamBtn").addEventListener("click", () => showStep(2));
 $("#addRoleBtn").addEventListener("click", () =>
-  renderRoster(readRoster().concat([{ role: knownRoles[0] || "backend", count: 1, model: "worker" }])));
+  renderRoster(readRoster().concat([{ role: "", count: 1, model: "worker" }])));
+$("#toGoBtn").addEventListener("click", () => {
+  if (readRoster().length === 0) {
+    $("#formError2").textContent = "Add at least one role."; $("#formError2").hidden = false; return;
+  }
+  $("#formError2").hidden = true;
+  showStep(3);
+});
 
 const INGEST_STEPS = [
   "Reading your idea…", "Understanding the scope…", "Identifying the skills needed…",
@@ -718,7 +739,7 @@ $("#restartBtn").addEventListener("click", async () => {
 $("#newProjectForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const form = ev.target;
-  const errBox = $("#formError2");
+  const errBox = $("#formError3");
   errBox.hidden = true;
   const f = new FormData(form);
   const btn = $("#createBtn");
@@ -730,19 +751,18 @@ $("#newProjectForm").addEventListener("submit", async (ev) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: f.get("name"), brief: f.get("brief"), repo: f.get("repo"),
-        max_workers: Number(f.get("max_workers")), max_runs: Number(f.get("max_runs")),
-        team: readRoster(),
+        max_workers: Number(f.get("max_workers")) || 3, max_runs: Number(f.get("max_runs")) || 40,
+        team: readRoster(), autonomy: f.get("autonomy") || "supervised",
       }),
     });
     dialog.close();
-    form.reset();
     openProject(res.id);
   } catch (e) {
     errBox.textContent = e.message;
     errBox.hidden = false;
   } finally {
     btn.disabled = false;
-    btn.textContent = "Hire team & start ▶";
+    btn.textContent = "🚀 Hire team & start";
   }
 });
 

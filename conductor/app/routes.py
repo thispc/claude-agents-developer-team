@@ -24,6 +24,7 @@ class NewProject(BaseModel):
     max_workers: int = 0
     max_runs: int = 0
     team: list[TeamMember] = []
+    autonomy: str = "supervised"
 
 
 class BriefOnly(BaseModel):
@@ -95,12 +96,13 @@ async def create_project(body: NewProject) -> dict:
                                  "or ANTHROPIC_API_KEY")
     repo = body.repo or config.GITHUB_REPO
     team = [m.model_dump() for m in body.team]
+    autonomy = "autonomous" if body.autonomy == "autonomous" else "supervised"
     project_id = db.create_project(
         body.name, body.brief, repo,
         body.budget_usd or config.PROJECT_BUDGET_USD,
         body.max_workers or config.MAX_CONCURRENT_WORKERS,
         body.max_runs or config.MAX_AGENT_RUNS,
-        team=team,
+        team=team, autonomy=autonomy,
     )
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
     # Make sure the target repo exists before the team tries to clone it. This is

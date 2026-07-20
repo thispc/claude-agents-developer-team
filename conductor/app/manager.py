@@ -208,6 +208,15 @@ def build_team_server(project_id: int):
                 db.set_project_status(project_id, "running" if prev_status == "hold" else prev_status)
                 bus.emit(project_id, None, "boss", "answer", q["answer"])
                 return _text(f"The boss answered: {q['answer']}")
+            # The boss may reply by typing a message instead of clicking an option —
+            # treat any directive that arrives while we wait as the answer.
+            directives = db.take_directives(project_id)
+            if directives:
+                db.answer_question(qid, "; ".join(directives))
+                db.set_project_status(project_id, "running" if prev_status == "hold" else prev_status)
+                reply = "The boss replied: " + "; ".join(directives)
+                bus.emit(project_id, None, "boss", "answer", reply)
+                return _text(reply)
             await asyncio.sleep(4)
         db.set_project_status(project_id, "running")
         return _text("No answer within 60 minutes; use your best judgment and proceed.")
@@ -318,11 +327,24 @@ async def run_manager(project_id: int) -> None:
             "If the work doesn't split cleanly, you may use fewer; if it clearly needs a role "
             "the boss didn't recruit, you may still add it, but respect the boss's intent.\n"
         )
+    autonomy = project.get("autonomy", "supervised")
+    if autonomy == "autonomous":
+        autonomy_text = (
+            "\nAUTONOMY: FULL. The boss gave you full control. Make every call yourself — "
+            "plan, merge, add tasks, and finish without asking. Only use ask_boss if you are "
+            "genuinely, unrecoverably blocked (e.g. a missing credential only they can supply).\n")
+    else:
+        autonomy_text = (
+            "\nAUTONOMY: SUPERVISED. The boss wants a say on the important calls. Use ask_boss "
+            "before merging the FIRST substantial PR and before finish, and whenever there's a "
+            "real product/scope decision — give 2-4 concrete options. Don't ask about routine "
+            "mechanics; do ask before anything the boss would want to weigh in on.\n")
     prompt = (
         f"Project: {project['name']}\n"
         f"Repository: {project['repo'] or '(none configured)'}\n"
         f"Max parallel workers: {project['max_workers']} | "
-        f"Agent-run cap: {project['max_runs']}\n\n"
+        f"Agent-run cap: {project['max_runs']}\n"
+        f"{autonomy_text}\n"
         f"{role_catalog_text()}\n"
         f"{roster_text}\n"
         f"Brief from the user:\n{project['brief']}\n\n"
