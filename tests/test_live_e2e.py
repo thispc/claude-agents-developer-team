@@ -116,9 +116,11 @@ def test_new_user_builds_an_app_through_the_ui(live_server):
         browser = pw.chromium.launch()
         page = browser.new_page()
         console_errors = []
-        page.on("pageerror", lambda e: console_errors.append(str(e)))
-        page.on("console", lambda m: console_errors.append(m.text)
-                if m.type == "error" else None)
+        page.on("pageerror", lambda e: console_errors.append(f"pageerror: {e}"))
+        # Record the URL and status of any failed request — a bare "400 Bad Request"
+        # in the console is not actionable.
+        page.on("response", lambda r: console_errors.append(
+            f"HTTP {r.status} {r.request.method} {r.url}") if r.status >= 400 else None)
 
         # --- 1. sign up a brand-new user -----------------------------------
         page.goto(BASE, wait_until="networkidle")

@@ -98,11 +98,15 @@ $("#settingsForm").addEventListener("submit", async (ev) => {
       body: JSON.stringify(body),
     });
     $("#settingsDialog").close();
-    loadMe();
+    loadMe().then(loadRepos);   // token may have just been added
   } catch (e) { $("#settingsError").textContent = e.message; $("#settingsError").hidden = false; }
 });
 
 async function loadRepos() {
+  // A brand-new user has no GitHub token yet, and the endpoint 400s without one —
+  // calling it anyway logged a console error on every first sign-in. The datalist
+  // is only a convenience; the repo field still accepts a typed name.
+  if (!me.settings || !me.settings.github_token_set) return;
   try {
     const r = await api("/api/github/repos");
     $("#repoList").innerHTML = r.repos.map((x) => `<option value="${x.full_name}">`).join("");
