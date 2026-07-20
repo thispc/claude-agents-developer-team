@@ -199,6 +199,8 @@ function renderHome(projects) {
         <button data-act="open" data-id="${p.id}">Open</button>
         ${active ? `<button data-act="cancel" data-id="${p.id}" class="danger">Cancel</button>` : ""}
         ${canRestart ? `<button data-act="restart" data-id="${p.id}">↻</button>` : ""}
+        ${p.is_self ? "" : `<button data-act="delete" data-id="${p.id}" class="danger"
+          title="Delete this project and everything under it">🗑</button>`}
       </td>`;
     tr.addEventListener("click", () => openProject(p.id));
     body.appendChild(tr);
@@ -212,6 +214,15 @@ function renderHome(projects) {
         await api(`/api/projects/${id}/cancel`, { method: "POST" });
       if (b.dataset.act === "restart")
         await api(`/api/projects/${id}/restart`, { method: "POST" });
+      if (b.dataset.act === "delete") {
+        const p2 = (await api("/api/projects")).find((x) => String(x.id) === String(id));
+        if (!confirm(`Delete "${p2 ? p2.name : id}" for good?\n\n`
+          + "Its tasks, activity and any running agents go with it. The GitHub repo "
+          + "and its PRs are NOT touched. This cannot be undone.")) return;
+        const r = await api(`/api/projects/${id}`, { method: "DELETE" });
+        toast(`Deleted — ${r.tasks} task(s), ${r.events} event(s)`
+          + (r.agents_stopped ? `, stopped ${r.agents_stopped} agent(s)` : ""));
+      }
       loadProjects();
     }));
 }

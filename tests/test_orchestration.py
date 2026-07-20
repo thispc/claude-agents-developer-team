@@ -407,9 +407,21 @@ def test_unverified_is_not_reported_as_passing(fresh_db):
 
 # ---- a human is required for decisions that paper over a problem -----------
 
-def _tool(srv, name):
-    """The manager's tool handlers, via the testing seam build_team_server exposes."""
-    return srv["_handlers"][name]
+def _tool(srv_or_pid, name):
+    """The manager's tool handlers, via the module-level testing registry."""
+    from app import manager
+    pid = srv_or_pid if isinstance(srv_or_pid, int) else _LAST_PID[0]
+    return manager.HANDLERS[pid]["handlers"][name]
+
+
+_LAST_PID = [None]
+
+
+def _server(project_id):
+    from app import manager
+    srv = manager.build_team_server(project_id)
+    _LAST_PID[0] = project_id
+    return srv
 
 
 def test_supervised_asks_before_accepting_undelivered_work(fresh_db, monkeypatch):
@@ -419,14 +431,14 @@ def test_supervised_asks_before_accepting_undelivered_work(fresh_db, monkeypatch
     from app import manager
     p = make_project(owner_id=1, autonomy="supervised")
     t = make_task(p, status="review")          # no report, no PR, no rivals
-    srv = manager.build_team_server(p)
-    accept = _tool(srv, "accept_task")
+    srv = _server(p)
+    accept = _tool(p, "accept_task")
 
     asked = {}
     async def fake_ask(args):
         asked["q"] = args["question"]
         return {"content": [{"type": "text", "text": "Stop and let me look"}]}
-    srv["_ask_impl"]["fn"] = fake_ask      # intercept before the real 60-min wait
+    manager.HANDLERS[p]["ask_impl"]["fn"] = fake_ask   # intercept the real 60-min wait
 
     out = asyncio.run(accept({"task_id": 1, "verdict": "looks fine"}))["content"][0]["text"]
     assert "q" in asked, "supervised mode accepted undelivered work without asking"
@@ -442,14 +454,14 @@ def test_autonomous_proceeds_but_leaves_an_audit_trail(fresh_db, monkeypatch):
     from app import manager
     p = make_project(owner_id=1, autonomy="autonomous")
     t = make_task(p, status="review")
-    srv = manager.build_team_server(p)
+    srv = _server(p)
     asked = {"n": 0}
     async def fake_ask(args):
         asked["n"] += 1
         return {"content": [{"type": "text", "text": "x"}]}
-    srv["_ask_impl"]["fn"] = fake_ask      # intercept before the real 60-min wait
+    manager.HANDLERS[p]["ask_impl"]["fn"] = fake_ask   # intercept the real 60-min wait
 
-    asyncio.run(_tool(srv, "accept_task")({"task_id": 1, "verdict": "ok"}))
+    asyncio.run(_tool(p, "accept_task")({"task_id": 1, "verdict": "ok"}))
     assert asked["n"] == 0, "autonomous mode blocked on a question"
     assert db.get_task(t)["status"] == "done"
     kinds = [e["kind"] for e in db.list_events(p)]
@@ -463,12 +475,67 @@ def test_delivered_work_is_accepted_without_pestering(fresh_db, monkeypatch):
     p = make_project(owner_id=1, autonomy="supervised")
     t = make_task(p, status="review")
     db.update_task(t, report="Here is what I built, with evidence.")
-    srv = manager.build_team_server(p)
+    srv = _server(p)
     asked = {"n": 0}
     async def fake_ask(args):
         asked["n"] += 1
         return {"content": [{"type": "text", "text": "x"}]}
-    srv["_ask_impl"]["fn"] = fake_ask      # intercept before the real 60-min wait
-    asyncio.run(_tool(srv, "accept_task")({"task_id": 1, "verdict": "good"}))
+    manager.HANDLERS[p]["ask_impl"]["fn"] = fake_ask   # intercept the real 60-min wait
+    asyncio.run(_tool(p, "accept_task")({"task_id": 1, "verdict": "good"}))
     assert asked["n"] == 0, "asked the boss about perfectly normal work"
     assert db.get_task(t)["status"] == "done"
+
+
+def test_the_server_config_stays_json_serializable(fresh_db):
+    """The SDK serialises the mcp_servers config for the CLI subprocess. Putting
+    anything unserialisable on that dict — as a testing seam once did — breaks
+    EVERY real run with 'Object of type function is not JSON serializable'."""
+    import json as _json
+    from app import manager
+    p = make_project()
+    srv = manager.build_team_server(p)
+    assert set(srv.keys()) == {"type", "name", "instance"}, \
+        f"extra keys leaked into the SDK payload: {set(srv.keys())}"
+    # everything except the SDK's own Server object must serialise
+    payload = {k: v for k, v in srv.items() if k != "instance"}
+    _json.dumps(payload)          # raises if a function or other object crept in
+    # and the seam is still usable from the registry
+    assert "accept_task" in manager.HANDLERS[p]["handlers"]
+
+
+# ---- deleting a project cleans up after itself ----------------------------
+
+def test_delete_project_cascades_and_leaves_nothing_orphaned(fresh_db):
+    p = make_project(owner_id=1)
+    t1 = make_task(p); t2 = make_task(p)
+    db.create_contender(t1, 1, "b", "m")
+    db.add_event(p, t1, "system", "x", {})
+    db.add_directive(p, "hello")
+    counts = db.delete_project(p)
+    assert counts["tasks"] == 2
+    assert db.get_project(p) is None
+    assert db.list_tasks(p) == []
+    assert db.list_events(p) == []
+    assert db.list_contenders(t1) == []
+    assert db._rows("SELECT * FROM inbox WHERE project_id=?", (p,)) == []
+
+
+def test_delete_stops_agents_and_is_owner_guarded(root_client, make_user, fresh_db):
+    p = make_project(owner_id=1)
+    t = make_task(p, status="running")
+    launcher.ACTIVE[str(t)] = {"kind": "process", "pid": None, "proc": None,
+                               "project_id": p, "task_id": t}
+    _uid, other = make_user("thief")
+    assert other.delete(f"/api/projects/{p}").status_code == 404   # not yours
+    r = root_client.delete(f"/api/projects/{p}")
+    assert r.status_code == 200
+    assert r.json()["agents_stopped"] == 1        # never orphan a live agent
+    assert db.get_project(p) is None
+    launcher.ACTIVE.clear()
+
+
+def test_the_platforms_own_project_cannot_be_deleted(root_client, fresh_db):
+    from app import selfops
+    pid = selfops.ensure_project(owner_id=1)
+    r = root_client.delete(f"/api/projects/{pid}")
+    assert r.status_code == 400

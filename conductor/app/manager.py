@@ -98,6 +98,11 @@ def _task_line(t: dict) -> str:
             f"attempts={t['attempts']} pr={t['pr_number'] or '-'}")
 
 
+# project_id -> {handlers, escalate, ask_impl}. Populated by build_team_server so
+# tests can drive the manager's tools; never part of the SDK payload.
+HANDLERS: dict[int, dict] = {}
+
+
 def build_team_server(project_id: int):
     """Create the per-project MCP toolset the manager agent uses."""
 
@@ -620,17 +625,18 @@ def build_team_server(project_id: int):
                request_changes, reassign_task, compare_work, pick_winner,
                accept_task, merge_pr, finish],
     )
-    # The SDK returns {type, name, instance} and keeps the handlers out of reach, so
-    # the tools cannot be exercised directly. Expose the raw coroutines under a
-    # private key purely as a testing seam — the SDK ignores extra keys.
-    if isinstance(srv, dict):
-        srv["_handlers"] = {
-            t.name: t.handler for t in
-            (create_tasks, add_tasks, status, wait, ask_boss, reply_to_boss, get_report,
-             request_changes, reassign_task, compare_work, pick_winner,
-             accept_task, merge_pr, finish)}
-        srv["_escalate"] = _escalate
-        srv["_ask_impl"] = ask_impl
+    # Testing seam. This must NOT live on the returned dict: that dict is handed to
+    # the SDK, which serialises the server config to JSON for the CLI subprocess —
+    # putting functions on it breaks every real run with "Object of type function is
+    # not JSON serializable". Park it in a module-level registry instead.
+    HANDLERS[project_id] = {
+        "handlers": {t.name: t.handler for t in
+                     (create_tasks, add_tasks, status, wait, ask_boss, reply_to_boss,
+                      get_report, request_changes, reassign_task, compare_work,
+                      pick_winner, accept_task, merge_pr, finish)},
+        "escalate": _escalate,
+        "ask_impl": ask_impl,
+    }
     return srv
 
 

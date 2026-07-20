@@ -176,3 +176,40 @@ def test_model_health_scoped_to_owner(make_user):
     assert r.status_code == 200
     models = [m["model"] for m in r.json().get("models", [])]
     assert "claude-opus-4-8" not in models   # that task belongs to root, not this user
+
+
+# ---- exercise the ROUTES, not just the functions they call ----------------
+# launcher.kill_task/kill_project were called from three routes while `launcher`
+# was never imported at module level. Every one raised NameError at runtime, and
+# the unit tests missed it entirely because they called the functions directly.
+
+def test_kill_route_actually_executes(root_client, fresh_db):
+    pid = make_project(owner_id=1)
+    tid = make_task(pid, status="running")
+    r = root_client.post(f"/api/tasks/{tid}/kill")
+    assert r.status_code == 200, r.text
+    assert db.get_task(tid)["status"] == "failed"
+
+
+def test_cancel_route_actually_executes(root_client, fresh_db):
+    pid = make_project(owner_id=1)
+    make_task(pid, status="running")
+    r = root_client.post(f"/api/projects/{pid}/cancel")
+    assert r.status_code == 200, r.text
+    assert db.get_project(pid)["status"] == "cancelled"
+
+
+def test_skip_route_actually_executes(root_client, fresh_db):
+    pid = make_project(owner_id=1)
+    tid = make_task(pid, status="running")
+    r = root_client.post(f"/api/tasks/{tid}/skip")
+    assert r.status_code == 200, r.text
+    assert db.get_task(tid)["status"] == "done"
+
+
+def test_delete_route_actually_executes(root_client, fresh_db):
+    pid = make_project(owner_id=1)
+    make_task(pid)
+    r = root_client.delete(f"/api/projects/{pid}")
+    assert r.status_code == 200, r.text
+    assert db.get_project(pid) is None

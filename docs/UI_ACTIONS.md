@@ -36,6 +36,7 @@ Legend: 💸 spends tokens · 🤖 starts an agent · 🛑 stops an agent ·
 | **Open** | — | Same. |
 | **Cancel** ⚠️🛑 | `POST /projects/{id}/cancel` | Identical to the header Cancel. |
 | **↻** 💸🤖 | `POST /projects/{id}/restart` | Identical to the header Restart. No confirmation. |
+| **🗑** ⚠️🛑 | `DELETE /projects/{id}` | **Deletes the project for good** — tasks, activity and any running agents. The GitHub repo and its PRs are NOT touched. Cannot be undone. Refused for the platform's own project. |
 | Repo link 🌐 | — | Opens GitHub. Does not open the project. |
 | `⟲ this platform` tag | — | Marks the row that is devteam itself. |
 

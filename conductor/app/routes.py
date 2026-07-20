@@ -6,8 +6,8 @@ from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSoc
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from . import (auth, blockers, bus, config, db, deploy, github_client, manager, planner,
-               preview, providers, roundtable, scheduler, selfops)
+from . import (auth, blockers, bus, config, db, deploy, github_client, launcher, manager,
+               planner, preview, providers, roundtable, scheduler, selfops)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -784,6 +784,30 @@ async def cancel_project(project_id: int, request: Request) -> dict:
                     pass
     bus.emit(project_id, None, "system", "project_cancelled", {"agents_stopped": len(killed)})
     return {"ok": True, "agents_stopped": len(killed), "detail": killed}
+
+
+@router.delete("/api/projects/{project_id}")
+async def delete_project(project_id: int, request: Request) -> dict:
+    """Delete a project and everything under it. Irreversible."""
+    p = owned_project(project_id, request)
+    if p["is_self"]:
+        raise HTTPException(400, "the platform's own project cannot be deleted")
+    # Never orphan live agents: stop them before the rows they belong to vanish.
+    killed = launcher.kill_project(project_id, "project was deleted by the boss")
+    scheduler.stop(project_id)
+    t = _manager_tasks.pop(project_id, None)
+    if t and not t.done():
+        t.cancel()
+    deploy.stop(project_id)
+    counts = db.delete_project(project_id)
+    return {"ok": True, "agents_stopped": len(killed), **counts}
+
+
+@router.delete("/api/tables/{table_id}")
+def delete_table(table_id: int, request: Request) -> dict:
+    owned_table(table_id, request)
+    db.delete_table(table_id)
+    return {"ok": True}
 
 
 @router.get("/api/projects/{project_id}/events")

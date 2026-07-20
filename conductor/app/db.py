@@ -289,6 +289,32 @@ def load_cooldowns() -> dict[str, float]:
     return {r["model"]: r["until_ts"] for r in _rows("SELECT * FROM model_cooldown")}
 
 
+def delete_project(project_id: int) -> dict:
+    """Remove a project and everything hanging off it. Irreversible.
+
+    Cascades by hand because SQLite foreign keys are off by default here; missing
+    one of these would leave orphan rows that still show up in counts and feeds.
+    """
+    tasks = [t["id"] for t in list_tasks(project_id)]
+    counts = {"tasks": len(tasks)}
+    for tid in tasks:
+        _execute("DELETE FROM contenders WHERE task_id=?", (tid,))
+    counts["events"] = len(_rows("SELECT id FROM events WHERE project_id=?", (project_id,)))
+    _execute("DELETE FROM events WHERE project_id=?", (project_id,))
+    _execute("DELETE FROM inbox WHERE project_id=?", (project_id,))
+    _execute("DELETE FROM tasks WHERE project_id=?", (project_id,))
+    # a round table that produced this project loses only the link, not itself
+    _execute("UPDATE roundtables SET project_id=NULL WHERE project_id=?", (project_id,))
+    _execute("DELETE FROM projects WHERE id=?", (project_id,))
+    return counts
+
+
+def delete_table(table_id: int) -> None:
+    _execute("DELETE FROM turns WHERE table_id=?", (table_id,))
+    _execute("DELETE FROM seats WHERE table_id=?", (table_id,))
+    _execute("DELETE FROM roundtables WHERE id=?", (table_id,))
+
+
 def set_project_budget(project_id: int, budget_usd: float) -> None:
     _execute("UPDATE projects SET budget_usd=? WHERE id=?", (budget_usd, project_id))
 
