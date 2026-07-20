@@ -50,7 +50,12 @@ SELF_REPO = _env("SELF_REPO")
 
 CONDUCTOR_URL = _env("CONDUCTOR_URL", "http://localhost:8000")
 WORKER_TOKEN = _env("WORKER_TOKEN", "dev-token")
-DB_PATH = _env("DB_PATH", "devteam.db")
+# Anchored to the repo root, NOT the process's working directory. A relative
+# path means the conductor silently opens (and creates) a different, empty
+# database if it is ever started from another directory — losing every project
+# with no error at all.
+DB_PATH = str(Path(_env("DB_PATH", "devteam.db")) if Path(_env("DB_PATH", "devteam.db")).is_absolute()
+              else ROOT / _env("DB_PATH", "devteam.db"))
 
 LAUNCHER = _env("LAUNCHER", "local")  # local | k8s
 WORKER_IMAGE = _env("WORKER_IMAGE", "devteam-worker:latest")
