@@ -288,3 +288,63 @@ def test_seats_are_told_to_lead_with_a_one_line_gist():
 def test_the_skeptic_still_gets_the_skeptic_brief():
     s = roundtable._seat_system({"name": "A", "persona": ""}, "x", skeptic=True)
     assert "SKEPTIC" in s and "GIST:" in s
+
+
+# ---- a busy provider must not silently remove a seat ----------------------
+
+@pytest.mark.asyncio
+async def test_a_seat_gets_a_second_chance_on_a_transient_failure(table, monkeypatch):
+    """Free-tier Gemini returns 503 readily. Both Gemini seats dropping out leaves
+    two Claudes agreeing with each other, which is the configuration the evidence
+    says does not work."""
+    calls = {"n": 0}
+
+    async def flaky(provider, model, system, prompt, settings, max_tokens=2000):
+        if provider == "google":
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise providers.ProviderError(
+                    "Gemini returned 503: This model is currently experiencing high demand")
+        if "ONLY valid JSON" in prompt:
+            return json.dumps({"approach": "x", "team": []})
+        return "a proposal"
+
+    monkeypatch.setattr("app.roundtable.providers.complete", flaky)
+    monkeypatch.setattr("app.roundtable.asyncio.sleep", _instant)
+    from app import auth
+    monkeypatch.setattr(auth, "get_settings", lambda u: {"anthropic_api_key": "k",
+                                                         "openai_api_key": "k",
+                                                         "gemini_api_key": "k"})
+    monkeypatch.setattr(auth, "get_user", lambda uid: {"id": 1, "is_root": 1, "settings": "{}"})
+    db.update_table(table, mode="diverge")
+    await roundtable.run_table(table)
+    google = [t for t in db.list_turns(table) if t["phase"] == "propose"]
+    assert all(t["ok"] for t in google), "a seat was silenced by one transient 503"
+
+
+async def _instant(*_a, **_k):
+    return None
+
+
+@pytest.mark.asyncio
+async def test_a_permanent_failure_is_not_retried_forever(table, monkeypatch):
+    calls = {"n": 0}
+
+    async def gone(provider, model, system, prompt, settings, max_tokens=2000):
+        if provider == "google":
+            calls["n"] += 1
+            raise providers.ProviderError("Gemini: not entitled to this model")
+        if "ONLY valid JSON" in prompt:
+            return json.dumps({"approach": "x", "team": []})
+        return "ok"
+
+    monkeypatch.setattr("app.roundtable.providers.complete", gone)
+    monkeypatch.setattr("app.roundtable.asyncio.sleep", _instant)
+    from app import auth
+    monkeypatch.setattr(auth, "get_settings", lambda u: {"anthropic_api_key": "k",
+                                                         "openai_api_key": "k",
+                                                         "gemini_api_key": "k"})
+    monkeypatch.setattr(auth, "get_user", lambda uid: {"id": 1, "is_root": 1, "settings": "{}"})
+    db.update_table(table, mode="diverge")
+    await roundtable.run_table(table)
+    assert calls["n"] == 1, "retried an error that will never clear"

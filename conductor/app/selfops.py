@@ -18,6 +18,7 @@ Two properties keep that from being reckless:
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -91,7 +92,71 @@ def ensure_project(owner_id: int) -> int:
         max_runs=config.MAX_AGENT_RUNS, owner_id=owner_id,
     )
     db.set_project_self(pid, True)
+    # Idle, NOT 'planning'. A new project defaults to 'planning', and startup
+    # resumes everything in planning/running/hold — so merely opening the
+    # self-repair tab once meant a manager session began planning changes to the
+    # running platform on every restart, with nobody having asked for it. The
+    # platform works on itself when told to, never on its own initiative.
+    db.set_project_status(pid, "idle")
     return pid
+
+
+REFINE_SYSTEM = (
+    "You turn a rough bug report into a ticket an engineer can act on without "
+    "asking a single follow-up question.\n\n"
+    "You are given a complaint about a running platform called devteam: a "
+    "self-hosted system where an AI manager plans a project and AI workers clone a "
+    "GitHub repo, work on branches and open PRs. Its parts are a FastAPI conductor "
+    "(app/routes.py, manager.py, scheduler.py, launcher.py, db.py — SQLite), a "
+    "vanilla-JS dashboard with no build step (dashboard/app.js), and a worker agent "
+    "(worker/worker.py).\n\n"
+    "Return ONLY valid JSON, no fences:\n"
+    '{"title": "one line, specific, no ticket-speak",\n'
+    ' "body": "markdown: what happens now, what should happen, where in the code it '
+    'most likely lives, and how to verify the fix",\n'
+    ' "severity": "bug" | "improvement" | "urgent",\n'
+    ' "acceptance": ["checkable statement", "..."]}\n\n'
+    "Rules: do not invent behaviour the complaint does not imply; if something is "
+    "genuinely ambiguous, say so in the body under '## Open question' rather than "
+    "guessing. Acceptance criteria must be things a test could check."
+)
+
+
+async def refine_issue(rough: str, settings: dict) -> dict[str, Any]:
+    """Expand a one-line complaint into a ticket worth handing to an agent.
+
+    A vague ticket is the cheapest way to waste a whole sprint: the team builds
+    the wrong thing competently. Runs on the user's own key, and falls back to
+    their raw words rather than blocking on a provider.
+    """
+    from . import providers
+    have = providers.available(settings)
+    for provider in ("anthropic", "google", "openai"):
+        if provider not in have:
+            continue
+        model = {"anthropic": config.ESCALATION_MODEL,
+                 "google": "gemini-flash-latest", "openai": "gpt-5-mini"}[provider]
+        try:
+            raw = await providers.complete(provider, model, REFINE_SYSTEM, rough,
+                                           settings, max_tokens=1600)
+            m = re.search(r"\{.*\}", raw, re.DOTALL)
+            if not m:
+                continue
+            data = json.loads(m.group(0))
+            body = str(data.get("body") or "").strip()
+            crit = [str(c) for c in (data.get("acceptance") or []) if str(c).strip()]
+            if crit:
+                body += "\n\n## Acceptance criteria\n" + "\n".join(f"- [ ] {c}" for c in crit)
+            return {"title": str(data.get("title") or "").strip()[:200],
+                    "body": body,
+                    "severity": data.get("severity") if data.get("severity") in
+                    ("bug", "improvement", "urgent") else "bug",
+                    "refined": True}
+        except Exception:
+            continue
+    first = rough.strip().splitlines()[0] if rough.strip() else "Issue"
+    return {"title": first[:80], "body": rough.strip(), "severity": "bug",
+            "refined": False}
 
 
 SEVERITY_NOTE = {

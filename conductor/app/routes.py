@@ -634,6 +634,26 @@ class SelfIssue(BaseModel):
     title: str
     body: str
     severity: str = "bug"
+    sprints: int = 1
+
+
+class RoughIssue(BaseModel):
+    rough: str
+
+
+@router.post("/api/self/refine")
+async def self_refine(payload: RoughIssue, request: Request) -> dict:
+    """Turn a one-line complaint into a ticket worth handing to an agent.
+
+    A vague ticket is the cheapest way to waste a sprint — the team builds the
+    wrong thing, competently. This is a draft for the human to edit, never
+    submitted on their behalf.
+    """
+    u = _root(request)
+    rough = payload.rough.strip()
+    if len(rough) < 8:
+        raise HTTPException(400, "say a little more about what's wrong")
+    return await selfops.refine_issue(rough, auth.get_settings(u))
 
 
 @router.post("/api/self/issue")
@@ -642,6 +662,14 @@ async def self_issue(payload: SelfIssue, request: Request) -> dict:
     if not payload.title.strip() or not payload.body.strip():
         raise HTTPException(400, "describe the issue and give it a title")
     pid = selfops.ensure_project(u["id"])
+    # Self-repair is meant to run start-to-finish on its own: fix, verify, ship.
+    # Asking the operator to approve each step of a fix they already asked for is
+    # the interruption this feature exists to remove.
+    sprints = max(1, min(10, payload.sprints or 1))
+    db.set_sprints(pid, sprints)
+    db.set_project_autonomy(pid, "autonomous")
+    if sprints > 1:
+        db.set_max_runs(pid, min(400, config.MAX_AGENT_RUNS * sprints))
     res = await selfops.file_issue(pid, payload.title.strip(), payload.body.strip(),
                                    payload.severity)
     # The manager plans the fix. If one is already running it picks the issue up as
@@ -767,7 +795,9 @@ async def create_project(body: NewProject, request: Request) -> dict:
 @router.get("/api/projects")
 def list_projects(request: Request) -> list[dict]:
     u = current_user(request)
-    projects = [p for p in db.list_projects() if can_see(p, u)]
+    # The platform's own row is not one of "your projects" — it has its own way in
+    # (the Improve tile) and listing it invited people to drive it like a normal one.
+    projects = [p for p in db.list_projects() if can_see(p, u) and not p["is_self"]]
     for p in projects:
         p["task_count"] = len(db.list_tasks(p["id"]))
     return projects

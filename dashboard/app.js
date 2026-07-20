@@ -236,7 +236,8 @@ async function loadHealth() {
 }
 
 const STATUS_CLASS = { done: "ok", failed: "bad", cancelled: "bad", review: "warn", hold: "warn", planning: "run", running: "run" };
-const STATUS_LABEL = { hold: "on hold — needs you", review: "in review" };
+const STATUS_LABEL = { hold: "on hold — needs you", review: "in review",
+                       idle: "idle — nothing running" };
 
 async function loadProjects() {
   const projects = await api("/api/projects");
@@ -741,15 +742,45 @@ let speechTimer = null;
 let bubbles = {};            // seat id (or "mod") -> {text, phase, ok}
 let speaking = null;
 
+function stripMd(line) {
+  return (line || "")
+    .replace(/^[#>\s]*/, "")            // headings, quotes
+    .replace(/^[-*+]\s+/, "")           // bullets
+    .replace(/^\d+[.)]\s*/, "")         // "1." / "1)"
+    .replace(/\*\*|__|`|\*/g, "")       // emphasis
+    .trim();
+}
+
 function gistOf(text) {
   const t = (text || "").trim();
   const m = t.match(/^[ \t]*GIST:[ \t]*(.+)$/im);
-  if (m) return m[1].trim().slice(0, 160);
-  // No GIST line (an older turn, or the model ignored the rule) — the first
-  // sentence is a decent stand-in and still beats showing the whole essay.
-  const first = t.split("\n").find((l) => l.trim()) || "";
-  const stop = first.search(/[.!?](\s|$)/);
-  return (stop > 0 ? first.slice(0, stop + 1) : first).trim().slice(0, 160) || "…";
+  if (m) return stripMd(m[1]).slice(0, 160);
+  // No GIST line — an older turn, or a model that ignored the rule. Taking the
+  // first line gave bubbles reading "## Systems Architect — opening proposal",
+  // which is a heading, not a point. Skip the scaffolding and find the first line
+  // that is actually a sentence: long enough to say something, or ending in
+  // sentence punctuation.
+  for (const raw of t.split("\n")) {
+    const line = stripMd(raw);
+    if (!line) continue;
+    const looksLikeHeading = line.length < 46 && !/[.!?:][)"']?$/.test(line);
+    if (looksLikeHeading) continue;
+    const stop = line.search(/[.!?](\s|$)/);
+    const sentence = (stop > 0 ? line.slice(0, stop + 1) : line).trim();
+    if (sentence.length >= 12) return sentence.slice(0, 160);
+  }
+  const any = t.split("\n").map(stripMd).find(Boolean) || "";
+  return any.slice(0, 160) || "…";
+}
+
+/** A provider error in words a person can act on, not a stack of HTTP prose. */
+function shortErr(text) {
+  const t = (text || "").toLowerCase();
+  if (t.includes("high demand") || t.includes("503")) return "the model was busy";
+  if (t.includes("limit is 0") || t.includes("not entitled")) return "not on your plan";
+  if (t.includes("429") || t.includes("quota") || t.includes("rate")) return "rate limited";
+  if (t.includes("no credentials")) return "no key for this provider";
+  return "a provider error";
 }
 
 function seatAngles(n) {
@@ -823,7 +854,10 @@ function playTurns(t) {
       // A new round starts a clean slate — old gists belong to the last round.
       if (bubbles.__phase && bubbles.__phase !== x.phase) bubbles = {};
       bubbles.__phase = x.phase;
-      bubbles[x.seat_id] = { text: gistOf(x.text), phase: x.phase, ok: x.ok };
+      // A seat that couldn't speak must SAY so. Rendering nothing left two of the
+      // four seats permanently blank with no hint that anything had gone wrong.
+      const text = x.ok ? gistOf(x.text) : `couldn't speak — ${shortErr(x.text)}`;
+      bubbles[x.seat_id] = { text, phase: x.phase, ok: x.ok };
       speaking = x.seat_id;
     }
     paintTable();
@@ -1178,7 +1212,13 @@ async function refreshBoard() {
   try { p = await api(`/api/projects/${currentProject}`); } catch { return; }
   lastTasks = p.tasks;
   const st = $("#selfTab");
-  if (st) st.hidden = !p.is_self;
+  if (st) {
+    st.hidden = !p.is_self;
+    // Switching to a normal project while the Self-repair view was open left the
+    // tab on screen and the panel showing the platform's data under someone
+    // else's project name.
+    if (st.hidden && !$("#self").hidden) switchView("command");
+  }
   renderBlockers();          // keeps the 🚧 badge honest even when the tab is closed
   currentRepo = p.repo || "";
   lastProject = p;
@@ -1470,6 +1510,50 @@ const STATUS_WORD = {
 
 function trim(s, n) { s = (s || "").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
+/** The delivery cycles, current one open and finished ones archived.
+ *
+ * Tasks accumulate across sprints, so by sprint 4 the board is a wall of work
+ * mostly finished three cycles ago. This separates "what the team is doing now"
+ * from "what it has already shipped", without hiding the latter. */
+function renderSprints(p) {
+  const total = p.sprints ?? 1;
+  if (total <= 1) return "";
+  const cur = p.sprint ?? 1;
+  const bySprint = {};
+  for (const t of p.tasks || []) (bySprint[t.sprint || 1] ||= []).push(t);
+
+  const line = (n) => {
+    const ts = bySprint[n] || [];
+    const done = ts.filter((t) => t.status === "done").length;
+    const failed = ts.filter((t) => t.status === "failed").length;
+    const live = ts.filter((t) => ["running", "queued"].includes(t.status)).length;
+    const state = n < cur ? "shipped" : n === cur ? "current" : "upcoming";
+    const titles = ts.map((t) =>
+      `<li class="sp-task ${t.status}"><b>#${t.seq}</b> ${escapeHtml(t.title)}
+         <span class="hint">${escapeHtml(t.role)} · ${t.status}</span></li>`).join("");
+    const body = ts.length
+      ? `<ul class="sp-tasks">${titles}</ul>`
+      : `<p class="hint">Not planned yet — the manager decides this sprint's scope
+           when the previous one ships.</p>`;
+    // Only the current sprint is open by default; finished ones are archive.
+    return `<details class="sp ${state}" ${state === "current" ? "open" : ""}>
+      <summary>
+        <span class="sp-n">Sprint ${n}</span>
+        <span class="sp-state">${state === "current" ? "in progress"
+          : state === "shipped" ? "shipped" : "not started"}</span>
+        <span class="sp-counts">${ts.length ? `${done}/${ts.length} done` : "—"}${
+          live ? ` · ${live} running` : ""}${failed ? ` · ${failed} failed` : ""}</span>
+      </summary>${body}</details>`;
+  };
+
+  return `<div class="sprints-card">
+    <div class="bl">🗓 Sprints <span class="hint">${cur} of ${total}</span></div>
+    <p class="hint sp-lede">The manager plans each cycle itself and rolls straight
+      into the next — it only stops for you if it is genuinely blocked.</p>
+    ${Array.from({ length: total }, (_, i) => line(i + 1)).join("")}
+  </div>`;
+}
+
 function renderCommand(p) {
   const el = $("#command");
   if (!el || el.hidden) return;
@@ -1590,6 +1674,7 @@ function renderCommand(p) {
     <div class="chain">
       ${attnHtml}
       ${askHtml}
+      ${renderSprints(p)}
       <div class="node boss" id="bossNode" title="Click to read your full request">
         <div class="who">👑 Boss</div>
         <div class="name">${escapeHtml(me.username || "You")}</div>

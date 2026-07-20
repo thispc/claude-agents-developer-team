@@ -224,6 +224,10 @@ def advance_sprint(project_id: int) -> int:
     return (p or {}).get("sprint", 1)
 
 
+def set_max_runs(project_id: int, max_runs: int) -> None:
+    _execute("UPDATE projects SET max_runs=? WHERE id=?", (max(1, int(max_runs)), project_id))
+
+
 def set_sprints(project_id: int, sprints: int) -> None:
     """Change the target number of cycles mid-run — the boss may want more or fewer
     once they have seen what one sprint actually produces."""
