@@ -122,6 +122,7 @@
       <button class="chip vchip" data-v="dag">Dependencies</button>
       <button class="chip vchip" data-v="artifacts">📦 Artifacts</button>
       <button class="chip vchip" data-v="agents">🖥 Agents</button>
+      <button class="chip vchip" data-v="chat">💬 Manager<span id="chatUnread" hidden>0</span></button>
       <button class="chip vchip" data-v="blockers">🚧 Blockers<span id="blockerCount" hidden>0</span></button>
       <button class="chip vchip" data-v="self" id="selfTab" hidden>⟲ Self-repair</button>
       <div class="vspacer"></div>
@@ -130,6 +131,17 @@
     <section id="command"></section>
     <section id="artifacts" hidden></section>
     <section id="agents" hidden></section>
+    <section id="chat" hidden>
+      <div class="chat-head">
+        <h2>💬 Your manager</h2>
+        <span class="hint" id="chatStatus"></span>
+      </div>
+      <div id="chatLog"></div>
+      <form id="chatForm">
+        <input id="chatInput" placeholder="Ask your manager anything — 'why is this slow?', 'skip the tests'…" autocomplete="off">
+        <button type="submit" class="primary">Send</button>
+      </form>
+    </section>
     <section id="blockers" hidden></section>
     <section id="self" hidden></section>
     <section id="dag" hidden><svg id="dagSvg" xmlns="http://www.w3.org/2000/svg"></svg></section>

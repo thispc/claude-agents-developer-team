@@ -393,10 +393,22 @@ def add_event(project_id: int, task_id: int | None, source: str, kind: str, payl
 
 
 def list_events(project_id: int, after_id: int = 0, limit: int = 500) -> list[dict]:
-    return _rows(
-        "SELECT * FROM events WHERE project_id=? AND id>? ORDER BY id LIMIT ?",
-        (project_id, after_id, limit),
-    )
+    """The MOST RECENT `limit` events, in chronological order.
+
+    This used to be `ORDER BY id LIMIT 500`, which returns the OLDEST 500 — so
+    once a project passed 500 events the dashboard silently froze on ancient
+    history and never showed anything current again. Tailing (after_id > 0) still
+    wants the oldest-first slice, because there the caller is asking for "what is
+    new since X".
+    """
+    if after_id:
+        return _rows(
+            "SELECT * FROM events WHERE project_id=? AND id>? ORDER BY id LIMIT ?",
+            (project_id, after_id, limit))
+    rows = _rows(
+        "SELECT * FROM events WHERE project_id=? ORDER BY id DESC LIMIT ?",
+        (project_id, limit))
+    return list(reversed(rows))
 
 
 def list_task_events(task_id: int) -> list[dict]:

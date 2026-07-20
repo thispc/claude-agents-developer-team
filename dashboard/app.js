@@ -126,23 +126,29 @@ const taskCost = (t) => (authMode === "subscription" ? "" : ` · $${t.cost_usd.t
 async function loadHealth() {
   try {
     const h = await api("/api/health");
-    authMode = h.auth || (h.anthropic_key ? "api-key" : "none");
+    authMode = h.auth || "none";
     const b = $("#authBadge");
+    // Say what it MEANS, not what it is called. "auth: Max subscription" told you
+    // nothing about whether you were about to be charged.
     if (authMode === "subscription") {
-      b.textContent = "auth: Max subscription";
+      b.textContent = "⚡ On your Claude plan · no token charges";
       b.className = "badge ok";
-      b.title = "Agents run on your Claude subscription. Dollar figures are ESTIMATES for " +
-        "budgeting only — nothing is billed. Usage counts toward your plan's rate limits.";
+      b.title = "Agents run on your Claude subscription, so nothing is billed per token. "
+        + "Any dollar figures are estimates for budgeting only. Your real limit is the "
+        + "agent-run cap and your plan's rate limits. Click to change credentials.";
     } else if (authMode === "api-key") {
-      b.textContent = "auth: API key";
+      b.textContent = "💳 API key · billed per token";
       b.className = "badge warn";
-      b.title = "Agents bill pay-per-token API credit. Figures shown are the SDK's per-project " +
-        "estimate; your authoritative balance is at console.anthropic.com (no API exposes it).";
+      b.title = "Agents spend pay-per-token API credit — this costs real money. Figures "
+        + "shown are the SDK's estimate; the authoritative balance is at "
+        + "console.anthropic.com. Click to change credentials.";
     } else {
-      b.textContent = "auth: none";
+      b.textContent = "⚠ No AI credentials — agents cannot run";
       b.className = "badge bad";
-      b.title = "Set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in .env";
+      b.title = "Add an Anthropic API key or a Claude subscription token before starting "
+        + "a project. Click to open Settings.";
     }
+    b.style.cursor = "pointer";
   } catch { /* server starting */ }
 }
 
@@ -251,12 +257,13 @@ function setHash(h) {
 function switchView(view, skipHash) {
   document.querySelectorAll(".vchip").forEach((c) =>
     c.classList.toggle("active", c.dataset.v === view));
-  for (const id of ["command", "board", "dag", "artifacts", "agents", "blockers", "self"])
+  for (const id of ["command", "board", "dag", "artifacts", "agents", "chat", "blockers", "self"])
     $("#" + id).hidden = id !== view;
   if (view === "dag") renderDag(lastTasks);
   if (view === "command" && lastProject) renderCommand(lastProject);
   if (view === "artifacts") renderArtifacts(true);
   if (view === "agents") { agentsSig = ""; renderAgents(); }
+  if (view === "chat") { chatSig = ""; renderChat(); markChatRead(); }
   if (view === "blockers") { blockersSig = ""; renderBlockers(); }
   if (view === "self") renderSelf();
   if (!skipHash && currentProject)
@@ -286,8 +293,11 @@ async function selectProject(id) {
   $("#events").innerHTML = "";
   $("#feedTitle").textContent = "Activity";
   managerThought = ""; managerThinking = ""; agentActivity = {}; pendingQ = null;
+  allEvents = []; chatSig = ""; chatSeen = 0;
   const events = await api(`/api/projects/${id}/events`);
-  for (const e of events.slice(-250)) { noteActivity(e); renderEvent(e); }
+  for (const e of events.slice(-250)) { allEvents.push(e); noteActivity(e); renderEvent(e); }
+  markChatRead();          // history is not "unread"
+  renderChat();
   await refreshBoard();
 }
 
@@ -761,6 +771,95 @@ function renderBlueprint(t) {
   });
 }
 
+// ===== MANAGER CHAT ========================================================
+// A conversation deserves its own surface. The activity feed auto-scrolls, which
+// is right for logs and wrong for reading a reply — so this view only follows the
+// bottom when you are already there, and never yanks the page while you read.
+
+let chatSig = "";
+let allEvents = [];        // kept so the chat view can filter without refetching
+let chatSeen = 0;          // highest event id the user has actually looked at
+
+const CHAT_KINDS = ["directive", "boss_reply", "boss_question", "answered"];
+const DECISION_KINDS = {
+  task_created: "planned a task", pr_merged: "merged a PR",
+  changes_requested: "sent work back", task_accepted: "accepted a task",
+  winner_picked: "picked a contest winner", reassigned: "moved a task to another model",
+  project_done: "finished the project", needs_attention: "flagged a problem",
+};
+
+function chatEvents() {
+  return (allEvents || []).filter((e) =>
+    CHAT_KINDS.includes(e.kind) || DECISION_KINDS[e.kind]);
+}
+
+function renderChat() {
+  const el = $("#chatLog");
+  if (!el || $("#chat").hidden) return;
+  const evs = chatEvents();
+  const sig = evs.map((e) => e.id).join(",");
+  if (sig === chatSig) return;
+  chatSig = sig;
+
+  // Only stay pinned to the bottom if the reader is already there.
+  const wasTailing = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+  const prevTop = el.scrollTop;
+
+  el.innerHTML = evs.map((e) => {
+    let obj = {};
+    try { obj = typeof e.payload === "string" ? JSON.parse(e.payload) : (e.payload || {}); }
+    catch { obj = {}; }
+    const when = e.ts ? new Date(e.ts * 1000).toLocaleTimeString() : "";
+
+    if (e.kind === "directive") {
+      const text = typeof e.payload === "string" ? e.payload : (obj.text || "");
+      return `<div class="cmsg you"><div class="cbubble">${escapeHtml(text)}</div>
+        <div class="cmeta">you · ${when}</div></div>`;
+    }
+    if (e.kind === "boss_reply") {
+      const running = (obj.running || []).length
+        ? `<div class="crun">Running then: ${escapeHtml(obj.running.join("; "))}</div>` : "";
+      return `<div class="cmsg mgr"><div class="cbubble">${escapeHtml(obj.message || "")}${running}</div>
+        <div class="cmeta">manager · ${when}</div></div>`;
+    }
+    if (e.kind === "boss_question") {
+      return `<div class="cmsg mgr"><div class="cbubble cask">
+        <b>Needs your decision</b><br>${escapeHtml(obj.question || obj.text || "")}
+        ${(obj.options || []).length ? `<div class="copts">${
+          obj.options.map((o) => escapeHtml(o)).join(" · ")}</div>` : ""}
+        <div class="chint">Answer it on the Command tab or in the bell.</div></div>
+        <div class="cmeta">manager · ${when}</div></div>`;
+    }
+    if (e.kind === "answered") {
+      return `<div class="cmsg you"><div class="cbubble">${escapeHtml(obj.answer || "")}</div>
+        <div class="cmeta">you answered · ${when}</div></div>`;
+    }
+    // a compact status line so the conversation has context without the flood
+    const what = DECISION_KINDS[e.kind];
+    const detail = obj.reason || obj.verdict || obj.title || obj.role || "";
+    return `<div class="cnote">· ${escapeHtml(what)}${detail ? ": " + escapeHtml(trim(String(detail), 90)) : ""}
+      <span class="chint">${when}</span></div>`;
+  }).join("") || `<p class="empty">No conversation yet. Ask your manager something below —
+    it answers with what is actually running.</p>`;
+
+  el.scrollTop = wasTailing ? el.scrollHeight : prevTop;
+}
+
+function markChatRead() {
+  const evs = chatEvents();
+  chatSeen = evs.length ? Math.max(...evs.map((e) => e.id || 0)) : chatSeen;
+  const b = $("#chatUnread"); if (b) b.hidden = true;
+}
+
+function updateChatUnread() {
+  const evs = chatEvents().filter((e) => e.kind === "boss_reply" || e.kind === "boss_question");
+  const unread = evs.filter((e) => (e.id || 0) > chatSeen).length;
+  const b = $("#chatUnread");
+  if (!b) return;
+  b.hidden = unread === 0 || !$("#chat").hidden;
+  b.textContent = unread;
+}
+
 function ago(ts) {
   const m = Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
   if (m < 1) return "just now";
@@ -937,6 +1036,10 @@ function renderEvent(e) {
   // Simple mode hides mechanical chatter; these are the "noise" kinds.
   if (["result", "agent_status", "dispatched", "repo_ready", "resumed_after_restart",
        "task_edited", "push_retry"].includes(e.kind)) cls += " sys-noise";
+  // Simple should read like a status board, not a transcript. A worker narrating
+  // its own steps is the bulk of the volume and almost never what the boss needs.
+  if (e.source.startsWith("worker") && ["message", "consult", "consult_reply"].includes(e.kind))
+    cls += " chatter";
   if (e.kind === "error" || e.kind === "worker_died" || e.kind === "dag_blocked") cls += " error";
   div.className = `ev ${cls}`;
   let text = e.payload;
@@ -990,7 +1093,14 @@ function connectWs() {
   ws = new WebSocket(`${proto}://${location.host}/ws`);
   ws.onmessage = (m) => {
     const e = JSON.parse(m.data);
-    if (currentProject) { noteActivity(e); renderEvent(e); scheduleRefresh(); }
+    if (currentProject) {
+      if (e.project_id === currentProject) {
+        allEvents.push(e);
+        if (allEvents.length > 800) allEvents = allEvents.slice(-600);
+        renderChat(); updateChatUnread();
+      }
+      noteActivity(e); renderEvent(e); scheduleRefresh();
+    }
     else loadProjects();  // on the home page, keep the table live
     if (e.kind === "boss_question" || e.kind === "answered") { refreshQuestion(); refreshBell(); }
     if (e.kind === "boss_question") notifyBoss(e);
@@ -1907,6 +2017,25 @@ $("#addSeatBtn").addEventListener("click", () => {
 });
 document.querySelectorAll("input[name=tmode]").forEach((r) =>
   r.addEventListener("change", updateSeatWarning));
+$("#authBadge").addEventListener("click", () => $("#settingsBtn").click());
+$("#chatForm").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const inp = $("#chatInput");
+  const text = inp.value.trim();
+  if (!text || !currentProject) return;
+  inp.value = "";
+  try {
+    await api(`/api/projects/${currentProject}/directive`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    $("#chatStatus").textContent = "sent — your manager reads it at its next decision point";
+    setTimeout(() => { $("#chatStatus").textContent = ""; }, 6000);
+  } catch (e) {
+    inp.value = text;      // don't lose what they typed
+    alert(e.message);
+  }
+});
 $("#startTableBtn").addEventListener("click", startTable);
 $("#whyCircle").addEventListener("click", (e) => {
   e.preventDefault();

@@ -108,3 +108,25 @@ def test_agents_endpoint_scoped_to_owner(root_client, make_user, fresh_db):
     got = u_client.get(f"/api/agents?project_id={p_root}")
     assert got.status_code == 404      # not her project
     launcher.ACTIVE.clear()
+
+
+# ---- the activity feed must show RECENT events, not the oldest ones --------
+
+def test_list_events_returns_the_newest_not_the_oldest(fresh_db):
+    """With ORDER BY id LIMIT 500 this returned the OLDEST 500, so any project
+    past 500 events froze on ancient history and never showed anything current."""
+    p = make_project()
+    for i in range(30):
+        db.add_event(p, None, "system", "tick", {"n": i})
+    got = db.list_events(p, limit=10)
+    assert len(got) == 10
+    # newest ten, still in chronological order
+    payloads = [json.loads(e["payload"])["n"] for e in got]
+    assert payloads == list(range(20, 30)), payloads
+
+
+def test_list_events_tailing_still_returns_what_is_new(fresh_db):
+    p = make_project()
+    ids = [db.add_event(p, None, "system", "tick", {"n": i})["id"] for i in range(10)]
+    tail = db.list_events(p, after_id=ids[4])
+    assert [json.loads(e["payload"])["n"] for e in tail] == [5, 6, 7, 8, 9]
