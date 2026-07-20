@@ -284,7 +284,7 @@ def build_team_server(project_id: int):
         allowed = {"claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"}
         if model not in allowed:
             return _text(f"error: model must be one of {sorted(allowed)}")
-        db.update_task(task_id, model=model, status="planned",
+        db.update_task(task_id, pinned_model=model, status="planned",
                        feedback=(t["feedback"] or "") +
                                 f"\n[reassigned to {model}: {args.get('reason', '')}]")
         bus.emit(project_id, task_id, "manager", "reassigned",

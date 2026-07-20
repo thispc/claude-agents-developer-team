@@ -183,9 +183,11 @@ def pick_model(task: dict, project: dict | None = None) -> str:
     """Model precedence: an explicit reassignment by the manager > a fallback when the
     previous run was rate-limited > escalation after repeated failures > the boss's
     recruited per-role choice > the role's roles.json default > WORKER_MODEL."""
-    # The manager (or auto-fallback) pinned a specific model for this task.
-    if task.get("model"):
-        return task["model"]
+    # Only an EXPLICIT manager reassignment pins the model. task["model"] is just
+    # what the last run used — reading it here would make every retry re-pick the
+    # same model and silently disable escalation and rate-limit fallback.
+    if task.get("pinned_model"):
+        return task["pinned_model"]
     # Previous attempt died on a rate limit — move to a model that is not still in
     # its cooldown window rather than hammering the throttled one.
     if task["attempts"] >= 1 and looks_rate_limited(task.get("report", "")):

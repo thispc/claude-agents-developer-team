@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     status TEXT NOT NULL DEFAULT 'planned',
     deps TEXT NOT NULL DEFAULT '[]',
     origin TEXT NOT NULL DEFAULT 'initial',   -- initial | runtime (added mid-project)
-    model TEXT NOT NULL DEFAULT '',           -- model actually used for the last run
+    model TEXT NOT NULL DEFAULT '',           -- model used for the LAST run (informational)
+    pinned_model TEXT NOT NULL DEFAULT '',    -- explicit manager override; wins over auto-selection
     branch TEXT NOT NULL DEFAULT '',
     issue_number INTEGER,
     pr_number INTEGER,
@@ -94,6 +95,7 @@ def init() -> None:
         "ALTER TABLE projects ADD COLUMN manager_persona TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE projects ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE tasks ADD COLUMN model TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE tasks ADD COLUMN pinned_model TEXT NOT NULL DEFAULT ''",
     ):
         try:
             _conn.execute(stmt)
