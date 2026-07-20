@@ -253,7 +253,9 @@ async function refreshBoard() {
   badge.title = p.summary || "";
   $("#cancelBtn").hidden = ["done", "failed", "cancelled"].includes(p.status);
   $("#restartBtn").hidden = !["failed", "review", "cancelled"].includes(p.status);
-  $("#artifactsBtn").hidden = !p.repo;
+  $("#artifactsBtn").hidden = true;   // artifacts live in their own tab now
+  if (!$("#artifacts").hidden) renderArtifacts();
+  if (!$("#agents").hidden) renderAgents();
   refreshQuestion();
   for (const [col, statuses] of Object.entries(COLS)) {
     const box = document.querySelector(`.col[data-col="${col}"] .cards`);
@@ -340,7 +342,7 @@ function connectWs() {
     const e = JSON.parse(m.data);
     if (currentProject) { noteActivity(e); renderEvent(e); scheduleRefresh(); }
     else loadProjects();  // on the home page, keep the table live
-    if (e.kind === "boss_question" || e.kind === "answered") refreshQuestion();
+    if (e.kind === "boss_question" || e.kind === "answered") { refreshQuestion(); refreshBell(); }
     if (e.kind === "boss_question") notifyBoss(e);
     if (e.kind === "project_finished") notify("Project finished", `Project #${e.project_id} is done.`);
     if (["project_created", "project_finished", "project_cancelled", "boss_question"].includes(e.kind)) loadProjects();
@@ -684,6 +686,99 @@ $("#taskDialog").addEventListener("click", (ev) => {
   if (ev.target === $("#taskDialog")) $("#taskDialog").close();
 });
 
+// --- ARTIFACTS TAB: the deliverable, documented ------------------------------
+async function renderArtifacts() {
+  const el = $("#artifacts");
+  if (!currentProject || el.hidden) return;
+  el.innerHTML = `<div class="pane"><p class="dim">Loading…</p></div>`;
+  let a;
+  try { a = await api(`/api/projects/${currentProject}/artifacts`); }
+  catch (e) { el.innerHTML = `<div class="pane"><p class="dim">${escapeHtml(e.message)}</p></div>`; return; }
+
+  const demo = a.preview_url
+    ? `<a class="demo-btn" href="${a.preview_url}" target="_blank">▶ Open the demo app</a>
+       <span class="hint">served from this app, sandboxed — no external hosting</span>`
+    : `<button id="buildPreviewBtn" class="primary">▶ Build the demo app</button>
+       <span class="hint">runs the built site here (static apps only)</span>`;
+
+  const prs = (a.prs || []).map((p) =>
+    `<li><a href="${p.url}" target="_blank">PR #${p.number}</a>
+      <span class="pill ${p.merged ? "ok" : ""}">${p.merged ? "merged" : p.state}</span>
+      ${escapeHtml(p.title)}</li>`).join("");
+
+  const work = (a.work || []).map((w) => `
+    <div class="work-item">
+      <div class="work-head">
+        <span class="role">${escapeHtml(w.role)}</span>
+        <span class="pill ${w.status === "done" ? "ok" : w.status === "failed" ? "bad" : "warn"}">${w.status}</span>
+        ${w.pr ? `<a href="https://github.com/${a.repo}/pull/${w.pr}" target="_blank">PR #${w.pr}</a>` : ""}
+        <span class="hint">${escapeHtml(w.model || "")}${w.attempts > 1 ? ` · ${w.attempts} attempts` : ""}</span>
+      </div>
+      <div class="work-title">${escapeHtml(w.title)}</div>
+      ${w.outcome ? `<details><summary>What they delivered</summary><pre>${escapeHtml(w.outcome)}</pre></details>` : ""}
+    </div>`).join("");
+
+  el.innerHTML = `
+    <div class="pane">
+      <h2>${escapeHtml(a.project)}</h2>
+      <p class="brief">${escapeHtml(a.brief)}</p>
+      <div class="demo-row">${demo}</div>
+      ${a.conclusion ? `<h3>Conclusion</h3><div class="conclusion">${escapeHtml(a.conclusion)}</div>` : ""}
+      <h3>What the team did</h3>
+      <div class="work-list">${work || '<p class="dim">No work yet.</p>'}</div>
+      <h3>Pull requests</h3>
+      <ul class="art-list">${prs || '<li class="dim">none yet</li>'}</ul>
+      <h3>Source</h3>
+      <p>📁 <a href="${a.repo_url}" target="_blank">${escapeHtml(a.repo || "no repo")}</a>
+         &nbsp; <span class="hint">branches: ${(a.branches || []).length}</span></p>
+    </div>`;
+
+  const bp = $("#buildPreviewBtn");
+  if (bp) bp.addEventListener("click", async () => {
+    bp.disabled = true; bp.textContent = "Building…";
+    try { await api(`/api/projects/${currentProject}/preview`, { method: "POST" }); renderArtifacts(); }
+    catch (e) { alert(e.message); bp.disabled = false; bp.textContent = "▶ Build the demo app"; }
+  });
+}
+
+// --- AGENTS TAB: the actual machines ----------------------------------------
+async function renderAgents() {
+  const el = $("#agents");
+  if (el.hidden) return;
+  let a;
+  try { a = await api("/api/agents"); }
+  catch (e) { el.innerHTML = `<div class="pane"><p class="dim">${escapeHtml(e.message)}</p></div>`; return; }
+  const rows = (a.agents || []).map((g) => `
+    <tr>
+      <td><span class="role">${escapeHtml(g.role)}</span></td>
+      <td>${escapeHtml(g.title)}</td>
+      <td><code>${escapeHtml(g.ref)}</code></td>
+      <td>${escapeHtml(g.model)}</td>
+      <td>${Math.floor(g.uptime_s / 60)}m ${g.uptime_s % 60}s</td>
+      <td><button data-logs="${g.task_id}">logs</button></td>
+    </tr>`).join("");
+  el.innerHTML = `
+    <div class="pane">
+      <h2>🖥 Machines</h2>
+      <p class="hint">Execution mode: <b>${a.mode === "k8s" ? `Kubernetes (namespace ${escapeHtml(a.namespace)})` : "local processes"}</b>
+        · running now: <b>${a.running}</b> · max at once: ${a.max_parallel}</p>
+      <table class="agents-table">
+        <thead><tr><th>Role</th><th>Task</th><th>${a.mode === "k8s" ? "Pod / Job" : "Process"}</th><th>Model</th><th>Uptime</th><th></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="6" class="dim">No agents running right now.</td></tr>'}</tbody>
+      </table>
+      <pre id="machineLogs" hidden></pre>
+    </div>`;
+  el.querySelectorAll("[data-logs]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const box = $("#machineLogs");
+      box.hidden = false; box.textContent = "loading…";
+      try {
+        const r = await api(`/api/tasks/${b.dataset.logs}/machine-logs`);
+        box.textContent = `— ${r.source} —\n\n${r.logs}`;
+      } catch (e) { box.textContent = e.message; }
+    }));
+}
+
 // --- artifacts / public link ------------------------------------------------
 async function showArtifacts() {
   if (!currentProject) return;
@@ -805,13 +900,58 @@ document.querySelectorAll(".vchip").forEach((chip) =>
     document.querySelectorAll(".vchip").forEach((c) => c.classList.remove("active"));
     chip.classList.add("active");
     const v = chip.dataset.v;
-    $("#command").hidden = v !== "command";
-    $("#board").hidden = v !== "board";
-    $("#dag").hidden = v !== "dag";
+    for (const id of ["command", "board", "dag", "artifacts", "agents"])
+      $("#" + id).hidden = id !== v;
     if (v === "dag") renderDag(lastTasks);
     if (v === "command" && lastProject) renderCommand(lastProject);
+    if (v === "artifacts") renderArtifacts();
+    if (v === "agents") renderAgents();
   }),
 );
+
+// --- notification centre -----------------------------------------------------
+async function refreshBell() {
+  let n;
+  try { n = await api("/api/notifications"); } catch { return; }
+  const badge = $("#bellCount");
+  badge.hidden = n.count === 0;
+  badge.textContent = n.count;
+  $("#bellBtn").classList.toggle("has-items", n.count > 0);
+  const panel = $("#bellPanel");
+  if (panel.hidden) return;                 // only rebuild when it's open
+  panel.innerHTML = n.count === 0
+    ? `<div class="bell-empty">Nothing needs you right now.</div>`
+    : n.items.map((it) => `
+      <div class="bell-item" data-q="${it.question_id}">
+        <div class="bell-proj">${escapeHtml(it.project)} · #${it.project_id}</div>
+        <div class="bell-q">${escapeHtml(trim(it.question, 220))}</div>
+        <div class="bell-opts">
+          ${(it.options || []).slice(0, 4).map((o, i) =>
+            `<button data-q="${it.question_id}" data-opt="${i}">${escapeHtml(trim(o, 60))}</button>`).join("")}
+          <button class="link" data-open="${it.project_id}">Open project →</button>
+        </div>
+      </div>`).join("");
+  panel.querySelectorAll("[data-opt]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const item = n.items.find((x) => String(x.question_id) === b.dataset.q);
+      await answerQuestion(Number(b.dataset.q), item.options[Number(b.dataset.opt)]);
+      refreshBell();
+    }));
+  panel.querySelectorAll("[data-open]").forEach((b) =>
+    b.addEventListener("click", () => {
+      panel.hidden = true;
+      openProject(Number(b.dataset.open));
+    }));
+}
+
+$("#bellBtn").addEventListener("click", () => {
+  const panel = $("#bellPanel");
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) refreshBell();
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest(".bell-wrap")) $("#bellPanel").hidden = true;
+});
 
 document.querySelectorAll(".vb").forEach((chip) =>
   chip.addEventListener("click", () => {
@@ -997,6 +1137,8 @@ async function boot() {
   await loadHealth();
   loadRepos();
   showHome();
+  refreshBell();
+  setInterval(refreshBell, 20000);
   if (!ws) connectWs();
   if (window.Notification && Notification.permission === "default")
     setTimeout(() => Notification.requestPermission(), 1500);

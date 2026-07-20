@@ -154,6 +154,58 @@ async def create_my_repo(body: NewRepo, request: Request) -> dict:
     return {"repo": result}
 
 
+@router.get("/api/agents")
+def list_agents() -> dict:
+    """Live infrastructure: every worker machine currently running, plus how work is
+    being executed (local processes vs Kubernetes Jobs)."""
+    from . import launcher as lx
+    import time as _t
+    agents = []
+    for task_id, info in list(lx.ACTIVE.items()):
+        t = db.get_task(task_id)
+        p = db.get_project(info["project_id"])
+        agents.append({
+            "task_id": task_id, "kind": info["kind"], "ref": info["ref"],
+            "role": info["role"], "model": info["model"], "title": info.get("title", ""),
+            "project_id": info["project_id"], "project": p["name"] if p else "",
+            "uptime_s": int(_t.time() - info["started_at"]),
+            "status": t["status"] if t else "gone",
+            "location": info.get("workdir", ""),
+        })
+    return {"mode": config.LAUNCHER, "namespace": config.K8S_NAMESPACE,
+            "max_parallel": config.MAX_CONCURRENT_WORKERS,
+            "running": len(agents), "agents": agents}
+
+
+@router.get("/api/tasks/{task_id}/machine-logs")
+def machine_logs(task_id: int) -> dict:
+    """Raw logs from the machine running this task (k8s pod logs when on a cluster)."""
+    if config.LAUNCHER == "k8s":
+        try:
+            from .launcher import get_launcher
+            return {"source": "k8s pod", "logs": get_launcher().pod_logs(task_id)}
+        except Exception as e:
+            return {"source": "k8s pod", "logs": f"could not read pod logs: {e}"}
+    evs = db.list_task_events(task_id)
+    lines = [f"[{e['kind']}] {e['payload'][:400]}" for e in evs]
+    return {"source": "local process (event stream)", "logs": "\n".join(lines) or "no output yet"}
+
+
+@router.get("/api/notifications")
+def notifications() -> dict:
+    """Everything waiting on the boss, across all projects — for the bell menu."""
+    items = []
+    for p in db.list_projects():
+        if p["status"] in ("cancelled",):
+            continue
+        q = db.pending_question(p["id"])
+        if q:
+            items.append({"project_id": p["id"], "project": p["name"],
+                          "question_id": q["id"], "question": q["text"],
+                          "options": db.json.loads(q["options"])})
+    return {"count": len(items), "items": items}
+
+
 @router.get("/api/health")
 def health() -> dict:
     return {"ok": True, "launcher": config.LAUNCHER, "auth": config.auth_mode(),
@@ -270,13 +322,23 @@ async def get_artifacts(project_id: int) -> dict:
     if not project:
         raise HTTPException(404, "no such project")
     repo = project["repo"]
-    out = {"repo": repo, "repo_url": f"https://github.com/{repo}" if repo else None,
-           "prs": [], "branches": [], "pages_url": None}
+    tasks = db.list_tasks(project_id)
+    # A plain-language record of what the team actually did, per task.
+    work = [{"id": t["id"], "role": t["role"], "title": t["title"], "status": t["status"],
+             "pr": t["pr_number"], "attempts": t["attempts"], "model": t["model"],
+             "outcome": (t["report"] or "").strip()[:1200]}
+            for t in tasks]
+    out = {
+        "repo": repo, "repo_url": f"https://github.com/{repo}" if repo else None,
+        "project": project["name"], "brief": project["brief"],
+        "status": project["status"], "conclusion": project["summary"],
+        "preview_url": f"/preview/{project_id}/" if preview.preview_root(project_id) else None,
+        "work": work, "prs": [], "branches": [],
+    }
     if github_client.enabled(repo):
         try:
             out["prs"] = await github_client.list_prs(repo)
             out["branches"] = await github_client.list_branches(repo)
-            out["pages_url"] = await github_client.get_pages_url(repo)
         except Exception as e:
             out["error"] = str(e)[:200]
     return out
@@ -390,6 +452,16 @@ async def add_task(project_id: int, body: NewTask) -> dict:
     deps = [d for d in body.depends_on if d in valid]
     task_id = db.create_task(project_id, body.role, body.title, body.description,
                              deps=deps, origin="runtime")
+    # New work on a finished project puts it back to work: reopen it and bring the
+    # manager back so the task is planned, reviewed and shipped like any other.
+    if project["status"] in ("done", "failed", "review", "cancelled"):
+        db.set_project_status(project_id, "running")
+        existing = _manager_tasks.get(project_id)
+        if not existing or existing.done():
+            _manager_tasks[project_id] = asyncio.get_event_loop().create_task(
+                manager.run_manager(project_id))
+        bus.emit(project_id, None, "system", "reopened",
+                 {"reason": f"boss added a new {body.role} task"})
     if github_client.enabled(project["repo"]):
         try:
             n = await github_client.create_issue(

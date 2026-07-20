@@ -107,21 +107,33 @@ def pick_model(task: dict, project: dict | None = None) -> str:
     return role["model"] if role else config.WORKER_MODEL
 
 
+# Live worker registry so the dashboard can show real running machines.
+# task_id -> {kind, ref, role, model, project_id, started_at, workdir}
+ACTIVE: dict[int, dict] = {}
+
+
 class LocalLauncher:
     async def launch(self, task: dict, project: dict) -> None:
-        env = _worker_env(task, project, pick_model(task, project))
+        model = pick_model(task, project)
+        env = _worker_env(task, project, model)
         workdir = config.WORKSPACES_DIR / f"task-{task['id']}-a{task['attempts']}"
         workdir.mkdir(parents=True, exist_ok=True)
         import os
+        import time as _t
         proc = await asyncio.create_subprocess_exec(
             sys.executable, str(config.WORKER_SCRIPT),
             env={**os.environ, **env, "WORKDIR": str(workdir)},
             cwd=str(workdir),
         )
+        ACTIVE[task["id"]] = {"kind": "process", "ref": f"pid {proc.pid}",
+                              "role": task["role"], "model": model,
+                              "project_id": task["project_id"], "started_at": _t.time(),
+                              "workdir": str(workdir), "title": task["title"]}
         asyncio.get_event_loop().create_task(self._reap(proc, task))
 
     async def _reap(self, proc, task: dict) -> None:
         code = await proc.wait()
+        ACTIVE.pop(task["id"], None)
         # The worker's /internal/report is the source of truth. Grace period: the
         # report POST can land a moment after the process exits, so wait before
         # declaring failure to avoid a spurious "died without reporting".
@@ -145,9 +157,15 @@ class K8sLauncher:
         self.client = client
 
     async def launch(self, task: dict, project: dict) -> None:
-        env = _worker_env(task, project, pick_model(task, project))
+        import time as _t
+        model = pick_model(task, project)
+        env = _worker_env(task, project, model)
         k = self.client
         name = f"devteam-worker-{task['id']}-a{task['attempts']}"
+        ACTIVE[task["id"]] = {"kind": "k8s-job", "ref": name, "role": task["role"],
+                              "model": model, "project_id": task["project_id"],
+                              "started_at": _t.time(), "workdir": config.K8S_NAMESPACE,
+                              "title": task["title"]}
         job = k.V1Job(
             metadata=k.V1ObjectMeta(
                 name=name,
@@ -158,7 +176,8 @@ class K8sLauncher:
                 ttl_seconds_after_finished=600,
                 active_deadline_seconds=3600,
                 template=k.V1PodTemplateSpec(
-                    metadata=k.V1ObjectMeta(labels={"app": "devteam-worker"}),
+                    metadata=k.V1ObjectMeta(labels={"app": "devteam-worker",
+                                                    "task-id": str(task["id"])}),
                     spec=k.V1PodSpec(
                         restart_policy="Never",
                         containers=[
@@ -179,6 +198,17 @@ class K8sLauncher:
         await asyncio.to_thread(
             self.batch.create_namespaced_job, namespace=config.K8S_NAMESPACE, body=job
         )
+
+    def pod_logs(self, task_id: int, tail: int = 200) -> str:
+        """Logs straight from the worker's pod (k8s mode)."""
+        from kubernetes import client as kclient
+        core = kclient.CoreV1Api()
+        pods = core.list_namespaced_pod(
+            namespace=config.K8S_NAMESPACE, label_selector=f"task-id={task_id}")
+        if not pods.items:
+            return "no pod found for this task (it may have finished and been cleaned up)"
+        return core.read_namespaced_pod_log(
+            name=pods.items[0].metadata.name, namespace=config.K8S_NAMESPACE, tail_lines=tail)
 
 
 _launcher = None

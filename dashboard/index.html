@@ -26,6 +26,10 @@
   <div id="authBadge" class="badge">auth: …</div>
   <div id="costBadge" class="badge" hidden>—</div>
   <div id="statusBadge" class="badge" hidden>—</div>
+  <div class="bell-wrap">
+    <button id="bellBtn" title="Requests waiting on you">🔔<span id="bellCount" hidden>0</span></button>
+    <div id="bellPanel" hidden></div>
+  </div>
   <button id="settingsBtn" title="Your GitHub & API keys">⚙</button>
   <button id="logoutBtn" title="Sign out">⏻</button>
   <button id="artifactsBtn" hidden title="Repo, PRs, and the public link">📦 Artifacts</button>
@@ -51,10 +55,14 @@
       <button class="chip vchip active" data-v="command">👑 Command</button>
       <button class="chip vchip" data-v="board">Board</button>
       <button class="chip vchip" data-v="dag">Dependencies</button>
+      <button class="chip vchip" data-v="artifacts">📦 Artifacts</button>
+      <button class="chip vchip" data-v="agents">🖥 Agents</button>
       <div class="vspacer"></div>
       <button id="addTaskBtn" class="chip" title="Add a task yourself">+ Add task</button>
     </div>
     <section id="command"></section>
+    <section id="artifacts" hidden></section>
+    <section id="agents" hidden></section>
     <section id="dag" hidden><svg id="dagSvg" xmlns="http://www.w3.org/2000/svg"></svg></section>
     <section id="board" hidden>
     <div class="col" data-col="planned"><h2>Planned</h2><div class="cards"></div></div>

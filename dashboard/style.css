@@ -329,3 +329,45 @@ pre.dim, .dim { color: var(--dim); }
 
 .ev.ratelimit { border-color: var(--warn); background: var(--warn-soft); }
 .agent .deps { font-family: var(--mono); font-size: 10.5px; }
+
+/* ---------- artifacts & agents tabs ---------- */
+#artifacts, #agents { flex: 1; overflow-y: auto; }
+.pane { background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 22px 24px; }
+.pane h2 { font-size: 19px; font-weight: 650; letter-spacing: -.3px; }
+.pane h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--faint); font-weight: 650; margin: 22px 0 10px; }
+.pane .brief { color: var(--dim); font-size: 13px; margin-top: 5px; }
+.demo-row { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.demo-btn { background: var(--accent); color: #fff; padding: 11px 20px; border-radius: 9px; text-decoration: none; font-weight: 600; font-size: 14px; }
+.demo-btn:hover { background: #4338ca; }
+.conclusion { background: var(--good-soft); border: 1px solid #bfe6cd; border-radius: 10px; padding: 13px 15px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+.work-list { display: flex; flex-direction: column; gap: 10px; }
+.work-item { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--card-2); }
+.work-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.work-head .role { font-size: 10.5px; text-transform: uppercase; letter-spacing: .8px; font-weight: 700; color: var(--accent); }
+.work-head a { color: var(--accent); text-decoration: none; font-size: 12px; }
+.work-title { font-size: 13.5px; font-weight: 600; margin-top: 5px; }
+.work-item details { margin-top: 8px; }
+.work-item summary { cursor: pointer; font-size: 12px; color: var(--dim); }
+.work-item pre { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 11px; font-size: 12px; font-family: var(--mono); white-space: pre-wrap; max-height: 260px; overflow-y: auto; margin-top: 7px; }
+.agents-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+.agents-table th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--faint); padding: 9px 10px; border-bottom: 1px solid var(--line); }
+.agents-table td { padding: 11px 10px; border-bottom: 1px solid var(--line-soft); }
+.agents-table code { font-family: var(--mono); font-size: 11.5px; background: var(--card-2); padding: 2px 6px; border-radius: 5px; }
+.agents-table .role { font-size: 10.5px; text-transform: uppercase; font-weight: 700; color: var(--accent); }
+#machineLogs { margin-top: 16px; background: #16191f; color: #d7dde5; border-radius: 10px; padding: 14px; font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; max-height: 380px; overflow-y: auto; }
+
+/* ---------- notification bell ---------- */
+.bell-wrap { position: relative; }
+#bellBtn { position: relative; padding: 7px 11px; }
+#bellBtn.has-items { border-color: var(--warn); background: var(--warn-soft); }
+#bellCount { background: var(--bad); color: #fff; border-radius: 999px; font-size: 10px; padding: 1px 6px; margin-left: 4px; font-weight: 700; }
+#bellPanel { position: absolute; right: 0; top: 42px; width: 380px; max-height: 460px; overflow-y: auto; background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-lg); z-index: 40; padding: 8px; }
+.bell-empty { padding: 22px; text-align: center; color: var(--dim); font-size: 13px; }
+.bell-item { padding: 12px; border-bottom: 1px solid var(--line-soft); }
+.bell-item:last-child { border-bottom: none; }
+.bell-proj { font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--faint); font-weight: 650; }
+.bell-q { font-size: 12.5px; margin: 6px 0 9px; line-height: 1.5; }
+.bell-opts { display: flex; flex-direction: column; gap: 5px; }
+.bell-opts button { font-size: 12px; padding: 7px 10px; text-align: left; }
+.bell-opts button:hover { border-color: var(--warn); color: var(--warn); }
+.bell-opts .link { background: none; border: none; color: var(--accent); text-align: left; padding: 4px 0; }
