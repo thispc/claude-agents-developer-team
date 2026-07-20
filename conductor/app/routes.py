@@ -168,7 +168,8 @@ async def suggest_team(body: BriefOnly) -> dict:
 
 
 @router.post("/api/projects")
-async def create_project(body: NewProject) -> dict:
+async def create_project(body: NewProject, request: Request) -> dict:
+    owner = auth.user_for_token(request.cookies.get("devteam_session"))
     if not config.AUTH_CONFIGURED:
         raise HTTPException(400, "Set ANTHROPIC_API_KEY (API billing) or "
                                  "CLAUDE_CODE_OAUTH_TOKEN (Pro/Max subscription) on the conductor")
@@ -187,6 +188,7 @@ async def create_project(body: NewProject) -> dict:
         team=team, autonomy=autonomy,
         manager_model=body.manager_model.strip(),
         manager_persona=body.manager_persona.strip(),
+        owner_id=(owner["id"] if owner else 0),
     )
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
     # Make sure the target repo exists before the team tries to clone it. This is
@@ -471,6 +473,10 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
     _check_token(x_worker_token)
     status = "pushed" if body.status == "pushed" else "failed"
     task = db.get_task(body.task_id)
+    from .launcher import looks_rate_limited
+    if status == "failed" and looks_rate_limited(body.report):
+        bus.emit(body.project_id, body.task_id, "system", "rate_limited",
+                 {"model": task.get("model") if task else "", "detail": body.report[:300]})
     db.update_task(body.task_id, status=status, report=body.report,
                    cost_usd=(task["cost_usd"] if task else 0) + body.cost_usd)
     db.add_project_cost(body.project_id, body.cost_usd)

@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS projects (
     runs_used INTEGER NOT NULL DEFAULT 0,
     team TEXT NOT NULL DEFAULT '[]',   -- recruited roster: [{role, count, model}]
     autonomy TEXT NOT NULL DEFAULT 'supervised',  -- supervised | autonomous
+    owner_id INTEGER NOT NULL DEFAULT 0,          -- whose credentials the agents use
     manager_model TEXT NOT NULL DEFAULT '',       -- '' = server default
     manager_persona TEXT NOT NULL DEFAULT '',     -- extra character instructions
     cost_usd REAL NOT NULL DEFAULT 0,
@@ -39,6 +40,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     status TEXT NOT NULL DEFAULT 'planned',
     deps TEXT NOT NULL DEFAULT '[]',
     origin TEXT NOT NULL DEFAULT 'initial',   -- initial | runtime (added mid-project)
+    model TEXT NOT NULL DEFAULT '',           -- model actually used for the last run
     branch TEXT NOT NULL DEFAULT '',
     issue_number INTEGER,
     pr_number INTEGER,
@@ -90,6 +92,8 @@ def init() -> None:
         "ALTER TABLE projects ADD COLUMN autonomy TEXT NOT NULL DEFAULT 'supervised'",
         "ALTER TABLE projects ADD COLUMN manager_model TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE projects ADD COLUMN manager_persona TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tasks ADD COLUMN model TEXT NOT NULL DEFAULT ''",
     ):
         try:
             _conn.execute(stmt)
@@ -117,12 +121,13 @@ def _rows(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
 def create_project(name: str, brief: str, repo: str, budget_usd: float,
                    max_workers: int, max_runs: int = 40, team: list | None = None,
                    autonomy: str = "supervised", manager_model: str = "",
-                   manager_persona: str = "") -> int:
+                   manager_persona: str = "", owner_id: int = 0) -> int:
     cur = _execute(
         "INSERT INTO projects (name, brief, repo, budget_usd, max_workers, max_runs, team, "
-        "autonomy, manager_model, manager_persona, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "autonomy, manager_model, manager_persona, owner_id, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (name, brief, repo, budget_usd, max_workers, max_runs, json.dumps(team or []),
-         autonomy, manager_model, manager_persona, time.time()),
+         autonomy, manager_model, manager_persona, owner_id, time.time()),
     )
     return cur.lastrowid
 

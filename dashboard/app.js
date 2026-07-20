@@ -295,6 +295,7 @@ function renderEvent(e) {
   if (e.source === "manager" && e.kind === "message") cls += " mgrmsg";
   if (e.kind === "boss_question") cls += " question";
   if (e.source === "boss") cls += " bossmsg";
+  if (e.kind === "rate_limited" || e.kind === "reassigned") cls += " ratelimit";
   // Simple mode hides mechanical chatter; these are the "noise" kinds.
   if (["result", "agent_status", "dispatched", "repo_ready", "resumed_after_restart",
        "task_edited", "push_retry"].includes(e.kind)) cls += " sys-noise";
@@ -317,6 +318,8 @@ function renderEvent(e) {
       else if (e.kind === "task_accepted") text = `✅ Accepted: ${obj.verdict || ""}`;
       else if (e.kind === "changes_requested") text = `↩ Sent back for changes: ${obj.feedback || ""}`;
       else if (e.kind === "project_finished") text = `🏁 Project ${obj.status}`;
+      else if (e.kind === "rate_limited") text = `⏳ ${obj.model || "a model"} hit a rate limit — the manager will move this work`;
+      else if (e.kind === "reassigned") text = `🔄 Moved to ${obj.model}: ${obj.reason || ""}`;
       else text = JSON.stringify(obj);
     }
   } catch { /* plain text payload */ }
@@ -470,6 +473,7 @@ function renderCommand(p) {
   const el = $("#command");
   if (!el || el.hidden) return;
   const tasks = p.tasks || [];
+  let roster = []; try { roster = JSON.parse(p.team || "[]"); } catch { /* */ }
   const busy = tasks.some((t) => ["running", "queued"].includes(t.status));
   const mgrModel = p.manager_model || "Sonnet 5";
   const mode = p.autonomy === "autonomous" ? "full autonomy" : "checks with you";
@@ -496,6 +500,18 @@ function renderCommand(p) {
     const doing = agentActivity[t.id] || (t.status === "planned"
       ? "Waiting for their turn." : t.status === "done" ? "Finished and handed in."
       : t.status === "failed" ? "Hit a problem — manager is on it." : "Getting started…");
+    // Show the model this agent ran on. For tasks that haven't run yet (or predate
+    // model tracking), show the model they're slated to use, from the recruited roster.
+    const pretty = (m) => m.replace("claude-", "").replace("-4-5", " 4.5")
+      .replace("-4-8", " 4.8").replace(/-5$/, " 5");
+    let modelLabel;
+    if (t.model) modelLabel = pretty(t.model);
+    else {
+      const hired = (roster || []).find((r) => r.role === t.role);
+      modelLabel = hired
+        ? pretty(hired.model === "lead" ? "claude-sonnet-5" : "claude-haiku-4-5") + " (planned)"
+        : "—";
+    }
     return `<div class="agent ${t.status}" data-task="${t.id}">
       <div class="top">
         <span class="role">${escapeHtml(t.role)}</span>
@@ -503,7 +519,8 @@ function renderCommand(p) {
       </div>
       <div class="title">${escapeHtml(t.title)}</div>
       <div class="doing">${escapeHtml(trim(doing, 150))}</div>
-      ${deps.length ? `<div class="deps">starts after ${deps.map((d) => "#" + d).join(", ")}</div>` : ""}
+      <div class="deps">🧠 ${escapeHtml(modelLabel)}${t.attempts > 1 ? ` · attempt ${t.attempts}` : ""}
+        ${deps.length ? ` · after ${deps.map((d) => "#" + d).join(", ")}` : ""}</div>
     </div>`;
   }).join("");
 

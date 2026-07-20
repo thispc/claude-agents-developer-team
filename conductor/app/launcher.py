@@ -14,13 +14,43 @@ import sys
 from . import config, db, bus
 
 
-def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
-    auth: dict[str, str] = {}
+def owner_credentials(project: dict) -> dict[str, str]:
+    """Credentials the agents on this project should run under.
+
+    Precedence: the project owner's own keys (so each user pays their own way and
+    uses their own subscription), then the server's, then the machine's Claude CLI
+    login (inherited by subprocesses when nothing else is set).
+    """
+    from . import auth as auth_mod
+    creds: dict[str, str] = {}
+    owner = auth_mod.get_user(project.get("owner_id") or 0)
+    if owner:
+        s = auth_mod.get_settings(owner)
+        if s.get("anthropic_api_key"):
+            creds["ANTHROPIC_API_KEY"] = s["anthropic_api_key"]
+        elif s.get("claude_oauth_token"):
+            creds["CLAUDE_CODE_OAUTH_TOKEN"] = s["claude_oauth_token"]
+    if creds:
+        return creds
     if config.ANTHROPIC_API_KEY:
-        auth["ANTHROPIC_API_KEY"] = config.ANTHROPIC_API_KEY
-    elif config.CLAUDE_CODE_OAUTH_TOKEN:
-        auth["CLAUDE_CODE_OAUTH_TOKEN"] = config.CLAUDE_CODE_OAUTH_TOKEN
-    # else: local CLI login — subprocess workers inherit the stored credentials.
+        return {"ANTHROPIC_API_KEY": config.ANTHROPIC_API_KEY}
+    if config.CLAUDE_CODE_OAUTH_TOKEN:
+        return {"CLAUDE_CODE_OAUTH_TOKEN": config.CLAUDE_CODE_OAUTH_TOKEN}
+    return {}   # local CLI login — inherited from the environment
+
+
+def owner_github_token(project: dict) -> str:
+    from . import auth as auth_mod
+    owner = auth_mod.get_user(project.get("owner_id") or 0)
+    if owner:
+        tok = auth_mod.get_settings(owner).get("github_token")
+        if tok:
+            return tok
+    return config.GITHUB_TOKEN
+
+
+def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
+    auth = owner_credentials(project)
     return {
         **auth,
         "CONDUCTOR_URL": config.CONDUCTOR_URL,
@@ -33,15 +63,39 @@ def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
         "TASK_FEEDBACK": task.get("feedback", ""),
         "BRANCH": task["branch"],
         "REPO": project["repo"],
-        "GITHUB_TOKEN": config.GITHUB_TOKEN,
+        "GITHUB_TOKEN": owner_github_token(project),
         "MODEL": model,
         "MAX_TURNS": str(config.WORKER_MAX_TURNS),
     }
 
 
+RATE_LIMIT_MARKERS = ("rate limit", "rate_limit", "429", "overloaded", "quota",
+                      "usage limit", "too many requests")
+
+
+def looks_rate_limited(text: str) -> bool:
+    t = (text or "").lower()
+    return any(m in t for m in RATE_LIMIT_MARKERS)
+
+
+# Models a throttled task can be moved to, cheapest/most-available first.
+FALLBACK_ORDER = ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"]
+
+
 def pick_model(task: dict, project: dict | None = None) -> str:
-    """Model precedence: escalation (after repeated failures) > the boss's recruited
-    per-role choice for this project > the role's roles.json default > WORKER_MODEL."""
+    """Model precedence: an explicit reassignment by the manager > a fallback when the
+    previous run was rate-limited > escalation after repeated failures > the boss's
+    recruited per-role choice > the role's roles.json default > WORKER_MODEL."""
+    # The manager (or auto-fallback) pinned a specific model for this task.
+    if task.get("model"):
+        return task["model"]
+    # Previous attempt died on a rate limit — move to a different model rather than
+    # hammering the same constrained one.
+    if task["attempts"] >= 1 and looks_rate_limited(task.get("report", "")):
+        prev = task.get("model") or config.WORKER_MODEL
+        for m in FALLBACK_ORDER:
+            if m != prev:
+                return m
     if task["attempts"] >= 2:
         return config.ESCALATION_MODEL
     if project:
@@ -167,9 +221,11 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
         return f"error: budget exhausted (${project['cost_usd']:.2f} of ${project['budget_usd']:.2f})"
 
     db.inc_runs(task["project_id"])
-    db.update_task(task_id, status="queued", attempts=task["attempts"] + 1)
-    task = db.get_task(task_id)
     model = pick_model(task, project)
+    # Record the model this run actually uses so it's visible in the UI and the
+    # manager can reason about who is on what.
+    db.update_task(task_id, status="queued", attempts=task["attempts"] + 1, model=model)
+    task = db.get_task(task_id)
     await get_launcher().launch(task, project)
     bus.emit(task["project_id"], task_id, source, "dispatched",
              {"role": task["role"], "title": task["title"], "model": model,

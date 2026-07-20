@@ -269,6 +269,29 @@ def build_team_server(project_id: int):
         return _text(f"task {task_id} queued for rework; the scheduler will re-dispatch it. "
                      "Call wait for the result.")
 
+    @tool("reassign_task", "Pull a task off its current agent and re-run it on a different "
+          "model — use when a model is rate-limited/overloaded, when cheap work needs a "
+          "stronger brain, or when an expensive model is overkill. Valid models: "
+          "claude-haiku-4-5 (fast/cheap, most headroom), claude-sonnet-5 (balanced), "
+          "claude-opus-4-8 (most capable). Give a short reason.",
+          {"task_id": int, "model": str, "reason": str})
+    async def reassign_task(args: dict[str, Any]) -> dict[str, Any]:
+        task_id = int(args["task_id"])
+        t = db.get_task(task_id)
+        if not t:
+            return _text("error: no such task")
+        model = str(args.get("model", "")).strip()
+        allowed = {"claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"}
+        if model not in allowed:
+            return _text(f"error: model must be one of {sorted(allowed)}")
+        db.update_task(task_id, model=model, status="planned",
+                       feedback=(t["feedback"] or "") +
+                                f"\n[reassigned to {model}: {args.get('reason', '')}]")
+        bus.emit(project_id, task_id, "manager", "reassigned",
+                 {"model": model, "reason": args.get("reason", "")})
+        scheduler.ensure(project_id)
+        return _text(f"task {task_id} reassigned to {model}; the scheduler will re-run it.")
+
     @tool("accept_task", "Mark a task done after judging its report, when there is no PR to "
           "merge — e.g. a tester task that only verified and made no code changes. Use this "
           "to close verification tasks so dependents unblock and the board stays clean. Pass "
@@ -315,13 +338,14 @@ def build_team_server(project_id: int):
     return create_sdk_mcp_server(
         name="team", version="1.0.0",
         tools=[create_tasks, add_tasks, status, wait, ask_boss, get_report,
-               request_changes, accept_task, merge_pr, finish],
+               request_changes, reassign_task, accept_task, merge_pr, finish],
     )
 
 
 MANAGER_TOOLS = [f"mcp__team__{n}" for n in
                  ("create_tasks", "add_tasks", "status", "wait", "ask_boss",
-                  "get_report", "request_changes", "accept_task", "merge_pr", "finish")]
+                  "get_report", "request_changes", "reassign_task", "accept_task",
+                  "merge_pr", "finish")]
 
 BUILTIN_TOOLS_OFF = ["Bash", "Read", "Write", "Edit", "Glob", "Grep",
                      "WebSearch", "WebFetch", "Task", "NotebookEdit", "TodoWrite"]
@@ -376,8 +400,12 @@ async def run_manager(project_id: int) -> None:
     if persona:
         system_prompt += ("\n\n## Additional character instructions from your boss "
                           "(these take precedence)\n\n" + persona)
+    # Run the manager under the project owner's own credentials (their key or their
+    # subscription token), falling back to the server's.
+    from .launcher import owner_credentials
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,
+        env=owner_credentials(project),
         model=(project.get("manager_model") or "").strip() or config.LEAD_MODEL,
         max_turns=config.LEAD_MAX_TURNS,
         mcp_servers={"team": build_team_server(project_id)},

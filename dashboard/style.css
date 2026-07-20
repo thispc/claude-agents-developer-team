@@ -326,3 +326,6 @@ pre.dim, .dim { color: var(--dim); }
   main { grid-template-columns: 1fr; }
   #board { grid-template-columns: repeat(2, 1fr); }
 }
+
+.ev.ratelimit { border-color: var(--warn); background: var(--warn-soft); }
+.agent .deps { font-family: var(--mono); font-size: 10.5px; }
