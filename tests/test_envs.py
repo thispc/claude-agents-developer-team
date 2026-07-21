@@ -184,3 +184,46 @@ def test_a_registry_name_is_not_doubled_up(monkeypatch):
 def test_on_kind_uses_the_local_tag(monkeypatch):
     monkeypatch.setattr(envs, "on_kind", lambda: True)
     assert envs.cluster_tag("devteam-conductor:abc") == "devteam-conductor:abc"
+
+
+# ---- a managed cluster is not kind ---------------------------------------
+
+def test_a_managed_cluster_gets_nodeport_not_a_loadbalancer(monkeypatch):
+    """Every LoadBalancer is billed, and one per preview is how a credit
+    disappears into networking rather than compute."""
+    monkeypatch.setattr(envs, "on_kind", lambda: False)
+    monkeypatch.setattr(config, "APPS_DOMAIN", "")
+    m = envs.manifests("pr-1", "img:1", "devteam-pr-1")
+    assert "type: NodePort" in m
+    assert "LoadBalancer" not in m
+    assert "Ingress" not in m, "an ingress with no wildcard domain buys nothing"
+
+
+def test_kind_keeps_clusterip_and_ingress(monkeypatch):
+    monkeypatch.setattr(envs, "on_kind", lambda: True)
+    m = envs.manifests("pr-1", "img:1", "devteam-pr-1")
+    assert "type: ClusterIP" in m and "Ingress" in m
+
+
+def test_a_private_registry_means_the_pod_needs_a_pull_secret(monkeypatch):
+    """Without it the pods sit in ImagePullBackOff, which reads as "image not
+    found" and sends you hunting for a build problem that isn't there."""
+    monkeypatch.setattr(envs, "on_kind", lambda: False)
+    monkeypatch.setattr(envs, "REGISTRY", "registry.digitalocean.com/x")
+    assert "imagePullSecrets" in envs.manifests("pr-1", "img:1", "devteam-pr-1")
+
+
+def test_no_pull_secret_when_no_registry(monkeypatch):
+    monkeypatch.setattr(envs, "on_kind", lambda: True)
+    monkeypatch.setattr(envs, "REGISTRY", "")
+    assert "imagePullSecrets" not in envs.manifests("pr-1", "img:1", "devteam-pr-1")
+
+
+def test_a_real_cluster_cross_builds_for_its_own_architecture():
+    """kind reuses the host's arch, so local testing can never surface this: DOKS
+    nodes are amd64, a Mac builds arm64, and that image dies on the node with
+    "exec format error" — which says nothing about architecture."""
+    src = (REPO / "conductor" / "app" / "envs.py").read_text()
+    body = src.split("def build(")[1].split("\ndef ")[0]
+    assert "buildx" in body and "DEPLOY_PLATFORM" in body
+    assert "--push" in body

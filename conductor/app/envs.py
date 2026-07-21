@@ -123,7 +123,24 @@ def build(source: str, note: str = "") -> dict[str, Any]:
     if not dockerfile.exists():
         return {"ok": False, "error": "deploy/Dockerfile.conductor is missing"}
 
-    r = _sh("docker", "build", "-f", str(dockerfile), "-t", tag, str(tree), timeout=1800)
+    # Build for the architecture the CLUSTER runs, not the one this machine has.
+    #
+    # kind reuses the host's architecture, so local testing can never surface
+    # this — but DOKS nodes are amd64 and a Mac builds arm64 by default, and that
+    # image dies on the node with "exec format error", which says nothing about
+    # architecture. When the target is a real cluster we cross-build with buildx
+    # and push in the same step, because an amd64 image is not runnable here and
+    # there is nothing to be gained by loading it locally first.
+    if on_kind():
+        r = _sh("docker", "build", "-f", str(dockerfile), "-t", tag, str(tree), timeout=1800)
+    else:
+        if not REGISTRY:
+            return {"ok": False,
+                    "error": "this cluster pulls from a registry, but DOCR_REGISTRY is "
+                             "not set — there is nowhere to push the build"}
+        r = _sh("docker", "buildx", "build", "--platform", config.DEPLOY_PLATFORM,
+                "-f", str(dockerfile), "-t", registry_tag(tag), "--push",
+                str(tree), timeout=3600)
     if r.returncode != 0:
         return {"ok": False, "error": "docker build failed",
                 "log": (r.stdout + r.stderr)[-2500:]}
@@ -186,15 +203,41 @@ def _publish(tag: str) -> tuple[bool, str]:
     if not REGISTRY:
         return False, ("this cluster pulls images from a registry, but DOCR_REGISTRY "
                        "is not set — nodes would have nowhere to fetch the build from")
+    # Already pushed by build(), which cross-compiles straight to the registry —
+    # an amd64 image cannot be held locally on an arm64 machine in any useful way.
     remote = registry_tag(tag)
-    t = _sh("docker", "tag", tag, remote, timeout=120)
-    if t.returncode != 0:
-        return False, t.stderr[-300:]
-    p = _sh("docker", "push", remote, timeout=1800)
-    if p.returncode != 0:
-        return False, ("docker push failed — is `doctl registry login` done? "
-                       + p.stderr[-260:])
-    return True, f"pushed {remote}"
+    r = _sh("docker", "manifest", "inspect", remote, timeout=120)
+    if r.returncode != 0:
+        return False, (f"{remote} is not in the registry — build it for this cluster "
+                       f"first (are you logged in to the registry?)")
+    return True, f"in the registry as {remote}"
+
+
+def ensure_pull_secret(namespace: str) -> tuple[bool, str]:
+    """Copy the registry credential into a namespace so its nodes can pull.
+
+    DOCR is private. Without this the pods sit in ImagePullBackOff, which surfaces
+    as "image can't be found" and sends you hunting for a build problem that isn't
+    there. The secret is copied from the default namespace rather than minted here,
+    so the credential lives in exactly one place.
+    """
+    if not REGISTRY:
+        return True, "no registry configured; nothing to copy"
+    have = _sh("kubectl", "-n", namespace, "get", "secret", "docr-creds", timeout=30)
+    if have.returncode == 0:
+        return True, "already present"
+    dump = _sh("kubectl", "-n", "default", "get", "secret", "docr-creds",
+               "-o", "yaml", timeout=30)
+    if dump.returncode != 0:
+        return False, ("no 'docr-creds' secret in the default namespace to copy — "
+                       "create it once with `kubectl create secret docker-registry`")
+    body = re.sub(r"^\s*namespace:.*$", f"  namespace: {namespace}",
+                  dump.stdout, count=1, flags=re.M)
+    body = re.sub(r"^\s*(resourceVersion|uid|creationTimestamp):.*$", "",
+                  body, flags=re.M)
+    r = subprocess.run(["kubectl", "apply", "-f", "-"], input=body,
+                       capture_output=True, text=True, timeout=60)
+    return r.returncode == 0, (r.stderr or r.stdout)[-200:]
 
 
 def registry_tag(tag: str) -> str:
@@ -216,6 +259,29 @@ def manifests(env: str, tag: str, namespace: str) -> str:
     destroys data is exactly the failure a preview exists to catch.
     """
     host = f"{env}.{config.APPS_DOMAIN}" if config.APPS_DOMAIN else f"{env}.localhost"
+    # A managed cluster bills for every LoadBalancer, and one per preview is how a
+    # credit disappears into networking rather than compute. NodePort reaches the
+    # same pod through the node's own IP for nothing; an ingress is worth it only
+    # once there is a wildcard domain to hang the previews off.
+    expose = "ClusterIP" if on_kind() else "NodePort"
+    # DOCR is private, so the node needs credentials to pull. Without this the
+    # rollout sits in ImagePullBackOff, which reports as "image not found" and
+    # sends you looking for a build problem that isn't there.
+    pull = ("      imagePullSecrets: [{name: docr-creds}]\n" if REGISTRY else "")
+    ingress = f"""---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {{name: devteam-conductor, namespace: {namespace}}}
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: {host}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: {{service: {{name: devteam-conductor, port: {{number: 80}}}}}}
+""" if config.APPS_DOMAIN or on_kind() else ""
     return f"""apiVersion: v1
 kind: Namespace
 metadata: {{name: {namespace}, labels: {{devteam-env: "{env}"}}}}
@@ -257,27 +323,15 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim: {{claimName: devteam-data}}
----
+{pull}---
 apiVersion: v1
 kind: Service
 metadata: {{name: devteam-conductor, namespace: {namespace}}}
 spec:
+  type: {expose}
   selector: {{app: devteam-conductor}}
   ports: [{{port: 80, targetPort: 8000}}]
----
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata: {{name: devteam-conductor, namespace: {namespace}}}
-spec:
-  ingressClassName: nginx
-  rules:
-    - host: {host}
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend: {{service: {{name: devteam-conductor, port: {{number: 80}}}}}}
-"""
+{ingress}"""
 
 
 def deploy_preview(tag: str, env: str) -> dict[str, Any]:
@@ -303,6 +357,10 @@ def deploy_preview(tag: str, env: str) -> dict[str, Any]:
         return {"ok": False, "error": f"could not make the image available to the "
                                       f"cluster: {note}"}
     body = manifests(env, cluster_tag(tag), namespace)
+    # namespace must exist before the secret can be copied into it
+    subprocess.run(["kubectl", "create", "namespace", namespace],
+                   capture_output=True, text=True, timeout=60)
+    sec_ok, sec_note = ensure_pull_secret(namespace)
     r = subprocess.run(["kubectl", "apply", "-f", "-"], input=body,
                        capture_output=True, text=True, timeout=180)
     if r.returncode != 0:
@@ -317,6 +375,7 @@ def deploy_preview(tag: str, env: str) -> dict[str, Any]:
     _save(st)
     return {"ok": w.returncode == 0, "env": env, "namespace": namespace, "tag": tag,
             "host": st["envs"][env]["host"], "published": note,
+            "pull_secret": sec_note if not sec_ok else "ok",
             "error": "" if w.returncode == 0 else (w.stderr or w.stdout)[-400:]}
 
 
