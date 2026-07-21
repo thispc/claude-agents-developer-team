@@ -226,3 +226,49 @@ def test_a_hint_sits_with_the_control_it_describes():
     field rather than a note about the previous one."""
     assert "label > .hint, .field-hint" in CSS
     assert "margin-top: calc(var(--field-gap) * -0.5)" in CSS
+
+
+# --- regressions reported from a live run ----------------------------------
+
+def test_the_managers_model_is_the_headline_not_a_bare_dropdown():
+    """Replacing the big model name with a select lost the one fact the card
+    existed to show — and said the wrong thing: a manager running claude-fable-5
+    displayed "server default", because the picker's list did not contain it and
+    a select falls back to its first option."""
+    assert 'id="mgrModelName"' in JS
+    assert "function modelName(" in JS
+    assert "function managerOptions(" in JS
+    body = JS.split("function managerOptions(")[1][:400]
+    assert "set outside this list" in body, "an unknown model is not offered back"
+
+
+def test_the_team_count_counts_people_not_tasks():
+    """It read `tasks.length` and called it "on the team", so a project with eight
+    hired teammates and two open tasks said "2 on the team"."""
+    assert "${tasks.length} on the team" not in JS
+    assert "lastTeam.length || tasks.length" in JS
+
+
+def test_idle_teammates_are_visible():
+    """The view drew task cards grouped by status, so a teammate only existed once
+    they had work — six of eight people on a real run were invisible."""
+    assert "function benchHtml(" in JS
+    assert "Free right now" in JS
+    assert "/team`" in JS, "the roster is never fetched"
+
+
+def test_a_question_is_the_loudest_thing_in_the_feed():
+    """The manager asked something on a live run and it went unnoticed: a faint
+    warm tint among a hundred other tinted rows."""
+    block = CSS.split(".ev.question {")[1].split("}")[0]
+    assert "var(--boss)" in block, "a question should use the colour that means a human is needed"
+    assert "border-left: 4px" in block
+    assert 'content: "needs you"' in CSS
+
+
+def test_the_improve_tile_does_not_depend_on_which_screen_you_visited():
+    """It was revealed only inside showHome(), so landing straight on a project
+    URL left it hidden until something routed you home or you reloaded."""
+    assert "function applyPermissions()" in JS
+    load_me = JS.split("async function loadMe()")[1][:600]
+    assert "applyPermissions()" in load_me

@@ -37,7 +37,20 @@ async function loadMe() {
   $("#loginScreen").hidden = !!me.signed_in;
   document.querySelector("header").hidden = !me.signed_in;
   if (!me.signed_in) { $("#home").hidden = true; $("main").hidden = true; }
+  applyPermissions();
   return me.signed_in;
+}
+
+// Whether the Improve tile is shown depends only on who you are, so it is applied
+// wherever that becomes known — not, as before, only inside showHome(). Landing
+// straight on a project URL never calls showHome, so the tile stayed hidden until
+// something else happened to route you home or you reloaded the page.
+function applyPermissions() {
+  const improve = $("#modeImprove");
+  if (!improve) return;
+  // Fall back to is_root when the server predates may_self_repair — otherwise the
+  // tile silently vanishes for the one account that definitely has the right.
+  improve.hidden = !(me && (me.may_self_repair ?? me.is_root));
 }
 
 $("#loginForm").addEventListener("submit", async (ev) => {
@@ -700,11 +713,7 @@ function showHome(skipHash) {
   const ab = $("#aboutPage"); if (ab) ab.hidden = true;
   if (!skipHash) setHash("#/");
   currentProject = null;
-  // Fall back to is_root when the server predates may_self_repair — otherwise the
-  // tile silently vanishes for the one account that definitely has the right.
-  const improve = $("#modeImprove");
-  const mayFix = me && (me.may_self_repair ?? me.is_root);
-  if (improve) improve.hidden = !mayFix;
+  applyPermissions();
   $("#home").hidden = false;
   $("main").hidden = true;
   // The whole project bar goes away with the project — none of it means anything
@@ -1770,6 +1779,14 @@ async function refreshBoard() {
   let p;
   try { p = await api(`/api/projects/${currentProject}`); } catch { return; }
   lastTasks = p.tasks;
+  // The roster, which is not part of the project payload. Without it the command
+  // view could only draw people who happened to have a task open, so six of the
+  // eight teammates on a real run were invisible and the header counted TASKS
+  // and called them team members.
+  try {
+    const t = await api(`/api/projects/${currentProject}/team`);
+    lastTeam = t.team || [];
+  } catch { /* an older server has no roster; the view falls back to tasks */ }
   // Self-repair is its own page now, reached from the landing tile — it is not a
   // tab on an ordinary project, which is what let it linger after switching.
   renderBlockers();          // keeps the 🚧 badge honest even when the tab is closed
@@ -1881,6 +1898,13 @@ function renderEvent(e) {
   if (e.source.startsWith("worker") && ["message", "consult", "consult_reply"].includes(e.kind))
     cls += " chatter";
   if (e.kind === "error" || e.kind === "worker_died" || e.kind === "dag_blocked") cls += " error";
+  // Outcomes, as distinct from narration. Everything in the feed used to carry
+  // the same weight, so "merged PR #12" and a worker musing about a file looked
+  // equally important — which means neither did.
+  if (["pr_merged", "task_accepted", "project_finished", "winner_picked",
+       "verified"].includes(e.kind)) cls += " outcome good";
+  if (["changes_requested", "task_failed", "worker_stalled"].includes(e.kind))
+    cls += " outcome bad";
   div.className = `ev ${cls}`;
   let text = e.payload;
   try {
@@ -2163,12 +2187,56 @@ function assemblingHtml(p, roster, thought) {
 // Manager models offered in the picker. A short list on purpose: this is the
 // model that plans and reviews, so the meaningful choice is how much judgement
 // you want to pay for, not which of a dozen ids you prefer.
+let lastTeam = [];
+
+// A model the picker does not know about is still the model that is running, and
+// showing "server default" for it was a lie the card told confidently. Unknown
+// ids are displayed as themselves and offered as an option, so changing something
+// else never silently reassigns the manager.
+function modelName(id) {
+  if (!id) return "server default";
+  const known = MANAGER_MODELS.find((m) => m.id === id);
+  return known ? known.label.split(" — ")[0] : id;
+}
+
+function managerOptions(current) {
+  const opts = MANAGER_MODELS.slice();
+  if (current && !opts.some((m) => m.id === current)) {
+    opts.push({ id: current, label: `${current} (set outside this list)` });
+  }
+  return opts.map((m) => `<option value="${escapeHtml(m.id)}"${
+    m.id === (current || "") ? " selected" : ""}>${escapeHtml(m.label)}</option>`).join("");
+}
+
 const MANAGER_MODELS = [
   { id: "", label: "server default" },
   { id: "claude-haiku-4-5", label: "Haiku — fastest, cheapest" },
   { id: "claude-sonnet-5", label: "Sonnet — balanced" },
   { id: "claude-opus-4-8", label: "Opus — most careful" },
 ];
+
+// Everyone who has nothing on right now.
+//
+// The view drew task cards grouped by status, so a teammate only appeared once
+// they had work. On a real run eight people were hired and six were invisible —
+// and the header counted TASKS and called them "on the team", so it said 2.
+// Idle is a real and useful state: it is who could take the next thing.
+function benchHtml(tasks) {
+  if (!lastTeam.length) return "";
+  const working = new Set(tasks
+    .filter((t) => ["running", "queued", "pushed", "review"].includes(t.status))
+    .map((t) => t.agent_id).filter(Boolean));
+  const idle = lastTeam.filter((a) => !working.has(a.id));
+  if (!idle.length) return "";
+  return `<div class="bench">
+    <div class="bench-head">Free right now · ${idle.length}
+      <span class="bench-note">hired and waiting for work they can start</span></div>
+    <div class="bench-list">${idle.map((a) => `
+      <span class="bench-person" title="${escapeHtml(a.persona || "no particular brief")}">
+        <b>${escapeHtml(a.name)}</b> ${escapeHtml(a.role)}${
+          a.tasks_done ? ` · ${a.tasks_done} done` : ""}</span>`).join("")}</div>
+  </div>`;
+}
 
 function renderCommand(p) {
   const el = $("#command");
@@ -2314,10 +2382,16 @@ function renderCommand(p) {
       <div class="node-row">
         <div class="node manager ${busy ? "busy" : ""}">
           <div class="who">👔 Manager</div>
-          <select class="mgr-model" id="mgrModelSel"
-                  title="Which model runs the manager. Applies when it next starts.">
-            ${MANAGER_MODELS.map((m) => `<option value="${m.id}"${
-              m.id === (p.manager_model || "") ? " selected" : ""}>${escapeHtml(m.label)}</option>`).join("")}
+          <!-- The model is the headline again. Replacing it with a bare dropdown
+               reading "server default" lost the one fact the card existed to show —
+               and worse, said the wrong thing: a manager running on a model the
+               list did not contain fell back to displaying the first option. -->
+          <div class="name" id="mgrModelName" title="Click to change which model runs the manager">
+            ${escapeHtml(modelName(p.manager_model))}<span class="mgr-edit">change</span>
+          </div>
+          <select class="mgr-model" id="mgrModelSel" hidden
+                  title="Applies when the manager next starts.">
+            ${managerOptions(p.manager_model)}
           </select>
           <div class="sub">
             <button class="mode-toggle ${p.autonomy === "autonomous" ? "auton" : ""}"
@@ -2326,7 +2400,7 @@ function renderCommand(p) {
                 ? "Full autonomy: decides everything itself. Click to start checking with you."
                 : "Checks with you on the important calls. Click to give it full autonomy."}">
               ${p.autonomy === "autonomous" ? "⚡ full autonomy" : "🧑‍💼 checks with you"}</button>
-            · ${tasks.length} on the team</div>
+            · ${(lastTeam.length || tasks.length)} on the team</div>
         </div>
         ${bubbleHtml("Manager says", managerThought)}
         ${bubbleHtml("thinking", managerThinking, "thinking")}
@@ -2334,6 +2408,7 @@ function renderCommand(p) {
       <div class="fan"></div>
       <div class="section-label">The team</div>
       ${agents || assemblingHtml(p, roster, managerThought || managerThinking)}
+      ${benchHtml(tasks)}
     </div>`;
 
   const attnBtn = el.querySelector("[data-attn]");
@@ -2351,6 +2426,13 @@ function renderCommand(p) {
   });
   el.querySelectorAll(".agent").forEach((a) =>
     a.addEventListener("click", () => showTask(Number(a.dataset.task))));
+  const mname = $("#mgrModelName");
+  const msel = $("#mgrModelSel");
+  if (mname && msel) mname.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    mname.hidden = true; msel.hidden = false; msel.focus();
+  });
+
   const ms = $("#mgrModelSel");
   if (ms) ms.addEventListener("change", async (ev) => {
     ev.stopPropagation();

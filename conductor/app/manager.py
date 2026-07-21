@@ -496,6 +496,8 @@ def build_team_server(project_id: int):
         q, options = sprint_review_prompt(project_id, sprint_no)
         wait = int(tuning.get("sprint_checkin_seconds"))
         qid = db.ask_question(project_id, q, options, topic="sprint_review")
+        bus.emit(project_id, None, "manager", "boss_question",
+                 {"question": q, "topic": "sprint_review"})
         bus.emit(project_id, None, "manager", "sprint_checkin",
                  {"sprint": sprint_no, "blocking_for": wait})
         deadline = time.time() + wait
@@ -625,6 +627,8 @@ def build_team_server(project_id: int):
         qid = db.ask_question(project_id, interview.as_message(qs),
                               ["Answer below", "Just get on with it"],
                               topic="interview")
+        bus.emit(project_id, None, "manager", "boss_question",
+                 {"question": interview.as_message(qs), "topic": "interview"})
         deadline = time.time() + wait
         while time.time() < deadline:
             row = db.get_question(qid)

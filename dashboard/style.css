@@ -289,7 +289,22 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 380px; gap: 16px; padd
 .ev.tool { color: var(--dim); font-family: var(--mono); font-size: 11.5px; }
 .ev.think { color: var(--dim); font-style: italic; background: var(--card-2); border-color: var(--line); }
 .ev.mgrmsg { border-color: var(--mgr); background: #f2fbfa; font-size: 13px; }
-.ev.question { border-color: var(--warn); background: var(--warn-soft); }
+/* A question is the one event in the feed that needs YOU. It was a faint warm
+   tint among a hundred other tinted rows, and on a real run the manager asked
+   something and the boss never noticed. It gets weight now: brick, the colour
+   this product uses everywhere else to mean a human is involved. */
+.ev.question {
+  border-color: var(--boss); background: var(--boss-soft);
+  border-left: 4px solid var(--boss); padding-left: 10px;
+  font-size: 13.5px; font-weight: 500; color: var(--text);
+}
+.ev.question .lt { color: var(--boss); font-weight: 700; }
+/* Nothing else in the feed is allowed to be this loud, so the eye learns it. */
+.ev.question::after {
+  content: "needs you"; display: inline-block; margin-left: 8px;
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--boss); vertical-align: 1px;
+}
 /* verbosity: simple mode keeps only the human-meaningful lines */
 #feed[data-verbosity="simple"] .ev.tool,
 #feed[data-verbosity="simple"] .ev.think,
@@ -1419,3 +1434,35 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .vchip .quiet {
   background: var(--card-2); color: var(--dim); border: 1px solid var(--line);
 }
+
+/* ---------- the bench ----------
+ * Who is hired and free. The command view drew task cards, so a teammate with
+ * nothing on did not exist — six of eight people on a real run were invisible,
+ * and the header counted tasks and called them team members.
+ */
+.bench { margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.bench-head { font-size: 12px; font-weight: 650; color: var(--dim); margin-bottom: 9px; }
+.bench-note { font-weight: 400; color: var(--faint); margin-left: 6px; }
+.bench-list { display: flex; flex-wrap: wrap; gap: 7px; }
+.bench-person {
+  font-size: 12px; color: var(--dim); background: var(--card-2);
+  border: 1px solid var(--line); border-radius: 20px; padding: 4px 11px;
+}
+.bench-person b { color: var(--text); font-weight: 600; margin-right: 4px; }
+
+/* The manager's model, as the headline it used to be. */
+.node.manager .name { cursor: pointer; }
+.mgr-edit {
+  font-size: 10px; font-weight: 500; color: var(--accent); margin-left: 7px;
+  text-transform: uppercase; letter-spacing: .06em; opacity: 0; transition: opacity .12s;
+}
+.node.manager .name:hover .mgr-edit { opacity: 1; }
+
+
+/* Events that are a RESULT rather than narration. The feed was uniform, so a
+   merged pull request and a worker saying "let me check that file" carried the
+   same visual weight, and the things worth reading were buried in the things
+   that are not. */
+.ev.outcome { font-weight: 550; color: var(--text); }
+.ev.outcome.good { border-left: 3px solid var(--good); }
+.ev.outcome.bad { border-left: 3px solid var(--bad); }

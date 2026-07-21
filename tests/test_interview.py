@@ -222,3 +222,16 @@ def test_the_model_picker_admits_it_does_not_apply_immediately():
     js = _dash("app.js")
     assert "restart_needed" in js
     assert "Restart manager" in js
+
+
+def test_every_way_of_being_asked_something_reaches_the_feed(fresh_db):
+    """Only ask_boss ever emitted a feed event, so the two NEW ways of being asked
+    — the interview before planning and the sprint check-in — were invisible in
+    the one place people watch. On a live run the manager asked and nobody saw."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "conductor" / "app" / "manager.py").read_text()
+    assert src.count('"boss_question"') >= 3, (
+        "a question is posted somewhere without telling the activity feed")
+    interview_block = src.split("async def interview_boss")[1].split("@tool")[0]
+    assert '"boss_question"' in interview_block
