@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from . import (auth, blockers, bus, cloud, config, credcheck, db, deploy, notify,
                envs, github_client, launcher, manager, planner, preview, providers,
-               roundtable, sandbox, scheduler, selfops)
+               roundtable, sandbox, scheduler, selfops, triage)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -662,6 +662,18 @@ async def self_refine(payload: RoughIssue, request: Request) -> dict:
     return await selfops.refine_issue(rough, auth.get_settings(u))
 
 
+@router.post("/api/self/triage")
+async def self_triage(payload: RoughIssue, request: Request) -> dict:
+    """How much independence this issue would get, before any work starts.
+
+    Shown before you file, so the answer is never a surprise afterwards.
+    """
+    u = _root(request)
+    t = await triage.classify(payload.rough[:200], payload.rough,
+                              auth.get_settings(u))
+    return {**t, "policy": triage.policy(t["tier"])}
+
+
 @router.post("/api/self/issue")
 async def self_issue(payload: SelfIssue, request: Request) -> dict:
     u = _root(request)
@@ -671,13 +683,22 @@ async def self_issue(payload: SelfIssue, request: Request) -> dict:
     # Self-repair is meant to run start-to-finish on its own: fix, verify, ship.
     # Asking the operator to approve each step of a fix they already asked for is
     # the interruption this feature exists to remove.
+    # Decide the independence BEFORE any work starts, so "it merged something it
+    # should have asked about" cannot happen after the fact.
+    t = await triage.classify(payload.title, payload.body, auth.get_settings(u))
+    pol = triage.policy(t["tier"])
+    if not pol["may_work"]:
+        raise HTTPException(400, f"{pol['note']} ({'; '.join(t['why'])})")
     sprints = max(1, min(10, payload.sprints or 1))
     db.set_sprints(pid, sprints)
-    db.set_project_autonomy(pid, "autonomous")
+    # Only a routine fix runs unsupervised to completion. Anything substantial
+    # does the work and stops at a pull request.
+    db.set_project_autonomy(pid, "autonomous" if pol["may_merge"] else "supervised")
     if sprints > 1:
         db.set_max_runs(pid, min(400, config.MAX_AGENT_RUNS * sprints))
     res = await selfops.file_issue(pid, payload.title.strip(), payload.body.strip(),
                                    payload.severity)
+    res["triage"] = {**t, "policy": pol}
     # The manager plans the fix. If one is already running it picks the issue up as
     # a directive on its next decision point, so we must not start a second session.
     if pid not in _manager_tasks or _manager_tasks[pid].done():

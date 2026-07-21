@@ -826,6 +826,7 @@ async function renderSelf() {
           <label>Sprints <span class="hint">cycles it may take to get this right</span>
             <input name="sprints" type="number" min="1" max="10" value="1"></label>
         </div>
+        <p id="triageBox" class="triage" hidden></p>
         <p id="selfErr" class="form-error" hidden></p>
         <button type="submit" class="primary">🔧 Put the team on it</button>
         <p class="hint">This runs <b>autonomously</b>: the team plans the fix, writes it,
@@ -896,6 +897,32 @@ async function renderSelf() {
       refine.disabled = false; refine.textContent = "✨ Draft the ticket";
     }
   });
+
+  // Say what will happen BEFORE they file it. Learning afterwards that the
+  // platform merged something you expected to review is the bad outcome here.
+  let triageTimer = null;
+  const previewTriage = () => {
+    clearTimeout(triageTimer);
+    triageTimer = setTimeout(async () => {
+      const rough = (form.querySelector("[name=title]").value + " " +
+                     form.querySelector("[name=body]").value).trim();
+      const box = $("#triageBox");
+      if (!box) return;
+      if (rough.length < 10) { box.hidden = true; return; }
+      try {
+        const t = await api("/api/self/triage", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rough }) });
+        const cls = t.tier === "routine" ? "ok" : t.tier === "substantial" ? "warn" : "bad";
+        box.hidden = false;
+        box.className = "triage " + cls;
+        box.innerHTML = `<b>${escapeHtml(t.policy.label)}</b> — ${escapeHtml(t.policy.note)}
+          ${(t.why || []).length ? `<span class="why">${escapeHtml(t.why.join("; "))}</span>` : ""}`;
+      } catch { box.hidden = true; }
+    }, 700);
+  };
+  form.querySelector("[name=title]").addEventListener("input", previewTriage);
+  form.querySelector("[name=body]").addEventListener("input", previewTriage);
 
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();

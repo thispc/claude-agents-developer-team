@@ -989,3 +989,14 @@ pre.dim, .dim { color: var(--dim); }
 .env-acts button { font-size: 11.5px; padding: 5px 11px; }
 #envsCard h4 { margin: 16px 0 7px; font-size: 12px; text-transform: uppercase;
                letter-spacing: .4px; color: var(--faint); }
+
+/* ---------- triage verdict ---------- */
+/* Shown while the ticket is being written, not after it is filed: learning
+   afterwards that the platform merged something you expected to review is the
+   outcome this exists to prevent. */
+.triage { font-size: 12px; line-height: 1.55; border-radius: 9px; padding: 9px 11px;
+          border: 1px solid transparent; margin: 2px 0 10px; }
+.triage.ok   { color: var(--good); background: var(--good-soft); border-color: #bfe6cd; }
+.triage.warn { color: var(--warn); background: var(--warn-soft); border-color: #f0d9a8; }
+.triage.bad  { color: var(--bad);  background: var(--bad-soft);  border-color: #f4c9c6; }
+.triage .why { display: block; margin-top: 4px; opacity: .85; font-size: 11.5px; }
