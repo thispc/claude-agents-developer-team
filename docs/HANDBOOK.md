@@ -82,8 +82,8 @@ backend task again". The first keeps the context; the second pays to rediscover 
 
 1. **You write a brief.** A paragraph or two, plus how many rounds to run and how
    independent the team should be.
-2. **Optionally a round table argues first.** Five or six AIs *from different
-   companies* propose approaches, critique each other, and revise. Different
+2. **Optionally a round table argues first.** Three to eight AIs *from different
+   companies* (six is the recommended ceiling) propose approaches, critique each other, and revise. Different
    companies is the point — two copies of one model tend to agree, and agreement
    is not the same as being right.
 3. **The manager plans.** The brief becomes concrete tasks, recording which must
@@ -143,7 +143,7 @@ needs to evaluate, host or extend it.
 
 ### What "the conductor" actually is
 
-One program: a Python web server of roughly 5,000 lines doing five jobs and no
+One program: a Python web server of about 13,500 lines doing five jobs and no
 others.
 
 - **Serves the dashboard.** Plain HTML, CSS and JavaScript read off disk. No
@@ -206,7 +206,7 @@ attached to specific work), **tuning** (the dials, changeable without rebuilding
 |---|---|---|
 | Local | A program on your laptop | Nothing — real records, real keys |
 | Sandbox | A second program on your laptop | Own records; every credential blanked |
-| Staging | Its own space on the cluster | Own records and address; real keys, cannot approve its own changes |
+| Staging | Its own space on the cluster | Own records and address; real keys, cannot approve its own changes. Storage is deliberately throwaway — a restart wipes it, which is what you want of a rehearsal |
 | Production | Its own space on the cluster | Own storage, real credentials. The live system |
 
 The sandbox is not a miniature cluster — it is one extra copy of the program on
@@ -220,7 +220,7 @@ fall through to the real one.
 your browser
     │  HTTPS
     ▼
-load balancer ......... one public address, the priciest line on the bill
+load balancer ......... one public address, shared by every environment
     │
     ▼
 traffic router ........ reads the web address you asked for
@@ -270,7 +270,8 @@ back to whatever version the configuration file happened to name.
 Grounded in published research on multi-agent AI performance rather than in
 intuition about what sounds clever.
 
-**Combining opinions beats collecting them.** The finding that shaped this system
+**Combining opinions beats collecting them.** One teammate reviews by default,
+and that number is a setting rather than a constant. The finding that shaped this system
 is that *how* you aggregate several opinions matters several times more than how
 many you gather. So reviewers read independently and never see each other — a
 second reviewer who reads the first's verdict tends to agree with it, and you have
@@ -416,9 +417,20 @@ between teammates.**
 
 ## What it costs
 
-**The server:** roughly **$40/month** for a small managed cluster. The largest
-single component is not computing power but the load balancer — the piece that
-accepts traffic from the internet. That is the usual cloud pricing trap.
+**The server:** about **$42/month**. The breakdown is worth seeing, because the
+shape of it is the interesting part:
+
+| Item | Monthly |
+|---|---|
+| One 2-CPU / 4 GB machine | $24 |
+| Load balancer — the public entrance | $12 |
+| Private registry for packaged versions | $5 |
+| Storage, 11 GB | ~$1 |
+
+The machine is the biggest line, but the **load balancer is the one that
+multiplies**: you pay per entrance, so giving staging its own would add $12 for
+something serving a handful of requests a day. That is why every environment
+shares one, and why adding a fourth costs nothing.
 
 **The AI:** billed by your provider, directly to you. In a measured real run, a
 complete small feature — written, tested and submitted — cost about **ten cents**.

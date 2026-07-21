@@ -156,14 +156,24 @@
      The colour system is the same one, including the rule that brick means a human
      is involved. -->
 <section id="aboutPage" hidden>
+  <!-- One shared arrowhead for every diagram below; a marker must be defined in
+       the document before it can be referenced by marker-end. -->
+  <svg width="0" height="0" aria-hidden="true" focusable="false" style="position:absolute">
+    <defs>
+      <marker id="dArrowHead" viewBox="0 0 8 8" refX="7" refY="4"
+              markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M0 0 L8 4 L0 8 z"/>
+      </marker>
+    </defs>
+  </svg>
   <article class="doc">
-    <header class="doc-head">
+    <div class="doc-head">
       <p class="doc-eyebrow">Handbook</p>
       <h2>What this is, and how it works</h2>
       <p class="doc-standfirst">You describe what you want built. A manager plans it,
         hires a team, and the team writes the code — on your accounts, on your
         servers, in your version control. No coding knowledge assumed.</p>
-    </header>
+    </div>
 
     <h3>The idea in one paragraph</h3>
     <p>Imagine hiring a small software agency. A manager reads your brief, works out
@@ -208,6 +218,46 @@
       <li><strong>Approved or sent back.</strong> Approved work becomes a pull request. Two failures escalate to a stronger model.</li>
     </ol>
 
+
+    <figure class="doc-fig">
+      <svg viewBox="0 0 640 300" role="img" aria-labelledby="loopTitle loopDesc">
+        <title id="loopTitle">The loop a project runs in</title>
+        <desc id="loopDesc">A brief becomes a plan, the plan becomes tasks, a teammate
+          builds, the platform tests, and work is either sent back to the teammate or
+          approved as a pull request. At the end of a round you are asked what to change,
+          which feeds back into planning.</desc>
+        <g class="d-node human">
+          <rect x="8" y="16" width="120" height="42" rx="3"/>
+          <text x="68" y="42">You write a brief</text>
+        </g>
+        <g class="d-node"><rect x="168" y="16" width="126" height="42" rx="3"/><text x="231" y="42">Manager plans</text></g>
+        <g class="d-node"><rect x="334" y="16" width="126" height="42" rx="3"/><text x="397" y="42">Team is hired</text></g>
+        <g class="d-node"><rect x="500" y="16" width="132" height="42" rx="3"/><text x="566" y="42">Tasks handed out</text></g>
+
+        <g class="d-node"><rect x="500" y="112" width="132" height="42" rx="3"/><text x="566" y="138">Teammate builds</text></g>
+        <g class="d-node plain"><rect x="326" y="112" width="142" height="42" rx="3"/>
+          <text x="397" y="132">Platform runs</text><text x="397" y="146">the tests</text></g>
+        <g class="d-node"><rect x="160" y="112" width="134" height="42" rx="3"/><text x="227" y="138">Reviewed</text></g>
+        <g class="d-node"><rect x="8" y="112" width="120" height="42" rx="3"/><text x="68" y="138">Pull request</text></g>
+
+        <g class="d-node human"><rect x="8" y="216" width="286" height="42" rx="3"/>
+          <text x="151" y="242">End of round: you are asked what to change</text></g>
+
+        <path class="d-arrow" d="M128 37 H160"/>
+        <path class="d-arrow" d="M294 37 H326"/>
+        <path class="d-arrow" d="M460 37 H492"/>
+        <path class="d-arrow" d="M566 58 V104"/>
+        <path class="d-arrow" d="M500 133 H476"/>
+        <path class="d-arrow" d="M326 133 H302"/>
+        <path class="d-arrow" d="M160 133 H136"/>
+        <path class="d-arrow" d="M68 154 V208"/>
+        <path class="d-arrow d-back" d="M294 237 H560 V162"/>
+        <text class="d-label" x="410" y="230">sent back, or a new round</text>
+      </svg>
+      <figcaption>The two places a human appears are the brick boxes: writing the brief,
+        and answering at the end of a round. Everything between runs without you.</figcaption>
+    </figure>
+
     <div class="doc-note">
       <span class="doc-note-label">The single most important safeguard</span>
       <p>Tests are run by the plain, non-AI part of the system, and the exit code is
@@ -229,6 +279,47 @@
         <tr><td>Teammates</td><td>Separate programs that write the code.</td><td>Yes</td></tr>
       </tbody>
     </table>
+
+    <figure class="doc-fig">
+      <svg viewBox="0 0 640 330" role="img" aria-labelledby="archTitle archDesc">
+        <title id="archTitle">What the machine is made of</title>
+        <desc id="archDesc">Your browser reaches a single load balancer over HTTPS. A
+          router forwards to production or staging by web address. Inside each is one
+          conductor process holding the records and running the manager, with teammates
+          as separate processes beside it. Storage is attached, and the only outbound
+          traffic goes to AI providers and your code repository.</desc>
+
+        <g class="d-node human"><rect x="250" y="8" width="140" height="38" rx="3"/><text x="320" y="32">Your browser</text></g>
+        <path class="d-arrow" d="M320 46 V72"/>
+        <text class="d-label" x="336" y="64">HTTPS</text>
+
+        <g class="d-node"><rect x="228" y="74" width="184" height="38" rx="3"/><text x="320" y="98">Load balancer — one address</text></g>
+        <path class="d-arrow" d="M320 112 V136"/>
+        <g class="d-node"><rect x="228" y="138" width="184" height="38" rx="3"/><text x="320" y="162">Router reads the address</text></g>
+
+        <path class="d-arrow" d="M270 176 V196 H150 V214"/>
+        <path class="d-arrow" d="M370 176 V196 H500 V214"/>
+        <text class="d-label" x="112" y="208">devteam.…</text>
+        <text class="d-label" x="470" y="208">staging.…</text>
+
+        <g class="d-box"><rect x="18" y="214" width="264" height="104" rx="4"/></g>
+        <text class="d-boxlabel" x="30" y="232">PRODUCTION</text>
+        <g class="d-node"><rect x="30" y="240" width="118" height="34" rx="3"/><text x="89" y="262">Conductor</text></g>
+        <g class="d-node"><rect x="158" y="240" width="112" height="34" rx="3"/><text x="214" y="262">Teammates</text></g>
+        <g class="d-node plain"><rect x="30" y="282" width="240" height="28" rx="3"/><text x="150" y="301">Storage — records and working copies</text></g>
+
+        <g class="d-box"><rect x="358" y="214" width="264" height="104" rx="4"/></g>
+        <text class="d-boxlabel" x="370" y="232">STAGING</text>
+        <g class="d-node"><rect x="370" y="240" width="118" height="34" rx="3"/><text x="429" y="262">Conductor</text></g>
+        <g class="d-node"><rect x="498" y="240" width="112" height="34" rx="3"/><text x="554" y="262">Teammates</text></g>
+        <g class="d-node plain"><rect x="370" y="282" width="240" height="28" rx="3"/><text x="490" y="301">Throwaway storage</text></g>
+      </svg>
+      <figcaption>One public entrance serves both environments — which one you reach is
+        decided by the address you typed, not by a separate machine. Teammates only ever
+        reach outward, to AI providers and your repository; nothing on the internet can
+        start a conversation with them.</figcaption>
+    </figure>
+
     <p><strong>AI is used for judgement; ordinary software for bookkeeping.</strong>
       Which tasks can start and who is free is arithmetic — asking an AI would cost
       money on every check and occasionally be wrong in a way that is hard to spot.</p>

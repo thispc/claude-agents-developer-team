@@ -1130,6 +1130,11 @@ pre.dim, .dim { color: var(--dim); }
  * column. The colour system is unchanged, including brick meaning a human.
  */
 #aboutPage { overflow-y: auto; padding: 0 20px 80px; }
+/* Belt and braces against the global `header { display:flex }` rule, which
+   matches any <header> element and once laid this page's eyebrow, title and
+   standfirst out in a row. The markup uses a div now; this makes a future
+   <header> here harmless too. */
+#aboutPage .doc-head { display: block; background: none; border-bottom: 1px solid var(--line); }
 .doc {
   max-width: 66ch;
   margin: 0 auto;
@@ -1144,8 +1149,8 @@ pre.dim, .dim { color: var(--dim); }
   text-transform: uppercase; color: var(--dim); margin-bottom: 12px;
 }
 .doc h2 {
-  font-size: 30px; line-height: 1.12; font-weight: 600; letter-spacing: -.015em;
-  text-wrap: balance; margin-bottom: 14px; max-width: 20ch;
+  font-size: 30px; line-height: 1.14; font-weight: 600; letter-spacing: -.015em;
+  text-wrap: balance; margin-bottom: 14px; max-width: 26ch;
 }
 .doc-standfirst { font-size: 18px; line-height: 1.5; color: var(--dim); max-width: 54ch; }
 .doc h3 {
@@ -1223,3 +1228,41 @@ pre.dim, .dim { color: var(--dim); }
 @media (min-width: 620px) { .doc-glossary > div { grid-template-columns: 11rem 1fr; gap: 18px; } }
 .doc-glossary dt { font-family: var(--mono); font-size: 13.5px; padding-top: 2px; }
 .doc-glossary dd { margin: 0; color: var(--dim); font-size: 15.5px; }
+
+/* ---------- About: diagrams ----------
+ *
+ * Hand-authored SVG rather than a diagram library: the pod has no guaranteed
+ * outbound access and the dashboard has no build step, so a CDN script would be
+ * a silent blank box on exactly the page meant to explain the product.
+ *
+ * Everything is drawn through the palette tokens, so a teammate box and a
+ * "needs you" box carry the same meaning here as they do in the feed.
+ */
+.doc-fig { margin: 0 0 22px; }
+.doc-fig svg { width: 100%; height: auto; display: block; background: var(--card);
+  border: 1px solid var(--line); border-radius: 4px; padding: 8px 4px; }
+.doc-fig figcaption {
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.55;
+  color: var(--dim); margin-top: 9px;
+}
+.d-node rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1; }
+.d-node text {
+  fill: var(--text); font-family: var(--ui); font-size: 12px; font-weight: 500;
+  text-anchor: middle; dominant-baseline: middle;
+}
+/* Brick: a human is involved. Same rule as the rest of the app. */
+.d-node.human rect { fill: var(--boss-soft); stroke: var(--boss); }
+/* Grey: ordinary software, no AI and no cost. */
+.d-node.plain rect { fill: var(--card-2); stroke: var(--line); }
+.d-node.plain text { fill: var(--dim); font-weight: 400; }
+.d-box rect { fill: none; stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 3; }
+.d-boxlabel {
+  fill: var(--dim); font-family: var(--mono); font-size: 9px; letter-spacing: .12em;
+}
+.d-arrow { fill: none; stroke: var(--dim); stroke-width: 1.2; marker-end: url(#dArrowHead); }
+.d-arrow.d-back { stroke: var(--boss); stroke-dasharray: 4 3; }
+.d-label { fill: var(--dim); font-family: var(--mono); font-size: 10px; }
+/* The arrowhead is filled here rather than with currentColor on the marker: a
+   marker resolves currentColor against its OWN context, not the path pointing at
+   it, so it would have rendered black whatever the arrow's colour. */
+#dArrowHead path { fill: var(--dim); }

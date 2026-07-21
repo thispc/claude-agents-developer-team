@@ -79,3 +79,76 @@ def test_the_page_pulls_in_nothing_from_the_internet():
     script would degrade the one page meant to explain the product."""
     for tag in ("<script src=\"http", "<link rel=\"stylesheet\" href=\"http", "@import url(http"):
         assert tag not in HTML and tag not in CSS
+
+
+# --- the page must agree with the code -------------------------------------
+#
+# Every one of these was wrong when the page was first written. Prose drifts from
+# code silently, and a handbook that confidently states a stale number is worse
+# than one that omits it — so the numbers are asserted against their source.
+
+def _handbook() -> str:
+    return (Path(__file__).resolve().parent.parent / "docs" / "HANDBOOK.md").read_text()
+
+
+def test_the_endpoint_count_is_the_real_one():
+    routes = (Path(__file__).resolve().parent.parent
+              / "conductor" / "app" / "routes.py").read_text()
+    actual = routes.count("@router.")
+    assert f"There are {actual}" in _handbook() or f"are {actual};" in _handbook(), \
+        f"the handbook does not say {actual} endpoints"
+
+
+def test_the_internal_door_really_has_three_requests_behind_it():
+    """The page tells a reader that a teammate can do exactly three things. If a
+    fourth is added, that sentence becomes a false security claim."""
+    routes = (Path(__file__).resolve().parent.parent
+              / "conductor" / "app" / "routes.py").read_text()
+    internal = routes.count('@router.get("/internal/') + routes.count('@router.post("/internal/')
+    assert internal == 3, (
+        f"{internal} internal endpoints exist; the About page and handbook both say "
+        "three, and both need updating")
+
+
+def test_the_table_count_matches_the_schema():
+    from app import db, auth, findings
+    declared = sum(mod.SCHEMA.count("CREATE TABLE IF NOT EXISTS")
+                   for mod in (db, auth, findings))
+    assert "Eighteen tables" in _handbook() and declared == 18, \
+        f"{declared} tables are declared; the handbook says eighteen"
+
+
+def test_the_round_table_range_matches_the_limits():
+    from app import roundtable
+    assert roundtable.MIN_SEATS == 3 and roundtable.MAX_SEATS == 8
+    assert "Three to eight" in _handbook(), \
+        "the handbook's seat range no longer matches MIN_SEATS/MAX_SEATS"
+
+
+def test_escalation_wording_matches_the_knob():
+    from app import tuning
+    assert tuning.KNOBS["escalate_after_attempts"][0] == 2
+    assert "Two failures escalate" in _handbook()
+
+
+def test_the_handbook_does_not_claim_workers_are_containerised():
+    """The deployment runs LAUNCHER=local, so workers are subprocesses sharing the
+    conductor's container. The first draft claimed otherwise, which is the kind of
+    error that reads as a security guarantee."""
+    text = _handbook()
+    assert "separate *process*, not a" in text
+    assert "boxed into an isolated container" not in text
+
+
+def test_the_stated_size_of_the_conductor_is_not_badly_stale():
+    """Stated as "about 13,500 lines" — it was written as 5,000, which was wrong by
+    more than a factor of two. A line count drifts with every commit, so this is a
+    loose band rather than an exact match: it should fail when the number becomes
+    misleading, not every time someone adds a function.
+    """
+    import re
+    root = Path(__file__).resolve().parent.parent / "conductor"
+    actual = sum(len(f.read_text().splitlines()) for f in root.rglob("*.py"))
+    claimed = int(re.search(r"about ([\d,]+) lines", _handbook()).group(1).replace(",", ""))
+    assert 0.75 * claimed <= actual <= 1.35 * claimed, (
+        f"the handbook says about {claimed:,} lines; the conductor is now {actual:,}")
