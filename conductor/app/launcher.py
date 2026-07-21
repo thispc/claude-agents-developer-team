@@ -14,7 +14,7 @@ import signal
 import subprocess
 import sys
 
-from . import config, db, bus
+from . import config, db, bus, tuning
 
 
 def owner_credentials(project: dict) -> dict[str, str]:
@@ -625,6 +625,11 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
             branch = f"task/{task_id}-a{task['attempts'] + 1}-c{i}"
             cid = db.create_contender(task_id, i, branch, cm)
             rival = {**task, "branch": branch, "model": cm}
+            db.start_run(task["project_id"], task_id, role=task["role"], model=cm,
+                         attempt=task["attempts"], kind="contender",
+                         sprint=task.get("sprint") or 1, contender_id=cid,
+                         agent_id=task.get("agent_id"),
+                         profile=tuning.profile_of(project))
             await get_launcher().launch(rival, project, contender_id=cid, label=f"c{i}")
             launched.append(f"#{i} on {cm}")
         bus.emit(task["project_id"], task_id, source, "contest_started",
@@ -632,6 +637,9 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
         return (f"dispatched {n} rival attempts at task {task_id} "
                 f"({', '.join(launched)}); the manager judges them when they finish.")
 
+    db.start_run(task["project_id"], task_id, role=task["role"], model=model,
+                 attempt=task["attempts"], kind="task", sprint=task.get("sprint") or 1,
+                 agent_id=task.get("agent_id"), profile=tuning.profile_of(project))
     await get_launcher().launch(task, project)
     bus.emit(task["project_id"], task_id, source, "dispatched",
              {"role": task["role"], "title": task["title"], "model": model,

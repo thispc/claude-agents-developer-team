@@ -32,10 +32,28 @@ from . import bus, config, db, github_client
 MAX_PER_HOUR = int(config._env("NOTIFY_MAX_PER_HOUR", "6"))
 ENABLED = config._env("NOTIFY_GITHUB", "1") != "0"
 
-# fingerprint -> {issue, count, first, last}. In memory on purpose: a restart
-# re-notifying once is a smaller problem than a schema for something this small.
-_SEEN: dict[str, dict[str, Any]] = {}
-_SENT: list[float] = []
+# fingerprint -> {issue, count, first, last}, in the kv table.
+#
+# This was in memory "on purpose", reasoning that re-notifying once after a
+# restart is cheaper than a schema. That reasoning inverts precisely when it
+# matters: the fault most worth deduplicating is the one that kills the process,
+# and a crash loop restarts often enough that "once per restart" is not once at
+# all. The dedup was absent exactly when it was needed.
+_SEEN_PREFIX = "notify_seen:"
+_SENT_KEY = "notify_sent"
+
+
+def _seen(fp: str) -> dict[str, Any] | None:
+    return db.kv_get(_SEEN_PREFIX + fp)
+
+
+def _remember(fp: str, record: dict[str, Any]) -> None:
+    db.kv_set(_SEEN_PREFIX + fp, record)
+
+
+def _sent_times() -> list[float]:
+    now = time.time()
+    return [t for t in db.kv_get(_SENT_KEY, []) or [] if now - t < 3600]
 
 
 def _fingerprint(kind: str, detail: str) -> str:
@@ -50,9 +68,7 @@ def _fingerprint(kind: str, detail: str) -> str:
 
 
 def _throttled() -> bool:
-    now = time.time()
-    _SENT[:] = [t for t in _SENT if now - t < 3600]
-    return len(_SENT) >= MAX_PER_HOUR
+    return len(_sent_times()) >= MAX_PER_HOUR
 
 
 def _repo() -> str:
@@ -69,12 +85,13 @@ async def report_error(kind: str, detail: str, context: dict | None = None) -> d
     if not ENABLED or not detail:
         return {"sent": False, "reason": "disabled"}
     fp = _fingerprint(kind, detail)
-    seen = _SEEN.get(fp)
+    seen = _seen(fp)
     if seen:
         # Same fault again: count it, do not file another issue. Comment only on
         # milestones, or a busy loop becomes a busy comment thread.
         seen["count"] += 1
         seen["last"] = time.time()
+        _remember(fp, seen)
         if seen["count"] in (10, 100, 1000) and seen.get("issue"):
             try:
                 await github_client.comment_issue(
@@ -86,7 +103,8 @@ async def report_error(kind: str, detail: str, context: dict | None = None) -> d
         return {"sent": False, "reason": "already reported", "count": seen["count"],
                 "issue": seen.get("issue")}
 
-    _SEEN[fp] = {"count": 1, "first": time.time(), "last": time.time(), "issue": None}
+    record = {"count": 1, "first": time.time(), "last": time.time(), "issue": None}
+    _remember(fp, record)
     if _throttled():
         return {"sent": False, "reason": f"more than {MAX_PER_HOUR} in an hour; "
                                          f"holding off so this cannot flood"}
@@ -107,8 +125,9 @@ async def report_error(kind: str, detail: str, context: dict | None = None) -> d
     )
     try:
         n = await github_client.create_issue(repo, f"[{kind}] {detail.strip().splitlines()[0][:90]}", body)
-        _SEEN[fp]["issue"] = n
-        _SENT.append(time.time())
+        record["issue"] = n
+        _remember(fp, record)
+        db.kv_set(_SENT_KEY, _sent_times() + [time.time()])
         bus.emit(0, None, "system", "notified", {"issue": n, "kind": kind})
         return {"sent": True, "issue": n}
     except Exception as e:
@@ -166,8 +185,24 @@ def status() -> dict[str, Any]:
         "enabled": ENABLED,
         "repo": _repo(),
         "max_per_hour": MAX_PER_HOUR,
-        "sent_last_hour": len([t for t in _SENT if time.time() - t < 3600]),
+        "sent_last_hour": len(_sent_times()),
         "distinct_faults": [
-            {"kind_hash": fp, "count": v["count"], "issue": v["issue"],
-             "last": v["last"]} for fp, v in _SEEN.items()],
+            {"kind_hash": fp[len(_SEEN_PREFIX):], "count": v["count"], "issue": v["issue"],
+             "last": v["last"]}
+            for fp, v in sorted(db.kv_prefix(_SEEN_PREFIX).items(),
+                                key=lambda kv: -kv[1].get("last", 0))[:50]],
     }
+
+
+def forget(fingerprint: str | None = None) -> int:
+    """Stop counting a fault as already-reported, so the next occurrence files a
+    fresh issue. The operational use is after a fix ships: the old issue is closed
+    and a recurrence should be loud again, not silently added to a stale count.
+    """
+    if fingerprint:
+        db.kv_delete(_SEEN_PREFIX + fingerprint)
+        return 1
+    keys = list(db.kv_prefix(_SEEN_PREFIX))
+    for k in keys:
+        db.kv_delete(k)
+    return len(keys)

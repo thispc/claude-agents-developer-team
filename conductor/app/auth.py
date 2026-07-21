@@ -82,22 +82,42 @@ def get_user(user_id: int) -> dict | None:
     return rows[0] if rows else None
 
 
-# Failed logins per username: [timestamps]. In memory, which is the right scope —
-# a restart clearing it is fine, because a restart is not something an attacker
-# can cause from the login form.
-_FAILED: dict[str, list[float]] = {}
+# Failed logins per username: [timestamps], stored in the database.
+#
+# This lived in memory, on the reasoning that a restart is not something an
+# attacker can cause from the login form. True, and beside the point: they do not
+# need to cause one. The pod restarts on its own — a rollout, a node drain, an
+# OOM kill, a self-update — and each time it does, every lockout in force is
+# lifted. An attacker who paces their guesses does not have to break anything to
+# get their attempts back, only to wait for something ordinary to happen.
 LOCKOUT_AFTER = int(config._env("LOGIN_LOCKOUT_AFTER", "8"))
 LOCKOUT_WINDOW = int(config._env("LOGIN_LOCKOUT_WINDOW", "300"))
 
 
+def _fails(username: str) -> list[float]:
+    now = time.time()
+    return [t for t in db.kv_get(f"login_fail:{username}", []) or []
+            if now - t < LOCKOUT_WINDOW]
+
+
+def _record_fail(username: str) -> None:
+    tries = _fails(username)
+    tries.append(time.time())
+    # Bounded: a sustained attack must not grow a row without limit, and only the
+    # oldest of the last LOCKOUT_AFTER matters for computing the release time.
+    db.kv_set(f"login_fail:{username}", tries[-(LOCKOUT_AFTER * 2):])
+
+
+def _clear_fails(username: str) -> None:
+    db.kv_delete(f"login_fail:{username}")
+
+
 def locked_out(username: str) -> int:
     """Seconds until this username may try again; 0 if it may try now."""
-    now = time.time()
-    tries = [t for t in _FAILED.get(username, []) if now - t < LOCKOUT_WINDOW]
-    _FAILED[username] = tries
+    tries = _fails(username)
     if len(tries) < LOCKOUT_AFTER:
         return 0
-    return int(LOCKOUT_WINDOW - (now - tries[0]))
+    return max(1, int(LOCKOUT_WINDOW - (time.time() - tries[0])))
 
 
 def verify(username: str, password: str) -> dict | None:
@@ -113,12 +133,12 @@ def verify(username: str, password: str) -> dict | None:
     if not u:
         # Record the attempt anyway: otherwise guessing USERNAMES is free, and
         # "that account does not exist" is itself worth knowing to an attacker.
-        _FAILED.setdefault(username, []).append(time.time())
+        _record_fail(username)
         return None
     if hmac.compare_digest(_hash(password, u["pw_salt"]), u["pw_hash"]):
-        _FAILED.pop(username, None)
+        _clear_fails(username)
         return u
-    _FAILED.setdefault(username, []).append(time.time())
+    _record_fail(username)
     return None
 
 
@@ -232,3 +252,17 @@ def redacted(settings: dict) -> dict:
         "gemini_api_key_set": bool(settings.get("gemini_api_key")),
         "github_login": settings.get("github_login", ""),
     }
+
+
+def clear_lockouts(username: str | None = None) -> int:
+    """Release locked-out accounts. Root does this when a legitimate user locks
+    themselves out, which is the common case by a wide margin — the alternative is
+    telling them to wait, or restarting the server, which used to be the same thing.
+    """
+    if username:
+        _clear_fails(username)
+        return 1
+    keys = list(db.kv_prefix("login_fail:"))
+    for k in keys:
+        db.kv_delete(k)
+    return len(keys)

@@ -491,6 +491,7 @@ def build_team_server(project_id: int):
             launcher.kill_task(task_id, "superseded: the manager sent this work back "
                                         "while the agent was still on it")
         db.update_task(task_id, feedback=args["feedback"], status="planned")
+        db.judge_run(task_id, "rework", args["feedback"])
         bus.emit(project_id, task_id, "manager", "changes_requested",
                  {"feedback": args["feedback"]})
         repo = project().get("repo", "")
@@ -622,6 +623,7 @@ def build_team_server(project_id: int):
             if ans and "stop" in ans.lower():
                 return _text(f"Held at your request: {ans}. Task #{t['seq']} left as is.")
         db.update_task(t["id"], status="done")
+        db.judge_run(t["id"], "accepted", "accepted by the manager")
         bus.emit(project_id, t["id"], "manager", "task_accepted",
                  {"verdict": args.get("verdict", "")})
         scheduler.ensure(project_id)   # accepting unblocks dependents; wake the loop
@@ -669,10 +671,12 @@ def build_team_server(project_id: int):
                 f"with ask_boss, then retry with override_failed_tests=true.")
         if not github_client.enabled(repo) or not t["pr_number"]:
             db.update_task(t["id"], status="done")
+            db.judge_run(t["id"], "accepted", "no PR; accepted")
             return _text("no PR to merge; task marked done.")
         ok = await github_client.merge_pr(repo, t["pr_number"])
         if ok:
             db.update_task(t["id"], status="done")
+            db.judge_run(t["id"], "accepted", "merged")
             if t["issue_number"]:
                 try:
                     await github_client.close_issue(repo, t["issue_number"])

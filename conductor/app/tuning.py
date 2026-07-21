@@ -1,0 +1,188 @@
+"""The orchestration knobs, in one place and changeable on a running instance.
+
+Every value here used to be a literal somewhere in `launcher`, `manager`,
+`scheduler` or `blockers`. That was fine while the algorithm was fixed and wrong
+the moment it wasn't: deciding whether to escalate after one failed attempt or
+two is exactly the kind of question you answer by trying both and looking at the
+numbers, and you cannot try both if changing one means a rebuild, a push, and a
+rollout of the thing you are experimenting on.
+
+Resolution order, cheapest to override last:
+
+    DEFAULTS  <  environment variable  <  the `tuning` table
+
+The environment layer keeps existing deployments behaving exactly as they did
+(the env names are the ones already in use). The table layer is what a human or
+the platform itself edits at runtime, and it is the only one that survives a
+config change without a redeploy.
+
+Every knob carries a `why` — not documentation for its own sake, but because a
+number with no rationale gets tuned by vibes, and six months later nobody can say
+whether 2 was measured or guessed.
+"""
+
+from typing import Any
+
+from . import config, db
+
+# name -> (default, kind, env var, why it is set where it is)
+KNOBS: dict[str, tuple[Any, type, str, str]] = {
+    # --- when to spend a bigger model ---
+    "escalate_after_attempts": (
+        2, int, "ESCALATE_AFTER_ATTEMPTS",
+        "Failed attempts on one task before moving up the model ladder. Lower "
+        "burns money on work a cheap model was never going to finish; higher "
+        "burns wall-clock re-running something that keeps failing the same way."),
+    "escalate_on_rate_limit_after": (
+        1, int, "ESCALATE_ON_RATE_LIMIT_AFTER",
+        "A rate limit is not a quality failure, so it escalates sooner — the "
+        "point is to reach a model that will answer, not a better one."),
+    "max_attempts": (
+        3, int, "TASK_MAX_ATTEMPTS",
+        "Attempts before the manager is told a task is stuck. Repeated identical "
+        "failure is a planning problem, and more attempts do not fix planning."),
+
+    # --- contests ---
+    "contest_max_width": (
+        3, int, "CONTEST_MAX_WIDTH",
+        "Ceiling on rival attempts at one task. Width buys diversity, and the "
+        "evidence is that diversity is worth far less than good aggregation — so "
+        "this stays small and the effort goes into judging."),
+    "contest_min_deliverables": (
+        2, int, "CONTEST_MIN_DELIVERABLES",
+        "Rivals that must have actually produced something before a contest is "
+        "judged rather than salvaged. Selecting from a pool of one is not selection."),
+
+    # --- review ---
+    "review_panel_size": (
+        1, int, "REVIEW_PANEL_SIZE",
+        "How many teammates weigh in on finished work besides the manager. The "
+        "aggregation step is where multi-agent review earns its cost; 1 means "
+        "the manager still decides but hears one informed second opinion."),
+    "review_requires_evidence": (
+        True, bool, "REVIEW_REQUIRES_EVIDENCE",
+        "Refuse to accept work whose tests were never run. An imperfect verifier "
+        "caps achievable accuracy no matter how much inference you buy, so the "
+        "verifier is the thing worth protecting."),
+
+    # --- pacing ---
+    "max_concurrent_workers": (
+        config.MAX_CONCURRENT_WORKERS, int, "MAX_CONCURRENT_WORKERS",
+        "Agents in flight per project. Bounded by API rate limits far more often "
+        "than by anything on this machine."),
+    "stuck_seconds": (
+        1800, int, "WORKER_STUCK_SECONDS",
+        "Silence from a running agent before it is presumed dead. Long, because a "
+        "real build legitimately goes quiet for a while."),
+    "slow_seconds": (
+        900, int, "SLOW_SECONDS",
+        "When a task starts being called slow in the blockers panel. Advisory only."),
+
+    # --- work sharing ---
+    "reuse_verification": (
+        True, bool, "REUSE_VERIFICATION",
+        "Let a task inherit a teammate's already-run verification of the same "
+        "commit instead of re-running it. Re-running a green suite costs a full "
+        "agent dispatch and tells you what you already knew."),
+    "rebalance_idle": (
+        True, bool, "REBALANCE_IDLE",
+        "Offer blocked-but-idle teammates work outside their role rather than "
+        "leaving them parked while one critical path runs alone."),
+}
+
+
+def defaults() -> dict[str, Any]:
+    return {k: v[0] for k, v in KNOBS.items()}
+
+
+def _coerce(kind: type, raw: str) -> Any:
+    if kind is bool:
+        return raw.strip().lower() not in ("0", "false", "no", "")
+    return kind(raw)
+
+
+def _from_env() -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for name, (_default, kind, env, _why) in KNOBS.items():
+        raw = config._env(env)
+        if raw != "":
+            try:
+                out[name] = _coerce(kind, raw)
+            except (TypeError, ValueError):
+                pass  # a malformed env var falls back to the default, never crashes boot
+    return out
+
+
+def all() -> dict[str, Any]:
+    """Every knob's effective value."""
+    values = defaults()
+    values.update(_from_env())
+    try:
+        stored = db.tuning_all()
+    except Exception:
+        stored = {}  # before db.init(), fall back to defaults rather than failing
+    for k, v in stored.items():
+        if k in KNOBS:
+            values[k] = v
+    return values
+
+
+def get(name: str) -> Any:
+    return all().get(name, KNOBS[name][0] if name in KNOBS else None)
+
+
+def set(name: str, value: Any, who: str = "") -> Any:
+    """Change a knob on the running instance. Returns the coerced value.
+
+    Unknown names are refused rather than stored: a typo that silently persists
+    looks exactly like a knob that does not work.
+    """
+    if name not in KNOBS:
+        raise KeyError(f"unknown knob '{name}'")
+    kind = KNOBS[name][1]
+    if kind is bool:
+        value = bool(value)
+    else:
+        value = kind(value)
+    db.tuning_set(name, value, who)
+    return value
+
+
+def reset(name: str) -> None:
+    if name not in KNOBS:
+        raise KeyError(f"unknown knob '{name}'")
+    db.tuning_clear(name)
+
+
+def describe() -> list[dict]:
+    """Knobs with their provenance, for the settings UI: what it is, what it is
+    now, where that value came from, and why the default is what it is."""
+    env = _from_env()
+    try:
+        stored = db.tuning_all()
+    except Exception:
+        stored = {}
+    out = []
+    for name, (default, kind, envvar, why) in KNOBS.items():
+        if name in stored:
+            source = "tuned"
+        elif name in env:
+            source = "environment"
+        else:
+            source = "default"
+        out.append({
+            "name": name,
+            "value": stored.get(name, env.get(name, default)),
+            "default": default,
+            "type": kind.__name__,
+            "env": envvar,
+            "source": source,
+            "why": why,
+        })
+    return out
+
+
+def profile_of(project: dict | None) -> str:
+    """Which tuning profile a project's runs are stamped with, so runs made under
+    different settings are comparable rather than pooled."""
+    return (project or {}).get("profile") or "default"

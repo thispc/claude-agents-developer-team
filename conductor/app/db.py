@@ -103,6 +103,70 @@ CREATE TABLE IF NOT EXISTS model_cooldown (
     until_ts REAL NOT NULL,
     reason TEXT NOT NULL DEFAULT ''
 );
+-- A named teammate, not a fresh session. Roles used to be labels: every task got
+-- a brand-new agent with no memory of what "the backend engineer" had already
+-- built, which made continuity, per-role personas and per-role providers all
+-- impossible to express. An agent row is the durable thing a task is assigned to.
+CREATE TABLE IF NOT EXISTS agents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    name TEXT NOT NULL,                       -- stable human name, shown everywhere
+    role TEXT NOT NULL,
+    idx INTEGER NOT NULL DEFAULT 1,           -- which of N holding this role
+    persona TEXT NOT NULL DEFAULT '',         -- character instructions, editable mid-project
+    provider TEXT NOT NULL DEFAULT 'anthropic',
+    model TEXT NOT NULL DEFAULT '',           -- '' = the role default
+    status TEXT NOT NULL DEFAULT 'idle',      -- idle | busy
+    tasks_done INTEGER NOT NULL DEFAULT 0,
+    notes TEXT NOT NULL DEFAULT '',           -- carried into the next task's context
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agents_project ON agents(project_id);
+-- One row per agent dispatch. Without this there is no way to tell whether a
+-- change to the orchestration algorithm helped: cost and duration were recorded
+-- per project, so a tweak that halved rework and a tweak that did nothing looked
+-- identical. Every knob change is stamped with the profile in force, so runs can
+-- be compared across configurations rather than only across time.
+CREATE TABLE IF NOT EXISTS runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    task_id INTEGER,
+    agent_id INTEGER,
+    contender_id INTEGER,                     -- set when this run was one rival in a contest
+    sprint INTEGER NOT NULL DEFAULT 1,
+    role TEXT NOT NULL DEFAULT '',
+    provider TEXT NOT NULL DEFAULT 'anthropic',
+    model TEXT NOT NULL DEFAULT '',
+    attempt INTEGER NOT NULL DEFAULT 1,
+    kind TEXT NOT NULL DEFAULT 'task',        -- task | contender | manager | review
+    outcome TEXT NOT NULL DEFAULT 'running',  -- running | accepted | rework | failed | abandoned
+    reason TEXT NOT NULL DEFAULT '',
+    cost_usd REAL NOT NULL DEFAULT 0,
+    turns INTEGER NOT NULL DEFAULT 0,
+    profile TEXT NOT NULL DEFAULT '',         -- tuning profile this ran under
+    started_at REAL NOT NULL,
+    ended_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project_id, id);
+CREATE INDEX IF NOT EXISTS idx_runs_task ON runs(task_id);
+-- Small durable facts that outlive a process: notification fingerprints, login
+-- failure counts, the last scheduled-scan time. Each was in memory, and each was
+-- wrong for the same reason — a crash-looping pod re-notified on every restart,
+-- and a restart cleared a lockout an attacker could then walk straight through.
+CREATE TABLE IF NOT EXISTS kv (
+    k TEXT PRIMARY KEY,
+    v TEXT NOT NULL,
+    ts REAL NOT NULL
+);
+-- The orchestration knobs. Constants in source cannot be tuned on a running
+-- instance, and an algorithm that needs regular tweaking cannot live behind a
+-- rebuild-and-redeploy cycle.
+CREATE TABLE IF NOT EXISTS tuning (
+    k TEXT PRIMARY KEY,
+    v TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL,
@@ -168,6 +232,9 @@ def init() -> None:
         "ALTER TABLE tasks ADD COLUMN sprint INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE roundtables ADD COLUMN mode TEXT NOT NULL DEFAULT 'debate'",
         "ALTER TABLE tasks ADD COLUMN verification TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE tasks ADD COLUMN agent_id INTEGER",
+        "ALTER TABLE projects ADD COLUMN process TEXT NOT NULL DEFAULT 'agile'",
+        "ALTER TABLE projects ADD COLUMN profile TEXT NOT NULL DEFAULT 'default'",
         # roundtables/seats/turns are created by SCHEMA above (CREATE TABLE IF NOT
         # EXISTS), so existing databases pick them up without a migration here.
     ):
@@ -596,3 +663,158 @@ def update_contender(contender_id: int, **fields: Any) -> None:
 
 def clear_contenders(task_id: int) -> None:
     _execute("DELETE FROM contenders WHERE task_id=?", (task_id,))
+
+
+# --- agents: named teammates that outlive a single task ---
+
+def create_agent(project_id: int, name: str, role: str, idx: int = 1,
+                 persona: str = "", provider: str = "anthropic",
+                 model: str = "") -> int:
+    cur = _execute(
+        "INSERT INTO agents (project_id, name, role, idx, persona, provider, model, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (project_id, name, role, idx, persona, provider, model, time.time()))
+    return int(cur.lastrowid)
+
+
+def get_agent(agent_id: int) -> dict | None:
+    rows = _rows("SELECT * FROM agents WHERE id=?", (agent_id,))
+    return rows[0] if rows else None
+
+
+def list_agents(project_id: int, role: str | None = None) -> list[dict]:
+    if role:
+        return _rows("SELECT * FROM agents WHERE project_id=? AND role=? ORDER BY idx",
+                     (project_id, role))
+    return _rows("SELECT * FROM agents WHERE project_id=? ORDER BY role, idx", (project_id,))
+
+
+def update_agent(agent_id: int, **fields: Any) -> None:
+    cols = ", ".join(f"{k}=?" for k in fields)
+    _execute(f"UPDATE agents SET {cols} WHERE id=?", (*fields.values(), agent_id))
+
+
+def free_agents(project_id: int, role: str | None = None) -> list[dict]:
+    """Teammates holding no running task. The scheduler needs this to answer
+    'who could help?', which it could not ask before — capacity was implicit in
+    the dependency graph and nowhere else."""
+    return [a for a in list_agents(project_id, role) if a["status"] == "idle"]
+
+
+# --- runs: one row per dispatch, so the algorithm can be measured ---
+
+def start_run(project_id: int, task_id: int | None, *, role: str = "", model: str = "",
+              provider: str = "anthropic", attempt: int = 1, kind: str = "task",
+              sprint: int = 1, agent_id: int | None = None, profile: str = "",
+              contender_id: int | None = None) -> int:
+    cur = _execute(
+        "INSERT INTO runs (project_id, task_id, agent_id, contender_id, sprint, role, "
+        "provider, model, attempt, kind, profile, started_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (project_id, task_id, agent_id, contender_id, sprint, role, provider, model, attempt,
+         kind, profile, time.time()))
+    return int(cur.lastrowid)
+
+
+def open_run_for(task_id: int, contender_id: int | None = None) -> dict | None:
+    """The still-open run for this dispatch. Looked up rather than held in memory
+    so a report that arrives after a restart still closes its run — otherwise the
+    run stays 'running' forever and quietly distorts every average computed from it."""
+    if contender_id:
+        rows = _rows("SELECT * FROM runs WHERE contender_id=? AND outcome='running' "
+                     "ORDER BY id DESC LIMIT 1", (contender_id,))
+    else:
+        rows = _rows("SELECT * FROM runs WHERE task_id=? AND contender_id IS NULL "
+                     "AND outcome='running' ORDER BY id DESC LIMIT 1", (task_id,))
+    return rows[0] if rows else None
+
+
+def latest_run(task_id: int) -> dict | None:
+    rows = _rows("SELECT * FROM runs WHERE task_id=? ORDER BY id DESC LIMIT 1", (task_id,))
+    return rows[0] if rows else None
+
+
+def judge_run(task_id: int, outcome: str, reason: str = "") -> None:
+    """Record the manager's verdict on the most recent delivered run.
+
+    Delivery and acceptance are different events — a worker reporting 'pushed'
+    means it finished, not that the work was any good — so the run is closed as
+    'delivered' first and only relabelled once someone judges it. Collapsing the
+    two would make first-pass acceptance unmeasurable, which is the one number
+    worth having."""
+    rows = _rows("SELECT id FROM runs WHERE task_id=? AND outcome='delivered' "
+                 "ORDER BY id DESC LIMIT 1", (task_id,))
+    if rows:
+        _execute("UPDATE runs SET outcome=?, reason=? WHERE id=?",
+                 (outcome, reason[:500], rows[0]["id"]))
+
+
+def finish_run(run_id: int, outcome: str, *, reason: str = "", cost_usd: float = 0.0,
+               turns: int = 0) -> None:
+    _execute("UPDATE runs SET outcome=?, reason=?, cost_usd=?, turns=?, ended_at=? WHERE id=?",
+             (outcome, reason[:500], cost_usd, turns, time.time(), run_id))
+
+
+def list_runs(project_id: int | None = None, limit: int = 500) -> list[dict]:
+    if project_id is None:
+        return _rows("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,))
+    return _rows("SELECT * FROM runs WHERE project_id=? ORDER BY id DESC LIMIT ?",
+                 (project_id, limit))
+
+
+def open_runs(project_id: int) -> list[dict]:
+    return _rows("SELECT * FROM runs WHERE project_id=? AND outcome='running'", (project_id,))
+
+
+# --- kv: durable small facts ---
+
+def kv_get(key: str, default: Any = None) -> Any:
+    rows = _rows("SELECT v FROM kv WHERE k=?", (key,))
+    if not rows:
+        return default
+    try:
+        return json.loads(rows[0]["v"])
+    except json.JSONDecodeError:
+        return default
+
+
+def kv_set(key: str, value: Any) -> None:
+    _execute("INSERT INTO kv (k, v, ts) VALUES (?,?,?) "
+             "ON CONFLICT(k) DO UPDATE SET v=excluded.v, ts=excluded.ts",
+             (key, json.dumps(value), time.time()))
+
+
+def kv_delete(key: str) -> None:
+    _execute("DELETE FROM kv WHERE k=?", (key,))
+
+
+def kv_prefix(prefix: str) -> dict[str, Any]:
+    out = {}
+    for r in _rows("SELECT k, v FROM kv WHERE k LIKE ?", (prefix + "%",)):
+        try:
+            out[r["k"]] = json.loads(r["v"])
+        except json.JSONDecodeError:
+            pass
+    return out
+
+
+# --- tuning: orchestration knobs ---
+
+def tuning_all() -> dict[str, Any]:
+    out = {}
+    for r in _rows("SELECT k, v FROM tuning", ()):
+        try:
+            out[r["k"]] = json.loads(r["v"])
+        except json.JSONDecodeError:
+            pass
+    return out
+
+
+def tuning_set(key: str, value: Any, who: str = "") -> None:
+    _execute("INSERT INTO tuning (k, v, updated_at, updated_by) VALUES (?,?,?,?) "
+             "ON CONFLICT(k) DO UPDATE SET v=excluded.v, updated_at=excluded.updated_at, "
+             "updated_by=excluded.updated_by",
+             (key, json.dumps(value), time.time(), who))
+
+
+def tuning_clear(key: str) -> None:
+    _execute("DELETE FROM tuning WHERE k=?", (key,))

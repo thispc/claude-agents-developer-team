@@ -1,14 +1,15 @@
 import asyncio
 import hmac
 import json
+from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from . import (auth, blockers, bus, cloud, config, credcheck, db, deploy, notify,
-               envs, github_client, launcher, manager, planner, preview, providers,
-               roundtable, sandbox, scheduler, selfops, triage)
+               envs, github_client, launcher, manager, metrics, planner, preview,
+               providers, roundtable, sandbox, scheduler, selfops, triage, tuning)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -689,6 +690,59 @@ async def self_refine(payload: RoughIssue, request: Request) -> dict:
     if len(rough) < 8:
         raise HTTPException(400, "say a little more about what's wrong")
     return await selfops.refine_issue(rough, auth.get_settings(u))
+
+
+@router.get("/api/projects/{project_id}/metrics")
+def project_metrics(project_id: int, request: Request) -> dict:
+    """How this project's runs actually went — rework, first-pass acceptance, cost
+    per delivered task. Stale 'running' rows are swept first, because a run left
+    open by a restart is neither a success nor a failure and would quietly skew
+    every average below it."""
+    owned_project(project_id, request)
+    metrics.reconcile(project_id)
+    return metrics.project(project_id)
+
+
+@router.get("/api/tuning")
+def get_tuning(request: Request) -> dict:
+    """The orchestration knobs, with where each current value came from."""
+    current_user(request)
+    return {"knobs": tuning.describe()}
+
+
+class TuningUpdate(BaseModel):
+    name: str
+    value: Any = None
+    reset: bool = False
+
+
+@router.post("/api/tuning")
+def set_tuning(body: TuningUpdate, request: Request) -> dict:
+    """Change a knob on the running instance.
+
+    Root only. These values decide how much the platform spends and how hard it
+    retries, so they sit with the operator rather than with anyone who can log in.
+    """
+    u = current_user(request)
+    if not u["is_root"]:
+        raise HTTPException(403, "only root may change orchestration settings")
+    try:
+        if body.reset:
+            tuning.reset(body.name)
+        else:
+            tuning.set(body.name, body.value, who=u["username"])
+    except KeyError:
+        raise HTTPException(404, f"no knob called '{body.name}'")
+    except (TypeError, ValueError):
+        raise HTTPException(400, f"'{body.value}' is not a valid value for {body.name}")
+    return {"knobs": tuning.describe()}
+
+
+@router.get("/api/tuning/compare")
+def compare_tuning(request: Request) -> dict:
+    """Tuning profiles side by side — the reason runs are recorded at all."""
+    current_user(request)
+    return metrics.compare()
 
 
 @router.post("/api/self/triage")
@@ -1545,6 +1599,19 @@ def worker_event(body: WorkerEvent, x_worker_token: str | None = Header(None)) -
     return {"ok": True}
 
 
+def _close_run(task_id: int, status: str, cost_usd: float,
+               contender_id: int | None = None) -> None:
+    """Close the measurement row for a dispatch that just reported.
+
+    'delivered' rather than 'accepted': the worker finished, which is not the same
+    as the work being any good. The manager relabels it when it judges.
+    """
+    run = db.open_run_for(task_id, contender_id)
+    if run:
+        db.finish_run(run["id"], "delivered" if status == "pushed" else "failed",
+                      cost_usd=cost_usd)
+
+
 @router.post("/internal/report")
 def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None)) -> dict:
     _check_token(x_worker_token)
@@ -1557,6 +1624,7 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
     if body.contender_id:
         db.update_contender(body.contender_id, status=status, report=body.report[:12000])
         db.add_project_cost(body.project_id, body.cost_usd)
+        _close_run(body.task_id, status, body.cost_usd, contender_id=body.contender_id)
         rivals = db.list_contenders(body.task_id)
         c = db.get_contender(body.contender_id)
         bus.emit(body.project_id, body.task_id, f"rival {c['idx'] if c else '?'}",
@@ -1607,6 +1675,7 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
                    verification=body.verification or "",
                    cost_usd=(task["cost_usd"] if task else 0) + body.cost_usd)
     db.add_project_cost(body.project_id, body.cost_usd)
+    _close_run(body.task_id, status, body.cost_usd)
     try:
         v = json.loads(body.verification or "{}")
     except Exception:

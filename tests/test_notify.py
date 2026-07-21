@@ -15,11 +15,11 @@ from app import config, db, notify
 
 @pytest.fixture(autouse=True)
 def _clean():
-    notify._SEEN.clear()
-    notify._SENT.clear()
+    notify.forget()
+    db.kv_delete(notify._SENT_KEY)
     yield
-    notify._SEEN.clear()
-    notify._SENT.clear()
+    notify.forget()
+    db.kv_delete(notify._SENT_KEY)
 
 
 # ---- one issue per fault, not one per occurrence -------------------------
@@ -202,28 +202,28 @@ def test_login_locks_out_after_repeated_failures(fresh_db):
     """Unbounded guessing is only survivable behind a firewall. The moment this is
     reachable from the internet the password IS the security boundary."""
     from app import auth
-    auth._FAILED.clear()
+    auth.clear_lockouts()
     for _ in range(auth.LOCKOUT_AFTER):
         auth.verify("root", "nope")
     assert auth.locked_out("root") > 0
     assert auth.verify("root", "testpass") is None, "correct password accepted while locked"
-    auth._FAILED.clear()
+    auth.clear_lockouts()
 
 
 def test_a_successful_login_clears_the_counter(fresh_db):
     from app import auth
-    auth._FAILED.clear()
+    auth.clear_lockouts()
     auth.verify("root", "nope")
     assert auth.verify("root", "testpass")
     assert auth.locked_out("root") == 0
-    auth._FAILED.clear()
+    auth.clear_lockouts()
 
 
 def test_guessing_usernames_is_not_free(fresh_db):
     """Otherwise 'that account does not exist' is itself information worth having."""
     from app import auth
-    auth._FAILED.clear()
+    auth.clear_lockouts()
     for _ in range(auth.LOCKOUT_AFTER):
         auth.verify("does-not-exist", "x")
     assert auth.locked_out("does-not-exist") > 0
-    auth._FAILED.clear()
+    auth.clear_lockouts()
