@@ -1,0 +1,69 @@
+# Production on DOKS.
+#
+# Differs from a preview in exactly two ways, and both matter:
+#   - it carries REAL credentials, so it can actually run agents
+#   - it is NOT in DEMO_MODE, so nothing is simulated
+#
+# Service is NodePort, not LoadBalancer: DigitalOcean bills every LB, and at this
+# scale the node's own IP serves the same purpose for nothing. Swap to an Ingress
+# once there is a wildcard domain worth terminating TLS on.
+apiVersion: v1
+kind: Namespace
+metadata: {name: devteam}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: devteam-data, namespace: devteam}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 10Gi}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: devteam-conductor, namespace: devteam}
+spec:
+  replicas: 1
+  # The conductor holds a SQLite file on a ReadWriteOnce volume, so two replicas
+  # would fight over it. Recreate rather than RollingUpdate for the same reason:
+  # the new pod cannot mount the volume until the old one lets go.
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: devteam-conductor}}
+  template:
+    metadata: {labels: {app: devteam-conductor}}
+    spec:
+      imagePullSecrets: [{name: docr-creds}]
+      containers:
+        - name: conductor
+          image: registry.digitalocean.com/devteam-pulkit/devteam-conductor:doks-first
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8000}]
+          envFrom:
+            - secretRef: {name: devteam-secrets}
+          env:
+            - {name: DB_PATH, value: /data/devteam.db}
+            - {name: WORKSPACES_DIR, value: /data/workspaces}
+            - {name: LAUNCHER, value: local}
+            - {name: CONDUCTOR_URL, value: "http://devteam-conductor.devteam.svc.cluster.local"}
+          resources:
+            requests: {cpu: 200m, memory: 512Mi}
+            limits: {memory: 3Gi}
+          volumeMounts: [{name: data, mountPath: /data}]
+          readinessProbe:
+            httpGet: {path: /api/health, port: 8000}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /api/health, port: 8000}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: devteam-data}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: devteam-conductor, namespace: devteam}
+spec:
+  type: NodePort
+  selector: {app: devteam-conductor}
+  ports: [{port: 80, targetPort: 8000, nodePort: 30080}]
