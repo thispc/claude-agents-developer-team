@@ -153,8 +153,15 @@ def build(source: str, note: str = "") -> dict[str, Any]:
                 "-f", str(dockerfile), "-t", registry_tag(tag), "--push",
                 str(tree), timeout=3600)
     if r.returncode != 0:
-        return {"ok": False, "error": "docker build failed",
-                "log": (r.stdout + r.stderr)[-2500:]}
+        blob = (r.stdout or "") + (r.stderr or "")
+        # Name the common cause rather than making the caller read a build log.
+        # Registry credentials are short-lived by design, so "unauthorized" here
+        # means expired login far more often than it means anything else.
+        why = ("the registry login has expired — run `doctl registry login`, or "
+               "fetch fresh docker credentials for the registry"
+               if "unauthorized" in blob.lower() or "authentication required" in blob.lower()
+               else "docker build failed")
+        return {"ok": False, "error": why, "log": blob[-2500:]}
 
     st = _state()
     st["images"] = [i for i in st["images"] if i["tag"] != tag][:19]
