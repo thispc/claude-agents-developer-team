@@ -894,6 +894,28 @@ def staging_verify(body: StagingReq, request: Request) -> dict:
     return r
 
 
+@router.post("/api/self/staging/promote-check")
+def staging_promote_check(body: StagingReq, request: Request) -> dict:
+    """Deploy an image to staging and run its own tests against it, in one step.
+
+    One call because the two halves are only meaningful together: a deployment
+    nobody tested proves nothing, and a test run against a different build proves
+    less than nothing.
+    """
+    _root(request)
+    dep = cloud.staging_deploy(body.image.strip())
+    if not dep.get("ok"):
+        raise HTTPException(400, f"staging would not come up: {dep.get('error')}")
+    ver = cloud.staging_verify(body.image.strip())
+    bus.emit(0, None, "system",
+             "staging_passed" if ver.get("ok") else "staging_failed",
+             {"image": body.image, "output": (ver.get("output") or "")[:600]})
+    return {"deployed": dep, "verified": ver,
+            "may_promote": bool(ver.get("ok")),
+            "note": ("production can now adopt this image" if ver.get("ok")
+                     else "production will refuse this image while the gate is on")}
+
+
 @router.delete("/api/self/staging")
 def staging_teardown(request: Request) -> dict:
     _root(request)

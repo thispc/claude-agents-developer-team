@@ -339,3 +339,76 @@ def test_staging_routes_are_root_only(client, make_user, fresh_db, monkeypatch):
     _uid, c2 = make_user("mallory")
     assert c2.post("/api/self/staging", json={"image": "x:1"}).status_code == 403
     assert c2.delete("/api/self/staging").status_code == 403
+
+
+# ---- the gate: staging must vouch for the exact image --------------------
+
+def test_production_refuses_an_image_staging_has_not_verified(monkeypatch):
+    from app import cloud
+    monkeypatch.setattr(cloud, "in_cluster", lambda: True)
+    monkeypatch.setattr(cloud, "current_image", lambda: "img:1")
+    monkeypatch.setattr(cloud, "busy", lambda: [])
+    monkeypatch.setattr(cloud, "REQUIRE_STAGING", True)
+    monkeypatch.setattr(cloud, "verified_image", lambda: "img:0")
+
+    def _boom(i):
+        raise AssertionError("ran a canary on an unverified image")
+    monkeypatch.setattr(cloud, "canary", _boom)
+    r = cloud.self_update("img:2")
+    assert r["ok"] is False and "staging has not verified" in r["error"]
+
+
+def test_the_gate_is_per_image_not_per_run(monkeypatch):
+    """Verifying image A must not authorise image B — otherwise one green run
+    licenses everything that follows it."""
+    from app import cloud
+    monkeypatch.setattr(cloud, "in_cluster", lambda: True)
+    monkeypatch.setattr(cloud, "current_image", lambda: "img:1")
+    monkeypatch.setattr(cloud, "busy", lambda: [])
+    monkeypatch.setattr(cloud, "REQUIRE_STAGING", True)
+    monkeypatch.setattr(cloud, "verified_image", lambda: "img:2")
+    monkeypatch.setattr(cloud, "canary", lambda i: {"ok": True})
+
+    class _Api:
+        def patch_namespaced_deployment(self, *a, **k): pass
+    monkeypatch.setattr(cloud, "_api", lambda: _Api())
+    assert cloud.self_update("img:2")["ok"] is True
+    monkeypatch.setattr(cloud, "verified_image", lambda: "img:9")
+    assert cloud.self_update("img:2")["ok"] is False
+
+
+def test_force_bypasses_the_gate(monkeypatch):
+    """A gate that blocks the only route out of a broken deployment is worse than
+    no gate."""
+    from app import cloud
+    monkeypatch.setattr(cloud, "in_cluster", lambda: True)
+    monkeypatch.setattr(cloud, "current_image", lambda: "img:1")
+    monkeypatch.setattr(cloud, "REQUIRE_STAGING", True)
+    monkeypatch.setattr(cloud, "verified_image", lambda: "")
+
+    class _Api:
+        def patch_namespaced_deployment(self, *a, **k): pass
+    monkeypatch.setattr(cloud, "_api", lambda: _Api())
+    assert cloud.self_update("img:2", force=True)["ok"] is True
+
+
+def test_the_gate_is_off_by_default():
+    from app import cloud
+    assert cloud.REQUIRE_STAGING is False
+
+
+def test_the_verdict_outlives_the_pod_that_made_it():
+    """The pod that verifies is the pod about to be replaced by the update it
+    authorises, so the record cannot live in its memory or filesystem."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "conductor" / "app" / "cloud.py").read_text()
+    body = src.split("def _record_verified(")[1].split("\ndef ")[0]
+    assert "patch_namespaced_deployment" in body and "annotations" in body
+
+
+def test_the_image_carries_its_own_tests():
+    """Running the suite from a checkout would test whatever the checkout happened
+    to be — the drift this whole arrangement exists to remove."""
+    from pathlib import Path
+    df = (Path(__file__).resolve().parent.parent / "deploy" / "Dockerfile.conductor").read_text()
+    assert "COPY tests/ tests/" in df and "pytest" in df

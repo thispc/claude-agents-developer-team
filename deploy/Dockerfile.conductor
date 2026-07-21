@@ -11,7 +11,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY conductor/requirements.txt conductor/requirements.txt
 COPY worker/requirements.txt worker/requirements.txt
-RUN pip install --no-cache-dir -r conductor/requirements.txt -r worker/requirements.txt
+RUN pip install --no-cache-dir -r conductor/requirements.txt -r worker/requirements.txt \
+    && pip install --no-cache-dir pytest pytest-asyncio
+
+# The suite ships INSIDE the image so staging can run the exact tests that
+# belong to the exact build under consideration. Running them from a checkout
+# would test whatever the checkout happened to be, which is the drift this whole
+# arrangement exists to remove. ~200KB, and it makes the image self-verifying.
+COPY tests/ tests/
+COPY pytest.ini pytest.ini
 
 COPY conductor/ conductor/
 COPY worker/ worker/

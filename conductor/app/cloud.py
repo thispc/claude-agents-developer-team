@@ -98,6 +98,9 @@ def can_self_update() -> dict[str, Any]:
 
 CANARY = f"{DEPLOYMENT}-canary"
 CANARY_TIMEOUT = int(config._env("CANARY_TIMEOUT", "120"))
+# Off by default: a gate that blocks the only route out of a broken deployment is
+# worse than no gate. Turn it on once staging is reliably running.
+REQUIRE_STAGING = config._env("REQUIRE_STAGING") == "1"
 
 
 def canary(image: str) -> dict[str, Any]:
@@ -389,9 +392,40 @@ def staging_verify(image: str) -> dict[str, Any]:
         return {"ok": False, "error": f"could not run the suite: {e}"}
     tail = "\n".join((out or "").strip().splitlines()[-12:])
     passed = " failed" not in (out or "") and "error" not in (out or "").lower()
-    return {"ok": passed, "output": tail,
+    if passed:
+        _record_verified(image)
+    return {"ok": passed, "output": tail, "image": image,
             "note": "the suite ran inside staging, on the same image production "
                     "would take"}
+
+
+VERIFIED_ANNOTATION = "devteam.io/staging-verified"
+
+
+def _record_verified(image: str) -> None:
+    """Remember which image passed, on the production Deployment itself.
+
+    Stored as an annotation rather than in a file because the record has to
+    outlive the pod that made it — and the pod that made it is the one about to
+    be replaced by the very update this gates.
+    """
+    try:
+        _api().patch_namespaced_deployment(
+            DEPLOYMENT, namespace(),
+            {"metadata": {"annotations": {VERIFIED_ANNOTATION: image}}})
+    except Exception:
+        pass
+
+
+def verified_image() -> str:
+    """The image staging has actually vouched for, or ''."""
+    if not in_cluster():
+        return ""
+    try:
+        d = _api().read_namespaced_deployment(DEPLOYMENT, namespace())
+        return (d.metadata.annotations or {}).get(VERIFIED_ANNOTATION, "")
+    except Exception:
+        return ""
 
 
 def staging_teardown() -> dict[str, Any]:
@@ -426,6 +460,18 @@ def self_update(image: str, force: bool = False) -> dict[str, Any]:
     previous = current_image()
     if image == previous:
         return {"ok": False, "error": "already running that image"}
+    # Staging has to have vouched for this exact image. The canary below proves
+    # it boots; this proves its own tests pass with real credentials. Neither
+    # replaces the other, and the boot check is the weaker of the two.
+    if REQUIRE_STAGING and not force:
+        v = verified_image()
+        if v != image:
+            return {"ok": False,
+                    "error": ("staging has not verified this image. Deploy it to "
+                              "staging and run its tests first — "
+                              + (f"the last verified image was {v.split(':')[-1]}"
+                                 if v else "nothing has been verified yet")),
+                    "verified": v}
     # Prove it boots before it becomes the platform. Skipped only with force,
     # which is for getting OUT of a bad state — where the canary would be a second
     # thing to go wrong while the platform is already broken.
