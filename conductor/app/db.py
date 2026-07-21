@@ -223,6 +223,28 @@ CREATE TABLE IF NOT EXISTS sprint_artifacts (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sprint_artifacts
     ON sprint_artifacts(project_id, sprint);
+-- The boss's notes, attached to the thing they are about.
+-- A directive is a message and nothing more: it is consumed once, it is not
+-- stored against anything, and "the login screen is wrong" arrives at the manager
+-- with no way to know which login screen, from which sprint, or whether it was
+-- ever acted on. A note keeps its target and its own lifecycle, so the same
+-- comment can be shown beside the artifact it is about AND delivered as a
+-- directive — the channel stays the one that already works.
+-- directive_id records which inbox row carried it, which is the only way to tell
+-- "the manager has been told" apart from "the manager has done something".
+CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    target TEXT NOT NULL,                     -- task | sprint | project
+    target_id INTEGER NOT NULL DEFAULT 0,     -- task id, sprint number, or 0
+    text TEXT NOT NULL,
+    author TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'open',      -- open | delivered | resolved
+    directive_id INTEGER,
+    created_at REAL NOT NULL,
+    delivered_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_project ON feedback(project_id, status);
 """
 
 
@@ -421,6 +443,7 @@ def delete_project(project_id: int) -> dict:
     _execute("DELETE FROM inbox WHERE project_id=?", (project_id,))
     _execute("DELETE FROM tasks WHERE project_id=?", (project_id,))
     _execute("DELETE FROM sprint_artifacts WHERE project_id=?", (project_id,))
+    _execute("DELETE FROM feedback WHERE project_id=?", (project_id,))
     # a round table that produced this project loses only the link, not itself
     _execute("UPDATE roundtables SET project_id=NULL WHERE project_id=?", (project_id,))
     _execute("DELETE FROM projects WHERE id=?", (project_id,))
@@ -865,6 +888,47 @@ def save_sprint_artifact(project_id: int, sprint: int, facts: Any) -> None:
 def set_sprint_notes(project_id: int, sprint: int, notes: str, source: str = "") -> None:
     _execute("UPDATE sprint_artifacts SET notes=?, notes_source=? "
              "WHERE project_id=? AND sprint=?", (notes, source, project_id, sprint))
+
+
+# --- feedback: the boss's notes, attached to what they are about ---
+
+def add_feedback(project_id: int, target: str, target_id: int, text: str,
+                 author: str = "") -> int:
+    cur = _execute(
+        "INSERT INTO feedback (project_id, target, target_id, text, author, created_at) "
+        "VALUES (?,?,?,?,?,?)",
+        (project_id, target, target_id, text, author, time.time()))
+    return cur.lastrowid
+
+
+def get_feedback(feedback_id: int) -> dict | None:
+    rows = _rows("SELECT * FROM feedback WHERE id=?", (feedback_id,))
+    return rows[0] if rows else None
+
+
+def list_feedback(project_id: int, target: str = "", target_id: int | None = None,
+                  status: str = "") -> list[dict]:
+    sql = "SELECT * FROM feedback WHERE project_id=?"
+    params: list[Any] = [project_id]
+    if target:
+        sql += " AND target=?"
+        params.append(target)
+        if target_id is not None:
+            sql += " AND target_id=?"
+            params.append(target_id)
+    if status:
+        sql += " AND status=?"
+        params.append(status)
+    return _rows(sql + " ORDER BY id", tuple(params))
+
+
+def mark_feedback_delivered(feedback_id: int, directive_id: int) -> None:
+    _execute("UPDATE feedback SET status='delivered', directive_id=?, delivered_at=? "
+             "WHERE id=?", (directive_id, time.time(), feedback_id))
+
+
+def set_feedback_status(feedback_id: int, status: str) -> None:
+    _execute("UPDATE feedback SET status=? WHERE id=?", (status, feedback_id))
 
 
 def get_sprint_artifact(project_id: int, sprint: int) -> dict | None:

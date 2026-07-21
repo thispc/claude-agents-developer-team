@@ -8,9 +8,9 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from . import (artifacts, auth, blockers, bus, cloud, config, credcheck, db, deploy,
-               envs, findings, github_client, launcher, manager, metrics, notify,
-               planner, preview, process, providers, roundtable, sandbox, scheduler,
-               selfops, team, triage, tuning, upkeep)
+               envs, feedback, findings, github_client, launcher, manager, metrics,
+               notify, planner, preview, process, providers, roundtable, sandbox,
+               scheduler, selfops, team, triage, tuning, upkeep)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -251,12 +251,69 @@ async def verify_credential(body: VerifyCred, request: Request) -> dict:
 
     Checks the value being typed if there is one, otherwise the stored value —
     so 'Check' is useful both while entering a key and long afterwards.
+
+    A custom endpoint verifies through the same button and returns the same
+    shape, because it fails the same way: an endpoint that silently does not
+    answer is indistinguishable from a key that was never valid. Its `value` is
+    the endpoint id, since what is being proved is a URL, a key and a model list
+    together rather than any one string.
     """
     u = current_user(request)
+    if body.kind == credcheck.ENDPOINT_KIND:
+        ep = providers.endpoint(providers.CUSTOM_PREFIX + body.value.strip(),
+                                auth.get_settings(u))
+        if not ep:
+            raise HTTPException(404, "no such endpoint")
+        return await credcheck.check_endpoint(ep)
     if body.kind not in credcheck.KINDS:
         raise HTTPException(400, f"cannot verify {body.kind!r}")
     value = body.value.strip() or auth.get_settings(u).get(body.kind, "")
     return await credcheck.check(body.kind, value)
+
+
+class CustomEndpoint(BaseModel):
+    id: str = ""                    # blank = derived from the label
+    label: str = ""
+    base_url: str
+    # None means "leave the stored key alone". The browser is never sent a key, so
+    # a user editing the model list would otherwise submit an empty field and
+    # un-authenticate a working server; "" still clears it, deliberately.
+    api_key: str | None = None
+    key_header: str = "Authorization"
+    models: list[str] = []
+
+
+@router.get("/api/settings/endpoints")
+def list_endpoints(request: Request) -> dict:
+    """The user's own inference endpoints, keys withheld."""
+    u = current_user(request)
+    return {"endpoints": auth.redacted(auth.get_settings(u))["custom_endpoints"]}
+
+
+@router.post("/api/settings/endpoints")
+def save_endpoint(body: CustomEndpoint, request: Request) -> dict:
+    """Add or replace one OpenAI-compatible endpoint.
+
+    Saving does not check it. Verification is a separate call because it costs a
+    real request against the user's server, and a Settings dialog that reaches out
+    on every keystroke is one people learn to avoid.
+    """
+    u = current_user(request)
+    try:
+        auth.save_endpoint(u, body.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"endpoints": auth.redacted(
+        auth.get_settings(auth.get_user(u["id"])))["custom_endpoints"]}
+
+
+@router.delete("/api/settings/endpoints/{endpoint_id}")
+def delete_endpoint(endpoint_id: str, request: Request) -> dict:
+    u = current_user(request)
+    if not auth.delete_endpoint(u, endpoint_id):
+        raise HTTPException(404, "no such endpoint")
+    return {"endpoints": auth.redacted(
+        auth.get_settings(auth.get_user(u["id"])))["custom_endpoints"]}
 
 
 @router.get("/api/github/repos")
@@ -510,7 +567,7 @@ def list_providers(request: Request) -> dict:
     """Provider/model catalog plus which ones this user actually has keys for."""
     u = current_user(request)
     s = auth.get_settings(u)
-    return {"providers": providers.catalog(), "available": providers.available(s)}
+    return {"providers": providers.catalog(s), "available": providers.available(s)}
 
 
 @router.get("/api/tables")
@@ -531,10 +588,11 @@ def create_table(body: NewTable, request: Request) -> dict:
         raise HTTPException(400, f"a round table needs at least {roundtable.MIN_SEATS} seats")
     if len(body.seats) > roundtable.MAX_SEATS:
         raise HTTPException(400, f"at most {roundtable.MAX_SEATS} seats")
-    have = providers.available(auth.get_settings(u))
+    settings = auth.get_settings(u)
+    have = providers.available(settings)
     missing = sorted({s.provider for s in body.seats} - set(have))
     if missing:
-        labels = ", ".join(providers.PROVIDERS.get(m, {}).get("label", m) for m in missing)
+        labels = ", ".join(providers.label_for(m, settings) for m in missing)
         raise HTTPException(400, f"no credentials for: {labels}. Add a key in Settings.")
     tid = db.create_table(u["id"], body.brief.strip(), body.title.strip(),
                           body.mod_provider, body.mod_model,
@@ -1318,8 +1376,13 @@ async def restart_project(project_id: int, request: Request) -> dict:
         raise HTTPException(400, "manager session is still running")
     db.set_project_status(project_id, "planning")
     bus.emit(project_id, None, "system", "project_restarted", {})
+    # Notes written while the project was stopped were held rather than queued,
+    # because a directive nobody consumes is indistinguishable from one ignored.
+    # This is the moment they have somewhere to go, and it must happen before the
+    # manager session starts so its first decision point already sees them.
+    held = feedback.deliver(project_id)
     _manager_tasks[project_id] = asyncio.get_event_loop().create_task(manager.run_manager(project_id))
-    return {"ok": True}
+    return {"ok": True, "notes_delivered": len(held)}
 
 
 @router.post("/api/projects/{project_id}/cancel")
@@ -1505,10 +1568,15 @@ async def sprint_timeline(project_id: int, request: Request) -> dict:
 
 @router.get("/api/projects/{project_id}/sprints/{sprint}")
 async def sprint_artifacts(project_id: int, sprint: int, request: Request) -> dict:
-    """One sprint's deliverables, as they read when that sprint ended."""
+    """One sprint's deliverables, as they read when that sprint ended.
+
+    The boss's notes on this sprint come with it. A comment kept somewhere other
+    than the thing it is about is a comment nobody reads twice.
+    """
     owned_project(project_id, request)
     await artifacts.ensure(project_id)
-    return artifacts.read(project_id, sprint)
+    return {**artifacts.read(project_id, sprint),
+            "feedback": feedback.summary(project_id, "sprint", sprint)}
 
 
 @router.post("/api/projects/{project_id}/sprints/{sprint}/snapshot")
@@ -1627,6 +1695,72 @@ def send_directive(project_id: int, body: Directive, request: Request) -> dict:
     db.add_directive(project_id, body.text)
     bus.emit(project_id, None, "boss", "directive", body.text)
     return {"ok": True}
+
+
+class Note(BaseModel):
+    target: str = "project"     # task | sprint | project
+    target_id: int = 0
+    text: str
+
+
+@router.post("/api/projects/{project_id}/feedback")
+def add_note(project_id: int, body: Note, request: Request) -> dict:
+    """Notes on one task, one sprint, or the project — kept against that object.
+
+    Delivered immediately as a directive when the project is live. When it is not,
+    the note is recorded and held: a directive queued for a manager that will
+    never run again is swallowed with no trace, and the boss cannot tell that from
+    being ignored. `delivered` in the answer says which happened.
+    """
+    p = owned_project(project_id, request)
+    u = current_user(request)
+    try:
+        note = feedback.record(project_id, body.target, body.target_id,
+                               body.text, u["username"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    delivered = feedback.deliver(project_id)
+    if delivered:
+        bus.emit(project_id, None, "boss", "feedback",
+                 {"target": note["target"], "target_id": note["target_id"],
+                  "text": note["text"][:300]})
+    return {"note": db.get_feedback(note["id"]), "delivered": bool(delivered),
+            "held_reason": "" if delivered else
+                           f"recorded but not delivered — this project is "
+                           f"'{p['status']}' and no manager is reading it; "
+                           f"restarting the project delivers it"}
+
+
+@router.get("/api/projects/{project_id}/feedback")
+def list_notes(project_id: int, request: Request, target: str = "",
+               target_id: int | None = None) -> dict:
+    """Notes on this project, optionally scoped to one task or sprint."""
+    owned_project(project_id, request)
+    if target and target not in feedback.TARGETS:
+        raise HTTPException(400, f"unknown target {target!r}")
+    return feedback.summary(project_id, target, target_id)
+
+
+@router.post("/api/projects/{project_id}/feedback/deliver")
+def deliver_notes(project_id: int, request: Request) -> dict:
+    """Push every held note at the manager now. Used after a project is restarted,
+    and by hand when the boss wants to know whether anything is still waiting."""
+    owned_project(project_id, request)
+    delivered = feedback.deliver(project_id)
+    return {"delivered": [n["id"] for n in delivered],
+            "still_open": feedback.pending_count(project_id)}
+
+
+@router.post("/api/feedback/{feedback_id}/resolve")
+def resolve_note(feedback_id: int, request: Request) -> dict:
+    """Close a note. The boss decides when their own note is answered — the
+    manager acting on it is not the same as the boss being satisfied by it."""
+    note = db.get_feedback(feedback_id)
+    if not note:
+        raise HTTPException(404, "no such note")
+    owned_project(note["project_id"], request)
+    db.set_feedback_status(feedback_id, "resolved")
+    return db.get_feedback(feedback_id)
 
 
 @router.get("/api/projects/{project_id}/question")
