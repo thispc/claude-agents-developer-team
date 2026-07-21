@@ -22,7 +22,8 @@ from claude_agent_sdk import (
     tool,
 )
 
-from . import bus, config, db, github_client, process, review, scheduler, team, tuning
+from . import (bus, config, db, github_client, interview, process, review,
+               scheduler, team, tuning)
 
 
 def role_catalog_text(project: dict) -> str:
@@ -207,7 +208,7 @@ def build_team_server(project_id: int):
                                      origin=origin)
             compete = item.get("compete")
             if isinstance(compete, int) and compete > 1:
-                db.update_task(task_id, compete=min(compete, 3))
+                db.update_task(task_id, compete=min(compete, int(tuning.get("contest_max_width"))))
             created_ids.append(task_id)
         for item, task_id in zip(items, created_ids):
             if task_id is None:
@@ -550,6 +551,56 @@ def build_team_server(project_id: int):
             return _text("\n".join(lines))
         return _text(_with_evidence(t, t["report"] or "(no report yet)"))
 
+    @tool("interview_boss", "Ask the boss about their brief BEFORE you plan it. Use "
+          "this once, first, on any brief with real ambiguity in it. It returns their "
+          "answers, which you then plan from. Skip it only when the brief genuinely "
+          "leaves you nothing to decide.",
+          {})
+    async def interview_boss(args: dict[str, Any]) -> dict[str, Any]:
+        """Before planning, not alongside it.
+
+        The plan is a dependency graph whose SHAPE depends on the answers, so a
+        late answer either invalidates the graph — wasting exactly what running
+        them in parallel would have saved — or gets quietly ignored. And the
+        scheduler dispatches whatever is unblocked, so by the time an answer
+        arrived a worker could already have built the wrong thing.
+        """
+        p = project()
+        if interview.stored(project_id).get("questions") is not None:
+            return _text("you have already done this — plan the work now.")
+        from . import auth as auth_mod
+        owner = auth_mod.get_user(p.get("owner_id") or 0)
+        qs = await interview.draft(p, auth_mod.get_settings(owner) if owner else {})
+        if not qs:
+            interview.record(project_id, [], "")
+            return _text("Nothing worth asking — the brief is clear enough. Plan it.")
+
+        bus.emit(project_id, None, "manager", "interview_started",
+                 {"questions": [q["ask"] for q in qs]})
+        wait = int(tuning.get("interview_wait_seconds"))
+        if p.get("autonomy") == "autonomous":
+            wait = 0     # they asked for unattended; do not stall the start
+        qid = db.ask_question(project_id, interview.as_message(qs),
+                              ["Answer below", "Just get on with it"])
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            row = db.get_question(qid)
+            if row and row["status"] == "answered":
+                break
+            for d in db.take_directives(project_id):
+                db.answer_question(qid, d)
+                break
+            await asyncio.sleep(3)
+        row = db.get_question(qid) or {}
+        answer = row.get("answer") or ""
+        if "get on with it" in answer.lower():
+            answer = ""
+        if not answer:
+            db.abandon_questions(project_id)
+        bus.emit(project_id, None, "manager", "interview_done",
+                 {"answered": bool(answer)})
+        return _text(interview.record(project_id, qs, answer))
+
     @tool("plan_sprints", "Set how many delivery cycles this project needs, once you "
           "understand the brief. Do this early: the boss's number was a guess before "
           "anyone looked at the work. Lowering it below the sprint you are on is "
@@ -888,7 +939,7 @@ def build_team_server(project_id: int):
         tools=[create_tasks, add_tasks, status, wait, ask_boss, reply_to_boss, get_report,
                request_changes, reassign_task, compare_work, pick_winner,
                accept_task, merge_pr, coach_teammate, discuss_work,
-               plan_sprints, finish],
+               plan_sprints, interview_boss, finish],
     )
     # Testing seam. This must NOT live on the returned dict: that dict is handed to
     # the SDK, which serialises the server config to JSON for the CLI subprocess —
@@ -899,7 +950,7 @@ def build_team_server(project_id: int):
                      (create_tasks, add_tasks, status, wait, ask_boss, reply_to_boss,
                       get_report, request_changes, reassign_task, compare_work,
                       pick_winner, accept_task, merge_pr, coach_teammate,
-                      discuss_work, plan_sprints, finish)},
+                      discuss_work, plan_sprints, interview_boss, finish)},
         "escalate": _escalate,
         "ask_impl": ask_impl,
     }
@@ -910,7 +961,8 @@ MANAGER_TOOLS = [f"mcp__team__{n}" for n in
                  ("create_tasks", "add_tasks", "status", "wait", "ask_boss",
                   "reply_to_boss", "get_report", "request_changes", "reassign_task",
                   "compare_work", "pick_winner", "accept_task", "merge_pr",
-                  "coach_teammate", "discuss_work", "plan_sprints", "finish")]
+                  "coach_teammate", "discuss_work", "plan_sprints",
+                  "interview_boss", "finish")]
 
 BUILTIN_TOOLS_OFF = ["Bash", "Read", "Write", "Edit", "Glob", "Grep",
                      "WebSearch", "WebFetch", "Task", "NotebookEdit", "TodoWrite"]
@@ -986,7 +1038,10 @@ async def run_manager(project_id: int) -> None:
         f"{process.guidance(project)}\n"
         f"Brief from the user:\n{project['brief']}\n\n"
         "Plan the work, run your team, and ship it. This may be a restarted session: "
-        "call status first, and only create_tasks if none exist yet."
+        "call status first, and only create_tasks if none exist yet.\n"
+        "If there are no tasks yet, call interview_boss BEFORE create_tasks — the "
+        "shape of your plan depends on what they tell you, so asking afterwards "
+        "means either redoing the plan or ignoring the answer."
     )
     # The manager's character is the biggest lever on the whole team: it decides who
     # gets recruited, how hard the work is reviewed, and what ships. Let the boss set it.

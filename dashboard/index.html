@@ -359,12 +359,19 @@
     </div>
 
     <h3>How much you are involved</h3>
-    <table class="doc-table">
+    <!-- data-doc marks this as the canonical list of autonomy modes; the drift
+         test parses its row labels and fails if they stop matching the code. -->
+    <table class="doc-table" data-doc="autonomy-modes">
       <thead><tr><th>Mode</th><th>What happens</th></tr></thead>
       <tbody>
-        <tr><td>Ask me</td><td>Stops at every meaningful decision.</td></tr>
-        <tr><td>Supervised</td><td>Proceeds, but stops for decisions that could paper over a problem.</td></tr>
-        <tr><td>Autonomous</td><td>Decides everything, and records every judgement call for audit.</td></tr>
+        <tr><td><b>Supervised</b><br><span style="color:var(--dim)">the default</span></td>
+          <td>Works on its own, but stops and waits for you on the three decisions that
+            quietly cause damage: accepting work nobody delivered, merging past failing
+            tests, and giving up after repeated failure. Other questions wait up to an
+            hour before it proceeds on its own judgement.</td></tr>
+        <tr><td><b>Autonomous</b></td>
+          <td>Never blocks on you. It still recognises those same three decisions and
+            still records each one loudly for audit — it just does not wait.</td></tr>
       </tbody>
     </table>
     <p>At the end of each sprint you are asked what should change before the next one
@@ -658,9 +665,11 @@
         <label class="acard">
           <input type="radio" name="autonomy" value="supervised" checked>
           <div>
-            <b>Ask me</b>
-            <span>Stops for approval before merging real work and before finishing.
-              You will get questions; the run waits for you.</span>
+            <b>Ask me first</b>
+            <span>Runs on its own, but stops and waits when a decision could hide a
+              problem — approving work that was never delivered, merging past failing
+              tests, giving up on a task. Other questions wait up to an hour, then it
+              decides and tells you what it assumed.</span>
             <em class="acard-when">Choose this while you still want to see what it does.</em>
           </div>
         </label>

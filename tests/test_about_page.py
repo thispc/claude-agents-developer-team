@@ -194,3 +194,35 @@ def test_the_waiting_animation_respects_reduced_motion():
     assert "prefers-reduced-motion" in CSS
     block = CSS.split("@media (prefers-reduced-motion: reduce)")[-1][:220]
     assert ".pulse" in block and "animation: none" in block
+
+
+# --- forms share one rhythm ------------------------------------------------
+
+def test_form_metrics_come_from_tokens_not_from_each_context():
+    """Controls were styled per context — the dialog said 9px, Settings 10px, the
+    self-repair card 9px at a different font size, the base rule 7px. Nothing was
+    wrong alone; together no two forms in the product lined up, and each new form
+    invented a fourth answer."""
+    for token in ("--ctl-pad-y", "--ctl-pad-x", "--field-gap", "--stack-gap",
+                  "--label-size", "--ctl-size"):
+        assert token in CSS, f"{token} is not defined"
+
+    import re
+    # No form control may carry its own hardcoded padding any more.
+    offenders = [m for m in re.findall(r"[^\n{]*(?:input|textarea|select)[^{]*\{[^}]*\}", CSS)
+                 if re.search(r"padding:\s*\d", m)]
+    assert not offenders, "form controls still hardcode padding:\n" + "\n".join(offenders[:4])
+
+
+def test_the_old_cool_greys_are_gone():
+    """Left over from the indigo palette. Each one reads as a blue-grey smudge in
+    a warm, green-biased one."""
+    for stale in ("#cfd4dd", "#d3d8e2", "#b9c0cd", "#aeb5c1"):
+        assert stale not in CSS, f"{stale} survived the sweep"
+
+
+def test_a_hint_sits_with_the_control_it_describes():
+    """Equal spacing above and below made a hint read as a heading for the NEXT
+    field rather than a note about the previous one."""
+    assert "label > .hint, .field-hint" in CSS
+    assert "margin-top: calc(var(--field-gap) * -0.5)" in CSS

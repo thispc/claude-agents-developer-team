@@ -86,28 +86,42 @@ backend task again". The first keeps the context; the second pays to rediscover 
    companies* (six is the recommended ceiling) propose approaches, critique each other, and revise. Different
    companies is the point — two copies of one model tend to agree, and agreement
    is not the same as being right.
-3. **The manager plans.** The brief becomes concrete tasks, recording which must
+3. **The manager asks you about the brief — once, before it plans.** Briefs are
+   short, and the gap between what you wrote and what you meant is where most
+   wasted work lives. It drafts a few questions about *your* text — quoting the
+   phrase it is unsure of — asks them together as one interruption, and waits a
+   while. Answer what you care about and ignore the rest.
+
+   This happens *before* planning rather than alongside it, and that is
+   deliberate. The plan is a dependency graph whose shape depends on the answers,
+   so a late answer either invalidates the plan — wasting exactly what running
+   them together would have saved — or gets quietly ignored. Worse, work may
+   already have been dispatched against the wrong reading.
+
+   On an autonomous project it does not wait at all. If nobody answers, it plans
+   anyway and states what it assumed, so you can correct it cheaply.
+4. **The manager plans.** The brief becomes concrete tasks, recording which must
    wait for others. Unrelated work runs side by side.
-4. **The team is hired.** Roles become named people with personalities. A persona
+5. **The team is hired.** Roles become named people with personalities. A persona
    the round table argued for is written into that teammate's standing brief.
-5. **Tasks are handed out.** Whatever is unblocked starts, up to a limit you set.
+6. **Tasks are handed out.** Whatever is unblocked starts, up to a limit you set.
    When it cannot start everything, it starts whatever is holding up the most
    other work.
-6. **A teammate builds.** Their own private copy of the code, the handover notes
+7. **A teammate builds.** Their own private copy of the code, the handover notes
    from whoever they build on, and the ability to ask a named colleague — who
    answers with their own actual work in front of them.
-7. **The platform runs the tests — not the AI.** The single most important
+8. **The platform runs the tests — not the AI.** The single most important
    safeguard. The raw result is recorded before the AI writes its summary.
    Without it you have only the AI's word, and AIs will describe broken code in
    glowing terms. With it, the manager judges evidence rather than a claim.
-8. **The work is reviewed.** Test result first, write-up second. Teammates can
+9. **The work is reviewed.** Test result first, write-up second. Teammates can
    review independently, never seeing each other's opinions, and never their own
    work. The manager is shown the *disagreement*, not a verdict.
-9. **Approved or sent back.** Approved work becomes a *pull request* — a formal
+10. **Approved or sent back.** Approved work becomes a *pull request* — a formal
    proposal you can read and comment on. Rejected work returns to the same person
    with specifics. Two failures escalate to a stronger model; repeated failure is
    treated as a planning problem, not an effort problem.
-10. **The round ends and you are asked** what should change before the next one.
+11. **The round ends and you are asked** what should change before the next one.
 
 ---
 
@@ -161,7 +175,7 @@ is not.
 
 ### The API, in families
 
-An *API* is the list of requests a program will answer. There are 107; the
+An *API* is the list of requests a program will answer. There are 108; the
 dashboard uses them for you.
 
 | Family | Example | For |
@@ -300,7 +314,7 @@ that cannot be improved by spending more.
 
 ---
 
-## Sprints and your involvement
+## Sprints and how much you are involved
 
 Work runs in *sprints* — rounds of building, testing and shipping. You say roughly
 how many; the manager can revise that once it understands the work, because your
@@ -308,13 +322,28 @@ original number was a guess made before anyone read anything.
 
 | Mode | What happens | Suits |
 |---|---|---|
-| Ask me | Stops at every meaningful decision | Watching it work |
-| Supervised | Proceeds, but stops for decisions that could paper over a problem | Most work |
-| Autonomous | Decides everything, records every judgement call for audit | Overnight runs |
+| **Supervised** *(default)* | Works on its own, but stops and waits for you on the three decisions that quietly cause damage: accepting work nobody delivered, merging past failing tests, and giving up on a task after repeated failure. Ordinary questions also wait for an answer, for up to an hour, before it proceeds using its own judgement. | Most work, including when you are only half watching |
+| **Autonomous** | Never blocks on you. It still recognises those same three decisions and still records each one loudly, so you can audit what it decided and why — it just does not wait. | Overnight and unattended runs |
 
-Three decisions are always flagged because they are dangerous precisely when made
-smoothly: approving work nobody delivered, shipping code whose tests fail, and
-giving up after repeated failure.
+There is no third mode. If you want it to stop more often, the thing to change
+is not the mode but the sprint length: a shorter sprint means more checkpoints,
+and a checkpoint is a better place to intervene than the middle of a task.
+
+Those three decisions are singled out because they are dangerous precisely when
+made smoothly — a confident manager makes each of them without hesitating, and
+each produces a result that looks like success.
+
+### Changing your mind about the manager
+
+Which model runs the manager is fixed when you create a project, which is the
+worst-informed moment to choose it — nobody yet knows whether this work needs a
+careful planner or a cheap one. A plan that keeps coming back thin is the signal
+to move up, and that signal only exists after some planning has happened, so it
+can be changed at any point afterwards.
+
+A model is bound when a session starts, so the change applies the next time the
+manager starts rather than mid-thought. The app says so rather than implying
+something happened that did not.
 
 **Being asked without being blocked.** The end of a sprint is the cheapest moment
 to redirect — nothing is built yet. But the question does not block: an overnight

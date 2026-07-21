@@ -101,6 +101,19 @@ KNOBS: dict[str, tuple[Any, type, str, str]] = {
         "critical fault seen a few times, or a warning seen very many."),
 
     # --- the boss's involvement ---
+    "interview_questions": (
+        3, int, "INTERVIEW_QUESTIONS",
+        "Questions the manager may ask about the brief before it plans. Zero "
+        "switches the interview off entirely. Kept small because each one is an "
+        "interruption, and three good questions asked together beat six asked one "
+        "at a time."),
+    "interview_wait_seconds": (
+        600, int, "INTERVIEW_WAIT_SECONDS",
+        "How long it waits for those answers before planning anyway. Unlike the "
+        "sprint check-in this DOES block, because the plan's shape depends on the "
+        "answers and a late answer either invalidates the plan or gets ignored. "
+        "Bounded so an unattended run still starts; autonomous projects skip the "
+        "wait entirely."),
     "sprint_checkin_seconds": (
         0, int, "SPRINT_CHECKIN_SECONDS",
         "How long a sprint boundary waits for the boss before planning the next "

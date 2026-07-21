@@ -52,6 +52,27 @@
   --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
   --serif: "Iowan Old Style", "Palatino Linotype", Charter, Georgia, serif;
+
+  /* Form metrics, in one place.
+   *
+   * Controls were styled per context — the dialog said 9px, Settings said 10px,
+   * the self-repair card said 9px with a different font size, and the base rule
+   * said 7px. Nothing was wrong individually; together they meant no two forms
+   * in the product lined up, and every new form invented a fourth answer.
+   * Divergence that carries meaning is kept (Settings uses a monospace face
+   * because it shows keys, where a lookalike character matters); divergence that
+   * was only ever an oversight is gone. */
+  --ctl-pad-y: 9px;
+  --ctl-pad-x: 12px;
+  /* For controls repeated many times down a page — round-table seats, mostly —
+     where standard padding turns eight rows into a scroll. */
+  --ctl-pad-y-tight: 7px;
+  --ctl-pad-x-tight: 9px;
+  --ctl-radius: 8px;
+  --field-gap: 6px;    /* a label to its own control */
+  --stack-gap: 14px;   /* one field to the next */
+  --label-size: 12.5px;
+  --ctl-size: 13.5px;
 }
 
 body {
@@ -75,10 +96,10 @@ h1 span { color: var(--accent); }
 button, select, input, textarea {
   font: inherit; color: var(--text);
   background: var(--card); border: 1px solid var(--line);
-  border-radius: 8px; padding: 7px 12px;
+  border-radius: var(--ctl-radius); padding: var(--ctl-pad-y) var(--ctl-pad-x);
 }
 button { cursor: pointer; transition: all .12s ease; }
-button:hover { background: var(--card-2); border-color: #cfd4dd; }
+button:hover { background: var(--card-2); border-color: var(--dim); }
 button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 550; }
 button.primary:hover { background: #25594A; }
 button.primary:disabled { opacity: .6; cursor: wait; }
@@ -199,7 +220,7 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 380px; gap: 16px; padd
   box-shadow: var(--shadow); width: 268px; padding: 14px 16px; cursor: pointer;
   transition: transform .12s, box-shadow .12s, border-color .12s;
 }
-.agent:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); border-color: #cfd4dd; }
+.agent:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); border-color: var(--dim); }
 .agent .top { display: flex; align-items: flex-start; justify-content: space-between;
   gap: 8px; min-height: 20px; }
 .agent .role { font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px;
@@ -335,8 +356,10 @@ dialog::backdrop { background: rgba(16,24,40,.45); backdrop-filter: blur(3px); }
 dialog form, .task-detail-wrap, .approval-wrap { display: flex; flex-direction: column; gap: 14px; padding: 26px; }
 dialog h2 { font-size: 17px; font-weight: 650; letter-spacing: -.2px; }
 dialog h3 { font-size: 12px; }
-dialog label { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--dim); font-weight: 500; }
-dialog input, dialog textarea, dialog select { width: 100%; padding: 9px 12px; font-size: 13.5px; }
+dialog label { display: flex; flex-direction: column; gap: var(--field-gap);
+  font-size: var(--label-size); color: var(--dim); font-weight: 550; }
+dialog input, dialog textarea, dialog select {
+  width: 100%; padding: var(--ctl-pad-y) var(--ctl-pad-x); font-size: var(--ctl-size); }
 dialog textarea { resize: vertical; min-height: 96px; line-height: 1.55; }
 .hint { font-size: 11.5px; color: var(--faint); font-weight: 400; }
 .nums { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -378,7 +401,7 @@ dialog textarea { resize: vertical; min-height: 96px; line-height: 1.55; }
 .cred-head h3 { font-size: 13.5px; font-weight: 600; color: var(--text); }
 .cred-head p { font-size: 11.5px; color: var(--faint); margin-top: 2px; line-height: 1.45; }
 
-.settings-dlg .field { display: flex; flex-direction: column; gap: 6px; }
+.settings-dlg .field { display: flex; flex-direction: column; gap: var(--field-gap); }
 .field-top { display: flex; align-items: center; gap: 8px;
              font-size: 12.5px; font-weight: 550; color: var(--text); }
 /* the global `dialog label` rule turns labels into dim flex columns — these are
@@ -386,12 +409,15 @@ dialog textarea { resize: vertical; min-height: 96px; line-height: 1.55; }
 .settings-dlg .field-top label { display: inline; color: inherit; font: inherit;
                                  gap: 0; cursor: pointer; }
 .settings-dlg .field input {
+  /* Monospace is deliberate here and nowhere else: these are keys, and a
+     lookalike character in a credential is worth a whole support conversation. */
   font-family: var(--mono); font-size: 12.5px;
-  background: var(--card-2); border: 1px solid #d3d8e2; padding: 10px 12px;
+  background: var(--card-2); border: 1px solid var(--line);
+  padding: var(--ctl-pad-y) var(--ctl-pad-x);
 }
-.settings-dlg .field input:hover { border-color: #b9c0cd; }
-.settings-dlg .field input:focus { background: #fff; border-color: var(--accent); }
-.settings-dlg .field input::placeholder { color: #aeb5c1; }
+.settings-dlg .field input:hover { border-color: var(--dim); }
+.settings-dlg .field input:focus { background: var(--card); border-color: var(--accent); }
+.settings-dlg .field input::placeholder { color: var(--faint); }
 .field-hint { font-size: 11.5px; color: var(--dim); line-height: 1.5; }
 .field-hint code { font-family: var(--mono); font-size: 11px; background: var(--soft);
                    border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
@@ -647,12 +673,13 @@ pre.dim, .dim { color: var(--dim); }
 /* `display: block` with no width left the label text and its control sharing a
    line, a 200px title box and a textarea floating off to one side. A form is a
    stack of labelled full-width controls. */
-.self-card label { display: flex; flex-direction: column; gap: 6px;
-                   margin-bottom: 13px; font-size: 12.5px; font-weight: 550;
-                   color: var(--text); }
+.self-card label { display: flex; flex-direction: column; gap: var(--field-gap);
+                   margin-bottom: var(--stack-gap); font-size: var(--label-size);
+                   font-weight: 550; color: var(--text); }
 .self-card label .hint { font-weight: 400; }
 .self-card input, .self-card select, .self-card textarea {
-  width: 100%; font-size: 13px; padding: 9px 12px;
+  width: 100%; font-size: var(--ctl-size);
+  padding: var(--ctl-pad-y) var(--ctl-pad-x);
 }
 .self-card textarea { resize: vertical; min-height: 92px; line-height: 1.55; }
 .self-card form > button[type=submit] { margin-top: 2px; }
@@ -716,7 +743,8 @@ pre.dim, .dim { color: var(--dim); }
 #seatList { margin: 10px 0 16px; display: flex; flex-direction: column; gap: 8px; }
 .seat-row { display: grid; grid-template-columns: 30px 1.1fr 1fr 1.3fr 2.2fr 30px;
   gap: 8px; align-items: center; }
-.seat-row input, .seat-row select { padding: 7px 9px; font-size: 12.5px; }
+.seat-row input, .seat-row select {
+  padding: var(--ctl-pad-y-tight) var(--ctl-pad-x-tight); font-size: 12.5px; }
 .seat-dot { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center;
   font-size: 11.5px; font-weight: 700; color: #fff; background: var(--dim); }
 .seat-del { border: 0; background: transparent; color: var(--faint); cursor: pointer; font-size: 15px; }
@@ -729,7 +757,8 @@ pre.dim, .dim { color: var(--dim); }
 
 .mod-row { display: flex; align-items: flex-end; gap: 14px; margin-top: 6px; flex-wrap: wrap; }
 .mod-row label { font-size: 13px; font-weight: 600; }
-.mod-row select { display: block; margin-top: 6px; padding: 8px 10px; min-width: 260px; font-weight: 400; }
+.mod-row select { display: block; margin-top: var(--field-gap);
+  padding: var(--ctl-pad-y) var(--ctl-pad-x); min-width: 260px; font-weight: 400; }
 .set-h { font-size: 13px; margin: 18px 0 4px; }
 
 /* ---- the circle ---- */
@@ -888,7 +917,7 @@ pre.dim, .dim { color: var(--dim); }
   padding: 7px 11px; font-size: 12.5px; font-weight: 600; }
 .bp-role .hint { display: block; font-weight: 400; max-width: 30ch; margin-top: 2px; }
 .bp-build { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
-.bp-build input { padding: 9px 11px; }
+.bp-build input { padding: var(--ctl-pad-y) var(--ctl-pad-x); }
 @media (max-width: 900px) {
   .seat-row { grid-template-columns: 26px 1fr 1fr; grid-auto-rows: auto; }
   .seat-row .seat-persona { grid-column: 1 / -1; }
@@ -932,7 +961,7 @@ pre.dim, .dim { color: var(--dim); }
 .chint { font-size: 11px; color: var(--muted); margin-top: 4px; }
 .cnote { align-self: center; font-size: 11.5px; color: var(--muted); text-align: center; }
 #chatForm { display: flex; gap: 8px; padding-top: 10px; border-top: 1px solid var(--line); }
-#chatForm input { flex: 1; padding: 10px 12px; }
+#chatForm input { flex: 1; padding: var(--ctl-pad-y) var(--ctl-pad-x); }
 #chatUnread { margin-left: 5px; padding: 1px 6px; border-radius: 9px; font-size: 10.5px;
   background: var(--accent); color: #fff; }
 
@@ -1329,3 +1358,20 @@ pre.dim, .dim { color: var(--dim); }
   font-family: var(--mono); font-size: .86em; background: var(--card-2);
   border: 1px solid var(--line-soft); border-radius: 3px; padding: 1px 4px;
 }
+
+/* ---------- forms: one rhythm everywhere ----------
+ *
+ * The gap between one field and the next was set by whichever container the form
+ * happened to be in, so the same form felt different in a dialog, in Settings and
+ * on the self-repair page. These give every stacked form the same rhythm without
+ * each one having to remember it.
+ */
+dialog form, .self-card form, .settings-dlg form { display: flex; flex-direction: column; gap: var(--stack-gap); }
+dialog form > label, .self-card form > label { margin-bottom: 0; }
+/* A hint belongs to the control above it, so it sits closer to that than to the
+   next field — otherwise it reads as a heading for whatever follows. */
+label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
+/* Rows of controls line up on their baseline rather than stretching to the
+   tallest, which is what made a select next to a short input look off-centre. */
+.form-row { display: flex; gap: var(--ctl-pad-x); align-items: flex-end; flex-wrap: wrap; }
+.form-row > * { flex: 1 1 12rem; min-width: 0; }

@@ -1436,6 +1436,40 @@ def delete_table(table_id: int, request: Request) -> dict:
     return {"ok": True}
 
 
+class ManagerModel(BaseModel):
+    model: str
+
+
+@router.post("/api/projects/{project_id}/manager-model")
+def set_manager_model(project_id: int, body: ManagerModel, request: Request) -> dict:
+    """Change which model runs the manager, mid-project.
+
+    It was fixed at creation, which is the worst-informed moment to choose it:
+    nobody knows yet whether this project needs a careful planner or a cheap one.
+    A plan that keeps coming back thin is the signal to move up, and that signal
+    only exists after some planning has happened.
+
+    Unlike autonomy, this cannot take effect on the running session — a model is
+    bound when the session starts and there is no way to swap it underneath. So
+    the change is recorded and applied on the manager's next start, and the reply
+    says so plainly rather than implying something happened that did not.
+    """
+    owned_project(project_id, request)
+    model = (body.model or "").strip()
+    known = {m["id"] for p in providers.PROVIDERS.values() for m in p["models"]}
+    if model and model not in known:
+        raise HTTPException(400, f"unknown model '{model}'")
+    db._execute("UPDATE projects SET manager_model=? WHERE id=?", (model, project_id))
+    running = project_id in _manager_tasks and not _manager_tasks[project_id].done()
+    bus.emit(project_id, None, "boss", "manager_model_changed",
+             {"model": model or "server default"})
+    return {
+        "ok": True, "model": model,
+        "applies": "when the manager next starts" if running else "immediately",
+        "restart_needed": running,
+    }
+
+
 @router.post("/api/projects/{project_id}/autonomy")
 def set_autonomy(project_id: int, body: Autonomy, request: Request) -> dict:
     """Change how much rope the manager has, mid-run.
