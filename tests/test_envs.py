@@ -343,3 +343,78 @@ def test_overview_survives_a_container_with_no_tooling(monkeypatch):
                         lambda *c, **k: subprocess.CompletedProcess(c, 127, "", "missing"))
     d = envs.overview()
     assert d["docker"] is False and d["kubernetes"] is False
+
+
+# ---- noticing a new version without being told ---------------------------
+
+@pytest.mark.asyncio
+async def test_it_defers_an_update_while_agents_are_working(fresh_db, monkeypatch):
+    """A restart kills every worker — each is a child process of the conductor —
+    so an agent eighty turns into a task loses all of it. Waiting costs minutes;
+    not waiting costs the work."""
+    from app import cloud
+    monkeypatch.setattr(cloud, "in_cluster", lambda: True)
+    monkeypatch.setattr(cloud, "AUTO_UPDATE", True)
+
+    async def newer():
+        return {"tag": "reg/devteam-conductor:new", "short": "new"}
+    monkeypatch.setattr(cloud, "newer_than_running", newer)
+
+    def _boom(*a, **k):
+        raise AssertionError("updated while an agent was mid-task")
+    monkeypatch.setattr(cloud, "self_update", _boom)
+
+    p = make_project(owner_id=1)
+    make_task(p, status="running")
+    r = await cloud.check_and_maybe_update()
+    assert r["deferred"] is True and r["busy"]
+
+
+@pytest.mark.asyncio
+async def test_it_adopts_a_new_version_when_idle(fresh_db, monkeypatch):
+    from app import cloud
+    monkeypatch.setattr(cloud, "in_cluster", lambda: True)
+    monkeypatch.setattr(cloud, "AUTO_UPDATE", True)
+    applied = {}
+
+    async def newer():
+        return {"tag": "reg/devteam-conductor:new", "short": "new"}
+    monkeypatch.setattr(cloud, "newer_than_running", newer)
+    def _apply(tag, force=False):
+        applied["tag"] = tag
+        return {"ok": True}
+    monkeypatch.setattr(cloud, "self_update", _apply)
+    make_task(make_project(owner_id=1), status="done")
+    r = await cloud.check_and_maybe_update()
+    assert applied["tag"].endswith(":new") and r["applied"]["ok"]
+
+
+@pytest.mark.asyncio
+async def test_auto_update_off_means_it_only_offers(fresh_db, monkeypatch):
+    """Adopting a new version restarts the platform. That should be opt-in."""
+    from app import cloud
+    monkeypatch.setattr(cloud, "in_cluster", lambda: True)
+    monkeypatch.setattr(cloud, "AUTO_UPDATE", False)
+
+    async def newer():
+        return {"tag": "reg/x:new", "short": "new"}
+    monkeypatch.setattr(cloud, "newer_than_running", newer)
+
+    def _boom(*a, **k):
+        raise AssertionError("updated itself without being asked")
+    monkeypatch.setattr(cloud, "self_update", _boom)
+    r = await cloud.check_and_maybe_update()
+    assert r["deferred"] is True and "AUTO_UPDATE" in r["reason"]
+
+
+@pytest.mark.asyncio
+async def test_a_registry_blip_never_takes_the_conductor_down(monkeypatch):
+    from app import cloud
+    monkeypatch.setattr(cloud, "REGISTRY", "registry.digitalocean.com/x")
+    monkeypatch.setenv("DIGITALOCEAN_API_TOKEN", "bad")
+    assert await cloud.available_images() == []
+
+
+def test_the_watcher_starts_only_in_a_cluster():
+    src = (REPO / "conductor" / "app" / "main.py").read_text()
+    assert "cloud.watch" in src and "cloud.in_cluster()" in src

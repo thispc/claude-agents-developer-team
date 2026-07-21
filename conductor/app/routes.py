@@ -744,6 +744,15 @@ def self_instance(request: Request) -> dict:
     return cloud.describe()
 
 
+@router.get("/api/self/images")
+async def self_images(request: Request) -> dict:
+    """What CI has published, and whether a newer one is waiting."""
+    _root(request)
+    imgs = await cloud.available_images()
+    return {"images": imgs, "candidate": await cloud.newer_than_running(),
+            "auto_update": cloud.AUTO_UPDATE, "busy": cloud.busy()}
+
+
 class SelfImage(BaseModel):
     image: str
     force: bool = False

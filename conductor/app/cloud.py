@@ -153,6 +153,101 @@ def rollback() -> dict[str, Any]:
         return {"ok": False, "error": str(e)}
 
 
+# --- noticing that a newer version exists ---------------------------------
+#
+# Without this the loop is autonomous but not unattended: CI publishes an image
+# and the platform sits there until a human pastes the tag. Polling the registry
+# closes that, and the registry is the right thing to watch rather than GitHub —
+# an image that exists is a thing you can actually run, whereas a merged commit
+# might still be building or might have failed to build at all.
+
+REGISTRY = config._env("DOCR_REGISTRY")
+AUTO_UPDATE = config._env("AUTO_UPDATE") == "1"
+CHECK_SECONDS = int(config._env("UPDATE_CHECK_SECONDS", "300"))
+
+
+def _registry_name() -> str:
+    # registry.digitalocean.com/devteam-pulkit -> devteam-pulkit
+    return REGISTRY.rstrip("/").split("/")[-1] if REGISTRY else ""
+
+
+async def available_images(limit: int = 10) -> list[dict[str, Any]]:
+    """Tags in the registry, newest first. Empty when we cannot look, never raises."""
+    import httpx
+    token = config._env("DIGITALOCEAN_API_TOKEN")
+    reg = _registry_name()
+    if not token or not reg:
+        return []
+    url = (f"https://api.digitalocean.com/v2/registry/{reg}"
+           f"/repositories/devteam-conductor/tags?per_page=50")
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get(url, headers={"Authorization": f"Bearer {token}"})
+            r.raise_for_status()
+            tags = r.json().get("tags", [])
+    except Exception:
+        return []
+    tags.sort(key=lambda t: t.get("updated_at", ""), reverse=True)
+    running = current_image()
+    return [{"tag": f"{REGISTRY}/devteam-conductor:{t['tag']}",
+             "short": t["tag"],
+             "updated_at": t.get("updated_at", ""),
+             "running": f"{REGISTRY}/devteam-conductor:{t['tag']}" == running}
+            for t in tags[:limit]]
+
+
+async def newer_than_running() -> dict[str, Any] | None:
+    """The most recent image that is not the one we are running.
+
+    Deliberately "most recent", not "any newer" — a rollback publishes nothing, so
+    the newest tag is the intended head. It is only a candidate; taking it is a
+    separate decision, because taking it destroys whatever the agents are doing.
+    """
+    imgs = await available_images()
+    if not imgs or imgs[0].get("running"):
+        return None
+    return imgs[0]
+
+
+async def check_and_maybe_update() -> dict[str, Any]:
+    """The unattended path: adopt a newer image when it is safe to.
+
+    Safe means idle. A restart kills every worker — each is a child process of
+    this one — so an agent eighty turns into a task would lose all of it and the
+    run would be spent for nothing. Waiting costs a few minutes; not waiting costs
+    the work.
+    """
+    if not in_cluster():
+        return {"checked": False, "reason": "not in a cluster"}
+    cand = await newer_than_running()
+    if not cand:
+        return {"checked": True, "update": None}
+    live = busy()
+    if live:
+        return {"checked": True, "update": cand, "deferred": True, "busy": live}
+    if not AUTO_UPDATE:
+        return {"checked": True, "update": cand, "deferred": True,
+                "reason": "AUTO_UPDATE is off; adopt it from the Improve page"}
+    from . import bus
+    bus.emit(0, None, "system", "auto_update",
+             {"to": cand["short"], "note": "a newer image was published and nothing "
+                                           "was running, so it was adopted"})
+    return {"checked": True, "update": cand, "applied": self_update(cand["tag"])}
+
+
+async def watch() -> None:
+    """Poll the registry forever. Started at boot; harmless outside a cluster."""
+    import asyncio
+    if not in_cluster() or not REGISTRY:
+        return
+    while True:
+        await asyncio.sleep(CHECK_SECONDS)
+        try:
+            await check_and_maybe_update()
+        except Exception:
+            pass          # a registry blip must never take the conductor down
+
+
 def describe() -> dict[str, Any]:
     """What this instance is, for the UI — works on a laptop and in a pod."""
     return {

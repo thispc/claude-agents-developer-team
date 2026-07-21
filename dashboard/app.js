@@ -359,6 +359,7 @@ function renderCloudInstance(el, inst) {
         ${escapeHtml(busy.slice(0, 3).join("; "))}${busy.length > 3 ? "…" : ""}.
         Updating would throw that work away.</p>` : ""}
     ${(can.reasons || []).length ? `<p class="form-error">${escapeHtml(can.reasons.join("; "))}</p>` : ""}
+    <div id="cloudImages"><p class="hint">looking for published versions…</p></div>
     <h4>Ship a new version</h4>
     <div class="sbx-start">
       <label>Image <input id="cloudImage" placeholder="registry.digitalocean.com/…/devteam-conductor:main-abc123"></label>
@@ -367,6 +368,38 @@ function renderCloudInstance(el, inst) {
     </div>
     <p class="hint" id="cloudMsg">The pod is replaced, so this page will briefly lose its
       connection. If the new image cannot start, Kubernetes keeps the old one running.</p>`;
+
+  // What CI has actually published. Pasting a tag by hand was the last manual
+  // step in a loop that is otherwise autonomous.
+  api("/api/self/images").then((d) => {
+    const box = $("#cloudImages");
+    if (!box) return;
+    if (!(d.images || []).length) {
+      box.innerHTML = `<p class="hint">No published images visible. CI publishes one on
+        every merge to main; check DIGITALOCEAN_API_TOKEN and DOCR_REGISTRY are set.</p>`;
+      return;
+    }
+    const c = d.candidate;
+    box.innerHTML = `
+      ${c ? `<div class="sbx live"><div class="sbx-head"><span class="sbx-dot"></span>
+          <b>A newer version is waiting</b><span class="hint">${escapeHtml(c.short)}</span></div>
+        <div class="sbx-actions"><button data-take="${escapeHtml(c.tag)}" class="primary"
+          ${(d.busy || []).length ? "disabled" : ""}>Take it</button></div>
+        ${(d.busy || []).length ? `<p class="hint">Waiting for ${d.busy.length} agent(s) to finish
+          — updating now would throw their work away.</p>` : ""}
+        ${d.auto_update ? `<p class="hint">AUTO_UPDATE is on, so this happens by itself
+          once the team is idle.</p>` : ""}</div>`
+        : `<p class="hint">Running the newest published image.</p>`}
+      <h4>Published</h4>
+      ${d.images.map((i) => `<div class="env-row"><div><code>${escapeHtml(i.short)}</code>
+        <span class="hint">${i.running ? "running now" : escapeHtml(i.updated_at || "")}</span></div>
+        ${i.running ? "" : `<div class="env-acts"><button data-take="${escapeHtml(i.tag)}"
+          ${(d.busy || []).length ? "disabled" : ""}>Use this</button></div>`}</div>`).join("")}`;
+    box.querySelectorAll("[data-take]").forEach((b) => b.addEventListener("click", () => {
+      $("#cloudImage").value = b.dataset.take;
+      $("#cloudUpdate").click();
+    }));
+  }).catch(() => { const b = $("#cloudImages"); if (b) b.innerHTML = ""; });
 
   $("#cloudUpdate").addEventListener("click", async () => {
     const image = $("#cloudImage").value.trim();

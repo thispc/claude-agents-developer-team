@@ -53,6 +53,11 @@ async def lifespan(app: FastAPI):
             scheduler.ensure(p["id"])
             _manager_tasks[p["id"]] = loop.create_task(manager.run_manager(p["id"]))
             bus.emit(p["id"], None, "system", "resumed_after_restart", {})
+    # Notice new versions of ourselves. Without this the loop is autonomous but
+    # not unattended: CI publishes an image and nothing adopts it.
+    from . import cloud
+    if cloud.in_cluster():
+        loop.create_task(cloud.watch())
     yield
 
 
