@@ -161,10 +161,51 @@ def _tree_hash(tree: Path) -> str:
 
 # --- deploy --------------------------------------------------------------
 
-def _load_into_kind(tag: str) -> tuple[bool, str]:
-    """kind nodes cannot see the host's Docker images; they must be loaded in."""
-    r = _sh("kind", "load", "docker-image", tag, "--name", KIND_CLUSTER, timeout=600)
-    return r.returncode == 0, (r.stderr or r.stdout)[-300:]
+REGISTRY = config._env("DOCR_REGISTRY")      # e.g. registry.digitalocean.com/my-reg
+
+
+def on_kind() -> bool:
+    """True when the cluster is the local kind one rather than a real provider."""
+    ctx = _sh("kubectl", "config", "current-context", timeout=15).stdout.strip()
+    return ctx.startswith("kind-")
+
+
+def _publish(tag: str) -> tuple[bool, str]:
+    """Get the image somewhere the cluster's nodes can pull it from.
+
+    Two worlds, and confusing them is the classic way a rollout hangs on
+    ImagePullBackOff with no useful message:
+      - kind: nodes cannot see the host's Docker daemon, so the image is *loaded*
+        into them. Nothing is pushed anywhere.
+      - a real cluster (DOKS): nodes pull from a registry, so the image must be
+        tagged into that registry and pushed.
+    """
+    if on_kind():
+        r = _sh("kind", "load", "docker-image", tag, "--name", KIND_CLUSTER, timeout=900)
+        return r.returncode == 0, (r.stderr or r.stdout)[-300:]
+    if not REGISTRY:
+        return False, ("this cluster pulls images from a registry, but DOCR_REGISTRY "
+                       "is not set — nodes would have nowhere to fetch the build from")
+    remote = registry_tag(tag)
+    t = _sh("docker", "tag", tag, remote, timeout=120)
+    if t.returncode != 0:
+        return False, t.stderr[-300:]
+    p = _sh("docker", "push", remote, timeout=1800)
+    if p.returncode != 0:
+        return False, ("docker push failed — is `doctl registry login` done? "
+                       + p.stderr[-260:])
+    return True, f"pushed {remote}"
+
+
+def registry_tag(tag: str) -> str:
+    """The name the CLUSTER will pull by. Local tags mean nothing to a DOKS node."""
+    if not REGISTRY or tag.startswith(REGISTRY):
+        return tag
+    return f"{REGISTRY}/{tag}"
+
+
+def cluster_tag(tag: str) -> str:
+    return tag if on_kind() else registry_tag(tag)
 
 
 def manifests(env: str, tag: str, namespace: str) -> str:
@@ -257,8 +298,11 @@ def deploy_preview(tag: str, env: str) -> dict[str, Any]:
                          "production changes"}
     namespace = f"{PROD_NAMESPACE}-{env}"
 
-    loaded, note = _load_into_kind(tag)
-    body = manifests(env, tag, namespace)
+    published, note = _publish(tag)
+    if not published:
+        return {"ok": False, "error": f"could not make the image available to the "
+                                      f"cluster: {note}"}
+    body = manifests(env, cluster_tag(tag), namespace)
     r = subprocess.run(["kubectl", "apply", "-f", "-"], input=body,
                        capture_output=True, text=True, timeout=180)
     if r.returncode != 0:
@@ -272,9 +316,8 @@ def deploy_preview(tag: str, env: str) -> dict[str, Any]:
                        else f"{env}.localhost"}
     _save(st)
     return {"ok": w.returncode == 0, "env": env, "namespace": namespace, "tag": tag,
-            "host": st["envs"][env]["host"],
-            "error": "" if w.returncode == 0 else (w.stderr or w.stdout)[-400:],
-            "kind_loaded": loaded, "kind_note": "" if loaded else note}
+            "host": st["envs"][env]["host"], "published": note,
+            "error": "" if w.returncode == 0 else (w.stderr or w.stdout)[-400:]}
 
 
 def promote(tag: str) -> dict[str, Any]:
@@ -305,9 +348,11 @@ def promote(tag: str) -> dict[str, Any]:
     name = _sh("kubectl", "-n", PROD_NAMESPACE, "get", "deployment",
                "devteam-conductor", "-o",
                "jsonpath={.spec.template.spec.containers[0].name}").stdout.strip() or "conductor"
-    _load_into_kind(tag)
+    published, note = _publish(tag)
+    if not published:
+        return {"ok": False, "error": f"the cluster could not be given the image: {note}"}
     r = _sh("kubectl", "-n", PROD_NAMESPACE, "set", "image",
-            "deployment/devteam-conductor", f"{name}={tag}", timeout=120)
+            "deployment/devteam-conductor", f"{name}={cluster_tag(tag)}", timeout=120)
     if r.returncode != 0:
         return {"ok": False, "error": r.stderr[-400:]}
     w = _sh("kubectl", "-n", PROD_NAMESPACE, "rollout", "status",
@@ -354,6 +399,7 @@ def overview() -> dict[str, Any]:
                 "jsonpath={range .items[*]}{.metadata.name}{'\\n'}{end}")
         live = [n for n in r.stdout.splitlines() if n.strip()]
     return {"docker": docker_ok(), "kubernetes": kubectl_ok(),
+            "kind": on_kind() if kubectl_ok() else False, "registry": REGISTRY,
             "production": st.get("production"), "images": st["images"][:10],
             "envs": st["envs"], "live_namespaces": live,
             "prod_namespace": PROD_NAMESPACE}

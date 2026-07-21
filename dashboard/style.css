@@ -967,3 +967,25 @@ pre.dim, .dim { color: var(--dim); }
 #staleBanner code { font-family: var(--mono); font-size: 11px; background: #fff;
                     border: 1px solid #f0d9a8; border-radius: 5px; padding: 1px 6px;
                     margin-left: 4px; white-space: nowrap; }
+
+/* ---------- environments ---------- */
+/* Production's identity is the one thing on this page that must never be
+   ambiguous — everything else here can be retried, that cannot. */
+.env-prod { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+            background: var(--good-soft); border: 1px solid #bfe6cd;
+            border-radius: 10px; padding: 11px 13px; margin: 4px 0 14px;
+            font-size: 13px; }
+.env-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--good); flex: none; }
+.env-prod code, .env-row code { font-family: var(--mono); font-size: 11.5px;
+                                background: #fff; border: 1px solid var(--line);
+                                border-radius: 5px; padding: 2px 7px; }
+.env-prod button { margin-left: auto; }
+.env-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+           border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px;
+           margin-bottom: 7px; background: var(--card-2); font-size: 12.5px; }
+.env-row > div:first-child { flex: 1; min-width: 0; }
+.env-row .hint { display: block; margin-top: 3px; }
+.env-acts { display: flex; gap: 7px; }
+.env-acts button { font-size: 11.5px; padding: 5px 11px; }
+#envsCard h4 { margin: 16px 0 7px; font-size: 12px; text-transform: uppercase;
+               letter-spacing: .4px; color: var(--faint); }

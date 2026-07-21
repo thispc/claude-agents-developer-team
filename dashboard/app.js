@@ -342,6 +342,130 @@ function renderHome(projects) {
 
 // The platform working on itself. /api/self creates-or-returns the row for this
 // repo, so there is nothing for the user to set up first.
+async function renderEnvs() {
+  const el = $("#envsBody");
+  if (!el) return;
+  let d;
+  try { d = await api("/api/self/envs"); }
+  catch (e) { el.innerHTML = `<p class="empty">${escapeHtml(e.message || e)}</p>`; return; }
+
+  // Say plainly what is missing rather than showing dead buttons.
+  if (!d.docker || !d.kubernetes) {
+    const missing = [!d.docker && "Docker", !d.kubernetes && "a Kubernetes cluster"]
+      .filter(Boolean).join(" and ");
+    el.innerHTML = `<p class="empty">Environments need ${escapeHtml(missing)}.
+      The sandbox below works without either.</p>`;
+    return;
+  }
+
+  const prod = d.production;
+  const envRows = Object.entries(d.envs || {}).map(([name, e]) => `
+    <div class="env-row">
+      <div><b>${escapeHtml(name)}</b>
+        <span class="hint">${escapeHtml(e.host)} · ${escapeHtml(e.tag)} · ${ago(e.at)}</span></div>
+      <div class="env-acts">
+        <button data-promote="${escapeHtml(e.tag)}" class="primary">Promote to production</button>
+        <button data-destroy="${escapeHtml(name)}" class="danger">Destroy</button>
+      </div>
+    </div>`).join("") || `<p class="hint">No preview environments running.</p>`;
+
+  const imgRows = (d.images || []).map((i) => `
+    <div class="env-row">
+      <div><code>${escapeHtml(i.tag)}</code>
+        <span class="hint">from ${escapeHtml(i.source)} · ${ago(i.built_at)}${
+          i.note ? " · " + escapeHtml(i.note) : ""}</span></div>
+      <div class="env-acts">
+        <button data-try="${escapeHtml(i.tag)}">Try it</button>
+        <button data-promote="${escapeHtml(i.tag)}">Promote</button>
+      </div>
+    </div>`).join("") || `<p class="hint">Nothing built yet.</p>`;
+
+  el.innerHTML = `
+    <div class="env-prod">
+      <span class="env-dot"></span><b>Production</b>
+      <code>${escapeHtml(prod ? prod.tag : "not managed from here yet")}</code>
+      ${prod ? `<span class="hint">promoted ${ago(prod.at)}</span>` : ""}
+      ${prod ? `<button id="envRollback" class="danger">Roll back</button>` : ""}
+    </div>
+
+    <h4>Build a new one</h4>
+    <div class="sbx-start">
+      <label>From <select id="envSource"></select></label>
+      <label>Label <input id="envNote" placeholder="what is in it — e.g. sprint archive"></label>
+      <button id="envBuild" class="primary">Build image</button>
+    </div>
+    <p class="hint" id="envMsg">Building takes about a minute. The tag includes a hash of
+      the exact files, so two builds of the same branch are never confused.</p>
+
+    <h4>Preview environments</h4>${envRows}
+    <h4>Artifacts</h4>${imgRows}`;
+
+  // reuse the sandbox's source list — same sources, same meaning
+  try {
+    const sb = await api("/api/self/sandbox");
+    $("#envSource").innerHTML = (sb.sources || []).map((s) =>
+      `<option value="${escapeHtml(s.id)}">${escapeHtml(s.label)} — ${escapeHtml(s.detail)}</option>`).join("");
+  } catch { /* the select stays empty; the button will say why */ }
+
+  const msg = (t) => { $("#envMsg").textContent = t; };
+  $("#envBuild").addEventListener("click", async () => {
+    const b = $("#envBuild"); b.disabled = true; b.textContent = "building…";
+    msg("Building — this takes about a minute.");
+    try {
+      const r = await api("/api/self/envs/build", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: $("#envSource").value, note: $("#envNote").value }) });
+      toast(`Built ${r.tag}`);
+      renderEnvs();
+    } catch (e) { msg(String(e.message || e)); b.disabled = false; b.textContent = "Build image"; }
+  });
+
+  el.querySelectorAll("[data-try]").forEach((b) => b.addEventListener("click", async () => {
+    const name = prompt("Name this environment (it gets its own namespace, database and host):",
+                        "try-" + Math.random().toString(36).slice(2, 6));
+    if (!name) return;
+    b.disabled = true; b.textContent = "deploying…";
+    try {
+      const r = await api("/api/self/envs/deploy", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag: b.dataset.try, env: name }) });
+      toast(`${r.env} is up at ${r.host}`);
+    } catch (e) { toast(String(e.message || e)); }
+    renderEnvs();
+  }));
+
+  el.querySelectorAll("[data-promote]").forEach((b) => b.addEventListener("click", async () => {
+    // Promotion replaces the platform everyone is using. Name the artifact in the
+    // confirm, so this cannot be a reflex click.
+    if (!confirm(`Point production at ${b.dataset.promote}?\n\n`
+      + "This is the exact image you previewed — nothing is rebuilt. "
+      + "If it fails to come up it rolls back automatically.")) return;
+    b.disabled = true; b.textContent = "promoting…";
+    try {
+      const r = await api("/api/self/envs/promote", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag: b.dataset.promote }) });
+      toast(`Production is now ${r.tag}`);
+    } catch (e) { toast(String(e.message || e)); }
+    renderEnvs();
+  }));
+
+  el.querySelectorAll("[data-destroy]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm(`Destroy ${b.dataset.destroy} and its database?`)) return;
+    try { await api(`/api/self/envs/${encodeURIComponent(b.dataset.destroy)}`, { method: "DELETE" }); }
+    catch (e) { toast(String(e.message || e)); }
+    renderEnvs();
+  }));
+
+  const rb = $("#envRollback");
+  if (rb) rb.addEventListener("click", async () => {
+    if (!confirm("Roll production back to the previous image?")) return;
+    try { await api("/api/self/envs/rollback", { method: "POST" }); toast("Rolled back"); }
+    catch (e) { toast(String(e.message || e)); }
+    renderEnvs();
+  });
+}
+
 async function renderSandbox() {
   const el = $("#sandboxBody");
   if (!el) return;
@@ -368,6 +492,7 @@ async function renderSandbox() {
       const b = $("#sbxStop"); b.disabled = true; b.textContent = "stopping…";
       try { await api("/api/self/sandbox", { method: "DELETE" }); } catch (e) { toast(String(e.message || e)); }
       renderSandbox();
+  renderEnvs();
     });
     return;
   }
@@ -600,6 +725,15 @@ async function renderSelf() {
         runs the tests and opens a PR without stopping to ask. Nothing reaches the
         running app until you deploy it above.</p>
       </form>
+    </div>
+
+    <div class="self-card" id="envsCard">
+      <h3>Environments</h3>
+      <p class="hint">An environment is an <b>image</b>, not a folder. Build one from
+        any source — including work you haven't committed — try it on its own
+        namespace and database, then promote <i>that exact image</i> to production.
+        Nothing is rebuilt on the way, so what you tested is what ships.</p>
+      <div id="envsBody"><p class="hint">loading…</p></div>
     </div>
 
     <div class="self-card" id="sandboxCard">

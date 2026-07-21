@@ -59,7 +59,7 @@ def test_a_preview_may_never_target_production(monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("refused too late — the cluster was already touched")
     monkeypatch.setattr(envs, "kubectl_ok", lambda: True)
-    monkeypatch.setattr(envs, "_load_into_kind", _boom)
+    monkeypatch.setattr(envs, "_publish", _boom)
     for bad in ("", "   ", "devteam", "production", "PROD", "main"):
         r = envs.deploy_preview("devteam-conductor:x", bad)
         assert r["ok"] is False, f"{bad!r} was accepted"
@@ -143,3 +143,44 @@ def test_overview_reports_what_is_actually_running():
     d = envs.overview()
     for k in ("docker", "kubernetes", "images", "envs", "prod_namespace"):
         assert k in d
+
+
+# ---- kind and a real cluster need different things ------------------------
+
+def test_a_real_cluster_needs_a_registry(monkeypatch):
+    """Nodes on DOKS pull from a registry; they cannot see the host's Docker
+    daemon. Getting this wrong is the classic ImagePullBackOff with no message."""
+    monkeypatch.setattr(envs, "on_kind", lambda: False)
+    monkeypatch.setattr(envs, "REGISTRY", "")
+    ok, note = envs._publish("devteam-conductor:x")
+    assert ok is False and "DOCR_REGISTRY" in note
+
+
+def test_kind_loads_rather_than_pushes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(envs, "on_kind", lambda: True)
+    monkeypatch.setattr(envs, "_sh",
+                        lambda *c, **k: calls.append(c) or type("R", (), {
+                            "returncode": 0, "stdout": "", "stderr": ""})())
+    envs._publish("devteam-conductor:x")
+    assert calls and calls[0][0] == "kind", "pushed to a registry that kind cannot use"
+
+
+def test_the_cluster_pulls_by_the_registry_name(monkeypatch):
+    """A local tag means nothing to a DOKS node — the manifest must name the
+    registry path, not the name it happens to have on this laptop."""
+    monkeypatch.setattr(envs, "on_kind", lambda: False)
+    monkeypatch.setattr(envs, "REGISTRY", "registry.digitalocean.com/pulkit")
+    assert envs.cluster_tag("devteam-conductor:abc") == \
+        "registry.digitalocean.com/pulkit/devteam-conductor:abc"
+
+
+def test_a_registry_name_is_not_doubled_up(monkeypatch):
+    monkeypatch.setattr(envs, "REGISTRY", "registry.digitalocean.com/pulkit")
+    already = "registry.digitalocean.com/pulkit/devteam-conductor:abc"
+    assert envs.registry_tag(already) == already
+
+
+def test_on_kind_uses_the_local_tag(monkeypatch):
+    monkeypatch.setattr(envs, "on_kind", lambda: True)
+    assert envs.cluster_tag("devteam-conductor:abc") == "devteam-conductor:abc"

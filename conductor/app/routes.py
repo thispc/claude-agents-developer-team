@@ -737,6 +737,17 @@ def envs_promote(body: EnvTag, request: Request) -> dict:
     return r
 
 
+@router.post("/api/self/envs/rollback")
+def envs_rollback(request: Request) -> dict:
+    """k8s keeps the previous ReplicaSet, so this needs no artifact and no guesswork."""
+    _root(request)
+    r = envs.rollback()
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("detail") or r.get("error", "rollback failed"))
+    bus.emit(0, None, "system", "rolled_back", {"detail": r.get("detail", "")})
+    return r
+
+
 @router.delete("/api/self/envs/{env}")
 def envs_destroy(env: str, request: Request) -> dict:
     _root(request)
