@@ -56,7 +56,13 @@ def _save_state(**fields: Any) -> None:
 
 
 def self_repo() -> str:
-    """The GitHub repo this platform's own code lives in."""
+    """The GitHub repo this platform's own code lives in.
+
+    In a container this CANNOT be discovered: the image deliberately carries no
+    .git, so `git remote` has nothing to read. It must be configured, and when it
+    is not, self-repair silently creates a project with no repo and every worker
+    fails at clone with no explanation. can_redeploy() reports the absence.
+    """
     if config.SELF_REPO:
         return config.SELF_REPO
     r = _sh("git", "remote", "get-url", "origin")

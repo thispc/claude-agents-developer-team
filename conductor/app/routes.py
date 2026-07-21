@@ -647,7 +647,13 @@ def self_status(request: Request) -> dict:
     pid = selfops.ensure_project(u["id"])
     st = selfops.can_redeploy()
     tasks = db.list_tasks(pid)
-    return {"project_id": pid, "repo": st["repo"], "head": st["head"],
+    repo = st["repo"]
+    return {"project_id": pid, "repo": repo,
+            "repo_missing": ("" if repo else
+                             "SELF_REPO is not set, and a container cannot discover "
+                             "its own repository — the image carries no .git. Set it "
+                             "in the secret or self-repair has nothing to clone."),
+            "head": st["head"],
             "can_redeploy": st["ok"], "blocked_reasons": st["reasons"],
             "last_deploy": st["last_deploy"],
             "open_issues": [

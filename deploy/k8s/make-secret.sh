@@ -30,6 +30,7 @@ KEYS=(
   GEMINI_API_KEY OPENAI_API_KEY
   SELFREPAIR_USERS
   DOCR_READ_TOKEN DOCR_REGISTRY AUTO_UPDATE
+  SELF_REPO
 )
 
 # A conductor with neither is not merely misconfigured — every task it dispatches
