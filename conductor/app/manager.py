@@ -732,9 +732,9 @@ async def run_manager(project_id: int) -> None:
     project = db.get_project(project_id)
     if not project:
         return
-    if config.DEMO_MODE:      # sandbox: no real session, no tokens, no decisions
-        bus.emit(project_id, None, "manager", "agent_status",
-                 {"status": "simulated (sandbox build)"})
+    if config.DEMO_MODE:
+        from . import demo
+        await demo.run_manager(project_id)
         return
     bus.emit(project_id, None, "manager", "agent_status", {"status": "starting"})
 

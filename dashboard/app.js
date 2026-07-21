@@ -206,6 +206,15 @@ $("#personaPreset").addEventListener("change", (e) => {
 });
 const taskCost = (t) => (authMode === "subscription" ? "" : ` · $${t.cost_usd.toFixed(2)}`);
 
+function showSandboxBanner() {
+  if ($("#sandboxBanner")) return;
+  const el = document.createElement("div");
+  el.id = "sandboxBanner";
+  el.innerHTML = `<b>Sandbox build.</b> Agents are simulated, GitHub is mocked and no
+    credentials are loaded — everything here is fake except the code you are testing.`;
+  document.body.prepend(el);
+}
+
 function showStaleBanner() {
   if ($("#staleBanner")) return;
   const el = document.createElement("div");
@@ -225,6 +234,7 @@ async function loadHealth() {
     // feature — an empty dropdown, a button that does nothing — rather than a
     // conductor that needs restarting. Say which it is.
     if (h.stale_ui) showStaleBanner();
+    if (h.demo) showSandboxBanner();
     const b = $("#authBadge");
     // Say what it MEANS, not what it is called. "auth: Max subscription" told you
     // nothing about whether you were about to be charged.

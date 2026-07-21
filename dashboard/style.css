@@ -962,3 +962,5 @@ pre.dim, .dim { color: var(--dim); }
                border-bottom: 1px solid #f0d9a8; padding: 9px 20px;
                font-size: 12.5px; line-height: 1.5; }
 #staleBanner b { color: #8a5a00; }
+#sandboxBanner { background: #eef2ff; color: #3730a3; border-bottom: 1px solid #c9d0f7;
+                 padding: 9px 20px; font-size: 12.5px; line-height: 1.5; }

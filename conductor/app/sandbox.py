@@ -164,6 +164,10 @@ def _child_env(port: int) -> dict[str, str]:
         **blank,
         "HOME": str(home),
         "DEMO_MODE": "1",
+        # The SHAPE of the parent's auth, never the secret behind it. Without this
+        # the candidate reports auth "none" and the dashboard renders dollars where
+        # the live build renders agent runs — a difference in the thing under test.
+        "DEMO_AUTH_MODE": config.auth_mode(),
         "DB_PATH": str(DB),
         "PORT": str(port),
         "LAUNCHER": "local",

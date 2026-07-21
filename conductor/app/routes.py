@@ -770,7 +770,8 @@ def health() -> dict:
     except Exception:
         pass
     return {"ok": True, "launcher": config.LAUNCHER, "auth": config.auth_mode(),
-            "github": bool(config.GITHUB_TOKEN), "stale_ui": stale_ui}
+            "github": bool(config.GITHUB_TOKEN) or config.DEMO_MODE,
+            "demo": config.DEMO_MODE, "stale_ui": stale_ui}
 
 
 @router.post("/api/suggest-team")

@@ -100,6 +100,9 @@ async def test_dispatch_is_intercepted_before_any_agent_starts(fresh_db, monkeyp
 
 @pytest.mark.asyncio
 async def test_the_manager_session_never_starts_in_a_sandbox(fresh_db, monkeypatch):
+    """The simulated manager is a daemon like the real one, so it is created as a
+    task, not awaited — but it must never reach the SDK."""
+    import asyncio
     from app import manager
     monkeypatch.setattr(config, "DEMO_MODE", True)
 
@@ -108,9 +111,16 @@ async def test_the_manager_session_never_starts_in_a_sandbox(fresh_db, monkeypat
         yield
     monkeypatch.setattr(manager, "query", _boom)
     p = make_project(owner_id=1)
-    await manager.run_manager(p)          # must simply return
-    kinds = [e["kind"] for e in db.list_events(p)]
-    assert "agent_status" in kinds
+    task = asyncio.get_running_loop().create_task(manager.run_manager(p))
+    await asyncio.sleep(0.15)
+    task.cancel()
+    assert "agent_status" in [e["kind"] for e in db.list_events(p)]
+
+
+def test_the_simulated_manager_cannot_run_forever(fresh_db):
+    """An unbounded loop in a process nobody is watching is how a sandbox outlives
+    the review it was started for."""
+    assert 0 < demo.MANAGER_MAX_LIFE <= 12 * 3600
 
 
 def test_a_run_is_not_charged_for_a_simulated_task(fresh_db, monkeypatch):
@@ -322,3 +332,85 @@ def test_a_project_can_be_created_in_a_sandbox(root_client, fresh_db, monkeypatc
     monkeypatch.setattr(config, "AUTH_CONFIGURED", False)
     r = root_client.post("/api/projects", json={"name": "in sandbox", "brief": "try me"})
     assert r.status_code == 200, r.text
+
+
+# ---- fidelity: a mock that differs visibly trains you to distrust it ------
+
+def test_the_sandbox_reports_the_same_auth_shape_as_its_parent(monkeypatch):
+    """The dashboard reads auth mode to decide whether to show agent RUNS or
+    DOLLARS. A sandbox reporting "none" rendered "$0.00 / $5.00" where the live
+    build shows "9/40 runs" — a difference in the thing under test."""
+    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr(config, "CLAUDE_CODE_OAUTH_TOKEN", "")
+    monkeypatch.setattr(config, "CLI_LOGIN", False)
+    monkeypatch.setattr(config, "DEMO_MODE", True)
+    monkeypatch.setenv("DEMO_AUTH_MODE", "subscription")
+    assert config.auth_mode() == "subscription"
+
+
+def test_the_parent_passes_its_shape_not_its_secret():
+    env = sandbox._child_env(8701)
+    assert env["DEMO_AUTH_MODE"] in ("subscription", "api-key", "none")
+    assert env["ANTHROPIC_API_KEY"] == ""
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == ""
+
+
+def test_github_reads_as_connected_in_a_sandbox(monkeypatch):
+    """"GitHub isn't connected" is a lie about the CANDIDATE: it renders a blocker
+    the real build would not show and hides the PR links a reviewer needs."""
+    from app import github_client
+    monkeypatch.setattr(config, "GITHUB_TOKEN", "")
+    monkeypatch.setattr(config, "DEMO_MODE", True)
+    assert github_client.enabled("demo-org/thing") is True
+    assert github_client.enabled("") is False
+
+
+@pytest.mark.asyncio
+async def test_no_github_call_can_escape_a_sandbox(monkeypatch):
+    """Intercepted at the single choke point, so a future code path that forgets
+    to check DEMO_MODE still cannot reach the network."""
+    from app import github_client
+    monkeypatch.setattr(config, "DEMO_MODE", True)
+
+    class Boom:
+        def __init__(self, *a, **k): raise AssertionError("the sandbox called GitHub")
+    monkeypatch.setattr(github_client.httpx, "AsyncClient", Boom)
+    n = await github_client.create_pr("o/r", "task/1", "main", "t", "b")
+    assert isinstance(n, int)
+
+
+@pytest.mark.asyncio
+async def test_the_mock_github_is_stateful(monkeypatch):
+    """A stub returning a random number each call gives a task a different PR on
+    every refresh, and merges that never stick — the reviewer would be judging the
+    mock's inconsistency instead of the candidate."""
+    from app import github_client
+    monkeypatch.setattr(config, "DEMO_MODE", True)
+    demo._GH.update({"next": 101, "prs": {}, "issues": {}, "merged": set()})
+    a = await github_client.create_pr("o/r", "task/9", "main", "t", "b")
+    b = await github_client.create_pr("o/r", "task/9", "main", "t", "b")
+    c = await github_client.create_pr("o/r", "task/10", "main", "t", "b")
+    assert a == b, "the same branch produced two different PRs"
+    assert c != a
+    assert await github_client.merge_pr("o/r", a) is True
+
+
+@pytest.mark.asyncio
+async def test_a_simulated_worker_emits_tool_use_not_just_prose(fresh_db, monkeypatch):
+    """That interleaving is most of what the Activity tab exists to show."""
+    import asyncio
+    monkeypatch.setattr(config, "DEMO_MODE", True)
+    monkeypatch.setattr(demo.random, "uniform", lambda a, b: 0)
+    p = make_project(owner_id=1)
+    t = make_task(p)
+    await demo.simulate(t)
+    await asyncio.sleep(0.4)
+    kinds = [e["kind"] for e in db.list_events(p)]
+    assert "tool_use" in kinds and "message" in kinds
+
+
+def test_the_settings_screen_is_not_a_wall_of_not_set(monkeypatch):
+    from app import auth
+    monkeypatch.setattr(config, "DEMO_MODE", True)
+    r = auth.redacted({})
+    assert r["anthropic_api_key_set"] and r["github_token_set"]

@@ -16,10 +16,21 @@ def _headers() -> dict:
 
 
 def enabled(repo: str) -> bool:
+    # A sandbox holds no GitHub token, but reporting "GitHub isn't connected"
+    # there is a lie about the CANDIDATE, not about the sandbox: it renders a
+    # blocker the real build would not show, hides the PR links a reviewer needs
+    # to look at, and makes the copy under test different from the copy shipped.
+    if config.DEMO_MODE:
+        return bool(repo)
     return bool(config.GITHUB_TOKEN and repo)
 
 
 async def _request(method: str, path: str, **kwargs) -> dict:
+    # Single choke point for every call, so the sandbox cannot reach GitHub even
+    # if some future code path forgets to check DEMO_MODE.
+    if config.DEMO_MODE:
+        from . import demo
+        return demo.github_call(method, path, kwargs)
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.request(method, f"{API}{path}", headers=_headers(), **kwargs)
         resp.raise_for_status()

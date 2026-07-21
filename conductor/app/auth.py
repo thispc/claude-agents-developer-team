@@ -159,6 +159,14 @@ def save_settings(user_id: int, updates: dict) -> dict:
 
 def redacted(settings: dict) -> dict:
     """Never send secrets back to the browser — only whether they're set."""
+    if config.DEMO_MODE:
+        # A sandbox holds nothing, but showing every credential as "not set" makes
+        # the Settings screen under test look broken and nags for keys that would
+        # be pointless to enter. Report the configured shape instead.
+        return {k: True for k in ("github_token_set", "anthropic_api_key_set",
+                                  "claude_oauth_token_set")} | {
+            "openai_api_key_set": False, "gemini_api_key_set": False,
+            "github_login": "sandbox"}
     return {
         "github_token_set": bool(settings.get("github_token")),
         "anthropic_api_key_set": bool(settings.get("anthropic_api_key")),

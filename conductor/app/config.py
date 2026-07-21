@@ -34,6 +34,14 @@ AUTH_CONFIGURED = bool(ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN or CLI_LOGIN
 
 
 def auth_mode() -> str:
+    # A sandbox has no credentials on purpose, so it would report "none" — and the
+    # dashboard reads this to decide whether to show agent RUNS or DOLLARS. The
+    # candidate build would then render "$0.00 / $5.00" where the real one shows
+    # "9/40 runs", which is a difference in the thing under test rather than in
+    # the sandbox. The parent passes down the shape of its own auth, never the
+    # secret behind it.
+    if DEMO_MODE:
+        return _env("DEMO_AUTH_MODE", "subscription")
     if ANTHROPIC_API_KEY:
         return "api-key"
     if CLAUDE_CODE_OAUTH_TOKEN or CLI_LOGIN:
