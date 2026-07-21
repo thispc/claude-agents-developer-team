@@ -1404,3 +1404,18 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 }
 .mgr-model:hover { border-color: var(--accent); }
 .mgr-model:disabled { opacity: .6; cursor: wait; }
+
+/* ---------- notices: worth knowing, not holding anything up ----------
+ *
+ * Split off the Blockers tab because they answer different questions. A project
+ * running perfectly on schedule showed a 🚧 badge because nothing was running
+ * its tests — worth telling someone, but not a blocker, and putting it under
+ * that heading made every real blocker easier to ignore.
+ */
+.bl-card.notice { border-left: 3px solid var(--line); }
+.pill.quiet {
+  background: var(--card-2); color: var(--dim); border: 1px solid var(--line);
+}
+.vchip .quiet {
+  background: var(--card-2); color: var(--dim); border: 1px solid var(--line);
+}

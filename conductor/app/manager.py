@@ -81,9 +81,17 @@ def _with_evidence(t: dict, body: str) -> str:
         head = ("VERIFICATION: none available — " + str(v.get("reason", "")) +
                 "\nTreat everything below as an unverified claim.")
     elif v.get("ok"):
+        # A syntax check passing means the file parses. It does not mean the thing
+        # works, and letting it be read as "tests passed" would be the platform
+        # over-claiming on its own evidence — the one place it must not.
+        shallow = "syntax" in str(v.get("cmd", "")).lower()
         head = (f"VERIFICATION: PASSED. `{v.get('cmd')}` exited 0 — run by the platform, "
                 f"not by the worker, so this is evidence rather than a claim.\n"
-                f"--- output (tail) ---\n{(v.get('output') or '')[-1200:]}")
+                + ("NOTE: this is a SYNTAX check only. It proves the code parses; it "
+                   "proves nothing about whether it behaves correctly. Treat the "
+                   "behaviour claims below as unverified, and consider asking for a "
+                   "real test.\n" if shallow else "")
+                + f"--- output (tail) ---\n{(v.get('output') or '')[-1200:]}")
     else:
         # Name what broke before showing raw log. A pass/fail bit makes the judge
         # guess; the failing test names and assertions are the actual evidence, and
@@ -102,6 +110,38 @@ def _with_evidence(t: dict, body: str) -> str:
                 f"code, not the prose.{detail}\n--- output (tail) ---\n"
                 f"{(v.get('output') or '')[-1500:]}")
     return f"{head}\n\n=== the worker's own report ===\n{body}"
+
+
+def verification_brief(project: dict) -> str:
+    """Tell the manager to CREATE a way to check the work when none exists.
+
+    The platform runs whatever check a repository declares, and treats that
+    result as evidence rather than a claim — which is its single most important
+    safeguard. When a repository declares nothing, the safeguard silently does
+    nothing, and every task is accepted on the worker's own account of itself.
+
+    That happened on a real run: a game project shipped five tasks, none of them
+    checked, because a canvas game written as index.html + game.js declares no
+    test command and nobody was ever asked to add one. The platform noticed and
+    told the boss — which is backwards. The team is what should fix it, and
+    creating the check is cheap at the start and awkward once five tasks are
+    already merged on trust.
+    """
+    return (
+        "\n## Making your work checkable\n\n"
+        "The platform runs whatever check this repository declares — an npm "
+        "`test`, `build` or `lint` script, a pytest suite, `go test`, `cargo "
+        "test`, or a `test:` Makefile target — and gives you the exit code as "
+        "EVIDENCE rather than the worker's claim. It refuses to merge a branch "
+        "that fails one.\n"
+        "If the repository declares none of those, that safeguard does nothing "
+        "and you are judging prose. So if there is no check yet, make creating "
+        "one an early task — before the work it is supposed to protect. Even a "
+        "thin one earns its keep: for a browser project a `lint` or `build` "
+        "script that fails on a syntax error catches the exact fault that turns "
+        "a game into a blank screen.\n"
+        "This is cheap now and awkward after five tasks have been merged on "
+        "trust.\n")
 
 
 def sprint_review_prompt(project_id: int, sprint_no: int) -> tuple[str, list[str]]:
@@ -1037,6 +1077,7 @@ async def run_manager(project_id: int) -> None:
         f"{role_catalog_text(project)}\n"
         f"{roster_text}\n"
         f"{process.guidance(project)}\n"
+        f"{verification_brief(project)}\n"
         f"Brief from the user:\n{project['brief']}\n\n"
         "Plan the work, run your team, and ship it. This may be a restarted session: "
         "call status first, and only create_tasks if none exist yet.\n"

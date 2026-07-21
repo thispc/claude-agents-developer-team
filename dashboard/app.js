@@ -747,7 +747,8 @@ function setHash(h) {
 function switchView(view, skipHash) {
   document.querySelectorAll(".vchip").forEach((c) =>
     c.classList.toggle("active", c.dataset.v === view));
-  for (const id of ["command", "board", "dag", "artifacts", "agents", "chat", "blockers", "self"])
+  for (const id of ["command", "board", "dag", "artifacts", "agents", "chat", "blockers",
+                    "notices", "self"])
     $("#" + id).hidden = id !== view;
   if (view === "dag") renderDag(lastTasks);
   if (view === "command" && lastProject) renderCommand(lastProject);
@@ -755,6 +756,7 @@ function switchView(view, skipHash) {
   if (view === "agents") { agentsSig = ""; renderAgents(); }
   if (view === "chat") { chatSig = ""; renderChat(); markChatRead(); }
   if (view === "blockers") { blockersSig = ""; renderBlockers(); }
+  if (view === "notices") { blockersSig = ""; renderBlockers(); }
   if (view === "self") renderSelf();
   if (!skipHash && currentProject)
     setHash(`#/p/${currentProject}${view !== "command" ? "/" + view : ""}`);
@@ -1613,20 +1615,92 @@ function ago(ts) {
 // --- Blockers: every current obstacle on this project, with the fix for each. ---
 let blockersSig = "";
 
+// Two different questions, split onto two tabs.
+//
+// "Is anything holding my project up" and "is there anything I should know" were
+// answered by one list, so a project running perfectly on schedule showed a
+// 🚧 badge because nothing was running its tests. That is worth telling someone;
+// it is not a blocker, and putting it under that heading made every genuine
+// blocker easier to ignore.
+const HOLDS_WORK_UP = new Set(["stopped", "pace", "waiting"]);
+const isBlocker = (b) => HOLDS_WORK_UP.has(b.impact || (b.severity === "critical" ? "stopped" : "heads_up"));
+
+// The label describes what a blocker DOES, not how urgent it is. Both used to come
+// from severity, so a project running perfectly on schedule with no test command
+// was told it was "slowing down". It was not — it was running blind, and saying
+// the wrong one sends you looking for a performance problem that is not there.
+// Older servers send no impact; fall back to the severity wording.
+const IMPACT_LABEL = {
+  stopped:  "Stopping the project",
+  pace:     "Slowing it down",
+  waiting:  "Waiting on you",
+  setup:    "Not set up yet",
+  evidence: "Running unverified",
+  heads_up: "Worth knowing",
+};
+const labelFor = (b) => IMPACT_LABEL[b.impact]
+  || (b.severity === "critical" ? "Stopping the project" : "Worth knowing");
+
+function renderNoticeList(el, notices) {
+  if (!notices.length) {
+    el.innerHTML = `<div class="bl-head"><h2>📋 Notices</h2></div>
+      <div class="empty">Nothing to mention. Anything that needs your attention but
+      is not holding work up will appear here.</div>`;
+    return;
+  }
+  el.innerHTML = `
+    <div class="bl-head">
+      <h2>📋 Notices</h2>
+      <div class="bl-tally"><span class="pill quiet">${notices.length} worth knowing —
+        none of it is blocking</span></div>
+    </div>
+    ${notices.map((b) => `
+      <div class="bl-card notice">
+        <div class="bl-top">
+          <span class="pill quiet">${labelFor(b)}</span>
+          ${b.since ? `<span class="bl-since">${ago(b.since)}</span>` : ""}
+        </div>
+        <h3>${escapeHtml(b.title)}</h3>
+        <p class="bl-detail">${inlineCode(b.detail)}</p>
+        ${b.fix ? `<p class="bl-fix"><b>What clears it:</b> ${inlineCode(b.fix)}</p>` : ""}
+        <div class="bl-acts">
+          ${b.task_id ? `<button data-blview="${b.task_id}">Open task #${b.task_seq}</button>` : ""}
+          ${b.action === "settings" ? `<button data-blset="1" class="primary">Open settings</button>` : ""}
+        </div>
+      </div>`).join("")}`;
+  el.querySelectorAll("[data-blview]").forEach((btn) =>
+    btn.addEventListener("click", () => showTask(Number(btn.dataset.blview))));
+  el.querySelectorAll("[data-blset]").forEach((btn) =>
+    btn.addEventListener("click", () => $("#settingsBtn").click()));
+}
+
 async function renderBlockers() {
   const el = $("#blockers");
+  const nel = $("#notices");
   if (!el || !currentProject) return;
   let data;
   try { data = await api(`/api/projects/${currentProject}/blockers`); } catch { return; }
-  const items = data.blockers || [];
+  const all = data.blockers || [];
+  const items = all.filter(isBlocker);
+  const notices = all.filter((b) => !isBlocker(b));
 
-  // Badge on the tab is always updated, even when the tab isn't open.
+  // Badges update even when neither tab is open. The blocker badge is loud
+  // because it means work is affected; the notices badge is quiet because it
+  // does not, and a badge that cries wolf stops being read.
   const badge = $("#blockerCount");
   if (badge) {
     badge.hidden = items.length === 0;
-    badge.textContent = data.critical || items.length;
-    badge.className = data.critical ? "crit" : "warn";
+    badge.textContent = String(items.length);
+    badge.className = items.some((b) => b.severity === "critical") ? "crit" : "warn";
   }
+  const nbadge = $("#noticeCount");
+  if (nbadge) {
+    nbadge.hidden = notices.length === 0;
+    nbadge.textContent = String(notices.length);
+    nbadge.className = "quiet";
+  }
+
+  if (nel && !nel.hidden) renderNoticeList(nel, notices);
   if (el.hidden) return;
 
   const sig = JSON.stringify(items.map((b) => [b.kind, b.task_id, b.title]));
@@ -1639,21 +1713,6 @@ async function renderBlockers() {
       <p>No failed work, no unanswered questions, no capacity or credential problems.</p></div>`;
     return;
   }
-  // The label describes what the blocker DOES, not how urgent it is. Both used to
-  // come from severity, so a project running perfectly on schedule with no test
-  // command was told it was "slowing down". It was not — it was running blind, and
-  // saying the wrong one sends you looking for a performance problem that is not
-  // there. Older servers send no impact; fall back to the severity wording.
-  const IMPACT_LABEL = {
-    stopped:  "Stopping the project",
-    pace:     "Slowing it down",
-    waiting:  "Waiting on you",
-    setup:    "Not set up yet",
-    evidence: "Running unverified",
-    heads_up: "Worth knowing",
-  };
-  const labelFor = (b) => IMPACT_LABEL[b.impact]
-    || (b.severity === "critical" ? "Stopping the project" : "Worth knowing");
   const slowing = items.filter((b) => b.impact === "pace").length;
   el.innerHTML = `
     <div class="bl-head">

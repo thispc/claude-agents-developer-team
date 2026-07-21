@@ -164,7 +164,29 @@ def detect_verification(repo_dir: Path) -> tuple[str, str] | None:
         mk = (repo_dir / "Makefile").read_text(errors="ignore")
         if "\ntest:" in mk or mk.startswith("test:"):
             return ("make test", "make test")
+
+    # Last resort: does the JavaScript even parse?
+    #
+    # A browser game written as index.html plus game.js declares nothing above,
+    # so nothing checked five merged tasks on a real run. `node --check` is not a
+    # test and must never be mistaken for one — but a syntax error is exactly the
+    # fault that turns a canvas game into a blank screen with a console message
+    # nobody sees, and catching that is worth more than catching nothing.
+    #
+    # Labelled "javascript syntax" precisely so the manager reads it as what it
+    # is. A green result here says the file parses, not that the game works.
+    js = [f for f in repo_dir.glob("*.js") if f.name != "node_modules"]
+    if js and _has(repo_dir, "node"):
+        names = " ".join(f'"{f.name}"' for f in sorted(js)[:20])
+        return (f"node --check {names}", "javascript syntax")
     return None
+
+
+def _has(repo_dir: Path, binary: str) -> bool:
+    """Whether a command exists here. Checked rather than assumed: proposing a
+    check we cannot run would report 'nothing verified this' with an extra step."""
+    import shutil
+    return shutil.which(binary) is not None
 
 
 # Which lines in a test run actually name what broke, by toolchain.

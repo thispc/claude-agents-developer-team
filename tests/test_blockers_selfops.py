@@ -172,3 +172,62 @@ def test_the_verification_advice_fits_a_project_with_no_test_suite(fresh_db):
     assert "does not have to be a test suite" in fix
     assert fix.index("build") < fix.index("pytest"), \
         "the realistic option for a web project is buried behind irrelevant ones"
+
+
+# --- notices are not blockers ----------------------------------------------
+
+def test_the_two_tabs_ask_different_questions(fresh_db):
+    """"Is anything holding my project up" and "is there anything I should know"
+    were one list, so a project running perfectly showed a blocker badge because
+    nothing was running its tests. Worth telling someone; not a blocker — and
+    putting it under that heading made every real blocker easier to ignore."""
+    from pathlib import Path
+    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    assert 'HOLDS_WORK_UP = new Set(["stopped", "pace", "waiting"])' in js
+    assert "renderNoticeList" in js
+    html = (Path(__file__).resolve().parent.parent / "dashboard" / "index.html").read_text()
+    assert 'data-v="notices"' in html
+
+
+def test_an_unverified_project_is_a_notice_not_a_blocker(fresh_db):
+    from app import blockers
+    assert blockers.IMPACT["unverified"] == "evidence"
+    assert blockers.IMPACT["unverified"] not in ("stopped", "pace", "waiting")
+
+
+# --- making the work checkable is the TEAM's job ---------------------------
+
+def test_the_manager_is_told_to_create_a_check_when_there_is_none(fresh_db):
+    """A real run shipped five tasks with nothing verifying any of them, because
+    a canvas game declares no test command and nobody was asked to add one. The
+    platform noticing and telling the boss is backwards — the team should fix it,
+    and it is cheap at the start and awkward after five merges on trust."""
+    from app import manager
+    text = manager.verification_brief({})
+    assert "make creating one an early task" in text
+    assert "before the work it is supposed to protect" in text
+    assert "blank screen" in text
+
+
+def test_a_syntax_check_is_never_reported_as_a_passing_test(fresh_db):
+    """It proves the file parses. Letting that read as "tests passed" would be
+    the platform over-claiming on its own evidence, which is the one place it
+    must not."""
+    import json as _json
+    from app import manager
+    task = {"verification": _json.dumps(
+        {"ran": True, "ok": True, "cmd": "javascript syntax", "output": ""})}
+    text = manager._with_evidence(task, "I built the whole game and it works great")
+    assert "SYNTAX check only" in text
+    assert "proves nothing about whether it behaves correctly" in text
+
+
+def test_a_real_test_run_is_not_hedged(fresh_db):
+    """The caveat must apply only where it is true, or it teaches the manager to
+    discount every green result."""
+    import json as _json
+    from app import manager
+    task = {"verification": _json.dumps(
+        {"ran": True, "ok": True, "cmd": "pytest", "output": "31 passed"})}
+    text = manager._with_evidence(task, "done")
+    assert "SYNTAX check only" not in text
