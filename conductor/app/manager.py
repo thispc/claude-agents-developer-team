@@ -453,7 +453,7 @@ def build_team_server(project_id: int):
         """
         q, options = sprint_review_prompt(project_id, sprint_no)
         wait = int(tuning.get("sprint_checkin_seconds"))
-        qid = db.ask_question(project_id, q, options)
+        qid = db.ask_question(project_id, q, options, topic="sprint_review")
         bus.emit(project_id, None, "manager", "sprint_checkin",
                  {"sprint": sprint_no, "blocking_for": wait})
         deadline = time.time() + wait
@@ -581,7 +581,8 @@ def build_team_server(project_id: int):
         if p.get("autonomy") == "autonomous":
             wait = 0     # they asked for unattended; do not stall the start
         qid = db.ask_question(project_id, interview.as_message(qs),
-                              ["Answer below", "Just get on with it"])
+                              ["Answer below", "Just get on with it"],
+                              topic="interview")
         deadline = time.time() + wait
         while time.time() < deadline:
             row = db.get_question(qid)

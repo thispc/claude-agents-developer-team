@@ -202,7 +202,13 @@ main { flex: 1; display: grid; grid-template-columns: 1fr 380px; gap: 16px; padd
   border-radius: 14px; padding: 16px 18px; margin: 0 auto 6px; max-width: 620px; box-shadow: var(--shadow);
 }
 .ask-card .bl { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--warn); font-weight: 700; }
-.ask-card .qtext { font-size: 14.5px; margin: 8px 0 12px; line-height: 1.5; }
+.ask-card .qtext {
+  font-size: 14.5px; margin: 8px 0 12px; line-height: 1.5;
+  /* The interview arrives as numbered questions with their consequences
+     indented underneath. Without preserved newlines the whole thing collapses
+     into one run-on paragraph and the structure — the readable part — is gone. */
+  white-space: pre-wrap;
+}
 .ask-card .qbtns { display: flex; flex-direction: column; gap: 8px; }
 .ask-card .qbtns button { background: #fff; font-size: 13px; text-align: left; padding: 11px 14px; }
 .ask-card .qbtns button:hover { border-color: var(--warn); color: var(--warn); }
@@ -1375,3 +1381,26 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
    tallest, which is what made a select next to a short input look off-centre. */
 .form-row { display: flex; gap: var(--ctl-pad-x); align-items: flex-end; flex-wrap: wrap; }
 .form-row > * { flex: 1 1 12rem; min-width: 0; }
+
+/* ---------- being asked something ----------
+ *
+ * Three different moments used one card and one heading. An interview before any
+ * work starts is not a problem to be unblocked, and framing it as "your manager
+ * needs a decision" made the first thing a new project did look like a fault.
+ * Brick still means a human is needed; the accent stripe distinguishes the kind.
+ */
+.ask-card .qnote {
+  font-size: 12px; color: var(--dim); line-height: 1.5;
+  margin: -4px 0 12px;
+}
+.ask-card.interview { border-left: 3px solid var(--accent); }
+.ask-card.sprint_review { border-left: 3px solid var(--mgr); }
+
+/* ---------- the manager's model, changeable in place ---------- */
+.mgr-model {
+  font-size: 12px; padding: 3px 24px 3px 8px; border-radius: 6px;
+  background: var(--card-2); border: 1px solid var(--line); color: var(--text);
+  max-width: 190px; margin: 2px 0 4px;
+}
+.mgr-model:hover { border-color: var(--accent); }
+.mgr-model:disabled { opacity: .6; cursor: wait; }

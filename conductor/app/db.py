@@ -184,6 +184,7 @@ CREATE TABLE IF NOT EXISTS inbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL,
     kind TEXT NOT NULL,          -- 'directive' | 'question'
+    topic TEXT NOT NULL DEFAULT 'decision',  -- what sort of moment: decision | interview | sprint_review
     text TEXT NOT NULL,
     options TEXT NOT NULL DEFAULT '[]',
     answer TEXT,
@@ -276,6 +277,7 @@ def init() -> None:
         "ALTER TABLE tasks ADD COLUMN agent_id INTEGER",
         "ALTER TABLE projects ADD COLUMN process TEXT NOT NULL DEFAULT 'agile'",
         "ALTER TABLE projects ADD COLUMN profile TEXT NOT NULL DEFAULT 'default'",
+        "ALTER TABLE inbox ADD COLUMN topic TEXT NOT NULL DEFAULT 'decision'",
         # roundtables/seats/turns are created by SCHEMA above (CREATE TABLE IF NOT
         # EXISTS), so existing databases pick them up without a migration here.
     ):
@@ -635,10 +637,17 @@ def take_directives(project_id: int) -> list[str]:
     return [r["text"] for r in rows]
 
 
-def ask_question(project_id: int, text: str, options: list[str]) -> int:
+def ask_question(project_id: int, text: str, options: list[str],
+                 topic: str = "decision") -> int:
+    """Ask the boss something. `topic` is what KIND of moment this is, which the
+    dashboard uses to frame it — being asked to settle an ambiguity before any
+    work starts reads very differently from being asked to unblock something
+    mid-flight, and labelling both "your manager needs a decision" makes the
+    first one look like a problem."""
     cur = _execute(
-        "INSERT INTO inbox (project_id, kind, text, options, created_at) VALUES (?,?,?,?,?)",
-        (project_id, "question", text, json.dumps(options), time.time()),
+        "INSERT INTO inbox (project_id, kind, topic, text, options, created_at) "
+        "VALUES (?,?,?,?,?,?)",
+        (project_id, "question", topic, text, json.dumps(options), time.time()),
     )
     return cur.lastrowid
 

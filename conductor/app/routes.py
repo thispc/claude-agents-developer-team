@@ -1806,7 +1806,12 @@ def get_pending_question(project_id: int, request: Request) -> dict:
         return {"question": None}
     # NOTE: the key is "question" (not "text") — the dashboard keys off it to raise
     # the approval modal. Keep this name stable.
-    return {"id": q["id"], "question": q["text"], "options": db.json.loads(q["options"])}
+    # `topic` says what sort of moment this is — an interview before planning, a
+    # sprint boundary, or a decision mid-flight. The dashboard frames each
+    # differently, because labelling all three "your manager needs a decision"
+    # makes the first thing a new project does look like a fault.
+    return {"id": q["id"], "question": q["text"], "topic": q.get("topic", "decision"),
+            "options": db.json.loads(q["options"])}
 
 
 @router.post("/api/questions/{qid}/answer")

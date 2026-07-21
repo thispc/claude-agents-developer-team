@@ -1922,7 +1922,8 @@ async function refreshQuestion() {
     pendingQ = null;
   } else {
     currentQuestionId = q.id;
-    pendingQ = { id: q.id, text: q.question, options: q.options || [] };
+    pendingQ = { id: q.id, text: q.question, topic: q.topic || "decision",
+                 options: q.options || [] };
   }
   // Questions are shown INLINE in the Command view (the amber ask-card).
   // No popup: modals covered the org chart and felt intrusive.
@@ -2100,6 +2101,16 @@ function assemblingHtml(p, roster, thought) {
   </div>`;
 }
 
+// Manager models offered in the picker. A short list on purpose: this is the
+// model that plans and reviews, so the meaningful choice is how much judgement
+// you want to pay for, not which of a dozen ids you prefer.
+const MANAGER_MODELS = [
+  { id: "", label: "server default" },
+  { id: "claude-haiku-4-5", label: "Haiku — fastest, cheapest" },
+  { id: "claude-sonnet-5", label: "Sonnet — balanced" },
+  { id: "claude-opus-4-8", label: "Opus — most careful" },
+];
+
 function renderCommand(p) {
   const el = $("#command");
   if (!el || el.hidden) return;
@@ -2117,10 +2128,23 @@ function renderCommand(p) {
       <div class="qbtns"><button data-attn="fix">Tell the manager to fix it</button></div>
     </div>` : "";
 
+  // How the moment is framed depends on what sort of moment it is. An interview
+  // before any work starts is not a problem to be unblocked, and calling it "your
+  // manager needs a decision" made the first thing a new project did look like
+  // something had already gone wrong.
+  const ASK_FRAME = {
+    interview: { icon: "💬", head: "Before your manager plans this",
+                 note: "Answer what you care about — it will decide the rest and tell you what it assumed." },
+    sprint_review: { icon: "🔄", head: "Sprint finished — anything to change?",
+                     note: "The cheapest moment to redirect: nothing for the next round is built yet." },
+    decision: { icon: "👔", head: "Your manager needs a decision", note: "" },
+  };
+  const frame = ASK_FRAME[pendingQ && pendingQ.topic] || ASK_FRAME.decision;
   const askHtml = pendingQ ? `
-    <div class="ask-card">
-      <div class="bl">👔 Your manager needs a decision</div>
+    <div class="ask-card ${pendingQ.topic || "decision"}">
+      <div class="bl">${frame.icon} ${frame.head}</div>
       <div class="qtext">${escapeHtml(pendingQ.text)}</div>
+      ${frame.note ? `<div class="qnote">${frame.note}</div>` : ""}
       <div class="qbtns">
         ${(pendingQ.options || []).map((o, i) =>
           `<button data-qopt="${i}">${escapeHtml(optText(o))}</button>`).join("")}
@@ -2231,7 +2255,11 @@ function renderCommand(p) {
       <div class="node-row">
         <div class="node manager ${busy ? "busy" : ""}">
           <div class="who">👔 Manager</div>
-          <div class="name">${escapeHtml(mgrModel)}</div>
+          <select class="mgr-model" id="mgrModelSel"
+                  title="Which model runs the manager. Applies when it next starts.">
+            ${MANAGER_MODELS.map((m) => `<option value="${m.id}"${
+              m.id === (p.manager_model || "") ? " selected" : ""}>${escapeHtml(m.label)}</option>`).join("")}
+          </select>
           <div class="sub">
             <button class="mode-toggle ${p.autonomy === "autonomous" ? "auton" : ""}"
               id="autonomyBtn"
@@ -2264,6 +2292,32 @@ function renderCommand(p) {
   });
   el.querySelectorAll(".agent").forEach((a) =>
     a.addEventListener("click", () => showTask(Number(a.dataset.task))));
+  const ms = $("#mgrModelSel");
+  if (ms) ms.addEventListener("change", async (ev) => {
+    ev.stopPropagation();
+    const model = ms.value;
+    ms.disabled = true;
+    try {
+      const r = await api(`/api/projects/${currentProject}/manager-model`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model }),
+      });
+      // Say what actually happened. A model is bound when a session starts, so a
+      // running manager keeps the old one until it restarts — reporting success
+      // without that would have someone waiting for a change that has not
+      // happened and cannot until they act.
+      toast(r.restart_needed
+        ? `Manager set to ${model || "the server default"}. The one running now keeps its `
+          + `current model — use ↻ Restart manager to switch it over.`
+        : `Manager set to ${model || "the server default"}.`);
+    } catch (e) {
+      toast(`Could not change it: ${e.message}`);
+      ms.value = (lastProject && lastProject.manager_model) || "";
+    } finally {
+      ms.disabled = false;
+    }
+  });
+
   const ab = $("#autonomyBtn");
   if (ab) ab.addEventListener("click", async (ev) => {
     ev.stopPropagation();

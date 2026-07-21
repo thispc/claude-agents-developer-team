@@ -105,8 +105,8 @@ async def test_an_answer_that_arrived_in_time_steers_the_next_sprint(fresh_db):
     # Stand in for a boss who was watching: answer the moment the question appears.
     real_ask = db.ask_question
 
-    def answer_immediately(project_id, text, options):
-        qid = real_ask(project_id, text, options)
+    def answer_immediately(project_id, text, options, topic="decision"):
+        qid = real_ask(project_id, text, options, topic)
         db.answer_question(qid, "drop the export feature and fix the login bug")
         return qid
 
@@ -130,8 +130,8 @@ async def test_the_boss_can_end_the_run_early_at_a_boundary(fresh_db):
 
     real_ask = db.ask_question
 
-    def answer_stop(project_id, text, options):
-        qid = real_ask(project_id, text, options)
+    def answer_stop(project_id, text, options, topic="decision"):
+        qid = real_ask(project_id, text, options, topic)
         db.answer_question(qid, "Stop here, this is enough")
         return qid
 
@@ -154,8 +154,8 @@ async def test_carry_on_adds_no_instructions(fresh_db):
 
     real_ask = db.ask_question
 
-    def answer_carry_on(project_id, text, options):
-        qid = real_ask(project_id, text, options)
+    def answer_carry_on(project_id, text, options, topic="decision"):
+        qid = real_ask(project_id, text, options, topic)
         db.answer_question(qid, "Carry on — you decide the next sprint")
         return qid
 
