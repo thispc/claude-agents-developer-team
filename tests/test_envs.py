@@ -198,21 +198,23 @@ def test_on_kind_uses_the_local_tag(monkeypatch):
 
 # ---- a managed cluster is not kind ---------------------------------------
 
-def test_a_managed_cluster_gets_nodeport_not_a_loadbalancer(monkeypatch):
-    """Every LoadBalancer is billed, and one per preview is how a credit
-    disappears into networking rather than compute."""
+def test_an_environment_is_never_put_on_the_internet(monkeypatch):
+    """DOKS reconciles k8s-public-access-<cluster> from the NodePort services it
+    finds and opens them to 0.0.0.0/0 — so a NodePort makes exposure the DEFAULT
+    and any restriction something you hold against the platform's own controller.
+    Verified live: a fresh NodePort service was world-reachable within seconds."""
+    for kind in (True, False):
+        monkeypatch.setattr(envs, "on_kind", lambda k=kind: k)
+        m = envs.manifests("pr-1", "img:1", "devteam-pr-1")
+        assert "type: ClusterIP" in m
+        assert "NodePort" not in m
+        assert "LoadBalancer" not in m, "every LB is billed, per environment"
+
+
+def test_no_loadbalancer_without_a_domain(monkeypatch):
     monkeypatch.setattr(envs, "on_kind", lambda: False)
     monkeypatch.setattr(config, "APPS_DOMAIN", "")
-    m = envs.manifests("pr-1", "img:1", "devteam-pr-1")
-    assert "type: NodePort" in m
-    assert "LoadBalancer" not in m
-    assert "Ingress" not in m, "an ingress with no wildcard domain buys nothing"
-
-
-def test_kind_keeps_clusterip_and_ingress(monkeypatch):
-    monkeypatch.setattr(envs, "on_kind", lambda: True)
-    m = envs.manifests("pr-1", "img:1", "devteam-pr-1")
-    assert "type: ClusterIP" in m and "Ingress" in m
+    assert "Ingress" not in envs.manifests("pr-1", "img:1", "devteam-pr-1")
 
 
 def test_a_private_registry_means_the_pod_needs_a_pull_secret(monkeypatch):

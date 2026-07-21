@@ -34,7 +34,7 @@ spec:
       imagePullSecrets: [{name: docr-creds}]
       containers:
         - name: conductor
-          image: registry.digitalocean.com/devteam-pulkit/devteam-conductor:doks-first
+          image: registry.digitalocean.com/devteam-pulkit/devteam-conductor:live-76874f889a
           imagePullPolicy: IfNotPresent
           ports: [{containerPort: 8000}]
           envFrom:
@@ -64,6 +64,23 @@ apiVersion: v1
 kind: Service
 metadata: {name: devteam-conductor, namespace: devteam}
 spec:
-  type: NodePort
+  # ClusterIP: production is NOT on the internet at all.
+  #
+  # A NodePort here would be worse than it looks. DOKS reconciles a firewall
+  # called k8s-public-access-<cluster> from the NodePort services it finds, and
+  # it opens them to 0.0.0.0/0 by default — so exposure is the default and any
+  # restriction you apply is something you are holding against the platform's own
+  # controller. For a pod holding a Claude subscription token, a GitHub PAT with
+  # write access and a WORKER_TOKEN that lets its bearer post as any worker, that
+  # is the wrong way round.
+  #
+  # Reach it with a tunnel instead — no port open, nothing to restrict, free:
+  #   kubectl -n devteam port-forward svc/devteam-conductor 8000:80
+  #   open http://localhost:8000
+  #
+  # When it needs a real URL: one Ingress with TLS, shared by every environment.
+  # That is the point at which a LoadBalancer earns its $12/month, and TLS plus a
+  # single reviewed entry point is a better answer than an open port anyway.
+  type: ClusterIP
   selector: {app: devteam-conductor}
-  ports: [{port: 80, targetPort: 8000, nodePort: 30080}]
+  ports: [{port: 80, targetPort: 8000}]

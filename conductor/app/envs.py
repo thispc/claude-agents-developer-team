@@ -263,7 +263,13 @@ def manifests(env: str, tag: str, namespace: str) -> str:
     # credit disappears into networking rather than compute. NodePort reaches the
     # same pod through the node's own IP for nothing; an ingress is worth it only
     # once there is a wildcard domain to hang the previews off.
-    expose = "ClusterIP" if on_kind() else "NodePort"
+    # ClusterIP everywhere. A NodePort on DOKS is opened to 0.0.0.0/0 by the
+    # platform's own controller (it reconciles k8s-public-access-<cluster> from
+    # the NodePort services it finds), so exposure becomes the default and any
+    # restriction is something you hold AGAINST that controller. A preview holds
+    # no secrets, but it does hold a login page with a known password, and
+    # `kubectl port-forward` costs nothing and exposes nothing.
+    expose = "ClusterIP"
     # DOCR is private, so the node needs credentials to pull. Without this the
     # rollout sits in ImagePullBackOff, which reports as "image not found" and
     # sends you looking for a build problem that isn't there.
