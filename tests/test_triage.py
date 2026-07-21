@@ -312,6 +312,7 @@ def test_production_branches_are_unprefixed_by_default(fresh_db):
     assert db.get_task(t)["branch"].startswith("task/")
 
 
+@pytest.mark.hostonly
 def test_staging_has_its_own_namespace_and_volume():
     from app import cloud
     assert cloud.STAGING_NS != cloud.namespace()
@@ -326,6 +327,7 @@ def test_staging_run_cap_is_small_by_default():
     assert int(cloud.STAGING_MAX_RUNS) <= 20
 
 
+@pytest.mark.hostonly
 def test_staging_verify_runs_the_real_suite():
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent / "conductor" / "app" / "cloud.py").read_text()
@@ -407,6 +409,7 @@ def test_the_verdict_outlives_the_pod_that_made_it():
     assert "patch_namespaced_deployment" in body and "annotations" in body
 
 
+@pytest.mark.hostonly
 def test_the_image_carries_its_own_tests():
     """Running the suite from a checkout would test whatever the checkout happened
     to be — the drift this whole arrangement exists to remove."""

@@ -30,9 +30,19 @@ os.environ["WORKSPACES_DIR"] = str(Path(_TMP) / "workspaces")
 # reach a real provider and classify a vague test fixture as "substantial",
 # failing an unrelated assertion. A test whose outcome depends on what happens to
 # be exported is not a test.
+#
+# The second group is deployment IDENTITY rather than credentials, and it caught
+# us the same way. Running this suite inside the staging pod failed five sprint
+# tests and a branch-naming test that pass on a laptop — not because the code
+# differed, but because staging sets BRANCH_PREFIX and a developer machine has a
+# `claude` CLI login. Both made tests pass or fail for reasons the tests were not
+# about. Anything below that changes behaviour has to be pinned here, or the
+# suite means something different in every environment that runs it.
 for _k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GEMINI_API_KEY",
            "GEMINI_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN", "DOCR_READ_TOKEN",
-           "DOCR_REGISTRY", "DIGITALOCEAN_API_TOKEN", "AUTO_UPDATE", "DEMO_MODE"):
+           "DOCR_REGISTRY", "DIGITALOCEAN_API_TOKEN", "AUTO_UPDATE", "DEMO_MODE",
+           "BRANCH_PREFIX", "ALLOW_MERGE", "DEVTEAM_ENV", "SELF_REPO",
+           "GITHUB_REPO", "REQUIRE_STAGING", "CUSTOM_MODEL_ENDPOINTS"):
     os.environ.pop(_k, None)
 
 from app import auth, db  # noqa: E402
@@ -107,6 +117,22 @@ def root_client(client):
     """A TestClient already logged in as root; carries the session cookie."""
     login(client, "root", "testpass")
     return client
+
+
+@pytest.fixture()
+def root_can_run_agents(fresh_db):
+    """Give root credentials of its own, explicitly.
+
+    Project creation refuses a user who cannot pay for their own agents. These
+    tests passed on a laptop only because the developer happened to have a
+    `claude` CLI login, which `config.AUTH_CONFIGURED` picks up — so they were
+    green for a reason that had nothing to do with what they assert, and red the
+    moment the same suite ran inside a container. Stating the precondition beats
+    inheriting it.
+    """
+    from app import auth as auth_mod
+    auth_mod.save_settings(1, {"anthropic_api_key": "sk-ant-test-not-a-real-key"})
+    return auth_mod.get_user(1)
 
 
 @pytest.fixture()

@@ -210,7 +210,7 @@ def test_a_first_attempt_gets_no_prior_context(fresh_db):
 
 # ---- the API and the UI must agree about sprints and modes ----------------
 
-def test_create_project_accepts_and_clamps_sprints(root_client, fresh_db):
+def test_create_project_accepts_and_clamps_sprints(root_client, fresh_db, root_can_run_agents):
     r = root_client.post("/api/projects", json={
         "name": "six", "brief": "build a thing", "sprints": 6})
     assert r.status_code == 200, r.text
@@ -261,7 +261,7 @@ def test_me_tells_the_ui_whether_to_offer_self_repair(root_client, fresh_db):
 
 # ---- the run cap has to survive the sprints it was given -------------------
 
-def test_run_cap_scales_with_sprints(root_client, fresh_db):
+def test_run_cap_scales_with_sprints(root_client, fresh_db, root_can_run_agents):
     """A cap sized for one pass stops mid-way through sprint 2 with the product
     half-built, which reads as the team giving up rather than a guard rail."""
     r = root_client.post("/api/projects", json={
@@ -271,18 +271,18 @@ def test_run_cap_scales_with_sprints(root_client, fresh_db):
     assert p["max_runs"] == config.MAX_AGENT_RUNS * 6
 
 
-def test_an_explicit_cap_is_a_decision_and_is_respected(root_client, fresh_db):
+def test_an_explicit_cap_is_a_decision_and_is_respected(root_client, fresh_db, root_can_run_agents):
     r = root_client.post("/api/projects", json={
         "name": "tight", "brief": "b", "sprints": 4, "max_runs": 300})
     assert db.get_project(r.json()["id"])["max_runs"] == 300
 
 
-def test_a_single_sprint_project_is_not_scaled(root_client, fresh_db):
+def test_a_single_sprint_project_is_not_scaled(root_client, fresh_db, root_can_run_agents):
     r = root_client.post("/api/projects", json={"name": "one", "brief": "b", "sprints": 1})
     assert db.get_project(r.json()["id"])["max_runs"] == config.MAX_AGENT_RUNS
 
 
-def test_scaling_is_bounded(root_client, fresh_db):
+def test_scaling_is_bounded(root_client, fresh_db, root_can_run_agents):
     r = root_client.post("/api/projects", json={"name": "many", "brief": "b", "sprints": 20})
     assert db.get_project(r.json()["id"])["max_runs"] <= 400
 
