@@ -170,3 +170,88 @@ def test_a_restricted_issue_is_refused_rather_than_started(root_client, fresh_db
         "body": "it has stale rows"})
     assert r.status_code == 400
     assert "Not started unsupervised" in r.json()["detail"]
+
+
+# ---- a new version must prove it boots before it becomes the platform ----
+
+def test_self_update_runs_a_canary_first(monkeypatch):
+    """Kubernetes protects against a pod that never becomes ready — but only
+    AFTER the rollout has begun. Trying the image first is cheaper than finding
+    out by replacing a working platform with a broken one."""
+    from app import cloud
+    monkeypatch.setattr(cloud, "in_cluster", lambda: True)
+    monkeypatch.setattr(cloud, "current_image", lambda: "img:1")
+    monkeypatch.setattr(cloud, "busy", lambda: [])
+    monkeypatch.setattr(cloud, "canary", lambda i: {"ok": False, "error": "CrashLoopBackOff"})
+
+    def _boom(*a, **k):
+        raise AssertionError("adopted an image that failed its trial run")
+    monkeypatch.setattr(cloud, "_api", _boom)
+    r = cloud.self_update("img:2")
+    assert r["ok"] is False and "did not pass a trial run" in r["error"]
+
+
+def test_a_passing_canary_lets_the_update_through(monkeypatch):
+    from app import cloud
+    patched = {}
+    monkeypatch.setattr(cloud, "in_cluster", lambda: True)
+    monkeypatch.setattr(cloud, "current_image", lambda: "img:1")
+    monkeypatch.setattr(cloud, "busy", lambda: [])
+    monkeypatch.setattr(cloud, "canary", lambda i: {"ok": True})
+
+    class _Api:
+        def patch_namespaced_deployment(self, *a, **k):
+            patched["done"] = True
+    monkeypatch.setattr(cloud, "_api", lambda: _Api())
+    assert cloud.self_update("img:2")["ok"] is True and patched["done"]
+
+
+def test_force_skips_the_canary(monkeypatch):
+    """force is for getting OUT of a bad state, where a canary would be a second
+    thing to go wrong while the platform is already broken."""
+    from app import cloud
+    monkeypatch.setattr(cloud, "in_cluster", lambda: True)
+    monkeypatch.setattr(cloud, "current_image", lambda: "img:1")
+
+    def _boom(i):
+        raise AssertionError("ran a canary during a forced recovery")
+    monkeypatch.setattr(cloud, "canary", _boom)
+
+    class _Api:
+        def patch_namespaced_deployment(self, *a, **k): pass
+    monkeypatch.setattr(cloud, "_api", lambda: _Api())
+    assert cloud.self_update("img:2", force=True)["ok"] is True
+
+
+def test_the_canary_never_touches_the_real_database():
+    """A migration that destroys data must do it to a scratch file — that is the
+    entire reason for running the trial at all."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "conductor" / "app" / "cloud.py").read_text()
+    body = src.split("def canary(")[1].split("\ndef ")[0]
+    assert 'value="/tmp/canary.db"' in body
+    assert 'name="DEMO_MODE", value="1"' in body, "a canary must not run real agents"
+    assert "V1Service" not in body, "nothing should be able to route to a canary"
+
+
+# ---- what it did on its own stays visible -------------------------------
+
+def test_the_healing_feed_shows_rejected_builds_too():
+    """The platform declining to ship something to itself is the most valuable
+    line in that list, and the easiest to miss."""
+    from pathlib import Path
+    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    assert "renderHealing" in js and "/api/self/healing" in js
+    assert "canary_failed" in js
+
+
+def test_the_healing_route_reports_what_happened(root_client, fresh_db):
+    from app import selfops, bus
+    pid = selfops.ensure_project(1)
+    bus.emit(pid, None, "system", "self_healed",
+             {"summary": "fixed the blockers tab contrast", "fixed": ["#1 contrast"]})
+    bus.emit(0, None, "system", "canary_failed",
+             {"image": "x:2", "why": "CrashLoopBackOff"})
+    d = root_client.get("/api/self/healing").json()
+    kinds = [i["kind"] for i in d["items"]]
+    assert "self_healed" in kinds and "canary_failed" in kinds

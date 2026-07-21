@@ -785,6 +785,34 @@ def notify_status(request: Request) -> dict:
     return notify.status()
 
 
+@router.get("/api/self/healing")
+def self_healing(request: Request) -> dict:
+    """What the platform has fixed, tried and failed to fix, on its own.
+
+    Exists so "you were not asked about it" does not mean "you cannot find out
+    about it" — the whole bargain of routine autonomy is that it stays visible.
+    """
+    u = _root(request)
+    pid = selfops.ensure_project(u["id"])
+    kinds = {"self_healed": "healed", "canary_failed": "rejected a bad build",
+             "auto_update": "took a new version", "self_update": "took a new version",
+             "notified": "raised an issue", "digest_filed": "filed a sprint digest",
+             "rolled_back": "rolled back"}
+    items = []
+    for e in reversed(db.list_events(pid, limit=300) + db.list_events(0, limit=200)):
+        if e["kind"] not in kinds:
+            continue
+        try:
+            payload = db.json.loads(e["payload"])
+        except Exception:
+            payload = {"note": str(e["payload"])[:200]}
+        items.append({"kind": e["kind"], "what": kinds[e["kind"]],
+                      "at": e["ts"], "detail": payload})
+        if len(items) >= 40:
+            break
+    return {"items": items, "project_id": pid}
+
+
 @router.get("/api/self/instance")
 def self_instance(request: Request) -> dict:
     """What this instance is and whether it can ship a new version of itself."""

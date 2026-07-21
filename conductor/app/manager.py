@@ -702,6 +702,14 @@ def build_team_server(project_id: int):
                 return _text(nxt)
         db.set_project_status(project_id, s, args.get("summary", ""))
         bus.emit(project_id, None, "manager", "project_finished", {"status": s})
+        # A routine self-repair finishing is the thing the operator wanted to SEE
+        # without being asked about. Recorded distinctly so the Improve page can
+        # show "the platform fixed these itself" rather than burying it in a feed.
+        if s == "done" and (db.get_project(project_id) or {}).get("is_self"):
+            done = [t for t in db.list_tasks(project_id) if t["status"] == "done"]
+            bus.emit(project_id, None, "system", "self_healed",
+                     {"summary": args.get("summary", "")[:300],
+                      "fixed": [f"#{t['seq']} {t['title']}" for t in done[-5:]]})
         return _text(f"project marked {s}. You can stop now.")
 
     ask_impl["fn"] = ask_boss.handler

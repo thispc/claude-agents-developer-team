@@ -442,6 +442,43 @@ function renderCloudInstance(el, inst) {
   });
 }
 
+const HEAL_ICON = {
+  self_healed: "✅", canary_failed: "🛑", auto_update: "⬆️",
+  self_update: "⬆️", notified: "📣", digest_filed: "📋", rolled_back: "↩️",
+};
+
+async function renderHealing() {
+  const el = $("#healBody");
+  if (!el) return;
+  let d;
+  try { d = await api("/api/self/healing"); }
+  catch (e) { el.innerHTML = `<p class="empty">${escapeHtml(e.message || e)}</p>`; return; }
+  if (!(d.items || []).length) {
+    el.innerHTML = `<p class="hint">Nothing yet. Routine fixes will appear here as they
+      happen; a build that fails its trial run shows up too, so silence means nothing
+      went wrong rather than nothing was checked.</p>`;
+    return;
+  }
+  el.innerHTML = `<div class="heal-list">${d.items.map((i) => {
+    const x = i.detail || {};
+    // A rejected build is the most valuable line here: it is the platform
+    // declining to ship something to itself, which is easy to miss otherwise.
+    const bad = i.kind === "canary_failed";
+    const detail = x.summary || x.note || x.why || x.reason
+      || (x.to ? `now on ${String(x.to).split(":").pop()}` : "")
+      || (x.issue ? `issue #${x.issue}` : "");
+    const fixed = (x.fixed || []).length
+      ? `<ul class="heal-fixed">${x.fixed.map((f) => `<li>${escapeHtml(f)}</li>`).join("")}</ul>` : "";
+    return `<div class="heal ${bad ? "bad" : ""}">
+      <span class="heal-ico">${HEAL_ICON[i.kind] || "•"}</span>
+      <div><b>${escapeHtml(i.what)}</b>
+        <span class="hint">${ago(i.at)}</span>
+        ${detail ? `<div class="heal-detail">${escapeHtml(String(detail).slice(0, 220))}</div>` : ""}
+        ${fixed}</div>
+    </div>`;
+  }).join("")}</div>`;
+}
+
 async function renderEnvs() {
   const el = $("#envsBody");
   if (!el) return;
@@ -600,6 +637,7 @@ async function renderSandbox() {
       try { await api("/api/self/sandbox", { method: "DELETE" }); } catch (e) { toast(String(e.message || e)); }
       renderSandbox();
   renderEnvs();
+  renderHealing();
     });
     return;
   }
@@ -833,6 +871,14 @@ async function renderSelf() {
         runs the tests and opens a PR without stopping to ask. Nothing reaches the
         running app until you deploy it above.</p>
       </form>
+    </div>
+
+    <div class="self-card" id="healCard">
+      <h3>What the platform has done on its own</h3>
+      <p class="hint">Small fixes are made, verified and shipped without asking you.
+        They appear here so "you were not interrupted" never means "you cannot find
+        out" — including the builds it tried and rejected.</p>
+      <div id="healBody"><p class="hint">loading…</p></div>
     </div>
 
     <div class="self-card" id="envsCard">

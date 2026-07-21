@@ -96,6 +96,100 @@ def can_self_update() -> dict[str, Any]:
             "image": current_image(), "namespace": namespace() if in_cluster() else ""}
 
 
+CANARY = f"{DEPLOYMENT}-canary"
+CANARY_TIMEOUT = int(config._env("CANARY_TIMEOUT", "120"))
+
+
+def canary(image: str) -> dict[str, Any]:
+    """Prove an image can actually boot before making it the platform.
+
+    Kubernetes already protects against the worst case — a pod that never becomes
+    ready leaves the old one serving — but only *after* the rollout has begun, and
+    only for failures the readiness probe catches. An image that starts, passes a
+    health check and is subtly broken still replaces a working platform.
+
+    So the new image gets run first, beside the live one, as its own short-lived
+    Deployment with a scratch database and DEMO_MODE on. It is asked the same
+    question the readiness probe asks, and torn down either way. Nothing about the
+    running platform is touched: the canary has its own name, writes its database
+    to its own container filesystem (thrown away with the pod), and has no Service,
+    so nothing can route to it.
+    """
+    if not in_cluster():
+        return {"ok": False, "error": "not in a cluster"}
+    from kubernetes import client
+    api, core = _api(), client.CoreV1Api()
+    ns = namespace()
+    body = client.V1Deployment(
+        metadata=client.V1ObjectMeta(name=CANARY, namespace=ns,
+                                     labels={"app": CANARY, "devteam-canary": "true"}),
+        spec=client.V1DeploymentSpec(
+            replicas=1,
+            selector=client.V1LabelSelector(match_labels={"app": CANARY}),
+            template=client.V1PodTemplateSpec(
+                metadata=client.V1ObjectMeta(labels={"app": CANARY}),
+                spec=client.V1PodSpec(
+                    service_account_name=DEPLOYMENT,
+                    image_pull_secrets=[client.V1LocalObjectReference(name="docr-creds")],
+                    restart_policy="Always",
+                    containers=[client.V1Container(
+                        name="conductor", image=image,
+                        # A scratch database: a migration that destroys data does it
+                        # here, which is the entire reason for running this at all.
+                        env=[client.V1EnvVar(name="DB_PATH", value="/tmp/canary.db"),
+                             client.V1EnvVar(name="DEMO_MODE", value="1"),
+                             client.V1EnvVar(name="ROOT_USERNAME", value="root"),
+                             client.V1EnvVar(name="ROOT_PASSWORD", value="canary")],
+                        readiness_probe=client.V1Probe(
+                            http_get=client.V1HTTPGetAction(path="/api/health", port=8000),
+                            initial_delay_seconds=3, period_seconds=3),
+                    )]))))
+    _delete_canary()
+    try:
+        api.create_namespaced_deployment(ns, body)
+    except Exception as e:
+        return {"ok": False, "error": f"could not start the canary: {e}"}
+
+    import time as _t
+    deadline = _t.time() + CANARY_TIMEOUT
+    last = ""
+    while _t.time() < deadline:
+        _t.sleep(3)
+        try:
+            d = api.read_namespaced_deployment(CANARY, ns)
+            if (d.status.ready_replicas or 0) >= 1:
+                _delete_canary()
+                return {"ok": True, "note": "the new image booted and answered "
+                                            "/api/health on its own database"}
+            pods = core.list_namespaced_pod(ns, label_selector=f"app={CANARY}")
+            for p in pods.items:
+                for cs in (p.status.container_statuses or []):
+                    w = cs.state.waiting
+                    if w and w.reason:
+                        last = f"{w.reason}: {(w.message or '')[:160]}"
+                        # These never resolve by waiting; fail now rather than at
+                        # the timeout, so the reason is the real one.
+                        if w.reason in ("ImagePullBackOff", "ErrImagePull",
+                                        "CrashLoopBackOff", "CreateContainerError"):
+                            _delete_canary()
+                            return {"ok": False, "error": last}
+        except Exception as e:
+            last = str(e)[:160]
+    _delete_canary()
+    return {"ok": False, "error": f"the new image did not become ready within "
+                                  f"{CANARY_TIMEOUT}s. {last}"}
+
+
+def _delete_canary() -> None:
+    try:
+        from kubernetes import client
+        _api().delete_namespaced_deployment(
+            CANARY, namespace(),
+            body=client.V1DeleteOptions(propagation_policy="Foreground"))
+    except Exception:
+        pass          # already gone, which is the state we wanted anyway
+
+
 def self_update(image: str, force: bool = False) -> dict[str, Any]:
     """Point our own Deployment at `image`. Kubernetes then replaces this pod.
 
@@ -117,6 +211,18 @@ def self_update(image: str, force: bool = False) -> dict[str, Any]:
     previous = current_image()
     if image == previous:
         return {"ok": False, "error": "already running that image"}
+    # Prove it boots before it becomes the platform. Skipped only with force,
+    # which is for getting OUT of a bad state — where the canary would be a second
+    # thing to go wrong while the platform is already broken.
+    if not force:
+        c = canary(image)
+        if not c.get("ok"):
+            from . import bus
+            bus.emit(0, None, "system", "canary_failed",
+                     {"image": image, "why": c.get("error", "")})
+            return {"ok": False, "error": f"the new image did not pass a trial run, "
+                                          f"so it was not adopted: {c.get('error')}",
+                    "canary": c}
     try:
         _api().patch_namespaced_deployment(
             DEPLOYMENT, namespace(),

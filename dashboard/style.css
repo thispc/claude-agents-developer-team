@@ -1000,3 +1000,18 @@ pre.dim, .dim { color: var(--dim); }
 .triage.warn { color: var(--warn); background: var(--warn-soft); border-color: #f0d9a8; }
 .triage.bad  { color: var(--bad);  background: var(--bad-soft);  border-color: #f4c9c6; }
 .triage .why { display: block; margin-top: 4px; opacity: .85; font-size: 11.5px; }
+
+/* ---------- self-healing feed ---------- */
+/* The bargain of routine autonomy is that it stays visible: you are not asked,
+   but you can always find out. A rejected build matters most here — that is the
+   platform declining to ship something to itself. */
+.heal-list { display: flex; flex-direction: column; gap: 8px; max-height: 46vh;
+             overflow-y: auto; margin-top: 8px; }
+.heal { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px;
+        padding: 9px 11px; border-radius: 9px; background: var(--card-2);
+        border: 1px solid var(--line); border-left: 3px solid var(--good); }
+.heal.bad { border-left-color: var(--bad); background: var(--bad-soft); }
+.heal-ico { font-size: 13px; line-height: 1.4; flex: none; }
+.heal .hint { margin-left: 7px; }
+.heal-detail { color: var(--dim); margin-top: 3px; line-height: 1.5; }
+.heal-fixed { margin: 5px 0 0 14px; color: var(--dim); font-size: 11.5px; line-height: 1.6; }
