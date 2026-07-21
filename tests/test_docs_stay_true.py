@@ -18,8 +18,39 @@ import pytest
 pytestmark = pytest.mark.hostonly     # reads the repo, not the running image
 
 ROOT = Path(__file__).resolve().parent.parent
-HANDBOOK = (ROOT / "docs" / "HANDBOOK.md").read_text()
-ABOUT = (ROOT / "dashboard" / "index.html").read_text()
+
+
+# Read inside the tests, not at import.
+#
+# `hostonly` deselects these when the suite runs inside the image, but a marker
+# cannot save a module that fails to IMPORT — collection happens first, and
+# docs/ is not shipped in the image. Reading at module level took the whole run
+# down with a FileNotFoundError instead of quietly skipping 11 tests.
+def _read(*parts) -> str:
+    return (ROOT.joinpath(*parts)).read_text()
+
+
+class _Lazy:
+    """Reads on first use, so `HANDBOOK in ...` still looks like a string to every
+    test below while costing nothing at import time."""
+
+    def __init__(self, *parts):
+        self._parts = parts
+        self._text = None
+
+    def _load(self) -> str:
+        if self._text is None:
+            self._text = _read(*self._parts)
+        return self._text
+
+    def __contains__(self, other): return other in self._load()
+    def __str__(self): return self._load()
+    def lower(self): return self._load().lower()
+    def split(self, *a, **k): return self._load().split(*a, **k)
+
+
+HANDBOOK = _Lazy("docs", "HANDBOOK.md")
+ABOUT = _Lazy("dashboard", "index.html")
 
 
 # --- the gate --------------------------------------------------------------
@@ -30,7 +61,7 @@ def test_every_capability_is_findable_in_the_handbook():
     from app import capabilities
     missing = [f"{k} (looked for {v['doc_phrase']!r})"
                for k, v in capabilities.CAPABILITIES.items()
-               if v["doc_phrase"].lower() not in HANDBOOK.lower()]
+               if v["doc_phrase"].lower() not in str(HANDBOOK).lower()]
     assert not missing, "these capabilities are not documented:\n  " + "\n  ".join(missing)
 
 
@@ -79,14 +110,14 @@ def test_the_documented_autonomy_modes_are_the_ones_that_exist():
     assert real == {"supervised", "autonomous"}, real
 
     # The handbook's table, taken from the section that introduces the modes.
-    section = HANDBOOK.split("how much you are involved")[1].split("\n\n##")[0]
+    section = str(HANDBOOK).split("how much you are involved")[1].split("\n\n##")[0]
     rows = re.findall(r"^\|\s*\*?\*?([A-Za-z ]+?)\*?\*?\s*(?:\*\(default\)\*)?\s*\|",
                       section, re.M)
     documented = {r.strip().lower() for r in rows} - {"mode", "---"}
     assert documented == real, f"handbook documents {documented}, code has {real}"
 
     # The About page's table, marked with data-doc so it can be found reliably.
-    table = ABOUT.split('data-doc="autonomy-modes"')[1].split("</table>")[0]
+    table = str(ABOUT).split('data-doc="autonomy-modes"')[1].split("</table>")[0]
     labels = {m.lower() for m in re.findall(r"<td><b>([A-Za-z ]+)</b>", table)}
     assert labels == real, f"About page documents {labels}, code has {real}"
 
@@ -94,8 +125,8 @@ def test_the_documented_autonomy_modes_are_the_ones_that_exist():
 def test_the_two_places_that_document_modes_agree_with_each_other():
     """Two copies of the same table is two chances to be wrong. They must at
     least be wrong together."""
-    assert ("Supervised" in HANDBOOK) == ("Supervised" in ABOUT)
-    assert ("Autonomous" in HANDBOOK) == ("Autonomous" in ABOUT)
+    assert ("Supervised" in str(HANDBOOK)) == ("Supervised" in str(ABOUT))
+    assert ("Autonomous" in str(HANDBOOK)) == ("Autonomous" in str(ABOUT))
 
 
 def test_contests_are_documented_as_optional_because_they_are_off_by_default():
@@ -103,7 +134,7 @@ def test_contests_are_documented_as_optional_because_they_are_off_by_default():
     never arrives."""
     from app import db
     assert "compete INTEGER NOT NULL DEFAULT 0" in db.SCHEMA
-    assert "used sparingly" in HANDBOOK.lower() or "optional" in HANDBOOK.lower()
+    assert "used sparingly" in str(HANDBOOK).lower() or "optional" in str(HANDBOOK).lower()
 
 
 def test_the_escalation_ladder_in_the_docs_is_the_real_one():
@@ -116,6 +147,19 @@ def test_the_escalation_ladder_in_the_docs_is_the_real_one():
 def test_no_claim_that_workers_are_containerised():
     """LAUNCHER=local is what runs, so workers are subprocesses sharing the
     conductor's container. Claiming otherwise reads as a security guarantee."""
-    for doc in (HANDBOOK, ABOUT):
+    for doc in (str(HANDBOOK), str(ABOUT)):
         assert "boxed into an isolated container" not in doc
         assert "separate" in doc and "process" in doc
+
+
+def test_this_module_imports_without_the_docs_present():
+    """`hostonly` deselects these inside the image, but a marker cannot save a
+    module that fails to IMPORT — collection happens first. Reading docs/ at
+    module level took the whole in-pod run down with a FileNotFoundError instead
+    of quietly skipping eleven tests, which is how a green gate becomes a red one
+    for a reason that has nothing to do with the build."""
+    import ast
+    src = (Path(__file__)).read_text()
+    module_level = [ast.unparse(n) for n in ast.parse(src).body
+                    if isinstance(n, ast.Assign) and "read_text()" in ast.unparse(n)]
+    assert not module_level, f"these run at import time: {module_level}"
