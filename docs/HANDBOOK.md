@@ -175,7 +175,7 @@ is not.
 
 ### The API, in families
 
-An *API* is the list of requests a program will answer. There are 108; the
+An *API* is the list of requests a program will answer. There are 109; the
 dashboard uses them for you.
 
 | Family | Example | For |
@@ -332,6 +332,31 @@ and a checkpoint is a better place to intervene than the middle of a task.
 Those three decisions are singled out because they are dangerous precisely when
 made smoothly — a confident manager makes each of them without hesitating, and
 each produces a result that looks like success.
+
+### How good does it have to be?
+
+Every default in this platform leans the same way — cheap models, contests off,
+one reviewer, and planning guidance that says build the smallest thing that runs.
+Each is defensible alone. Together they make a machine tuned to finish quickly,
+and nothing ever asks for more than that.
+
+So there is one more choice, and it is the one that was missing:
+
+| Setting | What it means |
+|---|---|
+| **Draft** | Fastest and cheapest. The smallest thing that shows the idea. Rough is fine. |
+| **Standard** *(default)* | Work you would be comfortable showing someone. |
+| **Exacting** | Time is not the constraint. Expect it to take much longer and cost considerably more. |
+
+**Exacting** is not just "use a better model". It changes how the work is
+planned: one task per meaningful piece rather than one per deliverable, the
+unglamorous parts planned in rather than discovered later, a real test command
+created before the work it protects, rival attempts on the pieces where approach
+matters, more than one person reading each result, and explicit instruction not
+to accept a first attempt merely because it works. Work also starts on the
+stronger model rather than arriving there after a failed cheap attempt — at this
+setting a cheap first try is not a saving, because the failure costs a full run
+and so does the retry.
 
 ### Changing your mind about the manager
 

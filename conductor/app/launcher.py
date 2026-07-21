@@ -14,7 +14,7 @@ import signal
 import subprocess
 import sys
 
-from . import config, db, bus, team, tuning
+from . import ambition, config, db, bus, team, tuning
 
 
 def owner_credentials(project: dict) -> dict[str, str]:
@@ -305,7 +305,11 @@ def pick_model(task: dict, project: dict | None = None, agent: dict | None = Non
         for m in FALLBACK_ORDER:
             if m != prev and not cooldown_left(m):
                 return m
-    if task["attempts"] >= 2:
+    # How many failures before spending a bigger model. At the exacting setting
+    # this is 1, because there a cheap first attempt is not a saving: the failure
+    # costs a full run, and so does the retry.
+    if task["attempts"] >= int(ambition.get(project, "escalate_after_attempts",
+                                            int(tuning.get("escalate_after_attempts")))):
         # Escalate RELATIVE to whatever just failed. Returning a fixed model made
         # this a no-op whenever the recruited roster had already assigned that
         # model: the mars-rover run "escalated" sonnet-5 to sonnet-5, spending a
@@ -327,6 +331,11 @@ def pick_model(task: dict, project: dict | None = None, agent: dict | None = Non
         for member in json.loads(project.get("team") or "[]"):
             if canon_role(member.get("role", "")) == want and member.get("model"):
                 return config._resolve_model(member["model"])
+    # Where the work STARTS, before anything has failed. An exacting project
+    # begins on the stronger tier rather than arriving there via a wasted attempt.
+    tier = ambition.worker_tier(project)
+    if tier:
+        return config._resolve_model(tier)
     role = config.roles_by_name().get(task["role"])
     return role["model"] if role else config.WORKER_MODEL
 

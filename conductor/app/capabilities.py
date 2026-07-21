@@ -54,6 +54,10 @@ CAPABILITIES: dict[str, dict[str, str]] = {
         "what": "How much the manager decides without asking",
         "doc_phrase": "how much you are involved",
     },
+    "ambition": {
+        "what": "Whether time or quality is the constraint on this project",
+        "doc_phrase": "How good does it have to be",
+    },
     "manager_interview": {
         "what": "The manager asks about the brief before planning it",
         "doc_phrase": "before it plans",

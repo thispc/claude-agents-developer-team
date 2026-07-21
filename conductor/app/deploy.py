@@ -42,7 +42,12 @@ from typing import Any
 
 from . import bus, config, db, provider, rollout
 
-DEPLOY_DIR = Path(config._env("DEPLOY_DIR", str(config.ROOT / "deployments")))
+# Next to the workspaces, which means ON THE VOLUME in a container. It used to
+# default under the repo root — /app/deployments — which is ephemeral: every
+# rollout destroyed each project's checkout and running app while the database
+# still recorded a live deployment.
+DEPLOY_DIR = Path(config._env(
+    "DEPLOY_DIR", str(config.WORKSPACES_DIR.parent / "deployments")))
 PORT_RANGE_START = int(config._env("DEPLOY_PORT_START", "8600"))
 BUILD_TIMEOUT = int(config._env("DEPLOY_BUILD_TIMEOUT", "600"))
 BOOT_TIMEOUT = int(config._env("DEPLOY_BOOT_TIMEOUT", "90"))
@@ -270,6 +275,17 @@ async def sync_from_workspace(project_id: int, workspace: str) -> tuple[bool, st
 
 async def sync_code(project_id: int, branch: str = "") -> tuple[bool, str]:
     """Fresh checkout of the default branch, or of `branch` for a preview."""
+    return checkout(project_id, branch)
+
+
+def checkout(project_id: int, branch: str = "") -> tuple[bool, str]:
+    """The same thing, callable from synchronous code.
+
+    `sync_code` was async and never awaited anything — it is subprocess all the
+    way down — which meant `status()` could not refresh a checkout before
+    detecting from it. That is how a project stayed undeployable against a
+    snapshot taken before its own code was merged.
+    """
     from . import github_client
 
     project = db.get_project(project_id)
@@ -818,10 +834,49 @@ def _generated_dockerfile(spec: dict) -> str:
             f"CMD [\"/bin/sh\", \"-c\", \"{spec['run'].replace('$PORT', '8080')}\"]\n")
 
 
+# How stale a checkout may be before "what would happen if you deployed" is
+# answered from it again.
+DETECT_TTL = 120
+
+
+def _refresh(project_id: int, branch: str = "") -> None:
+    """Re-clone before answering what this project looks like.
+
+    Detection used to run against whatever checkout happened to be on disk from
+    the last deploy attempt, and nothing ever refreshed it. On a real run that
+    meant a game was declared undeployable forever: the clone was taken while the
+    programmer's pull request was still open, so it held art and helper scripts
+    and no entrypoint, and the answer "could not work out how to start this" was
+    frozen against a repository that had gained an index.html twenty minutes
+    later.
+
+    Throttled because this is a polled endpoint and a fetch per poll would be a
+    git request every few seconds per open dashboard. Failures are swallowed: an
+    unreachable remote should leave the previous answer standing, not replace a
+    usable one with an error.
+    """
+    root = workdir(project_id, branch)
+    marker = _base(project_id, branch) / ".detected"
+    fresh = marker.exists() and (time.time() - marker.stat().st_mtime) < DETECT_TTL
+    if root.exists() and fresh:
+        return
+    p = db.get_project(project_id)
+    if not p or not p.get("repo"):
+        return
+    try:
+        ok, _note = checkout(project_id, branch)
+        if ok:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.touch()
+    except Exception:
+        pass      # keep whatever we had rather than losing a working answer
+
+
 def status(project_id: int, branch: str = "") -> dict[str, Any]:
     """What is deployed right now, and what would happen if you deployed."""
     slot = _slot(project_id, branch)
     root = workdir(project_id, branch)
+    _refresh(project_id, branch)
     spec = detect(root) if root.exists() else None
     r = RUNNING.get(slot) or _adopt(project_id, branch)
     live = None

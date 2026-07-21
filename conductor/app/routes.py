@@ -7,7 +7,8 @@ from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSoc
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from . import (artifacts, auth, blockers, bus, cloud, config, credcheck, db, deploy,
+from . import (ambition, artifacts, auth, blockers, bus, cloud, config, credcheck,
+               db, deploy,
                envs, feedback, findings, github_client, launcher, manager, metrics,
                notify, planner, preview, process, providers, roundtable, sandbox,
                scheduler, selfops, team, triage, tuning, upkeep)
@@ -42,6 +43,9 @@ class NewProject(BaseModel):
     # doing badly — planning in one pass with dependencies wired by role is
     # waterfall in everything but name, and it was never a choice anyone made.
     process: str = ""
+    # draft | standard | exacting. The one input the boss never had: whether time
+    # or quality is the constraint on this particular piece of work.
+    ambition: str = ""
 
 
 class BriefOnly(BaseModel):
@@ -856,6 +860,15 @@ async def run_upkeep(request: Request, force: bool = False) -> dict:
     return await upkeep.run_once(force=force)
 
 
+@router.get("/api/how-to-work")
+def how_to_work(request: Request) -> dict:
+    """The two choices that shape a project: how work is split, and whether time
+    or quality is the constraint. Served rather than hardcoded in the page so the
+    trade each one makes is stated in one place."""
+    current_user(request)
+    return {"process": process.catalog(), "ambition": ambition.catalog()}
+
+
 @router.get("/api/tuning")
 def get_tuning(request: Request) -> dict:
     """The orchestration knobs, with where each current value came from."""
@@ -1315,8 +1328,9 @@ async def create_project(body: NewProject, request: Request) -> dict:
         owner_id=(owner["id"] if owner else 0),
         sprints=sprints,
     )
-    db._execute("UPDATE projects SET process=? WHERE id=?",
-                (process.normalise(body.process), project_id))
+    db._execute("UPDATE projects SET process=?, ambition=? WHERE id=?",
+                (process.normalise(body.process),
+                 ambition.normalise(body.ambition), project_id))
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
     team.hire(project_id, roster)
     if scaled:

@@ -464,3 +464,55 @@ def test_the_preview_route_refuses_a_branch_git_would_misread(root_client):
     p = make_project(owner_id=1)
     r = root_client.post(f"/api/projects/{p}/previews", params={"branch": "-x"})
     assert r.status_code == 400
+
+
+def test_deploy_detection_does_not_answer_from_a_stale_checkout(fresh_db, monkeypatch):
+    """A real run left a game permanently undeployable. The checkout was taken
+    while the programmer's pull request was still open, so it held art and helper
+    scripts and no entrypoint — and "could not work out how to start this" was
+    then frozen against a repository that gained an index.html twenty minutes
+    later, because nothing ever re-cloned."""
+    from app import deploy
+    calls = []
+    monkeypatch.setattr(deploy, "checkout",
+                        lambda pid, branch="": (calls.append(pid), (True, "ok"))[1])
+    pid = make_project(name="d1", repo="o/r")
+    deploy.status(pid)
+    assert calls, "status() detected without refreshing the checkout"
+
+
+def test_the_refresh_is_throttled(fresh_db, monkeypatch):
+    """It is a polled endpoint. A fetch per poll is a git request every few
+    seconds for every open dashboard."""
+    from app import deploy
+    calls = []
+    monkeypatch.setattr(deploy, "checkout",
+                        lambda pid, branch="": (calls.append(pid), (True, "ok"))[1])
+    pid = make_project(name="d2", repo="o/r")
+    deploy.workdir(pid).mkdir(parents=True, exist_ok=True)
+    # Project ids restart with each fresh database but DEPLOY_DIR does not, so an
+    # earlier test's freshness marker for the same id would throttle this one and
+    # the assertion would pass for the wrong reason.
+    (deploy._base(pid) / ".detected").unlink(missing_ok=True)
+    deploy.status(pid)
+    deploy.status(pid)
+    assert len(calls) == 1, f"refreshed {len(calls)} times for two polls"
+
+
+def test_an_unreachable_remote_keeps_the_previous_answer(fresh_db, monkeypatch):
+    """Replacing a usable answer with an error because the network blipped is
+    worse than showing a slightly old one."""
+    from app import deploy
+    def boom(pid, branch=""):
+        raise RuntimeError("no route to host")
+    monkeypatch.setattr(deploy, "checkout", boom)
+    pid = make_project(name="d3", repo="o/r")
+    deploy.status(pid)      # must not raise
+
+
+def test_deployments_live_beside_the_workspaces_not_in_the_image(fresh_db):
+    """DEPLOY_DIR defaulted under the repo root — /app in a container — which is
+    ephemeral. Every rollout destroyed each project's checkout and running app
+    while the database still recorded a live deployment."""
+    from app import config, deploy
+    assert deploy.DEPLOY_DIR.parent == config.WORKSPACES_DIR.parent

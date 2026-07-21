@@ -278,6 +278,7 @@ def init() -> None:
         "ALTER TABLE projects ADD COLUMN process TEXT NOT NULL DEFAULT 'agile'",
         "ALTER TABLE projects ADD COLUMN profile TEXT NOT NULL DEFAULT 'default'",
         "ALTER TABLE inbox ADD COLUMN topic TEXT NOT NULL DEFAULT 'decision'",
+        "ALTER TABLE projects ADD COLUMN ambition TEXT NOT NULL DEFAULT 'standard'",
         # roundtables/seats/turns are created by SCHEMA above (CREATE TABLE IF NOT
         # EXISTS), so existing databases pick them up without a migration here.
     ):

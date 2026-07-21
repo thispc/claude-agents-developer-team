@@ -22,8 +22,8 @@ from claude_agent_sdk import (
     tool,
 )
 
-from . import (bus, config, db, github_client, interview, process, review,
-               scheduler, team, tuning)
+from . import (ambition, bus, config, db, github_client, interview, process,
+               review, scheduler, team, tuning)
 
 
 def role_catalog_text(project: dict) -> str:
@@ -248,7 +248,9 @@ def build_team_server(project_id: int):
                                      origin=origin)
             compete = item.get("compete")
             if isinstance(compete, int) and compete > 1:
-                db.update_task(task_id, compete=min(compete, int(tuning.get("contest_max_width"))))
+                width = ambition.get(project(), "contest_max_width",
+                                     int(tuning.get("contest_max_width")))
+                db.update_task(task_id, compete=min(compete, width))
             created_ids.append(task_id)
         for item, task_id in zip(items, created_ids):
             if task_id is None:
@@ -1077,6 +1079,7 @@ async def run_manager(project_id: int) -> None:
         f"{role_catalog_text(project)}\n"
         f"{roster_text}\n"
         f"{process.guidance(project)}\n"
+        f"{ambition.guidance(project)}\n"
         f"{verification_brief(project)}\n"
         f"Brief from the user:\n{project['brief']}\n\n"
         "Plan the work, run your team, and ship it. This may be a restarted session: "

@@ -3480,6 +3480,10 @@ $("#newProjectForm").addEventListener("submit", async (ev) => {
         manager_model: f.get("manager_model") || "",
         manager_persona: f.get("manager_persona") || "",
         sprints: Number(f.get("sprints")) || 1,
+        // Whether time or quality is the constraint. Sent explicitly rather than
+        // relying on the server default, so the form is the single source of what
+        // was chosen.
+        ambition: f.get("ambition") || "standard",
       }),
     });
     dialog.close();

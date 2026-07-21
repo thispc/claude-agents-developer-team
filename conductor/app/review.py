@@ -33,7 +33,7 @@ import asyncio
 import json
 from typing import Any
 
-from . import bus, db, providers, team, tuning
+from . import ambition, bus, db, providers, team, tuning
 
 # Reviews are read, not written. A long review is a worse review — the manager has
 # to act on it, and a page of prose per reviewer turns a decision into homework.
@@ -142,7 +142,8 @@ async def panel(project_id: int, task: dict, settings: dict,
     gives it something it could not have worked out by reading the report alone.
     """
     if size is None:
-        size = int(tuning.get("review_panel_size"))
+        size = int(ambition.get(db.get_project(project_id), "review_panel_size",
+                                int(tuning.get("review_panel_size"))))
     chosen = reviewers(project_id, task, size)
     if not chosen:
         return {"reviews": [], "note": "nobody else on this project to ask"}
