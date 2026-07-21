@@ -22,7 +22,7 @@ from claude_agent_sdk import (
     tool,
 )
 
-from . import bus, config, db, github_client, scheduler
+from . import bus, config, db, github_client, review, scheduler, team, tuning
 
 
 def role_catalog_text(project: dict) -> str:
@@ -101,6 +101,31 @@ def _with_evidence(t: dict, body: str) -> str:
                 f"code, not the prose.{detail}\n--- output (tail) ---\n"
                 f"{(v.get('output') or '')[-1500:]}")
     return f"{head}\n\n=== the worker's own report ===\n{body}"
+
+
+def sprint_review_prompt(project_id: int, sprint_no: int) -> tuple[str, list[str]]:
+    """What to ask the boss at the end of a sprint, and the answers to offer.
+
+    A digest filed as a GitHub issue tells the boss what happened. It does not ask
+    them anything, so a run of six sprints was six unilateral decisions with a
+    receipt after each one. The point of a sprint boundary is that it is the
+    cheapest moment to change direction — the next sprint has not been planned yet,
+    so redirecting costs nothing, whereas the same correction three sprints later
+    means discarding built work.
+    """
+    tasks = [t for t in db.list_tasks(project_id) if t["sprint"] == sprint_no]
+    done = [t for t in tasks if t["status"] == "done"]
+    failed = [t for t in tasks if t["status"] == "failed"]
+    shipped = "; ".join(f"#{t['seq']} {t['title']}" for t in done[:10]) or "nothing"
+    note = f" {len(failed)} task(s) failed." if failed else ""
+    return (
+        f"Sprint {sprint_no} is done. Shipped: {shipped}.{note}\n\n"
+        f"I am about to plan the next sprint. Anything you want changed, dropped, "
+        f"or prioritised before I do?",
+        ["Carry on — you decide the next sprint",
+         "I have notes, let me type them",
+         "Stop here, this is enough"],
+    )
 
 
 def sprint_gate(project_id: int, summary: str = "") -> str:
@@ -268,7 +293,18 @@ def build_team_server(project_id: int):
             usage = (f"agent runs used={p.get('runs_used', 0)}/{p.get('max_runs', 40)} "
                      "(no monetary cost — this project runs on a flat-rate subscription)")
         head = f"project '{p.get('name')}' status={p.get('status')} {usage}"
-        return _text("\n".join([head] + [_task_line(t) for t in tasks]))
+        # Idle capacity, because you are the only part of the system that can do
+        # anything about it. The scheduler cannot invent work — two agents on one
+        # branch collide — so unused slots stay unused until you widen the plan.
+        cap = scheduler.idle_capacity(project_id, p)
+        lines = [head]
+        if cap["free_slots"] and any(t["status"] == "planned" for t in tasks) is False:
+            who = ", ".join(f"{a['name']} ({a['role']})" for a in cap["idle"]) or "nobody named"
+            lines.append(
+                f"CAPACITY: {cap['free_slots']} worker slot(s) free and {who} idle, with "
+                f"nothing planned to give them. If there is genuinely independent work "
+                f"left in this sprint, add_tasks now rather than letting the slots idle.")
+        return _text("\n".join(lines + [_task_line(t) for t in tasks]))
 
     @tool("wait", "Sleep until a task needs your attention — a worker finished (PR opened "
           "or failure) — or timeout_seconds elapses. Returns updated task statuses. "
@@ -399,6 +435,48 @@ def build_team_server(project_id: int):
                 f"An unattended run must keep moving.")
         return _text(f"No answer within {mins} minutes; use your best judgment and proceed.")
 
+    async def _sprint_checkin(sprint_no: int) -> str:
+        """Offer the boss the wheel at a sprint boundary — without stopping for it.
+
+        This deliberately does not go through _escalate. Those are safety gates:
+        accepting undelivered work, merging past a red build. Blocking for an hour
+        is the right behaviour there, because proceeding wrongly is worse than not
+        proceeding at all. A sprint review is the opposite — it is a courtesy, and
+        a courtesy that stalls an unattended overnight run for an hour per sprint
+        has destroyed the thing the boss actually asked for.
+
+        So the question is posted and the manager carries on. The answer is not
+        lost: whatever the boss types becomes a directive, and directives are
+        consumed at the manager's next decision point anyway. Set
+        `sprint_checkin_seconds` above zero to make it genuinely wait.
+        """
+        q, options = sprint_review_prompt(project_id, sprint_no)
+        wait = int(tuning.get("sprint_checkin_seconds"))
+        qid = db.ask_question(project_id, q, options)
+        bus.emit(project_id, None, "manager", "sprint_checkin",
+                 {"sprint": sprint_no, "blocking_for": wait})
+        deadline = time.time() + wait
+        while time.time() < deadline:
+            row = db.get_question(qid)
+            if row and row["status"] == "answered":
+                break
+            await asyncio.sleep(2)
+        row = db.get_question(qid)
+        ans = (row or {}).get("answer") or ""
+        if not ans:
+            # Left on the board rather than abandoned: the boss may answer during
+            # the next sprint, and it is still worth reading when they do.
+            return ""
+        low = ans.lower()
+        if "stop" in low or "enough" in low:
+            db.set_sprints(project_id, sprint_no)
+            bus.emit(project_id, None, "boss", "sprints_ended_early", {"after": sprint_no})
+            return ""
+        if "carry on" in low:
+            return ""
+        return (f"\n\nYOUR BOSS'S NOTES ON THE LAST SPRINT — these outrank your own "
+                f"judgement about what comes next:\n{ans}")
+
     ask_impl: dict = {}      # filled once ask_boss exists; swappable in tests
 
     async def _escalate(kind: str, question: str, options: list[str]) -> str | None:
@@ -471,6 +549,74 @@ def build_team_server(project_id: int):
                 lines.append((r["report"] or "(no report)")[:1500])
             return _text("\n".join(lines))
         return _text(_with_evidence(t, t["report"] or "(no report yet)"))
+
+    @tool("plan_sprints", "Set how many delivery cycles this project needs, once you "
+          "understand the brief. Do this early: the boss's number was a guess before "
+          "anyone looked at the work. Lowering it below the sprint you are on is "
+          "refused. Say why in `reason` — it is shown to the boss.",
+          {"sprints": int, "reason": str})
+    async def plan_sprints(args: dict[str, Any]) -> dict[str, Any]:
+        """The boss picks a sprint count at project creation, before a single line
+        has been read. That is the worst-informed moment in the project's life to
+        be making the call, and the manager is the only party that ever learns
+        enough to correct it."""
+        p = project()
+        want = max(1, min(20, int(args.get("sprints") or 1)))
+        current = p.get("sprint", 1)
+        if want < current:
+            return _text(f"error: you are already in sprint {current}; you cannot plan "
+                         f"fewer than that. Finish, or set {current} to make this the last.")
+        was = p.get("sprints", 1)
+        if want == was:
+            return _text(f"already set to {was} sprint(s); nothing changed.")
+        db.set_sprints(project_id, want)
+        bus.emit(project_id, None, "manager", "sprints_replanned",
+                 {"from": was, "to": want, "reason": (args.get("reason") or "")[:300]})
+        return _text(f"sprints changed from {was} to {want}. Reason recorded for the boss.")
+
+    @tool("discuss_work", "Ask your team what they think of a finished task before you "
+          "decide. They review independently and you get the split, including anyone who "
+          "disagrees. Worth it on anything substantial; skip it on trivial work.",
+          {"task_id": int})
+    async def discuss_work(args: dict[str, Any]) -> dict[str, Any]:
+        """Aggregating several independent readings is where multi-agent review
+        earns its cost — worth several times more than adding diversity for its
+        own sake. Running rival implementations and then having one person skim
+        the winner spends the money on the part that pays least."""
+        t = db.resolve_task(project_id, int(args["task_id"]))
+        if not t:
+            return _text("error: no such task")
+        if not (t.get("report") or "").strip():
+            return _text("error: there is nothing to review yet — that task has not "
+                         "reported.")
+        from . import auth as auth_mod
+        owner = auth_mod.get_user(project().get("owner_id") or 0)
+        settings = auth_mod.get_settings(owner) if owner else {}
+        result = await review.panel(project_id, t, settings)
+        return _text(review.summarise(result))
+
+    @tool("coach_teammate", "Change how one of your team members works — their standing "
+          "instructions, not a task. Use when someone keeps making the same class of "
+          "mistake, or when the work turns out to need a different temperament than you "
+          "hired for. Takes effect on their NEXT task, not the one they are on now.",
+          {"name": str, "persona": str})
+    async def coach_teammate(args: dict[str, Any]) -> dict[str, Any]:
+        """Persona changes belong to whoever is watching the work, and that is the
+        manager far more often than the boss. Restricted to standing instructions
+        on purpose: per-task direction already has request_changes, and a manager
+        that could rewrite someone's character to push one task through would be
+        editing the record of why the work turned out as it did."""
+        who = (args.get("name") or "").strip()
+        people = db.list_agents(project_id)
+        match = next((a for a in people if a["name"].lower() == who.lower()), None)
+        if not match:
+            names = ", ".join(a["name"] for a in people) or "nobody yet"
+            return _text(f"error: no teammate called '{who}'. Your team: {names}")
+        team.set_persona(match["id"], args.get("persona", ""))
+        bus.emit(project_id, None, "manager", "coached",
+                 {"name": match["name"], "role": match["role"]})
+        return _text(f"{match['name']} ({match['role']}) briefed. It applies from their "
+                     f"next task — the one they are on now already has its instructions.")
 
     @tool("request_changes", "Send a task back to its team member with specific feedback. "
           "The scheduler re-runs it on the same branch automatically. After 2 failed "
@@ -624,6 +770,7 @@ def build_team_server(project_id: int):
                 return _text(f"Held at your request: {ans}. Task #{t['seq']} left as is.")
         db.update_task(t["id"], status="done")
         db.judge_run(t["id"], "accepted", "accepted by the manager")
+        team.release(t, t.get("report") or "", accepted=True)
         bus.emit(project_id, t["id"], "manager", "task_accepted",
                  {"verdict": args.get("verdict", "")})
         scheduler.ensure(project_id)   # accepting unblocks dependents; wake the loop
@@ -708,9 +855,16 @@ def build_team_server(project_id: int):
                     "accept_task/merge_pr, or finish with status 'failed' and explain.")
             # A finished sprint is not a finished product. If cycles remain, the boss
             # asked for iteration, not for one pass — so keep going without them.
+            # The cheapest moment to change direction is right here: the next
+            # sprint is not planned yet, so a correction costs nothing, while the
+            # same correction three sprints later means discarding built work.
+            steer = ""
+            p = project()
+            if p.get("sprint", 1) < p.get("sprints", 1):
+                steer = await _sprint_checkin(p.get("sprint", 1))
             nxt = sprint_gate(project_id, args.get("summary", ""))
             if nxt:
-                return _text(nxt)
+                return _text(nxt + steer)
         db.set_project_status(project_id, s, args.get("summary", ""))
         bus.emit(project_id, None, "manager", "project_finished", {"status": s})
         # A routine self-repair finishing is the thing the operator wanted to SEE
@@ -729,7 +883,8 @@ def build_team_server(project_id: int):
         name="team", version="1.0.0",
         tools=[create_tasks, add_tasks, status, wait, ask_boss, reply_to_boss, get_report,
                request_changes, reassign_task, compare_work, pick_winner,
-               accept_task, merge_pr, finish],
+               accept_task, merge_pr, coach_teammate, discuss_work,
+               plan_sprints, finish],
     )
     # Testing seam. This must NOT live on the returned dict: that dict is handed to
     # the SDK, which serialises the server config to JSON for the CLI subprocess —
@@ -739,7 +894,8 @@ def build_team_server(project_id: int):
         "handlers": {t.name: t.handler for t in
                      (create_tasks, add_tasks, status, wait, ask_boss, reply_to_boss,
                       get_report, request_changes, reassign_task, compare_work,
-                      pick_winner, accept_task, merge_pr, finish)},
+                      pick_winner, accept_task, merge_pr, coach_teammate,
+                      discuss_work, plan_sprints, finish)},
         "escalate": _escalate,
         "ask_impl": ask_impl,
     }
@@ -749,7 +905,8 @@ def build_team_server(project_id: int):
 MANAGER_TOOLS = [f"mcp__team__{n}" for n in
                  ("create_tasks", "add_tasks", "status", "wait", "ask_boss",
                   "reply_to_boss", "get_report", "request_changes", "reassign_task",
-                  "compare_work", "pick_winner", "accept_task", "merge_pr", "finish")]
+                  "compare_work", "pick_winner", "accept_task", "merge_pr",
+                  "coach_teammate", "discuss_work", "plan_sprints", "finish")]
 
 BUILTIN_TOOLS_OFF = ["Bash", "Read", "Write", "Edit", "Glob", "Grep",
                      "WebSearch", "WebFetch", "Task", "NotebookEdit", "TodoWrite"]
@@ -768,9 +925,14 @@ async def run_manager(project_id: int) -> None:
     roster = json.loads(project.get("team") or "[]")
     roster_text = ""
     if roster:
-        lines = ", ".join(f"{m['count']}× {m['role']}" for m in roster)
+        # Name the people where there are people to name. A manager told "2×
+        # backend" can only address the role; a manager told "Priya and Marco are
+        # your backend engineers" can send work back to whoever actually wrote it,
+        # which is the difference between review and re-assignment.
+        named = team.roster_text(project_id)
+        lines = named or ", ".join(f"{m['count']}× {m['role']}" for m in roster)
         roster_text = (
-            f"\nThe boss recruited this starting team: {lines}.\n"
+            f"\nThe boss recruited this starting team:\n{lines}\n"
             "Plan around this headcount: create tasks for these roles, and when a role has a "
             "count > 1 and the work genuinely splits into independent parallel pieces, create "
             "that many tasks for it (wired with no mutual dependency so they run in parallel). "

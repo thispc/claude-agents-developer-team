@@ -230,7 +230,7 @@ async def sync_code(project_id: int) -> tuple[bool, str]:
     if not github_client.enabled(project["repo"]):
         return False, "GitHub is not configured, so the code can't be fetched"
     dest = workdir(project_id)
-    url = f"https://x-access-token:{config.GITHUB_TOKEN}@github.com/{project['repo']}.git"
+    url = github_client.clone_url(project["repo"], config.GITHUB_TOKEN)
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)

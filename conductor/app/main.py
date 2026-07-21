@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, bus, config, db, launcher, manager, scheduler
+from . import auth, bus, config, db, findings, launcher, manager, scheduler, upkeep
 from .routes import router, _manager_tasks
 
 
@@ -15,7 +15,8 @@ STARTED_AT = time.time()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
-    auth.init()   # seeds the root superuser from .env on first run
+    auth.init()       # seeds the root superuser from .env on first run
+    findings.init()
     loop = asyncio.get_event_loop()
     bus.set_loop(loop)
     config.WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,6 +59,10 @@ async def lifespan(app: FastAPI):
     from . import cloud
     if cloud.in_cluster():
         loop.create_task(cloud.watch())
+    # Look at what went wrong, on a schedule, without being asked. Self-repair that
+    # only runs when a human notices something is broken is not self-repair — the
+    # value of the loop is entirely in the part nobody is present for.
+    loop.create_task(upkeep.loop())
     yield
 
 

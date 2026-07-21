@@ -57,8 +57,7 @@ async def sync(project_id: int) -> tuple[bool, str]:
     if not github_client.enabled(repo):
         return False, "GitHub not configured"
     dest = PREVIEW_DIR / str(project_id) / "repo"
-    token = config.GITHUB_TOKEN
-    url = f"https://x-access-token:{token}@github.com/{repo}.git"
+    url = github_client.clone_url(repo, config.GITHUB_TOKEN)
 
     def _do() -> tuple[bool, str]:
         if dest.exists():

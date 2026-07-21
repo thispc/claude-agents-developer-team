@@ -14,7 +14,7 @@ import signal
 import subprocess
 import sys
 
-from . import config, db, bus, tuning
+from . import config, db, bus, team, tuning
 
 
 def owner_credentials(project: dict) -> dict[str, str]:
@@ -118,8 +118,13 @@ def prior_attempt(task: dict) -> str:
 
 def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
     auth = owner_credentials(project)
+    agent = db.get_agent(task["agent_id"]) if task.get("agent_id") else None
     return {
         **auth,
+        # Who this is. Empty for projects created before teammates existed, and the
+        # worker treats empty as "no persona", so those keep behaving as they did.
+        "AGENT_NAME": (agent or {}).get("name", ""),
+        "AGENT_CONTEXT": team.system_addendum(agent),
         "HANDOFF_CONTEXT": handoff_context(task),
         "CONDUCTOR_URL": config.CONDUCTOR_URL,
         "WORKER_TOKEN": config.WORKER_TOKEN,
@@ -130,6 +135,11 @@ def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
         "TASK_DESCRIPTION": task["description"],
         "TASK_FEEDBACK": task.get("feedback", ""),
         "PRIOR_ATTEMPT": prior_attempt(task),
+        # What the last attempt's checks concluded, so a retry over an unchanged
+        # commit does not pay to re-derive the same green result. Only ever reused
+        # when it PASSED and the commit still matches — see run_verification.
+        "PRIOR_VERIFICATION": (task.get("verification") or ""
+                               if tuning.get("reuse_verification") else ""),
         "BRANCH": task["branch"],
         "REPO": project["repo"],
         "GITHUB_TOKEN": owner_github_token(project),
@@ -404,15 +414,37 @@ def kill_project(project_id: int, reason: str) -> list[str]:
     return notes
 
 
-def prune_workspaces(keep: int = 8) -> int:
-    """Delete old per-attempt worker clones, keeping the most recent `keep`.
+def _dir_bytes(path) -> int:
+    """What a clone actually costs on the volume.
+
+    Files that vanish mid-walk (a worker finishing at the same moment) are skipped
+    rather than raised on: an approximate size is fine here, and a pruner that dies
+    on a race is not.
+    """
+    total = 0
+    for p in path.rglob("*"):
+        try:
+            if p.is_file() and not p.is_symlink():
+                total += p.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def prune_workspaces(keep: int = 8, budget: int | None = None) -> int:
+    """Delete old per-attempt worker clones: keep the most recent `keep`, and keep
+    the whole directory under `budget` bytes.
 
     Every task attempt clones the repo into its own dir and nothing removed them,
-    so workspaces/ grew without bound (1.2 GB before this existed).
+    so workspaces/ grew without bound (1.2 GB before this existed). Counting them
+    was never a bound though — repo size is unbounded, so eight clones of a large
+    repo fill the 10Gi volume exactly as well as eighty of a small one, and a full
+    volume stops the whole platform because every agent needs somewhere to clone.
     """
     import re
     import shutil
     base = config.WORKSPACES_DIR
+    budget = config.WORKSPACES_BUDGET_BYTES if budget is None else budget
     if not base.exists():
         return 0
 
@@ -435,12 +467,38 @@ def prune_workspaces(keep: int = 8) -> int:
     dirs = sorted((d for d in base.iterdir() if d.is_dir()),
                   key=lambda d: d.stat().st_mtime, reverse=True)
     finished = [d for d in dirs if (task_of(d) not in live)]
-    removed = 0
+    sizes = {d: _dir_bytes(d) for d in dirs}
+    on_disk = sum(sizes.values())
+
     # Keep a handful of the most recent finished clones for post-mortems.
-    for d in finished[keep:]:
+    doomed = list(finished[keep:])
+    freed = sum(sizes[d] for d in doomed)
+    # Then oldest-first through the post-mortem window until the volume fits.
+    # A clone that survives the count rule still goes if the budget needs it —
+    # post-mortems are a convenience and a full volume halts the platform.
+    for d in reversed(finished[:keep]):
+        if on_disk - freed <= budget:
+            break
+        doomed.append(d)
+        freed += sizes[d]
+
+    for d in doomed:
         shutil.rmtree(d, ignore_errors=True)
-        removed += 1
-    return removed
+
+    if on_disk - freed > budget:
+        # Everything prunable is gone and it still does not fit, so what remains is
+        # live work that must not be touched. Pruning cannot fix this one, and the
+        # old behaviour — return a tidy count and let the volume fill — reported
+        # success right up until every agent lost the ability to clone.
+        bus.emit(0, None, "system", "workspaces_over_budget",
+                 {"bytes": on_disk - freed, "budget": budget,
+                  "live_clones": len(dirs) - len(doomed),
+                  "detail": f"{(on_disk - freed) // 1048576} MB of worker clones "
+                            f"against a {budget // 1048576} MB budget, and every "
+                            f"prunable one is already gone — the rest belong to "
+                            f"live tasks. Raise WORKSPACES_BUDGET_BYTES or the "
+                            f"volume, or stop some work."})
+    return len(doomed)
 
 
 def _rows_of_live_tasks() -> list[dict]:
@@ -602,7 +660,11 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
         return f"error: budget exhausted (${project['cost_usd']:.2f} of ${project['budget_usd']:.2f})"
 
     db.inc_runs(task["project_id"])
-    model = pick_model(task, project)
+    # Claim a named teammate before choosing a model: a teammate may carry their
+    # own model, and that choice has to win over the platform's default or
+    # per-role model selection is decorative.
+    agent = team.claim(task)
+    model = team.model_for(agent, pick_model(task, project))
     # Record the model this run actually uses so it's visible in the UI and the
     # manager can reason about who is on what.
     # Clear the previous run's report on re-dispatch: pick_model reads it for

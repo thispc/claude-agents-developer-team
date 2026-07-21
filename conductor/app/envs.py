@@ -40,6 +40,10 @@ from . import config, sandbox, selfops
 BUILD_DIR = sandbox.SANDBOX_DIR / "build"
 STATE = sandbox.SANDBOX_DIR / "envs.json"
 PROD_NAMESPACE = config._env("K8S_NAMESPACE", "devteam")
+# Which Deployment promotion writes to. Assumed until now, which was correct only
+# because the namespace holds exactly one app — the second one makes "the
+# deployment" ambiguous, and promotion is not a thing to be ambiguous about.
+PROD_DEPLOYMENT = config._env("PROD_DEPLOYMENT", "devteam-conductor")
 IMAGE_REPO = config._env("ENV_IMAGE_REPO", "devteam-conductor")
 KIND_CLUSTER = config._env("KIND_CLUSTER", "devteam")
 
@@ -403,13 +407,29 @@ def deploy_preview(tag: str, env: str) -> dict[str, Any]:
             "error": "" if w.returncode == 0 else (w.stderr or w.stdout)[-400:]}
 
 
-def promote(tag: str) -> dict[str, Any]:
+def _deployment_name(deployment: str) -> str:
+    """The Deployment to act on, refusing anything kubectl would read as a flag.
+
+    Arguments are passed as argv so there is no shell to inject into, but a name
+    beginning with '-' is still parsed by kubectl as an option, and a name with a
+    '/' in it changes which RESOURCE TYPE is addressed. Both turn "promote into
+    the wrong deployment" into "promote into something else entirely".
+    """
+    name = (deployment or PROD_DEPLOYMENT).strip()
+    return name if name and "/" not in name and not name.startswith("-") else ""
+
+
+def promote(tag: str, deployment: str = "") -> dict[str, Any]:
     """Ship the exact image that was previewed. No rebuild, no pull, no drift.
 
     This is the whole point of the module: `redeploy()` pulls main into the live
     tree and restarts, so the thing that goes live was assembled at deploy time
     and nobody ever ran it. Here the artifact is already running somewhere and
     has been looked at — promotion just points production at it.
+
+    `deployment` names the target explicitly. It defaults to PROD_DEPLOYMENT and
+    never to "whatever is in the namespace": picking for the caller is fine while
+    there is one app to pick and silently wrong the moment there are two.
     """
     if not kubectl_ok():
         return {"ok": False, "error": "no reachable Kubernetes cluster"}
@@ -418,46 +438,69 @@ def promote(tag: str) -> dict[str, Any]:
         return {"ok": False,
                 "error": "refusing to promote an image this platform did not build "
                          "and has no record of"}
+    target = _deployment_name(deployment)
+    if not target:
+        return {"ok": False, "error": f"{deployment!r} is not a Deployment name"}
+    # Resolve the target before touching it, and treat "not there" as fatal.
+    #
+    # `kubectl set image deployment/<name>` does exit 1 on a missing Deployment
+    # (checked against the live cluster: 'Error from server (NotFound)'), and also
+    # on a container name it cannot find — but it exits 0 and prints NOTHING when
+    # the target is expressed as `--all` or a label selector that matches nothing.
+    # So the target is always NAMED here, never selected, and a name that resolves
+    # to nothing stops here. A promote that no-ops is worse than one that errors:
+    # it reports the new image as live while production keeps serving the old one.
     previous = _sh("kubectl", "-n", PROD_NAMESPACE, "get", "deployment",
-                   "devteam-conductor", "-o",
+                   target, "-o",
                    "jsonpath={.spec.template.spec.containers[0].image}").stdout.strip()
     if not previous:
         return {"ok": False,
-                "error": f"no devteam-conductor deployment in {PROD_NAMESPACE} to promote into"}
+                "error": f"no '{target}' deployment in {PROD_NAMESPACE} to promote "
+                         f"into (set PROD_DEPLOYMENT if production is called "
+                         f"something else)"}
     # Ask what the container is actually called rather than assuming "conductor".
     # A production deployed from any other manifest would otherwise fail here with
     # kubectl's own words ('unable to find container named "conductor"'), which
     # reads like the image is wrong when the naming is.
     name = _sh("kubectl", "-n", PROD_NAMESPACE, "get", "deployment",
-               "devteam-conductor", "-o",
+               target, "-o",
                "jsonpath={.spec.template.spec.containers[0].name}").stdout.strip() or "conductor"
     published, note = _publish(tag)
     if not published:
         return {"ok": False, "error": f"the cluster could not be given the image: {note}"}
     r = _sh("kubectl", "-n", PROD_NAMESPACE, "set", "image",
-            "deployment/devteam-conductor", f"{name}={cluster_tag(tag)}", timeout=120)
+            f"deployment/{target}", f"{name}={cluster_tag(tag)}", timeout=120)
     if r.returncode != 0:
         return {"ok": False, "error": r.stderr[-400:]}
     w = _sh("kubectl", "-n", PROD_NAMESPACE, "rollout", "status",
-            "deployment/devteam-conductor", "--timeout=180s", timeout=200)
+            f"deployment/{target}", "--timeout=180s", timeout=200)
     if w.returncode != 0:
         _sh("kubectl", "-n", PROD_NAMESPACE, "rollout", "undo",
-            "deployment/devteam-conductor", timeout=120)
+            f"deployment/{target}", timeout=120)
         return {"ok": False, "rolled_back": True, "from": previous,
-                "error": (w.stderr or w.stdout)[-400:]}
+                "deployment": target, "error": (w.stderr or w.stdout)[-400:]}
     st = _state()
-    st["production"] = {"tag": tag, "previous": previous, "at": time.time()}
+    st["production"] = {"tag": tag, "previous": previous, "deployment": target,
+                        "at": time.time()}
     _save(st)
-    return {"ok": True, "tag": tag, "previous": previous}
+    return {"ok": True, "tag": tag, "previous": previous, "deployment": target}
 
 
-def rollback() -> dict[str, Any]:
-    """k8s keeps the previous ReplicaSet, so this is one command and no guesswork."""
+def rollback(deployment: str = "") -> dict[str, Any]:
+    """k8s keeps the previous ReplicaSet, so this is one command and no guesswork.
+
+    Same explicit target as promote: rolling back the wrong Deployment would leave
+    the broken one serving while reporting that it had been undone.
+    """
     if not kubectl_ok():
         return {"ok": False, "error": "no reachable Kubernetes cluster"}
+    target = _deployment_name(deployment)
+    if not target:
+        return {"ok": False, "error": f"{deployment!r} is not a Deployment name"}
     r = _sh("kubectl", "-n", PROD_NAMESPACE, "rollout", "undo",
-            "deployment/devteam-conductor", timeout=120)
-    return {"ok": r.returncode == 0, "detail": (r.stdout or r.stderr)[-300:]}
+            f"deployment/{target}", timeout=120)
+    return {"ok": r.returncode == 0, "deployment": target,
+            "detail": (r.stdout or r.stderr)[-300:]}
 
 
 def destroy(env: str) -> dict[str, Any]:
@@ -485,4 +528,4 @@ def overview() -> dict[str, Any]:
             "kind": on_kind() if kubectl_ok() else False, "registry": REGISTRY,
             "production": st.get("production"), "images": st["images"][:10],
             "envs": st["envs"], "live_namespaces": live,
-            "prod_namespace": PROD_NAMESPACE}
+            "prod_namespace": PROD_NAMESPACE, "prod_deployment": PROD_DEPLOYMENT}

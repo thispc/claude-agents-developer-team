@@ -266,3 +266,18 @@ async def _google(model: str, system: str, prompt: str, settings: dict,
     if not text:
         raise ProviderError("Gemini returned an empty response")
     return text
+
+
+def default_model(provider: str) -> str:
+    """A sensible model when a caller has a provider but no specific model.
+
+    Second in each list, not first: the top entry is the most capable and the most
+    expensive, and something that runs on every task should not default to the
+    priciest option available. An empty model string reaches the vendor API as a
+    404 with an unhelpful message, so this exists to make "provider only" a valid
+    thing to ask for.
+    """
+    models = PROVIDERS.get(provider, {}).get("models") or []
+    if not models:
+        return ""
+    return models[min(1, len(models) - 1)]["id"]

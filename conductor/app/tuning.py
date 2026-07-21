@@ -78,6 +78,37 @@ KNOBS: dict[str, tuple[Any, type, str, str]] = {
         900, int, "SLOW_SECONDS",
         "When a task starts being called slow in the blockers panel. Advisory only."),
 
+    # --- looking after itself ---
+    "upkeep_enabled": (
+        True, bool, "UPKEEP_ENABLED",
+        "Run the daily self-check. Scanning and ranking cost nothing — they only "
+        "read what was already recorded — so this is on by default. What the check "
+        "is then allowed to DO is governed separately below."),
+    "upkeep_interval_hours": (
+        24, int, "UPKEEP_INTERVAL_HOURS",
+        "Hours between self-checks. Daily is the useful cadence: often enough that "
+        "a fault is not a week old when you hear about it, rare enough that the "
+        "report is worth reading."),
+    "upkeep_files_tickets": (
+        True, bool, "UPKEEP_FILES_TICKETS",
+        "Let the check file the worst finding as a ticket. Filing is cheap and "
+        "reversible; it tells a human what is wrong without deciding anything."),
+    "repair_score_floor": (
+        400.0, float, "REPAIR_SCORE_FLOOR",
+        "How bad a finding must score before it is worth anyone's attention. A "
+        "knob rather than a constant because the right value depends on how noisy "
+        "a given deployment is, which nobody can know in advance. Roughly: one "
+        "critical fault seen a few times, or a warning seen very many."),
+
+    # --- the boss's involvement ---
+    "sprint_checkin_seconds": (
+        0, int, "SPRINT_CHECKIN_SECONDS",
+        "How long a sprint boundary waits for the boss before planning the next "
+        "cycle. Zero by default: the question is still posted and the answer is "
+        "still read when it arrives, but an unattended overnight run must not stall "
+        "an hour per sprint waiting for someone who is asleep. Raise it when you "
+        "intend to be present."),
+
     # --- work sharing ---
     "reuse_verification": (
         True, bool, "REUSE_VERIFICATION",

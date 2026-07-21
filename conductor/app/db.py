@@ -204,6 +204,25 @@ CREATE TABLE IF NOT EXISTS contenders (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_contenders_task ON contenders(task_id);
+-- What one sprint delivered, frozen at the moment the project left that sprint.
+-- Tasks carry a sprint number, but a task row is mutable: a later cycle reworks
+-- one and its status, report, PR and verification are overwritten in place, so
+-- "what shipped in sprint 1" stopped being answerable the moment sprint 2 began.
+-- The repo is no help either — it holds the current tree and no memory of which
+-- cycle put a file there. facts is the whole record as JSON rather than columns
+-- because it is written once and read whole, and a snapshot that had to be
+-- migrated every time a task grew a field would stop being a snapshot.
+CREATE TABLE IF NOT EXISTS sprint_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL,
+    sprint INTEGER NOT NULL,
+    facts TEXT NOT NULL DEFAULT '{}',
+    notes TEXT NOT NULL DEFAULT '',           -- release notes, once written
+    notes_source TEXT NOT NULL DEFAULT '',    -- 'recorded' | 'provider:model'
+    taken_at REAL NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sprint_artifacts
+    ON sprint_artifacts(project_id, sprint);
 """
 
 
@@ -401,6 +420,7 @@ def delete_project(project_id: int) -> dict:
     _execute("DELETE FROM events WHERE project_id=?", (project_id,))
     _execute("DELETE FROM inbox WHERE project_id=?", (project_id,))
     _execute("DELETE FROM tasks WHERE project_id=?", (project_id,))
+    _execute("DELETE FROM sprint_artifacts WHERE project_id=?", (project_id,))
     # a round table that produced this project loses only the link, not itself
     _execute("UPDATE roundtables SET project_id=NULL WHERE project_id=?", (project_id,))
     _execute("DELETE FROM projects WHERE id=?", (project_id,))
@@ -818,3 +838,41 @@ def tuning_set(key: str, value: Any, who: str = "") -> None:
 
 def tuning_clear(key: str) -> None:
     _execute("DELETE FROM tuning WHERE k=?", (key,))
+
+
+# --- sprint artifacts: what each cycle delivered, frozen ---
+
+def _snapshot(row: dict) -> dict:
+    """Rows come back with `facts` parsed. A caller that has to remember to
+    json.loads one column of one table will eventually forget."""
+    try:
+        facts = json.loads(row["facts"] or "{}")
+    except json.JSONDecodeError:
+        facts = {}
+    return {**row, "facts": facts}
+
+
+def save_sprint_artifact(project_id: int, sprint: int, facts: Any) -> None:
+    """Write (or replace) a sprint's frozen record. Notes are preserved across a
+    re-capture: they are written by a separate, more expensive step, and silently
+    dropping them because the facts were refreshed would be a surprising cost."""
+    _execute("INSERT INTO sprint_artifacts (project_id, sprint, facts, taken_at) "
+             "VALUES (?,?,?,?) ON CONFLICT(project_id, sprint) DO UPDATE SET "
+             "facts=excluded.facts, taken_at=excluded.taken_at",
+             (project_id, sprint, json.dumps(facts), time.time()))
+
+
+def set_sprint_notes(project_id: int, sprint: int, notes: str, source: str = "") -> None:
+    _execute("UPDATE sprint_artifacts SET notes=?, notes_source=? "
+             "WHERE project_id=? AND sprint=?", (notes, source, project_id, sprint))
+
+
+def get_sprint_artifact(project_id: int, sprint: int) -> dict | None:
+    rows = _rows("SELECT * FROM sprint_artifacts WHERE project_id=? AND sprint=?",
+                 (project_id, sprint))
+    return _snapshot(rows[0]) if rows else None
+
+
+def list_sprint_artifacts(project_id: int) -> list[dict]:
+    return [_snapshot(r) for r in _rows(
+        "SELECT * FROM sprint_artifacts WHERE project_id=? ORDER BY sprint", (project_id,))]

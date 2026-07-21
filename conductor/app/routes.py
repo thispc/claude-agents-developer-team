@@ -7,9 +7,10 @@ from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSoc
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from . import (auth, blockers, bus, cloud, config, credcheck, db, deploy, notify,
-               envs, github_client, launcher, manager, metrics, planner, preview,
-               providers, roundtable, sandbox, scheduler, selfops, triage, tuning)
+from . import (artifacts, auth, blockers, bus, cloud, config, credcheck, db, deploy,
+               envs, findings, github_client, launcher, manager, metrics, notify,
+               planner, preview, providers, roundtable, sandbox, scheduler, selfops,
+               team, triage, tuning, upkeep)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -19,6 +20,10 @@ class TeamMember(BaseModel):
     role: str
     count: int = 1
     model: str = "worker"
+    # Per-role choices. Both optional and both default to what the platform would
+    # have done anyway, so an existing client that sends neither is unaffected.
+    provider: str = "anthropic"
+    persona: str = ""
 
 
 class NewProject(BaseModel):
@@ -107,6 +112,13 @@ class Answer(BaseModel):
 
 class Budget(BaseModel):
     budget_usd: float
+
+
+class SprintNotes(BaseModel):
+    # Empty provider means "write them from the record", which needs no key and
+    # is the only mode that works on an instance with no credentials at all.
+    provider: str = ""
+    model: str = ""
 
 
 class WorkerEvent(BaseModel):
@@ -572,17 +584,21 @@ async def build_from_blueprint(table_id: int, body: BuildFromBlueprint,
     if not auth.has_own_ai_credentials(u):
         raise HTTPException(400, "add your own Anthropic key or Claude token in Settings")
 
-    team = [{"role": str(m.get("role", "")).strip().lower().replace(" ", "_"),
-             "count": max(1, min(int(m.get("count", 1) or 1), 4)),
-             "model": "worker"}
-            for m in (bp.get("team") or []) if m.get("role")]
+    # The round table argues about what kind of people the idea needs, and that
+    # judgement used to be discarded at the exact moment it mattered: only the head
+    # count survived, and the personas the seats had reasoned about went nowhere.
+    roster = [{**m, "role": str(m["role"]).strip().lower().replace(" ", "_"),
+               "count": max(1, min(int(m.get("count", 1) or 1), 4)),
+               "model": m.get("model") or "worker"}
+              for m in team.from_blueprint(bp)]
     brief = _brief_from_blueprint(t["brief"], bp)
     repo = body.repo.strip() or config.GITHUB_REPO
     pid = db.create_project(
         body.name.strip() or (t["title"] or "planned project"), brief, repo,
         config.PROJECT_BUDGET_USD, config.MAX_CONCURRENT_WORKERS,
-        max_runs=config.MAX_AGENT_RUNS, team=team, autonomy=body.autonomy,
+        max_runs=config.MAX_AGENT_RUNS, team=roster, autonomy=body.autonomy,
         manager_model=body.manager_model, owner_id=u["id"])
+    team.hire(pid, roster)
     db.update_table(table_id, project_id=pid)
     if repo:
         try:
@@ -701,6 +717,81 @@ def project_metrics(project_id: int, request: Request) -> dict:
     owned_project(project_id, request)
     metrics.reconcile(project_id)
     return metrics.project(project_id)
+
+
+@router.get("/api/projects/{project_id}/team")
+def project_team(project_id: int, request: Request) -> dict:
+    """The named people on this project, what they are doing, and what they have
+    already built. Projects created before teammates existed return an empty list
+    and keep working exactly as they did."""
+    owned_project(project_id, request)
+    return {"team": team.describe(project_id)}
+
+
+class PersonaUpdate(BaseModel):
+    persona: str = ""
+    model: str | None = None
+    provider: str | None = None
+
+
+@router.patch("/api/projects/{project_id}/team/{agent_id}")
+def update_teammate(project_id: int, agent_id: int, body: PersonaUpdate,
+                    request: Request) -> dict:
+    """Change who a teammate is, or what they run on, mid-project.
+
+    Applies to their next task, not the one in flight: a running session already
+    has its system prompt and there is no way to amend it without killing work
+    that is part-done.
+    """
+    owned_project(project_id, request)
+    agent = db.get_agent(agent_id)
+    if not agent or agent["project_id"] != project_id:
+        raise HTTPException(404, "no such teammate on this project")
+    if body.model is not None or body.provider is not None:
+        db.update_agent(agent_id, **{k: v for k, v in
+                                     (("model", body.model), ("provider", body.provider))
+                                     if v is not None})
+    updated = team.set_persona(agent_id, body.persona)
+    return {"teammate": updated, "applies": "from their next task"}
+
+
+@router.get("/api/self/findings")
+def list_findings(request: Request) -> dict:
+    """What the platform currently knows is wrong with itself, worst first.
+
+    Readable without letting the check act, because someone who wants to know what
+    it thinks is broken should not have to authorise a repair to find out.
+    """
+    _root(request)
+    return findings.summary()
+
+
+class FindingVerdict(BaseModel):
+    status: str      # fixed | dismissed | open
+
+
+@router.post("/api/self/findings/{finding_id}")
+def judge_finding(finding_id: int, body: FindingVerdict, request: Request) -> dict:
+    """Close a finding, or put a dismissed one back on the list.
+
+    Marking something fixed is not the end of it: a recurrence re-opens it and
+    says so, because a repair that did not hold is more interesting than a fresh
+    fault and must not be quietly re-filed as one.
+    """
+    _root(request)
+    if body.status not in ("fixed", "dismissed", "open"):
+        raise HTTPException(400, "status must be fixed, dismissed or open")
+    if not findings.get(finding_id):
+        raise HTTPException(404, "no such finding")
+    findings.set_status(finding_id, body.status)
+    return findings.summary()
+
+
+@router.post("/api/self/upkeep")
+async def run_upkeep(request: Request, force: bool = False) -> dict:
+    """Run the daily self-check now instead of waiting for it."""
+    _root(request)
+    return await upkeep.run_once(force=force)
 
 
 @router.get("/api/tuning")
@@ -1129,7 +1220,7 @@ async def create_project(body: NewProject, request: Request) -> dict:
                                  "set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) "
                                  "or ANTHROPIC_API_KEY")
     repo = body.repo or config.GITHUB_REPO
-    team = [m.model_dump() for m in body.team]
+    roster = [m.model_dump() for m in body.team]
     autonomy = "autonomous" if body.autonomy == "autonomous" else "supervised"
     sprints = max(1, min(20, body.sprints or 1))
     # A run cap sized for one pass starves a multi-sprint run: it stops somewhere
@@ -1146,13 +1237,14 @@ async def create_project(body: NewProject, request: Request) -> dict:
         body.budget_usd or config.PROJECT_BUDGET_USD,
         body.max_workers or config.MAX_CONCURRENT_WORKERS,
         runs,
-        team=team, autonomy=autonomy,
+        team=roster, autonomy=autonomy,
         manager_model=body.manager_model.strip(),
         manager_persona=body.manager_persona.strip(),
         owner_id=(owner["id"] if owner else 0),
         sprints=sprints,
     )
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
+    team.hire(project_id, roster)
     if scaled:
         bus.emit(project_id, None, "system", "run_cap_scaled",
                  {"runs": runs, "sprints": sprints})
@@ -1351,12 +1443,20 @@ async def get_artifacts(project_id: int, request: Request) -> dict:
     project = owned_project(project_id, request)
     repo = project["repo"]
     tasks = db.list_tasks(project_id)
-    # A plain-language record of what the team actually did, per task.
+    people = {a["id"]: a["name"] for a in db.list_agents(project_id)}
+    # A plain-language record of what the team actually did, per task. Which sprint
+    # and which teammate are carried on each row so this list can be filtered by
+    # either without a second call; both are blank on projects that predate them.
     work = [{"id": t["id"], "role": t["role"], "title": t["title"], "status": t["status"],
              "pr": t["pr_number"], "attempts": t["attempts"], "model": t["model"],
+             "sprint": t["sprint"], "agent_id": t.get("agent_id"),
+             "agent": people.get(t.get("agent_id") or 0, ""),
              "outcome": (t["report"] or "").strip()[:1200]}
             for t in tasks]
     out = {
+        # The per-sprint index, so the tab has a history dimension rather than
+        # only "now". Cheap: it reads rows we already have.
+        "sprints": artifacts.timeline(project_id),
         "repo": repo, "repo_url": f"https://github.com/{repo}" if repo else None,
         "project": project["name"], "brief": project["brief"],
         "status": project["status"], "conclusion": project["summary"],
@@ -1371,6 +1471,84 @@ async def get_artifacts(project_id: int, request: Request) -> dict:
         except Exception as e:
             out["error"] = str(e)[:200]
     return out
+
+
+@router.get("/api/projects/{project_id}/sprints")
+async def sprint_timeline(project_id: int, request: Request) -> dict:
+    """Every sprint this project has had, and what each one delivered.
+
+    Freezes any sprint the project has already left before answering. The sprint
+    boundary itself lives inside the manager session, so hooking it there would
+    miss every project that ran before this existed and every one whose manager
+    died mid-cycle; capturing on read is later but never absent.
+    """
+    owned_project(project_id, request)
+    taken = await artifacts.ensure(project_id)
+    return {"sprints": artifacts.timeline(project_id), "captured_now": taken}
+
+
+@router.get("/api/projects/{project_id}/sprints/{sprint}")
+async def sprint_artifacts(project_id: int, sprint: int, request: Request) -> dict:
+    """One sprint's deliverables, as they read when that sprint ended."""
+    owned_project(project_id, request)
+    await artifacts.ensure(project_id)
+    return artifacts.read(project_id, sprint)
+
+
+@router.post("/api/projects/{project_id}/sprints/{sprint}/snapshot")
+async def snapshot_sprint(project_id: int, sprint: int, request: Request,
+                          force: bool = False) -> dict:
+    """Freeze a sprint on demand.
+
+    `force` re-reads the task rows as they are today and overwrites the record,
+    which is only ever right when the first capture caught a sprint mid-flight —
+    otherwise it replaces what shipped with a later edit of it.
+    """
+    owned_project(project_id, request)
+    return await artifacts.capture(project_id, sprint, force=force)
+
+
+@router.get("/api/projects/{project_id}/sprints/{sprint}/notes")
+async def sprint_notes(project_id: int, sprint: int, request: Request) -> dict:
+    """Release notes for a sprint, from the record alone — no model, no key needed."""
+    owned_project(project_id, request)
+    await artifacts.ensure(project_id)
+    return await artifacts.release_notes(project_id, sprint)
+
+
+@router.post("/api/projects/{project_id}/sprints/{sprint}/notes")
+async def write_sprint_notes(project_id: int, sprint: int, body: SprintNotes,
+                             request: Request) -> dict:
+    """Have a model turn the record into readable notes.
+
+    The prose is checked against the record and discarded whole if it cites a task
+    this sprint did not contain, and the itemised facts come back with it either
+    way — so the summary is never the only account of the sprint on the page.
+    """
+    u = current_user(request)
+    owned_project(project_id, request)
+    await artifacts.ensure(project_id)
+    return await artifacts.release_notes(
+        project_id, sprint, auth.get_settings(u) if u else {},
+        provider=body.provider, model=body.model, rewrite=True)
+
+
+@router.get("/api/projects/{project_id}/by-agent")
+def artifacts_by_agent(project_id: int, request: Request, sprint: int = 0) -> dict:
+    """What each teammate produced — a grouping of task output, not a second copy
+    of it. Pass ?sprint=N to scope it to one cycle."""
+    owned_project(project_id, request)
+    return artifacts.by_agent(project_id, sprint or None)
+
+
+@router.get("/api/projects/{project_id}/agents/{agent_id}/artifacts")
+def one_agents_artifacts(project_id: int, agent_id: int, request: Request) -> dict:
+    """One teammate's work across every sprint they were here for."""
+    owned_project(project_id, request)
+    view = artifacts.agent_view(project_id, agent_id)
+    if not view:
+        raise HTTPException(404, "no such teammate on this project")
+    return view
 
 
 @router.post("/api/projects/{project_id}/preview")
@@ -1612,6 +1790,50 @@ def _close_run(task_id: int, status: str, cost_usd: float,
                       cost_usd=cost_usd)
 
 
+@router.get("/internal/teammate")
+def teammate_context(project_id: int, role: str = "", name: str = "",
+                     exclude_task: int = 0,
+                     x_worker_token: str | None = Header(None)) -> dict:
+    """Who a stuck worker is actually talking to, and what they have built.
+
+    `ask_teammate` used to fire a one-shot query at a stronger model. That is a
+    second opinion, but it is not a teammate: it had no idea what anyone on the
+    project had already built, so its advice regularly contradicted decisions
+    another agent had made an hour earlier — and the asker, having no way to know,
+    followed it. Handing over the real teammate's persona and their delivered work
+    is the difference between consulting a colleague and consulting a stranger who
+    happens to be clever.
+    """
+    _check_token(x_worker_token)
+    people = db.list_agents(project_id)
+    if not people:
+        return {"found": False}
+    match = None
+    if name:
+        match = next((a for a in people if a["name"].lower() == name.lower()), None)
+    if not match and role:
+        match = next((a for a in people if a["role"].lower() == role.lower()), None)
+    if not match:
+        # Nobody named: the most experienced teammate is the best default, because
+        # the point of asking is to reach someone who has seen more of this project.
+        match = sorted(people, key=lambda a: -a["tasks_done"])[0]
+
+    delivered = [t for t in db.list_tasks(project_id)
+                 if t.get("agent_id") == match["id"] and t["status"] == "done"
+                 and t["id"] != exclude_task]
+    return {
+        "found": True,
+        "name": match["name"],
+        "role": match["role"],
+        "persona": match["persona"],
+        "notes": match["notes"],
+        "model": match["model"],
+        "work": [{"title": t["title"], "report": (t["report"] or "")[:1500]}
+                 for t in delivered[-3:]],
+        "team": [{"name": a["name"], "role": a["role"]} for a in people],
+    }
+
+
 @router.post("/internal/report")
 def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None)) -> dict:
     _check_token(x_worker_token)
@@ -1676,6 +1898,9 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
                    cost_usd=(task["cost_usd"] if task else 0) + body.cost_usd)
     db.add_project_cost(body.project_id, body.cost_usd)
     _close_run(body.task_id, status, body.cost_usd)
+    # Back to the pool. Not credited with the task yet — that happens when the
+    # manager accepts, because finishing and being any good are different events.
+    team.release(db.get_task(body.task_id) or {}, body.report)
     try:
         v = json.loads(body.verification or "{}")
     except Exception:

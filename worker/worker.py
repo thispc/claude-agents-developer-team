@@ -2,7 +2,7 @@
 
 Runs as a k8s Job (or local subprocess). Contract (env vars, set by the conductor's
 launcher): TASK_ID, PROJECT_ID, ROLE, TASK_TITLE, TASK_DESCRIPTION, TASK_FEEDBACK,
-BRANCH, REPO, GITHUB_TOKEN, MODEL, MAX_TURNS, CONDUCTOR_URL, WORKER_TOKEN,
+BRANCH, REPO, GITHUB_TOKEN, GIT_WEB, MODEL, MAX_TURNS, CONDUCTOR_URL, WORKER_TOKEN,
 ANTHROPIC_API_KEY.
 
 Flow: clone repo -> checkout task branch -> run a headless Claude session with the
@@ -41,6 +41,9 @@ FEEDBACK = os.environ.get("TASK_FEEDBACK", "")
 BRANCH = os.environ.get("BRANCH", f"task/{TASK_ID}")
 REPO = os.environ.get("REPO", "")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+# The git host to clone from and push to. Defaults to github.com, so a worker
+# that is never told otherwise behaves exactly as it always has.
+GIT_WEB = os.environ.get("GIT_WEB", "https://github.com").rstrip("/")
 MODEL = os.environ.get("MODEL", "claude-haiku-4-5")
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "40"))
 CONDUCTOR_URL = os.environ.get("CONDUCTOR_URL", "http://localhost:8000").rstrip("/")
@@ -57,6 +60,18 @@ def post(path: str, body: dict) -> None:
                    headers={"X-Worker-Token": WORKER_TOKEN}, timeout=15)
     except Exception as e:
         print(f"[worker] failed to reach conductor: {e}", file=sys.stderr)
+
+
+def fetch(path: str, params: dict) -> dict:
+    """Read something from the conductor. Returns {} on any failure — a worker that
+    cannot look up context should carry on with less of it, not die holding a task."""
+    try:
+        r = httpx.get(f"{CONDUCTOR_URL}{path}", params=params,
+                      headers={"X-Worker-Token": WORKER_TOKEN}, timeout=15)
+        return r.json() if r.status_code == 200 else {}
+    except Exception as e:
+        print(f"[worker] could not read {path}: {e}", file=sys.stderr)
+        return {}
 
 
 def emit(kind: str, payload: str) -> None:
@@ -199,6 +214,21 @@ def run_verification(repo_dir: Path) -> dict:
     if not found:
         return {"ran": False, "reason": "this project declares no test/build command"}
     cmd, label = found
+
+    # Nothing new to check? Reuse the result rather than paying for it twice.
+    #
+    # A retry after a rate limit or a session limit re-clones the same branch and
+    # re-runs the same suite over the same commit, which cannot produce a different
+    # answer and can cost minutes on a shared node. Deliberately narrow: only a
+    # PASSING result is reused, and only for the exact commit it was recorded
+    # against. A failing result is always re-run, because the whole reason a retry
+    # exists is that someone is trying to fix it.
+    head = current_commit(repo_dir)
+    prior = json.loads(os.environ.get("PRIOR_VERIFICATION", "") or "{}")
+    if head and prior.get("ok") and prior.get("commit") == head and prior.get("cmd") == label:
+        emit("verify_reused", f"{label} already passed on {head[:8]}; not re-running")
+        return {**prior, "reused": True}
+
     emit("verifying", f"running {label}")
     try:
         r = subprocess.run(cmd, cwd=repo_dir, shell=True, capture_output=True,
@@ -206,7 +236,10 @@ def run_verification(repo_dir: Path) -> dict:
         out = ((r.stdout or "") + "\n" + (r.stderr or "")).strip()
         ok = r.returncode == 0
         res = {"ran": True, "ok": ok, "cmd": label,
-               "exit_code": r.returncode, "output": out[-3000:]}
+               "exit_code": r.returncode, "output": out[-3000:],
+               # Which commit this result is about. Without it a stored verification
+               # is a claim about "the branch", and the branch moves.
+               "commit": current_commit(repo_dir)}
         if not ok:
             # Extracted from the WHOLE output, not the tail we keep — the names of
             # what failed are often scrolled past by the time the run ends.
@@ -220,6 +253,15 @@ def run_verification(repo_dir: Path) -> dict:
         return {"ran": False, "reason": f"could not run {label}: {e}"}
 
 
+def current_commit(repo_dir: Path) -> str:
+    try:
+        r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_dir,
+                           capture_output=True, text=True, timeout=10)
+        return (r.stdout or "").strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
 def sh(*cmd: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
 
@@ -230,7 +272,7 @@ def setup_repo() -> Path:
         repo_dir.mkdir(parents=True, exist_ok=True)
         sh("git", "init", "-b", "main", cwd=repo_dir)
         return repo_dir
-    url = f"https://x-access-token:{GITHUB_TOKEN}@github.com/{REPO}.git"
+    url = f"https://x-access-token:{GITHUB_TOKEN}@{GIT_WEB.split('://', 1)[-1]}/{REPO}.git"
     r = sh("git", "clone", url, str(repo_dir))
     if r.returncode != 0:
         raise RuntimeError(f"git clone failed: {r.stderr[-500:]}")
@@ -305,22 +347,47 @@ def build_helper_server():
     """
 
     @tool("ask_teammate",
-          "Ask a senior teammate for help when you are stuck, unsure of an approach, "
+          "Ask a named teammate for help when you are stuck, unsure of an approach, "
           "or hitting the same error repeatedly. Include everything they need: what "
           "you're trying to do, what you tried, the exact error, and the relevant code. "
-          "They cannot see your screen. Returns their advice.",
-          {"question": str, "context": str})
+          "They cannot see your screen. Leave `who` empty to reach whoever on the team "
+          "has done the most work. Returns their advice.",
+          {"question": str, "context": str, "who": str})
     async def ask_teammate(args: dict) -> dict:
         question = str(args.get("question", ""))[:4000]
         ctx = str(args.get("context", ""))[:8000]
-        emit("consult", f"asked a senior teammate: {question[:200]}")
+        who = str(args.get("who", ""))[:60]
+
+        # Who is actually being asked, and what they have already built. Without
+        # this the "teammate" was a clever stranger: it had no idea what anyone on
+        # the project had done, so its advice regularly contradicted a decision
+        # another agent made an hour earlier — and the asker had no way to tell.
+        mate = fetch("/internal/teammate", {"project_id": PROJECT_ID, "name": who,
+                                            "exclude_task": TASK_ID})
+        name = mate.get("name") or "a senior teammate"
+        emit("consult", f"asked {name}: {question[:200]}")
+
+        identity = (
+            f"You are {mate['name']}, the {mate['role']} on this team."
+            + (f"\n\n{mate['persona']}" if mate.get("persona") else "")
+            + (f"\n\nWhat you have built on this project:\n{mate['notes']}"
+               if mate.get("notes") else "")
+            + ("\n\nYour recent work:\n" + "\n\n".join(
+                f"- {w['title']}: {w['report'][:600]}" for w in mate.get("work") or [])
+               if mate.get("work") else "")
+            if mate.get("found") else
+            "You are a senior engineer on this team."
+        )
         prompt = (
+            f"{identity}\n\n"
             f"A {ROLE} on your team is stuck and asked for your help.\n\n"
             f"THEIR TASK: {TITLE}\n\nTHEIR QUESTION:\n{question}\n\n"
             f"WHAT THEY'VE GOT (code / errors / attempts):\n{ctx}\n\n"
             "Give a direct, concrete answer they can act on immediately: the specific fix, "
             "the exact code, or the precise next step. No pleasantries, no restating their "
-            "problem. If they're on the wrong track, say so plainly and give the right one."
+            "problem. If they're on the wrong track, say so plainly and give the right one. "
+            "If their question touches something you built, say what you decided and why, "
+            "so they build on it instead of around it."
         )
         answer = ""
         try:
@@ -334,7 +401,7 @@ def build_helper_server():
                             answer += b.text
         except Exception as e:
             answer = f"(your teammate could not be reached: {e}; use your best judgement)"
-        emit("consult_reply", answer[:1500])
+        emit("consult_reply", f"{name}: {answer[:1400]}")
         return {"content": [{"type": "text", "text": answer or "(no answer)"}]}
 
     return create_sdk_mcp_server(name="team", version="1.0.0", tools=[ask_teammate])
@@ -384,6 +451,12 @@ async def run() -> None:
             "you could not do. If you hit work outside your scope, add an `ESCALATION:` section "
             "listing recommended follow-up tasks (role, what, why) for the manager to consider."
         )
+
+    # Who this agent is, appended rather than substituted: the role prompt is the
+    # part that has been tuned and tested, and a persona modifies it instead of
+    # replacing it. A persona able to override "verify your work before you
+    # finish" would be a way to talk the platform out of its own safeguards.
+    system_prompt += os.environ.get("AGENT_CONTEXT", "")
 
     options = ClaudeAgentOptions(
         system_prompt=system_prompt,

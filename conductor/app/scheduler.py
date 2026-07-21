@@ -19,7 +19,7 @@ import asyncio
 import json
 import time
 
-from . import bus, config, db, github_client, launcher
+from . import bus, config, db, github_client, launcher, tuning
 
 # A task 'running' longer than this with no update is treated as a dead worker
 # (k8s Job evicted, subprocess killed, SDK hang). Its Job has its own hard
@@ -98,6 +98,67 @@ def unreachable(project_id: int, tasks: list[dict] | None = None) -> list[dict]:
                 dead.add(t["id"])
                 changed = True
     return [t for t in tasks if t["id"] in dead and t["status"] == "planned"]
+
+
+def downstream(tasks: list[dict]) -> dict[int, int]:
+    """How many other tasks each task is holding up, transitively.
+
+    The scheduler used to dispatch the ready set in whatever order the database
+    returned, which is creation order. That is fine when capacity exceeds the ready
+    set and actively harmful when it does not: a task nothing depends on can take
+    the last worker slot ahead of the one three other people are waiting behind,
+    and the whole project waits out the difference. Nothing here creates work — it
+    only decides what goes first when not everything can.
+    """
+    blocks: dict[int, set[int]] = {t["id"]: set() for t in tasks}
+    for t in tasks:
+        for dep in json.loads(t["deps"] or "[]"):
+            if dep in blocks:
+                blocks[dep].add(t["id"])
+    # Transitive closure by repeated expansion. The DAG is small (tens of tasks),
+    # so the simple fixpoint is cheaper than being clever, and it terminates even
+    # if a cycle sneaks in — the sets stop growing.
+    changed = True
+    while changed:
+        changed = False
+        for tid, direct in blocks.items():
+            grown = set(direct)
+            for other in direct:
+                grown |= blocks.get(other, set())
+            grown.discard(tid)
+            if grown != direct:
+                blocks[tid] = grown
+                changed = True
+    return {tid: len(v) for tid, v in blocks.items()}
+
+
+def order_by_impact(ready: list[dict], tasks: list[dict]) -> list[dict]:
+    """Critical path first: whatever unblocks the most other work goes now.
+
+    Ties break on task id so the order is stable — an unstable order makes two
+    runs of the same plan incomparable, which would undermine the whole point of
+    recording per-run metrics.
+    """
+    if len(ready) < 2:
+        return ready
+    impact = downstream(tasks)
+    return sorted(ready, key=lambda t: (-impact.get(t["id"], 0), t["id"]))
+
+
+def idle_capacity(project_id: int, project: dict) -> dict:
+    """Worker slots going unused, and who is sitting out.
+
+    Reported rather than filled. The scheduler cannot invent work — two agents on
+    one branch collide, so "help with that task" is not a thing it can arrange —
+    and the manager is the only part of the system that can widen the plan. Making
+    the waste visible to the thing that can act on it beats a scheduler quietly
+    doing nothing about it.
+    """
+    running = db.count_running(project_id)
+    slots = max(0, int(project.get("max_workers") or 0) - running)
+    free = db.free_agents(project_id)
+    return {"free_slots": slots, "running": running,
+            "idle": [{"name": a["name"], "role": a["role"]} for a in free]}
 
 
 def has_cycle(project_id: int) -> list[int]:
@@ -246,6 +307,7 @@ async def _run(project_id: int) -> None:
             elif deps & failed_ids:
                 blocked.append(t)
 
+        ready = order_by_impact(ready, tasks)
         for t in ready:
             if db.count_running(project_id) >= project["max_workers"]:
                 break

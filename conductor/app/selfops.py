@@ -56,7 +56,7 @@ def _save_state(**fields: Any) -> None:
 
 
 def self_repo() -> str:
-    """The GitHub repo this platform's own code lives in.
+    """The repo this platform's own code lives in.
 
     In a container this CANNOT be discovered: the image deliberately carries no
     .git, so `git remote` has nothing to read. It must be configured, and when it
@@ -69,9 +69,12 @@ def self_repo() -> str:
     url = r.stdout.strip()
     if not url:
         return ""
-    # git@github.com:owner/repo.git  or  https://github.com/owner/repo.git
-    tail = url.split("github.com")[-1].lstrip(":/")
-    return tail[:-4] if tail.endswith(".git") else tail
+    # git@host:owner/repo.git, https://host/owner/repo.git, ssh://git@host:22/…
+    # Splitting on the literal "github.com" worked until the host wasn't GitHub,
+    # and then it returned the entire URL as if it were the repo name. The last
+    # two path segments are the repo on every host and every remote syntax.
+    parts = [p for p in re.split(r"[:/]", url.removesuffix(".git")) if p]
+    return "/".join(parts[-2:])
 
 
 def head() -> dict[str, str]:

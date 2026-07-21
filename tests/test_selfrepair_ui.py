@@ -202,3 +202,69 @@ def test_pruning_deletes_nothing_when_it_cannot_tell(fresh_db, tmp_path, monkeyp
     (tmp_path / "task-1-a1").mkdir()
     assert launcher.prune_workspaces(keep=0) == 0
     assert (tmp_path / "task-1-a1").exists()
+
+
+# ---- pruning must also keep the volume from filling ----------------------
+
+def _clone(base, name, kb=1):
+    d = base / name
+    d.mkdir(parents=True)
+    (d / "blob").write_bytes(b"x" * (kb * 1024))
+    return d
+
+
+def test_pruning_keeps_the_volume_under_budget_not_just_the_count(fresh_db, tmp_path,
+                                                                  monkeypatch):
+    """Repo size is unbounded, so a count is not a bound: a few large clones fill
+    the volume as thoroughly as many small ones, and a full volume stops every
+    agent — none of them has anywhere to clone."""
+    from app import config as cfg, launcher
+    monkeypatch.setattr(cfg, "WORKSPACES_DIR", tmp_path)
+    done = make_task(make_project(), status="done")
+    for i in range(6):
+        _clone(tmp_path, f"task-{done}-a{i}", kb=10)
+    # Well inside the keep-window (6 clones, keep 8) and far over the byte budget.
+    removed = launcher.prune_workspaces(keep=8, budget=25 * 1024)
+    assert removed == 4
+    assert sum(f.stat().st_size for f in tmp_path.rglob("blob")) <= 25 * 1024
+
+
+def test_the_budget_still_never_touches_a_live_clone(fresh_db, tmp_path, monkeypatch):
+    """Reclaiming space is worth less than the work in flight, and that was a
+    deliberate fix — a budget is not a licence to delete a running agent's tree."""
+    from app import config as cfg, launcher
+    monkeypatch.setattr(cfg, "WORKSPACES_DIR", tmp_path)
+    p = make_project()
+    live = make_task(p, status="running")
+    _clone(tmp_path, f"task-{live}-a1", kb=50)
+    launcher.prune_workspaces(keep=0, budget=1)
+    assert (tmp_path / f"task-{live}-a1").exists(), "deleted a running agent's checkout"
+
+
+def test_being_over_budget_with_nothing_left_to_prune_is_announced(fresh_db, tmp_path,
+                                                                   monkeypatch):
+    """The old failure mode was silence until the volume filled, at which point the
+    platform stops and nothing ever said why."""
+    from app import config as cfg, launcher
+    monkeypatch.setattr(cfg, "WORKSPACES_DIR", tmp_path)
+    said = []
+    monkeypatch.setattr(launcher.bus, "emit",
+                        lambda *a, **k: said.append((a[3], a[4])) or {})
+    p = make_project()
+    live = make_task(p, status="running")
+    _clone(tmp_path, f"task-{live}-a1", kb=50)
+    launcher.prune_workspaces(keep=0, budget=1024)
+    assert said and said[0][0] == "workspaces_over_budget"
+    assert said[0][1]["live_clones"] == 1
+
+
+def test_a_run_that_fits_says_nothing(fresh_db, tmp_path, monkeypatch):
+    """An alarm that fires when everything is fine is an alarm nobody reads."""
+    from app import config as cfg, launcher
+    monkeypatch.setattr(cfg, "WORKSPACES_DIR", tmp_path)
+    said = []
+    monkeypatch.setattr(launcher.bus, "emit", lambda *a, **k: said.append(a) or {})
+    done = make_task(make_project(), status="done")
+    _clone(tmp_path, f"task-{done}-a1", kb=1)
+    launcher.prune_workspaces(keep=8, budget=1024 * 1024)
+    assert said == []

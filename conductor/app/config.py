@@ -60,6 +60,19 @@ ESCALATION_MODEL = _env("ESCALATION_MODEL", "claude-sonnet-5")
 
 GITHUB_TOKEN = _env("GITHUB_TOKEN")
 GITHUB_REPO = _env("GITHUB_REPO")
+# Which git host this instance talks to. "your own git" was the one promise the
+# platform did not keep: the API host was a constant, so an in-house server could
+# not be used at all. GitHub Enterprise Server needs nothing here but its own base
+# URL (https://<host>/api/v3) — same API, different address.
+GIT_API = _env("GIT_API", "https://api.github.com").rstrip("/")
+# Human-facing links are built from this, never from GIT_API. On Enterprise and
+# Gitea the two are different hosts, and a link built from the API host lands the
+# reviewer on JSON or a 404.
+GIT_WEB = _env("GIT_WEB", "https://github.com").rstrip("/")
+# Only for the handful of calls where an API genuinely disagrees with GitHub's —
+# a different host is configuration, not a provider. Set this wrong against a
+# Gitea server and merges fail; set it wrong against GitHub and everything fails.
+GIT_PROVIDER = _env("GIT_PROVIDER", "github").strip().lower()
 # The repo holding this platform's own code. Blank = derive from the git remote.
 SELF_REPO = _env("SELF_REPO")
 # Non-root usernames allowed to run self-repair, comma-separated. Granted here and
@@ -124,6 +137,12 @@ AUTONOMOUS_QUESTION_GRACE = int(_env("AUTONOMOUS_QUESTION_GRACE", "300"))
 AGENTS_DIR = Path(_env("AGENTS_DIR", str(ROOT / "agents")))
 DASHBOARD_DIR = Path(_env("DASHBOARD_DIR", str(ROOT / "dashboard")))
 WORKSPACES_DIR = Path(_env("WORKSPACES_DIR", str(ROOT / "workspaces")))
+# Ceiling on what all worker clones together may occupy. A count of clones is not
+# a bound — repo size is unbounded, so a handful of large checkouts fill the 10Gi
+# volume as thoroughly as hundreds of small ones, and a full volume stops the
+# entire platform because every agent needs somewhere to clone. Well under the
+# volume so the database and an in-flight clone still have room.
+WORKSPACES_BUDGET_BYTES = int(_env("WORKSPACES_BUDGET_BYTES", str(6 * 1024**3)))
 WORKER_SCRIPT = Path(_env("WORKER_SCRIPT", str(ROOT / "worker" / "worker.py")))
 
 

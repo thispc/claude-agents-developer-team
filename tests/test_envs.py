@@ -150,6 +150,87 @@ def test_promote_does_not_rebuild(monkeypatch):
     assert '"set", "image"' in body      # kubectl set image, as separate argv
 
 
+def _fake_kubectl(monkeypatch, calls, images=None):
+    """A kubectl that answers the two `get` probes and records everything."""
+    images = {"devteam-conductor": "devteam-conductor:old"} if images is None else images
+
+    def run(*cmd, **kw):
+        calls.append(cmd)
+        out = ""
+        if "get" in cmd:
+            dep = cmd[cmd.index("deployment") + 1]
+            if dep in images:
+                out = images[dep] if "image" in cmd[-1] else "conductor"
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+    monkeypatch.setattr(envs, "kubectl_ok", lambda: True)
+    monkeypatch.setattr(envs, "_publish", lambda tag: (True, "published"))
+    monkeypatch.setattr(envs, "_state", lambda: {"images": [{"tag": "img:1"}], "envs": {}})
+    monkeypatch.setattr(envs, "_save", lambda st: None)
+    monkeypatch.setattr(envs, "_sh", run)
+
+
+def test_promotion_names_the_deployment_it_is_changing(monkeypatch):
+    """One app in the namespace made "the deployment" unambiguous. A second one
+    makes it a guess, and a guess here points production at someone else's image."""
+    calls: list[tuple] = []
+    _fake_kubectl(monkeypatch, calls, {"devteam-api": "devteam-api:old"})
+    r = envs.promote("img:1", deployment="devteam-api")
+    assert r["ok"] is True and r["deployment"] == "devteam-api"
+    setimg = next(c for c in calls if "set" in c and "image" in c)
+    assert "deployment/devteam-api" in setimg
+
+
+def test_promoting_into_a_deployment_that_is_not_there_fails_loudly(monkeypatch):
+    """A promote that quietly does nothing is worse than one that errors: it
+    reports the new image as live while production serves the old one."""
+    calls: list[tuple] = []
+    _fake_kubectl(monkeypatch, calls, {})          # nothing in the namespace
+    r = envs.promote("img:1", deployment="devteam-typo")
+    assert r["ok"] is False and "devteam-typo" in r["error"]
+    assert not any("set" in c and "image" in c for c in calls), \
+        "it changed something after failing to find the target"
+
+
+def test_the_target_is_named_and_never_selected(monkeypatch):
+    """Verified against the live cluster: `kubectl set image deployment/<name>`
+    exits 1 for a Deployment that is not there, but `--all` or a label selector
+    matching nothing exits 0 and prints nothing at all — success, no rollout."""
+    src = (REPO / "conductor" / "app" / "envs.py").read_text()
+    body = "\n".join(l for l in src.split("def promote(")[1].split("\ndef ")[0].splitlines()
+                     if not l.strip().startswith("#"))
+    assert "--all" not in body and '"-l"' not in body
+
+
+def test_a_deployment_name_kubectl_would_read_as_something_else_is_refused(monkeypatch):
+    """argv leaves no shell to inject into, but a leading '-' is still parsed as an
+    option and a '/' changes which resource TYPE is addressed."""
+    monkeypatch.setattr(envs, "kubectl_ok", lambda: True)
+    monkeypatch.setattr(envs, "_state", lambda: {"images": [{"tag": "img:1"}], "envs": {}})
+
+    def _boom(*a, **k):
+        raise AssertionError("reached the cluster with a name it should have refused")
+    monkeypatch.setattr(envs, "_sh", _boom)
+    for bad in ("--all", "-l app=x", "statefulset/devteam-conductor", "   "):
+        assert envs.promote("img:1", deployment=bad)["ok"] is False, bad
+        assert envs.rollback(deployment=bad)["ok"] is False, bad
+
+
+def test_promotion_still_defaults_to_production(monkeypatch):
+    """Explicit does not mean mandatory — the API and the dashboard call this with
+    a tag alone, and that must keep meaning the production deployment."""
+    calls: list[tuple] = []
+    _fake_kubectl(monkeypatch, calls)
+    monkeypatch.setattr(envs, "PROD_DEPLOYMENT", "devteam-conductor")
+    assert envs.promote("img:1")["deployment"] == "devteam-conductor"
+
+
+def test_rollback_undoes_the_deployment_it_was_asked_about(monkeypatch):
+    calls: list[tuple] = []
+    _fake_kubectl(monkeypatch, calls)
+    envs.rollback(deployment="devteam-api")
+    assert any("deployment/devteam-api" in c for c in calls)
+
+
 def test_a_failed_rollout_is_undone(monkeypatch):
     """Half a rollout on the platform that runs your team is worse than none."""
     src = (REPO / "conductor" / "app" / "envs.py").read_text()

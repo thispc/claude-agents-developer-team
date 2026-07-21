@@ -16,7 +16,7 @@ false, and the third is true only for DigitalOcean.
 |---|---|---|
 | G1 | ✗ | **Workers are Claude-only.** `FALLBACK_ORDER` is three Claude models and the worker is built on the Claude Agent SDK. `providers.py` speaks to three vendors but is used only by plan mode and recruiting. "Any agent in any role" is true for *planning*, false for *building*. Weeks of work: an agentic loop with file/shell tools per provider. |
 | G2 | ✗ | **No per-role provider or model choice.** The roster is `{role, count, model}` where model is the string `worker` or `lead`, resolved to Claude ids. You cannot say "backend on Gemini, tester on Claude". |
-| G3 | ✗ | **Git means github.com.** `API = "https://api.github.com"` is hardcoded. No GitHub Enterprise, Gitea, or self-hosted base URL. A user with their own git cannot use the platform at all. |
+| G3 | ◐ | **Git host is configurable; the dashboard's links are not.** `GIT_API`/`GIT_WEB`/`GIT_PROVIDER` route every API call, clone and credential check, and Gitea's real divergences (merge verb and body key, no `head` filter on list-pulls, `limit` not `per_page`, paged trees) are handled. Still hardcoded: the `github.com` links built in `routes.py` and `dashboard/app.js`, and the k8s launcher does not pass `GIT_WEB` into the worker's env, so k8s workers still clone from github.com. |
 | G4 | ◐ | **Cloud means DigitalOcean.** `deploy.py` is generic k8s/docker, but `envs.py` and `cloud.py` assume DOCR, DO firewalls and DO load balancers. No AWS/GCP path, and the DOKS-specific knowledge is baked into code rather than a provider interface. |
 | G5 | ✗ | **No custom model endpoints.** The provider list is fixed to Anthropic/OpenAI/Google. No Bedrock, Vertex, or self-hosted vLLM — which is the same "bring your own" promise applied to inference. |
 
@@ -57,9 +57,9 @@ comes back; the scheduler dispatches whatever is unblocked.
 
 | | | |
 |---|---|---|
-| G20 | ✗ | **No artifact versioning across sprints.** Sprint 1's output is overwritten by sprint 2. You cannot see what shipped when. |
-| G21 | ✗ | **No release notes.** Nothing summarises what changed between sprints. |
-| G22 | ✗ | **No per-agent artifacts.** The Artifacts tab has no agent dimension; you cannot see what a given role produced. |
+| G20 | ◐ | **Each sprint is frozen once the project leaves it.** `artifacts.py` writes the sprint's task record and the repo's file list into `sprint_artifacts`, so a later cycle reworking a task no longer rewrites what shipped earlier. Captured on read rather than at the sprint boundary, because the boundary lives in the manager session and would miss every project that already ran. Sprints from before this exists have no snapshot and read live, labelled as such. |
+| G21 | ◐ | **Release notes per sprint, assembled from the record.** Every line names the task it came from. A model may rewrite them into prose, but the draft is discarded whole if it cites a task the sprint did not contain, and the itemised facts are returned alongside either way. No dashboard surface yet. |
+| G22 | ◐ | **Per-teammate view over task artifacts**, not a second ownership model — `/api/projects/{id}/by-agent` groups tasks by `agent_id`, and projects from before teammates had names fall back to grouping by role. No dashboard surface yet. |
 | G23 | ◐ | **Non-code output is readable, not beautiful.** Files render as plain text — no markdown rendering, no diagrams, no document view. A blueprint project's output looks like a source dump. |
 | G24 | ◐ | **Two unrelated "run it" paths.** `deploy.py` (project apps) and `sandbox.py`/`envs.py` (the platform) do the same job with none of the same features. Project deploys have no canary, no image identity, no verification gate. |
 | G25 | ⚠ | **Project deploys can only go forward and back, not sideways.** Rollback exists now; there is still no preview-per-branch for a user's app. |

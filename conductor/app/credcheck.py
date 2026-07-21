@@ -17,7 +17,7 @@ from typing import Any
 
 import httpx
 
-from . import providers
+from . import config, github_client, providers
 
 TIMEOUT = 20
 
@@ -53,10 +53,13 @@ async def check(kind: str, value: str) -> dict[str, Any]:
 
 
 async def _github(token: str) -> dict[str, Any]:
+    # The configured host, not github.com: on a self-hosted server this check is
+    # the only thing that can tell the user their token is for the wrong place,
+    # and probing github.com would cheerfully pass a token that cannot reach the
+    # server the agents will actually push to.
     async with httpx.AsyncClient(timeout=TIMEOUT) as c:
-        r = await c.get("https://api.github.com/user",
-                        headers={"Authorization": f"Bearer {token}",
-                                 "Accept": "application/vnd.github+json"})
+        r = await c.get(f"{config.GIT_API}/user",
+                        headers=github_client.auth_headers(token))
     if r.status_code == 401:
         return _r(False, "GitHub rejected this token (401)",
                   "it is expired, revoked, or was pasted incompletely")
