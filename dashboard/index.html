@@ -312,7 +312,7 @@
         <text class="d-boxlabel" x="370" y="232">STAGING</text>
         <g class="d-node"><rect x="370" y="240" width="118" height="34" rx="3"/><text x="429" y="262">Conductor</text></g>
         <g class="d-node"><rect x="498" y="240" width="112" height="34" rx="3"/><text x="554" y="262">Teammates</text></g>
-        <g class="d-node plain"><rect x="370" y="282" width="240" height="28" rx="3"/><text x="490" y="301">Throwaway storage</text></g>
+        <g class="d-node plain"><rect x="370" y="282" width="240" height="28" rx="3"/><text x="490" y="301">Storage — its own, kept</text></g>
       </svg>
       <figcaption>One public entrance serves both environments — which one you reach is
         decided by the address you typed, not by a separate machine. Teammates only ever
@@ -340,7 +340,7 @@
       <tbody>
         <tr><td>Local</td><td>A program on your laptop</td><td>Nothing — your real records and keys.</td></tr>
         <tr><td>Sandbox</td><td>A second program on your laptop</td><td>Own records; every credential blanked, not removed.</td></tr>
-        <tr><td>Staging</td><td>Its own space on the cluster</td><td>Own records and address. Real keys, but not allowed to approve its own changes.</td></tr>
+        <tr><td>Staging</td><td>Its own space on the cluster</td><td>Own records, storage and address. Real keys, and it merges ordinary work — but never into the repository this platform is built from.</td></tr>
         <tr><td>Production</td><td>Its own space on the cluster</td><td>Own storage, real credentials. The live system.</td></tr>
       </tbody>
     </table>

@@ -206,7 +206,7 @@ attached to specific work), **tuning** (the dials, changeable without rebuilding
 |---|---|---|
 | Local | A program on your laptop | Nothing — real records, real keys |
 | Sandbox | A second program on your laptop | Own records; every credential blanked |
-| Staging | Its own space on the cluster | Own records and address; real keys, cannot approve its own changes. Storage is deliberately throwaway — a restart wipes it, which is what you want of a rehearsal |
+| Staging | Its own space on the cluster | Own records, own storage and own address; real keys, but it may not merge into the repository the platform is built from |
 | Production | Its own space on the cluster | Own storage, real credentials. The live system |
 
 The sandbox is not a miniature cluster — it is one extra copy of the program on

@@ -1,9 +1,20 @@
 # Staging: production's credentials, staging's identity.
 #
-# Its own database (emptyDir — thrown away with the pod, which is the
-# point), its own worker token, a run cap of 6, branch prefix staging/,
+# Its own database on its own volume, its own worker token, a run cap of 6,
+# branch prefix staging/,
 # and PROTECTED_REPOS set to this platform's own repo, so it behaves like a real
 # instance everywhere except the one place a merge would change what runs.
+# The volume the deployment below mounts. Declared here so `kubectl apply -f`
+# on this one file produces a working staging instance rather than a pod stuck
+# waiting for a claim somebody forgot to create.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: devteam-staging-data, namespace: devteam-staging}
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: do-block-storage
+  resources: {requests: {storage: 10Gi}}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata: {name: devteam-conductor, namespace: devteam-staging, labels: {app: devteam-conductor, devteam-env: staging}}
@@ -30,6 +41,19 @@ spec:
             httpGet: {path: /api/health, port: 8000}
             initialDelaySeconds: 5
             periodSeconds: 5
+      # A real volume, not an emptyDir.
+      #
+      # It was an emptyDir on the reasoning that a rehearsal environment should be
+      # disposable. That is right for the automated verification run, which creates
+      # its own data and does not care. It is wrong for how staging is actually
+      # used: a person trying the product there loses every project the next time
+      # anything is deployed, which is often. Losing someone's work to a routine
+      # rollout is not a property you want in the environment you ask people to
+      # try things in.
+      #
+      # The strategy above must be Recreate for the same reason production's is: a
+      # block volume is ReadWriteOnce, so a new pod cannot attach it while the old
+      # one still holds it.
       volumes:
         - name: data
-          emptyDir: {}
+          persistentVolumeClaim: {claimName: devteam-staging-data}
