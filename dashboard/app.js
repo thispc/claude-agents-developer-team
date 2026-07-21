@@ -2923,7 +2923,18 @@ async function renderDeploy() {
         escapeHtml(d.log)}</pre></details>` : ""}`;
   } else {
     const runnable = spec.kind && !["static", "unknown", "node-static"].includes(spec.kind);
-    box.innerHTML = `
+    // A static site has nothing to run, and that is not a problem to report — it
+    // is a different button. Offering a greyed-out Deploy next to "use the static
+    // preview instead" makes a project that works perfectly look broken, and
+    // leaves you to find the preview yourself.
+    const isStatic = spec.kind === "static" || spec.kind === "node-static";
+    box.innerHTML = isStatic ? `
+      <p class="detected"><b>Detected:</b> a static site — HTML, CSS and JavaScript
+        with no server behind it. Nothing needs building; it just opens.</p>
+      <button id="openStaticBtn" class="primary">▶ Open it</button>
+      <span class="hint">Serves the merged default branch straight from your repository.</span>
+      ${d.log ? `<details><summary>Last build log</summary><pre class="deploy-log">${
+        escapeHtml(d.log)}</pre></details>` : ""}` : `
       ${spec.kind ? `<p class="detected"><b>Detected:</b> ${escapeHtml(spec.kind)} —
          ${escapeHtml(spec.why || "")}</p>` : ""}
       <button id="deployAppBtn" class="primary" ${spec.kind && !runnable ? "disabled" : ""}>
@@ -2931,10 +2942,25 @@ async function renderDeploy() {
       <span class="hint">${modeNote}</span>
       ${spec.kind && !runnable
         ? `<p class="hint warn-t">Nothing to run — this project is ${escapeHtml(spec.kind)}.
-           The static preview is the right tool for it.</p>` : ""}
+           ${spec.kind === "unknown"
+             ? "Nothing here looked like an entrypoint. If the team has just merged something, this re-checks itself within a couple of minutes."
+             : "The static preview is the right tool for it."}</p>` : ""}
       ${d.log ? `<details><summary>Last build log</summary><pre class="deploy-log">${
         escapeHtml(d.log)}</pre></details>` : ""}`;
   }
+
+  const openStatic = $("#openStaticBtn");
+  if (openStatic) openStatic.addEventListener("click", async () => {
+    openStatic.disabled = true;
+    try {
+      const r = await api(`/api/projects/${currentProject}/preview`, { method: "POST" });
+      window.open(r.url, "_blank", "noopener");
+    } catch (e) {
+      toast(`Could not open it: ${e.message}`);
+    } finally {
+      openStatic.disabled = false;
+    }
+  });
 
   const go = $("#deployAppBtn") || $("#redeployBtn");
   if (go) go.addEventListener("click", async () => {

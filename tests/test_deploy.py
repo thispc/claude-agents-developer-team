@@ -516,3 +516,24 @@ def test_deployments_live_beside_the_workspaces_not_in_the_image(fresh_db):
     while the database still recorded a live deployment."""
     from app import config, deploy
     assert deploy.DEPLOY_DIR.parent == config.WORKSPACES_DIR.parent
+
+
+def test_a_static_project_gets_a_working_button_not_a_disabled_one(fresh_db):
+    """A game that runs perfectly showed a greyed-out Deploy next to "use the
+    static preview instead" — which reads as broken and leaves you to find the
+    preview yourself. There is nothing to build; it is a different button."""
+    from pathlib import Path
+    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    assert 'id="openStaticBtn"' in js
+    assert "▶ Open it" in js
+    # And it must actually reach the preview rather than just look like a button.
+    handler = js.split('$("#openStaticBtn")')[1][:500]
+    assert "/preview" in handler and "window.open" in handler
+
+
+def test_an_undetectable_project_says_it_will_re_check_itself(fresh_db):
+    """"Unknown" was permanent before, so telling someone it re-checks is only
+    honest now that it does."""
+    from pathlib import Path
+    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    assert "re-checks itself" in js
