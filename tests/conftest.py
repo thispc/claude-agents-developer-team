@@ -120,17 +120,22 @@ def root_client(client):
 
 
 @pytest.fixture()
-def root_can_run_agents(fresh_db):
-    """Give root credentials of its own, explicitly.
+def root_can_run_agents(fresh_db, monkeypatch):
+    """Make root able to start a project, explicitly.
 
-    Project creation refuses a user who cannot pay for their own agents. These
-    tests passed on a laptop only because the developer happened to have a
-    `claude` CLI login, which `config.AUTH_CONFIGURED` picks up — so they were
-    green for a reason that had nothing to do with what they assert, and red the
-    moment the same suite ran inside a container. Stating the precondition beats
-    inheriting it.
+    There are two gates and both were being satisfied by accident. Project
+    creation refuses a user with no credentials of their own, AND refuses when
+    the conductor itself is unauthenticated. On a developer machine a `claude`
+    CLI login satisfies both, so these tests were green for a reason that had
+    nothing to do with what they assert — and went red the moment the same suite
+    ran inside a container, where no such login exists.
+
+    AUTH_CONFIGURED is a module constant computed at import, so it is patched
+    rather than set: by the time a test runs, the environment has already been
+    read.
     """
-    from app import auth as auth_mod
+    from app import auth as auth_mod, config as config_mod
+    monkeypatch.setattr(config_mod, "AUTH_CONFIGURED", True)
     auth_mod.save_settings(1, {"anthropic_api_key": "sk-ant-test-not-a-real-key"})
     return auth_mod.get_user(1)
 
