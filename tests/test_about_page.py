@@ -105,9 +105,9 @@ def test_the_internal_door_really_has_three_requests_behind_it():
     routes = (Path(__file__).resolve().parent.parent
               / "conductor" / "app" / "routes.py").read_text()
     internal = routes.count('@router.get("/internal/') + routes.count('@router.post("/internal/')
-    assert internal == 3, (
+    assert internal == 4, (
         f"{internal} internal endpoints exist; the About page and handbook both say "
-        "three, and both need updating")
+        "four, and both need updating")
 
 
 def test_the_table_count_matches_the_schema():

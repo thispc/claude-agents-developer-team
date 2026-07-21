@@ -175,7 +175,7 @@ is not.
 
 ### The API, in families
 
-An *API* is the list of requests a program will answer. There are 109; the
+An *API* is the list of requests a program will answer. There are 110; the
 dashboard uses them for you.
 
 | Family | Example | For |
@@ -196,7 +196,7 @@ dashboard uses them for you.
 | Door | Who gets in | Why separate |
 |---|---|---|
 | `/api/…` | You, signed in | Normal use. Limited login attempts, surviving restarts |
-| `/internal/…` | Teammates, shared token | Three requests only: report work, post activity, look up a colleague. A teammate is not a user |
+| `/internal/…` | Teammates and the staging check, each with its own token | Four requests: report work, post activity, look up a colleague, and run this instance's own test suite. None of them is a user |
 | `/api/health` | Anyone | A monitor that had to sign in could not report that signing in was broken |
 
 ### The live feed

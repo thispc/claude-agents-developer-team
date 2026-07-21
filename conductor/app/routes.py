@@ -1109,6 +1109,38 @@ def staging_deploy(body: StagingReq, request: Request) -> dict:
     return r
 
 
+@router.post("/internal/self-verify")
+def self_verify(x_worker_token: str | None = Header(None)) -> dict:
+    """Run my own test suite and report the exit code.
+
+    Production used to reach into staging with a Kubernetes exec to do this. That
+    needed cross-namespace RBAC, and the Python client's websocket path is broken
+    against urllib3 2.x in a way that swallows the real error — the client's own
+    exception handler crashes decoding a None body, so every failure arrived as
+    "'NoneType' object has no attribute 'decode'" whatever had actually gone
+    wrong. Four separate causes hid behind that one message.
+
+    An instance running its own suite over plain HTTP has none of those problems,
+    and is a truer test anyway: it is the image testing itself, in its own
+    environment, exactly as it would run.
+    """
+    # Its own token, not the worker one — see config.VERIFY_TOKEN.
+    if not x_worker_token or not hmac.compare_digest(x_worker_token, config.VERIFY_TOKEN):
+        raise HTTPException(401, "bad verify token")
+    import subprocess
+    try:
+        r = subprocess.run(
+            ["python", "-m", "pytest", "tests", "-q", "-p", "no:cacheprovider",
+             "-m", "not live and not hostonly"],
+            cwd="/app", capture_output=True, text=True, timeout=1800)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "exit_code": None, "output": "",
+                "error": "the suite did not finish within 30 minutes"}
+    out = (r.stdout or "") + (r.stderr or "")
+    return {"ok": r.returncode == 0, "exit_code": r.returncode,
+            "image": cloud.current_image(), "output": out[-2000:]}
+
+
 @router.post("/api/self/staging/verify")
 def staging_verify(body: StagingReq, request: Request) -> dict:
     """Run the test suite inside staging — the check a boot canary cannot make."""

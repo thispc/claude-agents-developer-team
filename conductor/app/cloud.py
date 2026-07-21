@@ -396,113 +396,63 @@ def staging_deploy(image: str) -> dict[str, Any]:
 # that a slow run is not mistaken for a hung one, and short enough that a hung one
 # is not waited on all day.
 VERIFY_TIMEOUT = int(config._env("STAGING_VERIFY_TIMEOUT", "1500"))
+# Reached over the cluster's internal DNS, so the check never leaves the cluster
+# and does not depend on the public ingress being healthy.
+STAGING_URL = config._env(
+    "STAGING_URL", f"http://{DEPLOYMENT}.{STAGING_NS}.svc.cluster.local")
 
 def staging_verify(image: str) -> dict[str, Any]:
-    """Run the test suite inside staging, against real credentials.
+    """Ask staging to run its own test suite, and record the verdict if it passes.
 
-    This is the check the boot-canary cannot make. The suite runs in the same
-    image that would become production, in an environment holding the same kind
-    of credentials — so a change that only fails when something is real fails here
-    instead of in front of you.
+    Asked over HTTP rather than driven by a Kubernetes exec. The exec needed
+    cross-namespace RBAC and went through the Python client's websocket path,
+    which is broken against urllib3 2.x in a way that hides the real error: the
+    client's own exception handler crashes decoding a None body, so a permissions
+    problem, a misconfigured client and a working setup all reported
+    "'NoneType' object has no attribute 'decode'".
+
+    An instance running its own suite is also the truer test — it is the image
+    checking itself, in its own environment, exactly as it would run.
     """
     if not in_cluster():
         return {"ok": False, "error": "not in a cluster"}
-    from kubernetes import stream
-    core = _core()
-    # A permissions failure and an absent pod are different problems with the
-    # same old message. "no running staging pod to test in" sent a real
-    # investigation looking for a missing pod when the actual answer was a 403
-    # from RBAC — production had no rights in the staging namespace at all.
+    url = STAGING_URL.rstrip("/") + "/internal/self-verify"
     try:
-        pods = core.list_namespaced_pod(STAGING_NS, label_selector=f"app={DEPLOYMENT}")
+        import httpx
+        r = httpx.post(url, headers={"X-Worker-Token": config.VERIFY_TOKEN},
+                       timeout=VERIFY_TIMEOUT)
     except Exception as e:
-        forbidden = "403" in str(e) or "Forbidden" in str(e)
-        return {"ok": False, "error": (
-            f"not allowed to look in {STAGING_NS} — production's service account "
-            f"needs the devteam-staging-driver role (kubectl apply -f "
-            f"deploy/k8s/rbac.yaml)" if forbidden
-            else f"could not list staging pods: {str(e)[:200]}")}
-    pod = next((p.metadata.name for p in pods.items
-                if p.status.phase == "Running"), None)
-    if not pod:
-        return {"ok": False, "error": (
-            f"no running staging pod. {len(pods.items)} pod(s) matched "
-            f"app={DEPLOYMENT} in {STAGING_NS}, none of them Running — deploy "
-            f"staging first.")}
-    try:
-        # _preload_content=False and drain manually.
-        #
-        # The preloaded form buffers the whole exec and then decodes it, and on a
-        # command that runs for minutes the websocket has already been closed by
-        # the time it tries — which surfaces as "'NoneType' object has no
-        # attribute 'decode'", an error that says nothing about what went wrong.
-        # Draining explicitly also means a suite that hangs hits OUR deadline
-        # rather than an arbitrary one inside the client.
-        resp = stream.stream(
-            core.connect_get_namespaced_pod_exec, pod, STAGING_NS,
-            # Deselect tests that read the repository or drive host tooling: they
-            # verify the checkout, not the artifact, and neither exists in here.
-            #
-            # The exit code is echoed and read back, because this gate decides
-            # whether an image becomes production and it used to decide by
-            # searching the output for the word "failed". That is judging prose,
-            # which is precisely what the rest of this system refuses to do — and
-            # it would have called a run green if a test name happened to avoid
-            # the word, or red because a passing run mentioned it in a warning.
-            command=["sh", "-c",
-                     "cd /app && python -m pytest tests -q -p no:cacheprovider "
-                     "-m 'not live and not hostonly' 2>&1 | tail -20; "
-                     "echo \"__EXIT__:${PIPESTATUS[0]:-$?}\""],
-            stderr=True, stdout=True, stdin=False, tty=False,
-            _preload_content=False)
-        chunks: list[str] = []
-        deadline = time.time() + VERIFY_TIMEOUT
-        while resp.is_open():
-            if time.time() > deadline:
-                resp.close()
-                return {"ok": False, "image": image,
-                        "output": "".join(chunks)[-1500:],
-                        "error": f"the suite did not finish within "
-                                 f"{VERIFY_TIMEOUT // 60} minutes in staging"}
-            resp.update(timeout=5)
-            if resp.peek_stdout():
-                chunks.append(resp.read_stdout())
-            if resp.peek_stderr():
-                chunks.append(resp.read_stderr())
-        resp.close()
-        out = "".join(chunks)
-    except Exception as e:
-        forbidden = "403" in str(e) or "Forbidden" in str(e)
-        return {"ok": False, "error": (
-            f"not allowed to run commands in {STAGING_NS} — production's service "
-            f"account needs pods/exec there (deploy/k8s/rbac.yaml)" if forbidden
-            else f"could not run the suite: {str(e)[:300]}")}
+        return {"ok": False, "image": image,
+                "error": f"could not reach staging at {url}: {str(e)[:200]}"}
+    if r.status_code == 401:
+        return {"ok": False, "image": image,
+                "error": "staging rejected the token — production and staging must "
+                         "share VERIFY_TOKEN for this check (they deliberately do "
+                         "NOT share WORKER_TOKEN)"}
+    if r.status_code != 200:
+        return {"ok": False, "image": image,
+                "error": f"staging answered {r.status_code}: {r.text[:200]}"}
+    d = r.json()
 
-    text = out or ""
-    code = None
-    for line in text.splitlines():
-        if line.startswith("__EXIT__:"):
-            try:
-                code = int(line.split(":", 1)[1].strip())
-            except ValueError:
-                code = None
-    tail = "\n".join(l for l in text.strip().splitlines()
-                     if not l.startswith("__EXIT__:"))[-1500:]
-    if code is None:
-        return {"ok": False, "image": image, "output": tail,
-                "error": "the suite ran but did not report an exit code, so its "
-                         "result cannot be trusted — refusing to vouch for this image"}
-    if code != 0:
-        return {"ok": False, "image": image, "output": tail, "exit_code": code,
-                "error": f"the suite exited {code} inside staging"}
+    running = (d.get("image") or "")
+    if running and running != image:
+        return {"ok": False, "image": image, "output": (d.get("output") or "")[-1500:],
+                "error": (f"staging is running {running.split(':')[-1]}, not "
+                          f"{image.split(':')[-1]} — deploy the candidate to staging "
+                          f"first, or you would be vouching for the wrong build")}
+    if not d.get("ok"):
+        return {"ok": False, "image": image, "exit_code": d.get("exit_code"),
+                "output": (d.get("output") or "")[-1500:],
+                "error": d.get("error") or f"the suite exited {d.get('exit_code')} in staging"}
+
     recorded, why = _record_verified(image)
     if not recorded:
-        return {"ok": False, "image": image, "output": tail,
+        return {"ok": False, "image": image, "output": (d.get("output") or "")[-1500:],
                 "error": f"the suite passed but the verdict could not be recorded: {why}. "
                          f"Production would still refuse this image, so nothing was gained."}
-    return {"ok": True, "output": tail, "image": image, "exit_code": 0,
-            "note": "the suite ran inside staging, on the same image production "
-                    "would take"}
+    return {"ok": True, "image": image, "exit_code": 0,
+            "output": (d.get("output") or "")[-1500:],
+            "note": "staging ran its own suite on the image production would take"}
 
 
 VERIFIED_ANNOTATION = "devteam.io/staging-verified"

@@ -145,6 +145,14 @@ DEPLOY_PLATFORM = _env("DEPLOY_PLATFORM", "linux/amd64")
 
 CONDUCTOR_URL = _env("CONDUCTOR_URL", "http://localhost:8000")
 WORKER_TOKEN = _env("WORKER_TOKEN", "dev-token")
+# A separate shared secret for one narrow thing: production asking staging to run
+# its own test suite before an image is allowed to become production.
+#
+# Deliberately NOT the worker token. Staging gets its own of those precisely so a
+# staging worker cannot report into production, and reusing it here would undo
+# that to save a variable. Falls back to WORKER_TOKEN so a single-instance setup —
+# where there is no second environment to isolate from — needs no extra config.
+VERIFY_TOKEN = _env("VERIFY_TOKEN") or WORKER_TOKEN
 # Anchored to the repo root, NOT the process's working directory. A relative
 # path means the conductor silently opens (and creates) a different, empty
 # database if it is ever started from another directory — losing every project

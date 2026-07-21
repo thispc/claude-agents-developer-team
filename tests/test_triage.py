@@ -358,15 +358,6 @@ def test_staging_run_cap_is_small_by_default():
     assert int(cloud.STAGING_MAX_RUNS) <= 20
 
 
-@pytest.mark.hostonly
-def test_staging_verify_runs_the_real_suite():
-    from pathlib import Path
-    src = (Path(__file__).resolve().parent.parent / "conductor" / "app" / "cloud.py").read_text()
-    body = src.split("def staging_verify(")[1].split("\ndef ")[0]
-    assert "pytest" in body and "cd /app && python -m pytest tests" in body
-    assert "not hostonly" in body, "it would run repo tests that cannot pass in the image"
-
-
 def test_staging_routes_are_root_only(client, make_user, fresh_db, monkeypatch):
     from app import config as cfg
     monkeypatch.setattr(cfg, "SELFREPAIR_USERS", [])
@@ -452,33 +443,6 @@ def test_the_image_carries_its_own_tests():
 # --- the self-update gate has to be trustworthy ----------------------------
 
 @pytest.mark.hostonly
-def test_staging_verify_judges_by_exit_code_not_by_reading_the_output():
-    """It decided whether an image could become production by searching pytest's
-    output for the word "failed". That is judging prose — the exact thing the
-    rest of this system refuses to do — and it would call a run green if a test
-    name avoided the word, or red because a passing run mentioned it in a warning."""
-    from pathlib import Path
-    src = (Path(__file__).resolve().parent.parent
-           / "conductor" / "app" / "cloud.py").read_text()
-    body = src.split("def staging_verify(")[1].split("\ndef ")[0]
-    assert '" failed" not in' not in body, "still deciding by string match"
-    assert "__EXIT__" in body and "code != 0" in body
-    # An exit code that never arrived must not be read as success.
-    assert "did not report an exit code" in body
-
-
-@pytest.mark.hostonly
-def test_a_permissions_failure_does_not_masquerade_as_a_missing_pod():
-    """A 403 was reported as "no running staging pod to test in", which sent a
-    real investigation looking for a pod that was there the whole time."""
-    from pathlib import Path
-    src = (Path(__file__).resolve().parent.parent
-           / "conductor" / "app" / "cloud.py").read_text()
-    body = src.split("def staging_verify(")[1].split("\ndef ")[0]
-    assert "Forbidden" in body and "rbac.yaml" in body
-
-
-@pytest.mark.hostonly
 def test_a_verdict_that_could_not_be_recorded_is_not_reported_as_success():
     """Otherwise a suite passes, nothing is written, and the next self-update
     refuses an image somebody just watched go green with no explanation."""
@@ -520,3 +484,69 @@ def test_no_kubernetes_client_is_built_without_being_pointed_at_the_cluster():
         src = src.replace(block, "")
     stray = re.findall(r"client\.(?:CoreV1Api|AppsV1Api)\(\)", src)
     assert not stray, f"{len(stray)} client(s) built outside _api()/_core()"
+
+
+@pytest.mark.hostonly
+def test_the_verify_check_does_not_reuse_the_worker_token():
+    """Staging gets its own worker token precisely so a staging worker cannot
+    report into production. Reusing it for this check would undo that isolation
+    to save a variable."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent / "conductor" / "app"
+    cfg = (root / "config.py").read_text()
+    cloud_src = (root / "cloud.py").read_text()
+    assert "VERIFY_TOKEN = _env(\"VERIFY_TOKEN\") or WORKER_TOKEN" in cfg
+    assert "config.VERIFY_TOKEN" in cloud_src
+    body = cloud_src.split("def staging_verify(")[1].split("\ndef ")[0]
+    assert "config.WORKER_TOKEN" not in body
+
+
+@pytest.mark.hostonly
+def test_staging_verify_refuses_to_vouch_for_a_build_staging_is_not_running():
+    """Otherwise production is told an image is safe on the strength of a suite
+    that ran against a different one."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "conductor" / "app" / "cloud.py").read_text()
+    body = src.split("def staging_verify(")[1].split("\ndef ")[0]
+    assert "not" in body and "vouching for the wrong build" in body
+
+
+@pytest.mark.hostonly
+def test_an_instance_can_run_its_own_suite():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "conductor" / "app" / "routes.py").read_text()
+    assert '@router.post("/internal/self-verify")' in src
+    body = src.split('def self_verify(')[1].split("\n@router")[0]
+    assert "r.returncode == 0" in body, "still judging the suite by its prose"
+
+
+@pytest.mark.hostonly
+def test_the_gate_judges_staging_by_an_exit_code():
+    """It decided whether an image could become production by searching pytest's
+    output for the word "failed" — judging prose, which this system refuses to do
+    everywhere else. Staging now runs its own suite and reports returncode."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent / "conductor" / "app"
+    cloud_src = (root / "cloud.py").read_text()
+    routes = (root / "routes.py").read_text()
+    body = cloud_src.split("def staging_verify(")[1].split("\ndef ")[0]
+    assert '" failed" not in' not in body
+    assert 'd.get("ok")' in body
+    assert "r.returncode == 0" in routes
+
+
+@pytest.mark.hostonly
+def test_the_gate_no_longer_depends_on_a_kubernetes_exec():
+    """The websocket path in the Python client is broken against urllib3 2.x, and
+    its own error handler crashes decoding a None body — so a permissions problem,
+    a misconfigured client and a working setup all reported the same
+    "'NoneType' object has no attribute 'decode'". Four causes hid behind one
+    message before the exec was removed."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "conductor" / "app" / "cloud.py").read_text()
+    body = src.split("def staging_verify(")[1].split("\ndef ")[0]
+    assert "connect_get_namespaced_pod_exec" not in body
+    assert "httpx.post" in body
