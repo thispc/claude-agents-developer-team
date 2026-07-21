@@ -314,7 +314,7 @@ async def release_notes(project_id: int, sprint: int, settings: dict | None = No
            "recorded": recorded, "facts": view, "frozen": view["frozen"]}
     if provider and settings:
         allowed = {i["seq"] for i in view["delivered"] + view["failed"] + view["open"]}
-        model = model or providers.default_model(provider)
+        model = model or providers.default_model(provider, settings)
         try:
             draft = await providers.complete(provider, model, NOTES_SYSTEM,
                                              _prompt(view), settings, max_tokens=800)

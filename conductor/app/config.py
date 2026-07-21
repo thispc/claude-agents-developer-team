@@ -54,6 +54,34 @@ def auth_mode() -> str:
 GEMINI_API_KEY = _env("GEMINI_API_KEY") or _env("GEMINI_KEY")
 OPENAI_API_KEY = _env("OPENAI_API_KEY")
 
+
+def _custom_endpoints() -> list:
+    """The operator's own inference endpoints, as JSON in one variable.
+
+    Bring-your-own-keys was never only about keys: a user with a vLLM server on
+    their own cluster, an Azure deployment or a Bedrock gateway had no way in at
+    all. Endpoints are normally configured per user in Settings; this variable
+    exists for the same reason the key variables do — an operator running the
+    server does not want to type their own infrastructure into a web form on
+    every fresh database.
+
+    Malformed JSON is ignored rather than fatal. A typo here must not stop the
+    server from booting, because at that point nobody can log in to fix it.
+    """
+    import json
+    raw = _env("CUSTOM_MODEL_ENDPOINTS").strip()
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except ValueError as e:
+        print(f"[startup] CUSTOM_MODEL_ENDPOINTS is not valid JSON, ignoring it: {e}")
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+CUSTOM_ENDPOINTS = _custom_endpoints()
+
 LEAD_MODEL = _env("LEAD_MODEL", "claude-sonnet-5")
 WORKER_MODEL = _env("WORKER_MODEL", "claude-haiku-4-5")
 ESCALATION_MODEL = _env("ESCALATION_MODEL", "claude-sonnet-5")

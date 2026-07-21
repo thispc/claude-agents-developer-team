@@ -14,7 +14,7 @@ import secrets
 import sqlite3
 import time
 
-from . import config, db
+from . import config, db, providers
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -203,6 +203,11 @@ def get_settings(user: dict) -> dict:
         s.setdefault("claude_oauth_token", config.CLAUDE_CODE_OAUTH_TOKEN)
         s.setdefault("gemini_api_key", config.GEMINI_API_KEY)
         s.setdefault("openai_api_key", config.OPENAI_API_KEY)
+        # Same root-only rule for the operator's own inference endpoints. setdefault
+        # and not merge: once root has saved endpoints in the app, those are what
+        # root meant, and silently re-adding a decommissioned server from .env would
+        # put an endpoint back that the operator had deliberately removed.
+        s.setdefault("custom_endpoints", config.CUSTOM_ENDPOINTS)
         return {k: v for k, v in s.items() if v}   # drop the blanks setdefault added
     return s
 
@@ -234,6 +239,40 @@ def save_settings(user_id: int, updates: dict) -> dict:
     return current
 
 
+def save_endpoint(user: dict, raw: dict) -> dict:
+    """Add or replace one custom inference endpoint on this user.
+
+    Replaces by id rather than appending, so saving the same endpoint twice is a
+    correction and not a duplicate the picker then shows twice.
+
+    An omitted `api_key` KEEPS the stored one. The dialog never sends a key back
+    to the browser, so a user editing the model list of an endpoint would submit a
+    blank key field and silently un-authenticate a working server — the same trap
+    the redaction exists to avoid. Clearing a key is an explicit empty string,
+    matching how `save_settings` already treats one.
+    """
+    ep = providers.normalise_endpoint(raw)
+    if not ep:
+        raise ValueError("an endpoint needs a name and a base URL")
+    existing = {e["id"]: e for e in providers.custom_endpoints(get_settings(user))}
+    if raw.get("api_key") is None and ep["id"] in existing:
+        ep["api_key"] = existing[ep["id"]]["api_key"]
+    existing[ep["id"]] = ep
+    save_settings(user["id"], {"custom_endpoints": list(existing.values())})
+    return ep
+
+
+def delete_endpoint(user: dict, endpoint_id: str) -> bool:
+    kept = [e for e in providers.custom_endpoints(get_settings(user))
+            if e["id"] != endpoint_id]
+    if len(kept) == len(providers.custom_endpoints(get_settings(user))):
+        return False
+    # An empty list, not a cleared key: save_settings drops a key on "" only, and
+    # dropping this one would hand root back whatever .env still names.
+    save_settings(user["id"], {"custom_endpoints": kept})
+    return True
+
+
 def redacted(settings: dict) -> dict:
     """Never send secrets back to the browser — only whether they're set."""
     if config.DEMO_MODE:
@@ -243,13 +282,22 @@ def redacted(settings: dict) -> dict:
         return {k: True for k in ("github_token_set", "anthropic_api_key_set",
                                   "claude_oauth_token_set")} | {
             "openai_api_key_set": False, "gemini_api_key_set": False,
-            "github_login": "sandbox"}
+            "custom_endpoints": [], "github_login": "sandbox"}
     return {
         "github_token_set": bool(settings.get("github_token")),
         "anthropic_api_key_set": bool(settings.get("anthropic_api_key")),
         "claude_oauth_token_set": bool(settings.get("claude_oauth_token")),
         "openai_api_key_set": bool(settings.get("openai_api_key")),
         "gemini_api_key_set": bool(settings.get("gemini_api_key")),
+        # An endpoint is configuration, not a secret — the user needs to see the
+        # base URL to know which server they pointed at. Only the key is withheld,
+        # and whether one is set is itself worth showing: a server that needs a key
+        # and has none fails identically to a server that is down.
+        "custom_endpoints": [
+            {"id": e["id"], "label": e["label"], "base_url": e["base_url"],
+             "key_header": e["key_header"], "key_set": bool(e["api_key"]),
+             "models": [m["id"] for m in e["models"]]}
+            for e in providers.custom_endpoints(settings)],
         "github_login": settings.get("github_login", ""),
     }
 

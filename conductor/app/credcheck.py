@@ -25,6 +25,10 @@ TIMEOUT = 20
 KINDS = ("github_token", "anthropic_api_key", "claude_oauth_token",
          "openai_api_key", "gemini_api_key")
 
+# A custom endpoint is checked by id, not by value: the thing being proved is a
+# URL, a key and a model list together, and any one of them alone proves nothing.
+ENDPOINT_KIND = "custom_endpoint"
+
 
 def _r(ok: bool, detail: str, hint: str = "") -> dict[str, Any]:
     return {"ok": ok, "detail": detail, "hint": hint}
@@ -50,6 +54,81 @@ async def check(kind: str, value: str) -> dict[str, Any]:
         return _r(False, "timed out", "the provider did not respond in time; try again")
     except Exception as e:                       # a check must never 500 the dialog
         return _r(False, f"check failed: {str(e)[:200]}")
+
+
+async def check_endpoint(ep: dict) -> dict[str, Any]:
+    """Verify a custom inference endpoint the same way a key is verified.
+
+    An endpoint that silently does not work is indistinguishable from a broken
+    key — the project fails hours later and nothing points back at Settings — so
+    this makes the same real call the platform will make: one chat completion, in
+    OpenAI's shape, against a model the user actually configured.
+
+    The model list is fetched first where the server offers one, because the most
+    common misconfiguration is not a dead server but a right server with a model
+    id that is not on it, and "returns 404" is a far worse answer than "this
+    server has llama-3.3-70b, not llama-3.1-70b".
+
+    Never raises. A failed check is a result.
+    """
+    ep = providers.normalise_endpoint(ep) or {}
+    if not ep:
+        return _r(False, "this endpoint has no base URL")
+    headers = providers.auth_headers(ep["api_key"], ep["key_header"])
+    listed: list[str] = []
+    list_note = ""
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT) as c:
+            r = await c.get(ep["base_url"].partition("?")[0].rstrip("/") + "/models",
+                            headers=headers)
+        if r.status_code == 200:
+            listed = [m.get("id", "") for m in (r.json().get("data") or []) if m.get("id")]
+        elif r.status_code in (401, 403):
+            return _r(False, f"{ep['label']} rejected the key ({r.status_code})",
+                      "check the key, and whether this server wants it under a "
+                      "header other than Authorization (Azure uses `api-key`)")
+        else:
+            # Azure exposes no /models at the deployment path and proxies often
+            # disable it. Not being able to list is not a failure — it only means
+            # the completion below is the whole of the evidence.
+            list_note = f"no model list (GET /models returned {r.status_code})"
+    except Exception as e:
+        return _r(False, f"could not reach {ep['label']}: {str(e)[:150]}",
+                  "check the base URL, and that this server is reachable from the "
+                  "conductor — a private cluster address will not be")
+
+    model = (ep["models"][0]["id"] if ep["models"]
+             else (listed[0] if listed else ""))
+    if not model:
+        return _r(False, f"{ep['label']} is reachable but no model is configured",
+                  "add at least one model id; the endpoint offered no list to pick from")
+
+    try:
+        text = await providers._openai_compatible(
+            ep["base_url"], ep["api_key"], ep["key_header"], model,
+            "Reply with OK.", "Reply with OK.", 16, ep["label"])
+    except Exception as e:
+        detail = str(e)[:250]
+        hint = ""
+        if listed and model not in listed:
+            hint = (f"this server does not list {model} — it offers: "
+                    f"{', '.join(listed[:6])}")
+        elif "404" in detail:
+            hint = ("a 404 usually means the base URL is missing its version "
+                    "segment — most servers want it to end in /v1")
+        return _r(False, f"{ep['label']} would not complete on {model}: {detail}", hint)
+
+    unknown = [m["id"] for m in ep["models"] if listed and m["id"] not in listed]
+    detail = f"{ep['label']} answered on {model} ({text.strip()[:40]})"
+    if listed:
+        detail += f" — {len(listed)} model(s) available"
+    hint = list_note
+    if unknown:
+        # Only the first model was proved. Saying the rest are fine would be the
+        # same lie this module exists to stop: a seat configured on one of them
+        # dies at dispatch, hours later, with no trail back here.
+        hint = f"configured but not offered by this server: {', '.join(unknown[:6])}"
+    return {**_r(True, detail, hint), "models": listed}
 
 
 async def _github(token: str) -> dict[str, Any]:

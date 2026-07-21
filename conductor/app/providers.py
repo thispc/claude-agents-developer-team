@@ -443,7 +443,7 @@ async def _google(model: str, system: str, prompt: str, settings: dict,
     return text
 
 
-def default_model(provider: str) -> str:
+def default_model(provider: str, settings: dict | None = None) -> str:
     """A sensible model when a caller has a provider but no specific model.
 
     Second in each list, not first: the top entry is the most capable and the most
@@ -451,7 +451,15 @@ def default_model(provider: str) -> str:
     priciest option available. An empty model string reaches the vendor API as a
     404 with an unhelpful message, so this exists to make "provider only" a valid
     thing to ask for.
+
+    A custom endpoint takes the FIRST of its models instead. That ordering is a
+    cost ranking we wrote; a user's list is whatever they typed, usually one model,
+    and skipping past it to serve nothing would be a rule applied where it means
+    nothing.
     """
+    ep = endpoint(provider, settings)
+    if ep:
+        return ep["models"][0]["id"] if ep["models"] else ""
     models = PROVIDERS.get(provider, {}).get("models") or []
     if not models:
         return ""
