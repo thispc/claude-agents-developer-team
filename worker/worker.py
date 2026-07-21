@@ -2,11 +2,18 @@
 
 Runs as a k8s Job (or local subprocess). Contract (env vars, set by the conductor's
 launcher): TASK_ID, PROJECT_ID, ROLE, TASK_TITLE, TASK_DESCRIPTION, TASK_FEEDBACK,
-BRANCH, REPO, GITHUB_TOKEN, GIT_WEB, MODEL, MAX_TURNS, CONDUCTOR_URL, WORKER_TOKEN,
-ANTHROPIC_API_KEY.
+BRANCH, REPO, GITHUB_TOKEN, GIT_WEB, PROVIDER, MODEL, MAX_TURNS, CONDUCTOR_URL,
+WORKER_TOKEN, ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY.
 
-Flow: clone repo -> checkout task branch -> run a headless Claude session with the
+Flow: clone repo -> checkout task branch -> run a headless agent session with the
 role prompt -> commit & push -> POST the final report to the conductor.
+
+PROVIDER selects the engine and nothing else. "anthropic" (the default, and what
+every project created before this existed sends) is the Claude Agent SDK path,
+unchanged. Anything else goes through agentic.py, which drives that provider's
+own tool calling around the same clone. Everything downstream of the session —
+verification, commit, push, the report — is shared, which is the reason the
+conductor never has to ask who did the work.
 """
 
 import asyncio
@@ -44,6 +51,7 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 # The git host to clone from and push to. Defaults to github.com, so a worker
 # that is never told otherwise behaves exactly as it always has.
 GIT_WEB = os.environ.get("GIT_WEB", "https://github.com").rstrip("/")
+PROVIDER = (os.environ.get("PROVIDER") or "anthropic").strip().lower()
 MODEL = os.environ.get("MODEL", "claude-haiku-4-5")
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "40"))
 CONDUCTOR_URL = os.environ.get("CONDUCTOR_URL", "http://localhost:8000").rstrip("/")
@@ -423,6 +431,77 @@ def build_prompt() -> str:
     return "\n".join(parts)
 
 
+async def run_claude_session(system_prompt: str, repo_dir: Path) -> tuple[str, float, str | None]:
+    """The original Claude Agent SDK session, lifted out of run() unchanged.
+
+    bypassPermissions inside a disposable clone is the deliberate posture: an agent
+    that has to ask permission cannot build anything unattended, and there is no
+    human at the other end of the prompt.
+    """
+    options = ClaudeAgentOptions(
+        system_prompt=system_prompt,
+        model=MODEL,
+        max_turns=MAX_TURNS,
+        cwd=str(repo_dir),
+        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep",
+                       "mcp__team__ask_teammate"],
+        mcp_servers={"team": build_helper_server()},
+        permission_mode="bypassPermissions",
+        env={"GIT_TERMINAL_PROMPT": "0"},
+    )
+
+    last_text = ""
+    cost = 0.0
+    error: str | None = None
+    try:
+        async for message in query(prompt=build_prompt(), options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock) and block.text.strip():
+                        last_text = block.text
+                        emit("message", block.text)
+                    elif isinstance(block, ToolUseBlock):
+                        summary = str(block.input or {})[:300]
+                        emit("tool_use", f"{block.name}: {summary}")
+            elif isinstance(message, ResultMessage):
+                cost = message.total_cost_usd or 0.0
+    except Exception as e:
+        error = str(e)
+    return last_text, cost, error
+
+
+PROVIDER_KEY_ENV = {"openai": "OPENAI_API_KEY", "google": "GEMINI_API_KEY"}
+
+
+async def run_agentic_session(system_prompt: str, repo_dir: Path) -> tuple[str, float, str | None]:
+    """The same job on OpenAI or Gemini, through their own function calling.
+
+    Returns the same triple as the Claude path so everything after it — verify,
+    commit, push, report — cannot tell the difference. A missing key is returned as
+    an error rather than raised, so the caller still salvages and pushes whatever
+    is in the clone (nothing, in that case) and the boss gets a report saying why.
+    """
+    import agentic
+
+    key = os.environ.get(PROVIDER_KEY_ENV.get(PROVIDER, ""), "")
+    if not key:
+        return "", 0.0, (f"no {PROVIDER} credentials reached this worker — add the key "
+                         f"in Settings, or move this teammate to a provider you have")
+    spend = {"usd": 0.0}
+    try:
+        last_text, cost = await agentic.run_session(
+            provider=PROVIDER, model=MODEL, key=key,
+            system=system_prompt + agentic.TOOL_BRIEFING,
+            prompt=build_prompt(), repo_dir=repo_dir, max_turns=MAX_TURNS,
+            emit=emit, spend=spend)
+        return last_text, cost, None
+    except Exception as e:
+        # The turn limit and a rate limit both arrive here, and their wording is
+        # load-bearing: the launcher reads the report to tell a capacity death from
+        # a quality failure, and to give a turn-starved retry a bigger budget.
+        return "", spend["usd"], str(e)
+
+
 async def run() -> None:
     emit("agent_status", "running")
     try:
@@ -458,35 +537,10 @@ async def run() -> None:
     # finish" would be a way to talk the platform out of its own safeguards.
     system_prompt += os.environ.get("AGENT_CONTEXT", "")
 
-    options = ClaudeAgentOptions(
-        system_prompt=system_prompt,
-        model=MODEL,
-        max_turns=MAX_TURNS,
-        cwd=str(repo_dir),
-        allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep",
-                       "mcp__team__ask_teammate"],
-        mcp_servers={"team": build_helper_server()},
-        permission_mode="bypassPermissions",
-        env={"GIT_TERMINAL_PROMPT": "0"},
-    )
-
-    last_text = ""
-    cost = 0.0
-    error: str | None = None
-    try:
-        async for message in query(prompt=build_prompt(), options=options):
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock) and block.text.strip():
-                        last_text = block.text
-                        emit("message", block.text)
-                    elif isinstance(block, ToolUseBlock):
-                        summary = str(block.input or {})[:300]
-                        emit("tool_use", f"{block.name}: {summary}")
-            elif isinstance(message, ResultMessage):
-                cost = message.total_cost_usd or 0.0
-    except Exception as e:
-        error = str(e)
+    if PROVIDER == "anthropic":
+        last_text, cost, error = await run_claude_session(system_prompt, repo_dir)
+    else:
+        last_text, cost, error = await run_agentic_session(system_prompt, repo_dir)
 
     if error:
         # Salvage: commit and push anything already written before giving up, so a

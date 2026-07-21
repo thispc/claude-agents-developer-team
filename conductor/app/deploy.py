@@ -18,6 +18,16 @@ port has no such ambiguity.
 the operator's user account, so it is started with a minimal env: no
 ANTHROPIC_API_KEY, no GITHUB_TOKEN, no WORKER_TOKEN. It cannot read the
 credentials of the platform that built it.
+
+**A branch can be run before it is merged.** `branch` gets its own image, its own
+Deployment and its own hostname beside the deployed app, so "does this work?" is
+answerable while the change is still reviewable. Nothing about the live app is
+touched — a preview that shared it would be a deployment with extra steps.
+
+The mechanics of shipping — content-hash tags, cross-architecture builds, the
+canary that proves an image boots before it takes over, promotion into a named
+Deployment, rollback — are `rollout.py`, shared with the platform's own deploy
+path. They were written twice, differently, and only one of the two had them.
 """
 
 import json
@@ -30,15 +40,41 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import bus, config, db
+from . import bus, config, db, provider, rollout
 
 DEPLOY_DIR = Path(config._env("DEPLOY_DIR", str(config.ROOT / "deployments")))
 PORT_RANGE_START = int(config._env("DEPLOY_PORT_START", "8600"))
 BUILD_TIMEOUT = int(config._env("DEPLOY_BUILD_TIMEOUT", "600"))
 BOOT_TIMEOUT = int(config._env("DEPLOY_BOOT_TIMEOUT", "90"))
+APP_PORT = 8080
 
-# project_id -> {"proc": Popen, "port": int, "started": float, "spec": dict}
-RUNNING: dict[int, dict[str, Any]] = {}
+# slot -> {"proc": Popen, "port": int, "started": float, "spec": dict}. A slot is
+# the project id for the deployed app and "<id>@<branch>" for a branch preview,
+# so the two never collide and a preview can be stopped without stopping the app.
+RUNNING: dict[Any, dict[str, Any]] = {}
+
+
+def _slot(project_id: int, branch: str = "") -> Any:
+    """Left as the bare int when there is no branch, so every existing record,
+    pid file and log path keeps the name it already had on disk."""
+    return project_id if not branch else f"{project_id}@{rollout.safe_label(branch)}"
+
+
+def app_name(project_id: int, branch: str = "") -> str:
+    return (f"devteam-app-{project_id}" if not branch
+            else f"devteam-app-{project_id}-{rollout.safe_label(branch)}")
+
+
+def safe_branch(branch: str) -> str:
+    """A git ref we are willing to hand to `git clone --branch`.
+
+    It reaches argv, not a shell, so this is not about quoting: a ref beginning
+    with '-' is read by git as an option, and '..' is how a clone escapes the
+    directory it was told to use.
+    """
+    from . import sandbox
+    b = (branch or "").strip()
+    return b if b and sandbox._safe_ref(b) and not b.startswith("-") else ""
 
 
 # --------------------------------------------------------------------------
@@ -105,7 +141,7 @@ def detect(root: Path) -> dict[str, Any]:
 
 def _free_port() -> int:
     for p in range(PORT_RANGE_START, PORT_RANGE_START + 200):
-        if p in {r["port"] for r in RUNNING.values()}:
+        if p in {r["port"] for r in RUNNING.values()}:      # includes branch previews
             continue
         with socket.socket() as s:
             if s.connect_ex(("127.0.0.1", p)) != 0:
@@ -130,17 +166,28 @@ def _child_env(port: int) -> dict[str, str]:
     }
 
 
-def pid_file(project_id: int) -> Path:
-    return DEPLOY_DIR / str(project_id) / "running.json"
+def _base(project_id: int, branch: str = "") -> Path:
+    """Where a slot keeps its checkout, its log and its pid file.
+
+    A branch preview gets its own directory rather than sharing the app's: they
+    are different code, and a preview that overwrote the deployed app's checkout
+    would make the next rollback redeploy the branch.
+    """
+    root = DEPLOY_DIR / str(project_id)
+    return root if not branch else root / "branches" / rollout.safe_label(branch)
 
 
-def _adopt(project_id: int) -> dict[str, Any] | None:
+def pid_file(project_id: int, branch: str = "") -> Path:
+    return _base(project_id, branch) / "running.json"
+
+
+def _adopt(project_id: int, branch: str = "") -> dict[str, Any] | None:
     """Re-attach to an app still running after the conductor restarted.
 
     Without this, a restart loses the handle and the app keeps holding its port
     forever with no way to stop it from the UI.
     """
-    f = pid_file(project_id)
+    f = pid_file(project_id, branch)
     if not f.exists():
         return None
     try:
@@ -156,8 +203,9 @@ def _adopt(project_id: int) -> dict[str, Any] | None:
         f.unlink(missing_ok=True)
         return None
     entry = {"proc": _Adopted(rec["pid"]), "port": rec["port"],
-             "started": rec.get("started", time.time()), "spec": rec.get("spec", {})}
-    RUNNING[project_id] = entry
+             "started": rec.get("started", time.time()), "spec": rec.get("spec", {}),
+             "branch": branch}
+    RUNNING[_slot(project_id, branch)] = entry
     return entry
 
 
@@ -185,16 +233,16 @@ class _Adopted:
             pass
 
 
-def workdir(project_id: int) -> Path:
-    return DEPLOY_DIR / str(project_id) / "repo"
+def workdir(project_id: int, branch: str = "") -> Path:
+    return _base(project_id, branch) / "repo"
 
 
-def log_path(project_id: int) -> Path:
-    return DEPLOY_DIR / str(project_id) / "deploy.log"
+def log_path(project_id: int, branch: str = "") -> Path:
+    return _base(project_id, branch) / "deploy.log"
 
 
-def _log(project_id: int, line: str) -> None:
-    p = log_path(project_id)
+def _log(project_id: int, line: str, branch: str = "") -> None:
+    p = log_path(project_id, branch)
     p.parent.mkdir(parents=True, exist_ok=True)
     with p.open("a") as f:
         f.write(f"[{time.strftime('%H:%M:%S')}] {line}\n")
@@ -220,8 +268,8 @@ async def sync_from_workspace(project_id: int, workspace: str) -> tuple[bool, st
                   + (f" ({dirty} uncommitted change(s))" if dirty else ""))
 
 
-async def sync_code(project_id: int) -> tuple[bool, str]:
-    """Fresh checkout of the default branch — deployments always use latest main."""
+async def sync_code(project_id: int, branch: str = "") -> tuple[bool, str]:
+    """Fresh checkout of the default branch, or of `branch` for a preview."""
     from . import github_client
 
     project = db.get_project(project_id)
@@ -229,16 +277,24 @@ async def sync_code(project_id: int) -> tuple[bool, str]:
         return False, "no repo attached to this project"
     if not github_client.enabled(project["repo"]):
         return False, "GitHub is not configured, so the code can't be fetched"
-    dest = workdir(project_id)
+    if branch and not safe_branch(branch):
+        return False, f"refusing {branch!r} as a git branch"
+    dest = workdir(project_id, branch)
     url = github_client.clone_url(project["repo"], config.GITHUB_TOKEN)
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
-    r = subprocess.run(["git", "clone", "--depth", "1", url, str(dest)],
-                       capture_output=True, text=True, timeout=300)
+    cmd = ["git", "clone", "--depth", "1"]
+    if branch:
+        cmd += ["--branch", branch]
+    r = subprocess.run([*cmd, url, str(dest)], capture_output=True, text=True, timeout=300)
     if r.returncode != 0:
-        return False, f"clone failed: {r.stderr[-300:]}"
-    return True, "checked out the latest main"
+        # A branch that does not exist is by far the most common way this fails,
+        # and git says so only in the middle of a paragraph about remotes.
+        return False, (f"clone of {branch!r} failed — does that branch exist on the "
+                       f"remote? {r.stderr[-200:]}" if branch
+                       else f"clone failed: {r.stderr[-300:]}")
+    return True, (f"checked out branch {branch}" if branch else "checked out the latest main")
 
 
 def _wait_healthy(port: int, proc: subprocess.Popen, path: str) -> tuple[bool, str]:
@@ -260,16 +316,25 @@ def _wait_healthy(port: int, proc: subprocess.Popen, path: str) -> tuple[bool, s
     return False, f"no response on port {port} within {BOOT_TIMEOUT}s ({last[:120]})"
 
 
-def stop(project_id: int) -> str:
-    # Tear down a k8s deployment first (label was set at apply time). Harmless when
-    # there is nothing there; essential so cloud resources don't leak.
+def stop(project_id: int, branch: str = "") -> str:
+    # Tear down the k8s objects first (labels were set at apply time). Harmless
+    # when there is nothing there; essential so cloud resources don't leak.
+    #
+    # Without a branch this means the DEPLOYED app and not its previews, which is
+    # what `!devteam/branch` buys: stopping the app is a different intention from
+    # discarding every branch someone is still looking at. Objects created before
+    # previews existed carry no such label, so they still match.
+    slot = _slot(project_id, branch)
     if shutil.which("kubectl"):
+        selector = (f"devteam/project={project_id},"
+                    + (f"devteam/branch={rollout.safe_label(branch)}" if branch
+                       else "!devteam/branch"))
         subprocess.run(["kubectl", "delete", "deployment,service,ingress",
                         "-n", config.K8S_NAMESPACE,
-                        "-l", f"devteam/project={project_id}", "--ignore-not-found"],
+                        "-l", selector, "--ignore-not-found"],
                        capture_output=True, text=True)
-    r = RUNNING.pop(project_id, None) or (_adopt(project_id) and RUNNING.pop(project_id, None))
-    pid_file(project_id).unlink(missing_ok=True)
+    r = RUNNING.pop(slot, None) or (_adopt(project_id, branch) and RUNNING.pop(slot, None))
+    pid_file(project_id, branch).unlink(missing_ok=True)
     if not r:
         return "stopped"
     proc = r["proc"]
@@ -284,7 +349,7 @@ def stop(project_id: int) -> str:
             proc.kill()
         except Exception:
             pass
-    _log(project_id, "stopped by the operator")
+    _log(project_id, "stopped by the operator", branch)
     return "stopped"
 
 
@@ -313,41 +378,70 @@ def history(project_id: int) -> list[dict]:
         return []
 
 
-async def rollback(project_id: int) -> dict[str, Any]:
+async def rollback(project_id: int, branch: str = "") -> dict[str, Any]:
     """Redeploy the last source that actually came up healthy.
 
     A project deploy could previously only go forwards: if a deploy broke the app
     the only move was to fix it and deploy again, with the app down in between.
+
+    Scoped to one slot. Rolling the deployed app back to a state that was only
+    ever a branch preview would ship, as production, something nobody chose to
+    merge.
     """
-    prev = [h for h in history(project_id) if h.get("ok")]
+    prev = [h for h in history(project_id)
+            if h.get("ok") and h.get("branch", "") == branch]
     if len(prev) < 2:
         return {"ok": False, "error": "no earlier healthy deploy to return to"}
     target = prev[1]
-    res = await deploy_local(project_id, target.get("workspace", ""))
+    res = (await deploy_local(project_id, "", branch) if branch
+           else await deploy_local(project_id, target.get("workspace", "")))
     res["rolled_back_to"] = target
     return res
 
 
-async def deploy_local(project_id: int, workspace: str = "") -> dict[str, Any]:
+async def rollback_k8s(project_id: int, branch: str = "") -> dict[str, Any]:
+    """Undo the last rollout on the cluster, without rebuilding anything.
+
+    The local rollback above redeploys a remembered source; on a cluster that is
+    the wrong tool, because Kubernetes still holds the previous ReplicaSet and can
+    put it back in one step. Rebuilding to go backwards reintroduces exactly the
+    drift the content-hash tag exists to prevent — the image you return to would
+    be a new one built from the same source, not the one that was working.
+    """
+    if not shutil.which("kubectl"):
+        return {"ok": False, "error": "kubectl isn't available on the conductor host"}
+    return rollout.rollback(config.K8S_NAMESPACE, app_name(project_id, branch))
+
+
+async def deploy_local(project_id: int, workspace: str = "",
+                       branch: str = "") -> dict[str, Any]:
     """Build and run the app as a subprocess on its own port.
 
     `workspace` runs an agent's checkout instead of the merged default branch, so
-    work can be exercised before it is committed.
+    work can be exercised before it is committed. `branch` runs a pushed branch
+    the same way, on its own port and beside the deployed app rather than over it.
     """
-    stop(project_id)
-    log_path(project_id).parent.mkdir(parents=True, exist_ok=True)
-    log_path(project_id).write_text("")
+    if branch and not safe_branch(branch):
+        return {"ok": False, "error": f"refusing {branch!r} as a git branch"}
+    slot = _slot(project_id, branch)
+    stop(project_id, branch)
+    log_path(project_id, branch).parent.mkdir(parents=True, exist_ok=True)
+    log_path(project_id, branch).write_text("")
 
-    ok, note = (await sync_from_workspace(project_id, workspace) if workspace
-                else await sync_code(project_id))
-    _source = workspace or "default branch"
-    _log(project_id, note)
+    if branch:
+        ok, note = await sync_code(project_id, branch)
+    elif workspace:
+        ok, note = await sync_from_workspace(project_id, workspace)
+    else:
+        ok, note = await sync_code(project_id)
+    _source = workspace or (f"branch {branch}" if branch else "default branch")
+    _log(project_id, note, branch)
     if not ok:
         return {"ok": False, "error": note}
 
-    root = workdir(project_id)
+    root = workdir(project_id, branch)
     spec = detect(root)
-    _log(project_id, f"detected: {spec['kind']} — {spec['why']}")
+    _log(project_id, f"detected: {spec['kind']} — {spec['why']}", branch)
     if spec["kind"] == "static":
         return {"ok": False, "spec": spec,
                 "error": "This project is static — there is no server to run. "
@@ -367,29 +461,30 @@ async def deploy_local(project_id: int, workspace: str = "") -> dict[str, Any]:
         if not shutil.which("docker"):
             return {"ok": False, "spec": spec,
                     "error": "This project has a Dockerfile but docker isn't installed here."}
-        tag = f"devteam-app-{project_id}:latest"
-        _log(project_id, f"docker build -t {tag}")
+        tag = f"{app_name(project_id, branch)}:latest"
+        _log(project_id, f"docker build -t {tag}", branch)
         b = subprocess.run(["docker", "build", "-t", tag, "."], cwd=root,
                            capture_output=True, text=True, timeout=BUILD_TIMEOUT)
-        _log(project_id, (b.stdout + b.stderr)[-4000:])
+        _log(project_id, (b.stdout + b.stderr)[-4000:], branch)
         if b.returncode != 0:
             return {"ok": False, "spec": spec,
                     "error": f"docker build failed: {b.stderr[-300:]}"}
         cmd = ["docker", "run", "--rm", "-p", f"{port}:{port}",
-               "-e", f"PORT={port}", "--name", f"devteam-app-{project_id}", tag]
+               "-e", f"PORT={port}", "--name", app_name(project_id, branch), tag]
     else:
         if spec["build"]:
-            _log(project_id, f"build: {spec['build']}")
+            _log(project_id, f"build: {spec['build']}", branch)
             b = subprocess.run(spec["build"], cwd=root, shell=True, capture_output=True,
                                text=True, timeout=BUILD_TIMEOUT, env=_child_env(port))
-            _log(project_id, (b.stdout + b.stderr)[-4000:])
+            _log(project_id, (b.stdout + b.stderr)[-4000:], branch)
             if b.returncode != 0:
                 return {"ok": False, "spec": spec,
                         "error": f"build failed: {(b.stderr or b.stdout)[-300:]}"}
         cmd = ["/bin/sh", "-c", spec["run"].replace("$PORT", str(port))]
 
-    _log(project_id, f"starting on port {port}: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
-    logf = log_path(project_id).open("a")
+    _log(project_id, f"starting on port {port}: "
+                     f"{' '.join(cmd) if isinstance(cmd, list) else cmd}", branch)
+    logf = log_path(project_id, branch).open("a")
     proc = subprocess.Popen(cmd, cwd=root, stdout=logf, stderr=subprocess.STDOUT,
                             env=_child_env(port), start_new_session=True)
     healthy, note = _wait_healthy(port, proc, spec.get("health", "/"))
@@ -398,28 +493,31 @@ async def deploy_local(project_id: int, workspace: str = "") -> dict[str, Any]:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception:
             pass
-        tail = log_path(project_id).read_text()[-1200:]
-        _log(project_id, f"FAILED: {note}")
+        tail = log_path(project_id, branch).read_text()[-1200:]
+        _log(project_id, f"FAILED: {note}", branch)
         # Record the failure too. A history of only successes cannot tell you that
         # the last three attempts from this branch all died the same way.
-        _remember(project_id, {"ok": False, "workspace": workspace,
+        _remember(project_id, {"ok": False, "workspace": workspace, "branch": branch,
                                "source": _source, "at": time.time(),
                                "error": note[:200]})
         return {"ok": False, "spec": spec, "error": note, "log": tail,
-                "can_roll_back": len([h for h in history(project_id) if h.get("ok")]) >= 1}
+                "can_roll_back": len([h for h in history(project_id)
+                                      if h.get("ok") and h.get("branch", "") == branch]) >= 1}
 
-    RUNNING[project_id] = {"proc": proc, "port": port, "started": time.time(), "spec": spec}
-    pid_file(project_id).write_text(json.dumps(
+    RUNNING[slot] = {"proc": proc, "port": port, "started": time.time(), "spec": spec,
+                     "branch": branch}
+    pid_file(project_id, branch).write_text(json.dumps(
         {"pid": proc.pid, "port": port, "started": time.time(), "spec": spec}))
-    _log(project_id, f"live: {note}")
+    _log(project_id, f"live: {note}", branch)
     url = f"http://localhost:{port}"
     bus.emit(project_id, None, "system", "app_deployed",
-             {"mode": "local", "url": url, "kind": spec["kind"]})
-    _remember(project_id, {"ok": True, "workspace": workspace, "source": _source,
-                           "at": time.time(), "url": url})
+             {"mode": "local", "url": url, "kind": spec["kind"], "branch": branch})
+    _remember(project_id, {"ok": True, "workspace": workspace, "branch": branch,
+                           "source": _source, "at": time.time(), "url": url})
     return {"ok": True, "url": url, "port": port, "spec": spec, "mode": "local",
-            "source": _source,
-            "can_roll_back": len([h for h in history(project_id) if h.get("ok")]) >= 2}
+            "source": _source, "branch": branch,
+            "can_roll_back": len([h for h in history(project_id)
+                                  if h.get("ok") and h.get("branch", "") == branch]) >= 2}
 
 
 # --------------------------------------------------------------------------
@@ -427,8 +525,7 @@ async def deploy_local(project_id: int, workspace: str = "") -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 def _kubectl(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(["kubectl", *args], input=stdin, capture_output=True,
-                          text=True, timeout=300)
+    return rollout.sh("kubectl", *args, stdin=stdin, timeout=300)
 
 
 def ingress_available() -> bool:
@@ -437,29 +534,42 @@ def ingress_available() -> bool:
     return bool(r.stdout.strip())
 
 
-def app_host(project_id: int) -> str:
+def app_host(project_id: int, branch: str = "") -> str:
     domain = config.APPS_DOMAIN
-    return f"app-{project_id}.{domain}" if domain else ""
+    if not domain:
+        return ""
+    return (f"app-{project_id}.{domain}" if not branch
+            else f"app-{project_id}-{rollout.safe_label(branch)}.{domain}")
 
 
-def manifests(project_id: int, image: str, port: int = 8080,
-              use_ingress: bool = True) -> str:
+def manifests(project_id: int, image: str, port: int = APP_PORT,
+              use_ingress: bool = True, branch: str = "") -> str:
     """Deployment + Service, and an Ingress when a shared controller exists.
 
     A DigitalOcean regional HTTP load balancer costs $12/month *per load balancer*.
     Giving every deployed app `type: LoadBalancer` therefore bills per app — ten
     apps is $120/month of pure plumbing. One ingress controller fronts every app
     behind a single load balancer, routed by hostname, for $12 total.
+
+    A branch preview is the same shape under a different name and host, and it
+    carries a `devteam/branch` label so it can be torn down — or spared — on its
+    own. Previews are the objects most likely to be forgotten about, and an
+    unlabelled forgotten object is one nothing can find to delete.
     """
-    name = f"devteam-app-{project_id}"
-    host = app_host(project_id)
+    name = app_name(project_id, branch)
+    host = app_host(project_id, branch)
     svc_type = "ClusterIP" if (use_ingress and host) else "LoadBalancer"
+    marks = f'devteam/project: "{project_id}"'
+    if branch:
+        marks += f', devteam/branch: "{rollout.safe_label(branch)}"'
+    pull = provider.current().pull_secret if _registry() else ""
+    pull_line = f"      imagePullSecrets: [{{name: {pull}}}]\n" if pull else ""
     doc = f"""apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {name}
   namespace: {config.K8S_NAMESPACE}
-  labels: {{app: {name}, devteam/project: "{project_id}"}}
+  labels: {{app: {name}, {marks}}}
 spec:
   replicas: 1
   selector: {{matchLabels: {{app: {name}}}}}
@@ -467,7 +577,7 @@ spec:
     metadata:
       labels: {{app: {name}}}
     spec:
-      containers:
+{pull_line}      containers:
       - name: app
         image: {image}
         imagePullPolicy: IfNotPresent
@@ -488,7 +598,7 @@ kind: Service
 metadata:
   name: {name}
   namespace: {config.K8S_NAMESPACE}
-  labels: {{app: {name}, devteam/project: "{project_id}"}}
+  labels: {{app: {name}, {marks}}}
 spec:
   type: {svc_type}
   selector: {{app: {name}}}
@@ -501,7 +611,7 @@ kind: Ingress
 metadata:
   name: {name}
   namespace: {config.K8S_NAMESPACE}
-  labels: {{app: {name}, devteam/project: "{project_id}"}}
+  labels: {{app: {name}, {marks}}}
 spec:
   ingressClassName: nginx
   rules:
@@ -518,18 +628,38 @@ spec:
     return doc
 
 
-async def deploy_k8s(project_id: int) -> dict[str, Any]:
-    """Build an image and roll the app out on the cluster."""
+def _registry() -> str:
+    """Where the cluster pulls a user's app from.
+
+    DEPLOY_REGISTRY still wins so nothing configured today changes, and the
+    provider's registry is the fallback — on DigitalOcean that is DOCR, which is
+    the same place the platform's own images already live.
+    """
+    return config._env("DEPLOY_REGISTRY") or provider.current().registry
+
+
+async def deploy_k8s(project_id: int, branch: str = "") -> dict[str, Any]:
+    """Build an image, prove it boots, then roll the app out on the cluster.
+
+    The middle step is the one this path did not have. Applying the manifest was
+    the first time the image ran anywhere, so a broken build became a broken app
+    with the previous one already replaced. Now the image is identified by the
+    content it was built from, is run once under its own name with nothing routed
+    to it, and only then takes over — and if the rollout still fails, Kubernetes
+    puts the previous ReplicaSet back.
+    """
     if not shutil.which("kubectl"):
         return {"ok": False, "error": "kubectl isn't available on the conductor host"}
-    ok, note = await sync_code(project_id)
-    _log(project_id, note)
+    if branch and not safe_branch(branch):
+        return {"ok": False, "error": f"refusing {branch!r} as a git branch"}
+    ok, note = await sync_code(project_id, branch)
+    _log(project_id, note, branch)
     if not ok:
         return {"ok": False, "error": note}
 
-    root = workdir(project_id)
+    root = workdir(project_id, branch)
     spec = detect(root)
-    _log(project_id, f"detected: {spec['kind']} — {spec['why']}")
+    _log(project_id, f"detected: {spec['kind']} — {spec['why']}", branch)
     if spec["kind"] in ("static", "node-static", "unknown"):
         return {"ok": False, "spec": spec,
                 "error": f"nothing to deploy: {spec['why']}"}
@@ -537,16 +667,13 @@ async def deploy_k8s(project_id: int) -> dict[str, Any]:
     # A cluster can only run an image it can pull. A managed cluster (DOKS) needs a
     # registry it has credentials for; a local kind cluster can be handed the image
     # directly, which is what makes this testable without paying for a registry.
-    registry = config._env("DEPLOY_REGISTRY", "")
+    registry = _registry()
     ctx = _kubectl("config", "current-context").stdout.strip()
     local_cluster = ctx.startswith("kind-")
     if not registry and not local_cluster:
         return {"ok": False, "spec": spec,
                 "error": "set DEPLOY_REGISTRY (e.g. registry.digitalocean.com/yourreg) "
                          "so the built image can be pushed where the cluster can pull it"}
-    tag = str(int(time.time()))
-    image = f"{registry}/devteam-app-{project_id}:{tag}" if registry \
-        else f"devteam-app-{project_id}:{tag}"
 
     dockerfile = "Dockerfile"
     if spec["kind"] != "docker":
@@ -554,57 +681,130 @@ async def deploy_k8s(project_id: int) -> dict[str, Any]:
         # never makes a later detect() believe the project ships a Dockerfile.
         dockerfile = "Dockerfile.devteam"
         (root / dockerfile).write_text(_generated_dockerfile(spec))
-        _log(project_id, "no Dockerfile in the repo — generated one from the detected runtime")
+        _log(project_id, "no Dockerfile in the repo — generated one from the detected "
+                         "runtime", branch)
 
-    build = ["docker", "build", "-f", dockerfile, "-t", image, "."]
+    # Hash AFTER the generated Dockerfile is written, so the thing that is hashed
+    # is the thing that is built. The tag used to be a timestamp, which made two
+    # deploys of identical code two different artifacts and gave "is production
+    # running my change?" no answer other than reading the clock.
+    digest = rollout.tree_hash(root)
+    repo = f"devteam-app-{project_id}"
+    image = rollout.content_tag(f"{registry}/{repo}" if registry else repo,
+                                branch or "main", digest)
+    _log(project_id, f"image {image}", branch)
+
     if registry and config.DEPLOY_PLATFORM:
-        # A remote cluster runs whatever the cloud's nodes are, not what this host
-        # is. Building natively on an ARM Mac produces an image that crash-loops
-        # with "exec format error" on amd64 nodes.
-        build = ["docker", "buildx", "build", "--platform", config.DEPLOY_PLATFORM,
-                 "-f", dockerfile, "-t", image, "--load", "."]
         _log(project_id, f"cross-building for {config.DEPLOY_PLATFORM} "
-                         f"(this host is {os.uname().machine})")
-    steps = [build]
-    if registry:
-        steps.append(["docker", "push", image])
-    else:
-        steps.append(["kind", "load", "docker-image", image,
-                      "--name", ctx.removeprefix("kind-")])
-    for cmd in steps:
-        _log(project_id, " ".join(cmd))
-        r = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=BUILD_TIMEOUT)
-        _log(project_id, (r.stdout + r.stderr)[-3000:])
-        if r.returncode != 0:
+                         f"(this host is {os.uname().machine})", branch)
+    b = rollout.build_image(dockerfile, root, image,
+                            platform=config.DEPLOY_PLATFORM if registry else "",
+                            push=bool(registry), timeout=BUILD_TIMEOUT)
+    _log(project_id, b.get("log", "")[-3000:] or "build ok", branch)
+    if not b["ok"]:
+        return {"ok": False, "spec": spec, "error": b["error"]}
+    if not registry:
+        load = rollout.sh("kind", "load", "docker-image", image,
+                          "--name", ctx.removeprefix("kind-"), timeout=BUILD_TIMEOUT)
+        if load.returncode != 0:
             return {"ok": False, "spec": spec,
-                    "error": f"{' '.join(cmd[:2])} failed: {(r.stderr or r.stdout)[-300:]}"}
+                    "error": f"kind load failed: {(load.stderr or load.stdout)[-300:]}"}
+
+    # The gate. Same probe the real Deployment uses, so an app that 404s on / fails
+    # here rather than hanging the rollout for the same reason ten minutes later.
+    trial = rollout.canary(config.K8S_NAMESPACE, f"{app_name(project_id, branch)}-canary",
+                           image, port=APP_PORT, health="/",
+                           pull_secret=provider.current().pull_secret if registry else "",
+                           env={"PORT": str(APP_PORT)})
+    _log(project_id, f"trial run: {trial.get('note') or trial.get('error')}", branch)
+    if not trial["ok"]:
+        _remember(project_id, {"ok": False, "branch": branch, "at": time.time(),
+                               "source": branch or "default branch", "image": image,
+                               "error": f"failed its trial run: {trial.get('error', '')}"[:200]})
+        return {"ok": False, "spec": spec, "image": image, "canary": trial,
+                "error": f"the image did not pass a trial run, so what is deployed was "
+                         f"left alone: {trial.get('error')}"}
 
     use_ingress = bool(config.APPS_DOMAIN) and ingress_available()
     if not use_ingress:
         _log(project_id, "no APPS_DOMAIN/ingress controller — falling back to a "
-                         "per-app LoadBalancer (billed separately by the cloud)")
-    r = _kubectl("apply", "-f", "-",
-                 stdin=manifests(project_id, image, use_ingress=use_ingress))
-    _log(project_id, r.stdout + r.stderr)
-    if r.returncode != 0:
-        return {"ok": False, "spec": spec, "error": f"kubectl apply failed: {r.stderr[-300:]}"}
+                         "per-app LoadBalancer (billed separately by the cloud)", branch)
+    name = app_name(project_id, branch)
+    previous, container = rollout.running_image(config.K8S_NAMESPACE, name)
+    if previous:
+        # The Deployment already exists, so change ONLY its image. Re-applying the
+        # manifest would also be a promotion, but it would carry every other field
+        # in the file with it — and applying a manifest that pins an image is how a
+        # rollout silently goes backwards to whatever the file happens to say.
+        r = rollout.promote(config.K8S_NAMESPACE, name, image,
+                            container=container or "app", previous=previous)
+        if not r["ok"]:
+            _remember(project_id, {"ok": False, "branch": branch, "at": time.time(),
+                                   "source": branch or "default branch", "image": image,
+                                   "error": str(r.get("error", ""))[:200]})
+            return {"ok": False, "spec": spec, "image": image, **r}
+    else:
+        r = _kubectl("apply", "-f", "-",
+                     stdin=manifests(project_id, image, use_ingress=use_ingress,
+                                     branch=branch))
+        _log(project_id, r.stdout + r.stderr, branch)
+        if r.returncode != 0:
+            return {"ok": False, "spec": spec,
+                    "error": f"kubectl apply failed: {r.stderr[-300:]}"}
+        _kubectl("rollout", "status", f"deployment/{name}", "-n", config.K8S_NAMESPACE,
+                 "--timeout=180s")
 
-    name = f"devteam-app-{project_id}"
-    _kubectl("rollout", "status", f"deployment/{name}", "-n", config.K8S_NAMESPACE,
-             "--timeout=180s")
     if use_ingress:
-        url = f"http://{app_host(project_id)}"
-        ip = ""
+        url = f"http://{app_host(project_id, branch)}"
     else:
         ip = _kubectl("get", "svc", name, "-n", config.K8S_NAMESPACE, "-o",
                       "jsonpath={.status.loadBalancer.ingress[0].ip}").stdout.strip()
         url = f"http://{ip}" if ip else ""
     bus.emit(project_id, None, "system", "app_deployed",
-             {"mode": "k8s", "url": url or "pending load balancer", "image": image})
-    return {"ok": True, "mode": "k8s", "image": image, "url": url,
+             {"mode": "k8s", "url": url or "pending load balancer", "image": image,
+              "branch": branch})
+    _remember(project_id, {"ok": True, "branch": branch, "at": time.time(),
+                           "source": branch or "default branch", "image": image,
+                           "url": url})
+    return {"ok": True, "mode": "k8s", "image": image, "url": url, "branch": branch,
+            "verified": True, "previous": previous,
             "routing": "shared ingress" if use_ingress else "dedicated load balancer",
             "note": "" if url else "the load balancer is still being assigned an IP",
             "spec": spec}
+
+
+def previews(project_id: int) -> list[dict[str, Any]]:
+    """Every branch of this project running right now, local or on the cluster.
+
+    Asked of the cluster rather than of our own bookkeeping: a preview outlives
+    the conductor process that created it, and a list that forgets what is still
+    running is how a namespace fills up with branches nobody remembers merging.
+    """
+    out = [{"branch": r.get("branch", ""), "mode": "local",
+            "url": f"http://localhost:{r['port']}",
+            "uptime": int(time.time() - r["started"])}
+           for k, r in RUNNING.items()
+           if isinstance(k, str) and k.startswith(f"{project_id}@")
+           and r["proc"].poll() is None]
+    if shutil.which("kubectl"):
+        r = _kubectl("get", "deployment", "-n", config.K8S_NAMESPACE,
+                     "-l", f"devteam/project={project_id},devteam/branch",
+                     # Bracket notation because the label key has a '/' in it —
+                     # kubectl's jsonpath reads the dotted form as a nested field
+                     # and returns nothing at all, silently.
+                     "-o", "jsonpath={range .items[*]}{.metadata.labels['devteam/branch']}"
+                           "|{.spec.template.spec.containers[0].image}"
+                           "|{.status.readyReplicas}{'\\n'}{end}")
+        for line in r.stdout.splitlines():
+            slug, _, rest = line.partition("|")
+            image, _, ready = rest.partition("|")
+            if not slug.strip():
+                continue
+            out.append({"branch": slug, "mode": "k8s", "image": image,
+                        "ready": bool(ready.strip() and ready.strip() != "0"),
+                        "url": f"http://{app_host(project_id, slug)}"
+                               if config.APPS_DOMAIN else ""})
+    return out
 
 
 def _generated_dockerfile(spec: dict) -> str:
@@ -618,24 +818,26 @@ def _generated_dockerfile(spec: dict) -> str:
             f"CMD [\"/bin/sh\", \"-c\", \"{spec['run'].replace('$PORT', '8080')}\"]\n")
 
 
-def status(project_id: int) -> dict[str, Any]:
+def status(project_id: int, branch: str = "") -> dict[str, Any]:
     """What is deployed right now, and what would happen if you deployed."""
-    root = workdir(project_id)
+    slot = _slot(project_id, branch)
+    root = workdir(project_id, branch)
     spec = detect(root) if root.exists() else None
-    r = RUNNING.get(project_id) or _adopt(project_id)
+    r = RUNNING.get(slot) or _adopt(project_id, branch)
     live = None
     if r:
         if r["proc"].poll() is None:
             live = {"mode": "local", "url": f"http://localhost:{r['port']}",
                     "port": r["port"], "uptime": int(time.time() - r["started"]),
-                    "kind": r["spec"]["kind"]}
+                    "kind": r["spec"]["kind"], "branch": branch}
         else:
-            RUNNING.pop(project_id, None)   # it died on its own
-            pid_file(project_id).unlink(missing_ok=True)
+            RUNNING.pop(slot, None)   # it died on its own
+            pid_file(project_id, branch).unlink(missing_ok=True)
     log = ""
-    if log_path(project_id).exists():
-        log = log_path(project_id).read_text()[-6000:]
-    return {"live": live, "spec": spec, "log": log,
+    if log_path(project_id, branch).exists():
+        log = log_path(project_id, branch).read_text()[-6000:]
+    return {"live": live, "spec": spec, "log": log, "branch": branch,
+            "previews": previews(project_id) if not branch else [],
             "k8s_available": bool(shutil.which("kubectl")),
             "docker_available": bool(shutil.which("docker")),
             "default_mode": "k8s" if config.LAUNCHER == "k8s" else "local"}

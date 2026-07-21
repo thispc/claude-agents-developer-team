@@ -12,7 +12,7 @@ WORKDIR /app
 COPY worker/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY worker/worker.py .
+COPY worker/worker.py worker/agentic.py ./
 COPY agents/ /app/agents/
 
 ENV AGENTS_DIR=/app/agents WORKDIR=/work

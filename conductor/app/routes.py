@@ -1180,6 +1180,16 @@ def health() -> dict:
         stale_ui = js.stat().st_mtime > STARTED_AT
     except Exception:
         pass
+    # And whether this process can actually do its job, because an external
+    # watchdog reads only the status code. Being alive is the least interesting
+    # thing that can be true about a pod: one with a read-only volume answers
+    # every static request perfectly while being unable to work, and that exact
+    # failure has happened here. Unauthenticated for the same reason — a monitor
+    # that needs a session cannot tell you the login path is broken.
+    try:
+        db._rows("SELECT id FROM projects LIMIT 1", ())
+    except Exception as e:
+        raise HTTPException(503, f"database unavailable: {str(e)[:200]}")
     return {"ok": True, "launcher": config.LAUNCHER, "auth": config.auth_mode(),
             "github": bool(config.GITHUB_TOKEN) or config.DEMO_MODE,
             "demo": config.DEMO_MODE, "stale_ui": stale_ui,
@@ -1457,7 +1467,7 @@ async def get_artifacts(project_id: int, request: Request) -> dict:
         # The per-sprint index, so the tab has a history dimension rather than
         # only "now". Cheap: it reads rows we already have.
         "sprints": artifacts.timeline(project_id),
-        "repo": repo, "repo_url": f"https://github.com/{repo}" if repo else None,
+        "repo": repo, "repo_url": github_client.repo_url(repo) if repo else None,
         "project": project["name"], "brief": project["brief"],
         "status": project["status"], "conclusion": project["summary"],
         "preview_url": f"/preview/{project_id}/" if preview.preview_root(project_id) else None,
@@ -1945,3 +1955,57 @@ async def ws_feed(ws: WebSocket) -> None:
         pass
     finally:
         bus.unsubscribe(q)
+
+
+# --- per-branch previews of a user's app ---
+#
+# The platform could always preview its own candidate builds; a user could only
+# deploy their app and roll it back. These are the sideways move: a branch running
+# on its own name and its own host, beside the deployed app rather than over it,
+# so "does this work?" is answerable while the change is still reviewable.
+
+@router.get("/api/projects/{project_id}/previews")
+def list_previews(project_id: int, request: Request) -> dict:
+    owned_project(project_id, request)
+    return {"previews": deploy.previews(project_id)}
+
+
+@router.post("/api/projects/{project_id}/previews")
+async def start_preview(project_id: int, request: Request, branch: str,
+                        mode: str = "") -> dict:
+    """Run one branch of this project's app, without touching what is deployed."""
+    owned_project(project_id, request)
+    if not deploy.safe_branch(branch):
+        raise HTTPException(400, f"{branch!r} is not a branch name this can check out")
+    mode = mode or ("k8s" if config.LAUNCHER == "k8s" else "local")
+    r = (await deploy.deploy_k8s(project_id, branch) if mode == "k8s"
+         else await deploy.deploy_local(project_id, "", branch))
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "preview failed"))
+    return r
+
+
+@router.delete("/api/projects/{project_id}/previews")
+def stop_preview(project_id: int, request: Request, branch: str) -> dict:
+    """Tear one preview down. Without a branch this would stop the deployed app,
+    which is a different button and should stay one."""
+    owned_project(project_id, request)
+    if not deploy.safe_branch(branch):
+        raise HTTPException(400, f"{branch!r} is not a branch name")
+    return {"status": deploy.stop(project_id, branch)}
+
+
+@router.post("/api/projects/{project_id}/deploy/rollback/cluster")
+async def rollback_app_on_cluster(project_id: int, request: Request,
+                                  branch: str = "") -> dict:
+    """Undo the last rollout on the cluster, without rebuilding anything.
+
+    Distinct from the local rollback above, which redeploys a remembered source.
+    Rebuilding to go backwards would produce a NEW image from the same source
+    rather than the one that was known to work.
+    """
+    owned_project(project_id, request)
+    r = await deploy.rollback_k8s(project_id, branch)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("detail") or r.get("error", "rollback failed"))
+    return r

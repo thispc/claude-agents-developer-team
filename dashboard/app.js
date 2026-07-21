@@ -1158,7 +1158,7 @@ function updateSeatWarning() {
   const w = $("#seatWarn");
   const provs = new Set(seats.map((s) => s.provider));
   const combos = new Set(seats.map((s) => s.provider + "/" + s.model));
-  const mode = (document.querySelector("input[name=tmode]:checked") || {}).value || "debate";
+  const mode = (document.querySelector("input[name=tmode]:checked") || {}).value || "diverge";
   let msg = "";
   if (seats.length > 6) {
     msg = `${seats.length} seats — deliberation degrades past about 6.`;
@@ -1348,7 +1348,10 @@ async function startTable() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         brief, title: brief.slice(0, 60),
-        mode: (document.querySelector("input[name=tmode]:checked") || {}).value || "debate",
+        // Diverge, not debate, when the radio is somehow missing: the API defaults
+        // to debate for compatibility with tables already recorded, so the UI has
+        // to name the mode it wants every time or it silently buys 3× the calls.
+        mode: (document.querySelector("input[name=tmode]:checked") || {}).value || "diverge",
         mod_provider: mod[0] || "", mod_model: mod[1] || "",
         seats: seats.map((s) => ({ name: s.name, provider: s.provider,
                                    model: s.model, persona: s.persona })),
@@ -2380,20 +2383,228 @@ async function loadProjectFiles() {
     b.addEventListener("click", () => openProjectFile(b.dataset.path)));
 }
 
+// >>> markdown renderer -------------------------------------------------------
+// Hand-rolled, because the pod has neither npm nor guaranteed egress, and because
+// every byte below was written by an AI agent working in a repository nobody on
+// this side controls. Treat the document as hostile input aimed at the operator's
+// browser, not as content: it is the one place where a repo the team cloned gets
+// to put characters in front of a session that can start deployments.
+//
+// One rule keeps this honest, and it is mechanical rather than clever: markup is
+// only ever produced by the code in this section. Every fragment of the document
+// passes through escapeHtml before it is concatenated, and every URL passes
+// through mdSafeUrl before it becomes an href. There is no path where document
+// text reaches innerHTML unescaped, so raw <script>, <img onerror=…>, stray
+// quotes closing an attribute and so on are all the same, already-solved case.
+
+const MD_MAX_DEPTH = 8;   // "> > > > …" nested 20k deep is a stack overflow otherwise
+
+// An allowlist, not a "block javascript:" test, because the blocklist version
+// keeps losing: vbscript:, data:text/html;base64,…, and the endless spellings a
+// browser forgives while a regex does not. Anything not plainly a document link
+// is refused.
+const MD_SAFE_SCHEME = /^(?:https?:|mailto:)/i;
+
+function mdSafeUrl(raw) {
+  // Browsers skip leading and embedded whitespace and C0 controls while parsing a
+  // scheme, so "java\nscript:alert(1)" runs. Strip those before deciding, never
+  // after — deciding on the pretty version and emitting the raw one is the bug.
+  const u = String(raw == null ? "" : raw).replace(/[\u0000-\u0020\u007f]/g, "");
+  if (MD_SAFE_SCHEME.test(u)) return u;
+  if (/^\/\//.test(u)) return "";              // protocol-relative: inherits ours, goes anywhere
+  if (/^[^/?#]*:/.test(u)) return "";          // a colon before the first slash is a scheme we did not allow
+  return u;                                    // fragment, absolute or repo-relative path
+}
+
+function mdLink(url, label) {
+  const href = mdSafeUrl(url);
+  // A refused link is shown as refused rather than quietly turned into text: the
+  // operator is reviewing agent output, and "this document tried to link to
+  // javascript:" is exactly the thing they want to notice.
+  if (!href) return `<span class="md-blocked" title="link refused">${label} [blocked link]</span>`;
+  // noopener because target=_blank hands window.opener to whatever we just opened;
+  // nofollow because we are rendering somebody else's repo.
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer nofollow">${label}</a>`;
+}
+
+function mdInline(s) {
+  // Code spans come out first and are never looked at again: ** inside backticks
+  // is a literal, and a span that has already been escaped cannot later be talked
+  // into being markup by a rule that runs after it.
+  return String(s == null ? "" : s).split(/(`+[^`]*?`+)/).map((part, i) => {
+    if (i % 2) return `<code>${escapeHtml(part.replace(/^`+|`+$/g, ""))}</code>`;
+    let t = escapeHtml(part);
+    // Images are rendered as links on purpose. Fetching a remote asset named by an
+    // untrusted document leaks the operator's address to whoever wrote the repo and
+    // makes the dashboard issue requests on their behalf; the caption and the URL
+    // carry the same information without doing that.
+    t = t.replace(/!\[([^\]]*)\]\(\s*([^()\s]*)[^)]*\)/g,
+                  (m, alt, url) => mdLink(url, `🖼 ${alt || url}`));
+    // The URL stops at the first space or bracket, so a title string — the classic
+    // place to smuggle attributes — is dropped rather than reproduced.
+    t = t.replace(/\[([^\]]*)\]\(\s*([^()\s]*)[^)]*\)/g,
+                  (m, txt, url) => mdLink(url, txt || url));
+    t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    t = t.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+    t = t.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    t = t.replace(/(^|[^\w`])_([^_\n]+)_(?![\w])/g, "$1<em>$2</em>");
+    t = t.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+    return t;
+  }).join("");
+}
+
+// Info strings that are not a bare word become no class at all: the fence language
+// is attacker-chosen and would otherwise close the class attribute and open an
+// event handler.
+// Null-prototype because the key is the document's to choose: a plain object would
+// answer ```constructor and ```__proto__ with something truthy from the prototype.
+const MD_DIAGRAM = Object.assign(Object.create(null),
+  { mermaid: "mermaid", plantuml: "PlantUML", dot: "Graphviz", graphviz: "Graphviz" });
+
+function mdCodeBlock(lang, body) {
+  const tag = /^[\w+-]{1,20}$/.test(lang) ? lang.toLowerCase() : "";
+  const pre = `<pre class="md-code${tag ? " lang-" + tag : ""}"><code>${escapeHtml(body)}</code></pre>`;
+  const diagram = MD_DIAGRAM[tag];
+  if (!diagram) return pre;
+  // No diagram library is shipped and none is coming — see the top of this section.
+  // Drawing nothing while a heading promises a diagram reads as a broken page; the
+  // source with a label says what actually happened.
+  return `<figure class="md-figure"><figcaption>${escapeHtml(diagram)} diagram — `
+       + `source shown, not drawn</figcaption>${pre}</figure>`;
+}
+
+function mdCells(row) {
+  return row.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map((c) => c.trim());
+}
+
+function renderMarkdown(src, depth) {
+  depth = depth || 0;
+  const text = String(src == null ? "" : src).replace(/\r\n?/g, "\n");
+  // Past the nesting ceiling we stop parsing and show what is left verbatim. Wrong
+  // shape beats a hung tab.
+  if (depth > MD_MAX_DEPTH) return `<pre class="md-code"><code>${escapeHtml(text)}</code></pre>`;
+  const lines = text.split("\n");
+  const out = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+
+    const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      // A ~~~ block ends at ~~~ only: a ``` line inside it is content, which is how
+      // a document showing markdown examples stays readable instead of exploding.
+      const close = fence[1][0] === "~" ? /^ {0,3}~{3,}\s*$/ : /^ {0,3}`{3,}\s*$/;
+      const body = [];
+      i++;
+      while (i < lines.length && !close.test(lines[i])) body.push(lines[i++]);
+      i++;   // step over the closing fence; an unterminated block simply runs to EOF
+      out.push(mdCodeBlock(fence[2].trim().split(/\s+/)[0] || "", body.join("\n")));
+      continue;
+    }
+
+    if (!line.trim()) { i++; continue; }
+
+    const h = /^ {0,3}(#{1,6})\s+(.*)$/.exec(line);
+    if (h) {
+      const n = h[1].length;
+      out.push(`<h${n}>${mdInline(h[2].replace(/\s+#+\s*$/, ""))}</h${n}>`);
+      i++; continue;
+    }
+
+    if (/^ {0,3}([-*_])\s*(?:\1\s*){2,}$/.test(line)) { out.push("<hr>"); i++; continue; }
+
+    if (/^ {0,3}>/.test(line)) {
+      const quoted = [];
+      while (i < lines.length && (/^ {0,3}>/.test(lines[i]) || (quoted.length && lines[i].trim())))
+        quoted.push(lines[i++].replace(/^ {0,3}> ?/, ""));
+      out.push(`<blockquote>${renderMarkdown(quoted.join("\n"), depth + 1)}</blockquote>`);
+      continue;
+    }
+
+    // A table is only a table if the row under the header is the separator; a line
+    // of prose containing a pipe is prose.
+    if (line.includes("|") && i + 1 < lines.length
+        && /^[\s|:-]+$/.test(lines[i + 1]) && /-/.test(lines[i + 1]) && lines[i + 1].includes("|")) {
+      const head = mdCells(line);
+      const align = mdCells(lines[i + 1]).map((c) =>
+        /^:-+:$/.test(c) ? "center" : /-+:$/.test(c) ? "right" : "");
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) rows.push(mdCells(lines[i++]));
+      const cell = (t, j, tag) => {
+        const a = align[j] ? ` class="md-${align[j]}"` : "";
+        return `<${tag}${a}>${mdInline(t)}</${tag}>`;
+      };
+      out.push(`<table class="md-table"><thead><tr>${head.map((c, j) => cell(c, j, "th")).join("")}`
+        + `</tr></thead><tbody>${rows.map((r) =>
+            `<tr>${r.map((c, j) => cell(c, j, "td")).join("")}</tr>`).join("")}</tbody></table>`);
+      continue;
+    }
+
+    const item = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/.exec(line);
+    if (item) {
+      const indent = item[1].length;
+      const ordered = /\d/.test(item[2]);
+      const items = [];
+      while (i < lines.length) {
+        const m = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/.exec(lines[i]);
+        if (m && m[1].length <= indent && /\d/.test(m[2]) === ordered) {
+          items.push([m[3]]); i++;
+        } else if (items.length && lines[i].trim() && /^\s{2,}/.test(lines[i])) {
+          items[items.length - 1].push(lines[i].slice(indent + 2)); i++;   // nested block, dedented
+        } else break;
+      }
+      const body = items.map((parts) => parts.length === 1
+        ? mdInline(parts[0])
+        : renderMarkdown(parts.join("\n"), depth + 1));
+      out.push(`<${ordered ? "ol" : "ul"}>${body.map((b) => `<li>${b}</li>`).join("")}</${ordered ? "ol" : "ul"}>`);
+      continue;
+    }
+
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !/^ {0,3}(#{1,6}\s|>|```|~~~)/.test(lines[i])
+           && !/^(\s*)([-*+]|\d{1,9}[.)])\s+/.test(lines[i])) para.push(lines[i++]);
+    // A paragraph reflows: hard-wrapped source must not become a wall of forced
+    // breaks. Only markdown's own line break — two trailing spaces — makes a <br>.
+    out.push("<p>" + para.map((l, n) =>
+      (n ? (/ {2,}$/.test(para[n - 1]) ? "<br>\n" : "\n") : "") + mdInline(l.replace(/\s+$/, ""))
+    ).join("") + "</p>");
+  }
+  return out.join("\n");
+}
+// <<< markdown renderer -------------------------------------------------------
+
+// Rendered as prose, as code, or as markdown — decided by extension, because the
+// alternative (sniffing the content) means a .py file whose docstring starts with
+// "# " gets reflowed into a heading.
+const MD_EXT = /\.(md|markdown)$/i;
+const DOC_EXT = /\.(txt|rst|text)$/i;
+
 async function openProjectFile(path) {
   const dlg = $("#fileDialog");
+  const body = $("#fileBody");
   $("#fileTitle").textContent = path;
-  $("#fileBody").textContent = "loading…";
+  body.className = "file-code";
+  body.textContent = "loading…";
   dlg.showModal();
   try {
     const d = await api(`/api/projects/${currentProject}/file?path=${encodeURIComponent(path)}`);
-    const isDoc = /\.(md|txt|rst)$/i.test(path);
-    // Markdown gets read as prose; everything else keeps its whitespace, because
-    // reflowing code is how you make it unreadable.
-    $("#fileBody").className = isDoc ? "file-doc" : "file-code";
-    $("#fileBody").textContent = d.text;
+    if (MD_EXT.test(path)) {
+      // The only innerHTML in this file that touches repository content, and the
+      // only reason it is allowed: renderMarkdown escapes every fragment it did
+      // not write itself. Do not hand it anything else.
+      body.className = "file-md";
+      body.innerHTML = renderMarkdown(d.text);
+    } else {
+      // Prose reflows; everything else keeps its whitespace, because reflowing code
+      // is how you make it unreadable.
+      body.className = DOC_EXT.test(path) ? "file-doc" : "file-code";
+      body.textContent = d.text;
+    }
   } catch (e) {
-    $("#fileBody").textContent = String(e.message || e);
+    body.className = "file-doc";
+    body.textContent = String(e.message || e);
   }
 }
 

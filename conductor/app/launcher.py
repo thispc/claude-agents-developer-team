@@ -37,6 +37,11 @@ def owner_credentials(project: dict) -> dict[str, str]:
         # only an API key still leaked the operator's CLAUDE_CODE_OAUTH_TOKEN, and a
         # user with nothing fell through to the operator's `claude` CLI login.
         blank = {"ANTHROPIC_API_KEY": "", "CLAUDE_CODE_OAUTH_TOKEN": "",
+                 # A worker on a non-Anthropic teammate runs on one of these. Blanked
+                 # for the same reason as the others: unset means inherited from the
+                 # operator's shell, which is how a user would spend someone else's key.
+                 "OPENAI_API_KEY": s.get("openai_api_key", ""),
+                 "GEMINI_API_KEY": s.get("gemini_api_key", ""),
                  # …and the CLI login lives in a config dir under the operator's
                  # HOME, so point elsewhere or it is reachable regardless.
                  "CLAUDE_CONFIG_DIR": str(config.WORKSPACES_DIR / f"cfg-u{owner['id']}")}
@@ -44,14 +49,18 @@ def owner_credentials(project: dict) -> dict[str, str]:
             return {**blank, "ANTHROPIC_API_KEY": s["anthropic_api_key"]}
         if s.get("claude_oauth_token"):
             return {**blank, "CLAUDE_CODE_OAUTH_TOKEN": s["claude_oauth_token"]}
-        return blank      # no credentials of their own: unusable, by design
+        return blank      # no Claude credentials: OpenAI/Gemini teammates still run
     # Root / operator: their stored settings, then the server's, then CLI login.
     if owner:
         s = auth_mod.get_settings(owner)
+        byok = {k: v for k, v in (("OPENAI_API_KEY", s.get("openai_api_key")),
+                                  ("GEMINI_API_KEY", s.get("gemini_api_key"))) if v}
         if s.get("anthropic_api_key"):
-            return {"ANTHROPIC_API_KEY": s["anthropic_api_key"]}
+            return {**byok, "ANTHROPIC_API_KEY": s["anthropic_api_key"]}
         if s.get("claude_oauth_token"):
-            return {"CLAUDE_CODE_OAUTH_TOKEN": s["claude_oauth_token"]}
+            return {**byok, "CLAUDE_CODE_OAUTH_TOKEN": s["claude_oauth_token"]}
+        if byok:
+            return byok
     if config.ANTHROPIC_API_KEY:
         return {"ANTHROPIC_API_KEY": config.ANTHROPIC_API_KEY}
     if config.CLAUDE_CODE_OAUTH_TOKEN:
@@ -119,6 +128,18 @@ def prior_attempt(task: dict) -> str:
 def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
     auth = owner_credentials(project)
     agent = db.get_agent(task["agent_id"]) if task.get("agent_id") else None
+    provider = team.provider_for(agent)
+    # Provider and model have to agree or the worker asks OpenAI for a Claude model
+    # and gets a 404. They can disagree honestly: every model-picking rule above —
+    # the rate-limit fallback, the escalation ladder, the roles.json default — was
+    # written when every worker was Claude, so a throttled Gemini teammate is handed
+    # claude-haiku by pick_model. The teammate's provider is the thing the boss
+    # actually chose, so it wins and the model comes back to that provider's default.
+    if provider != "anthropic" and (not model or model.startswith("claude")):
+        from . import providers
+        own = (agent or {}).get("model") or ""
+        model = (own if not own.startswith("claude") else "") \
+            or providers.default_model(provider) or model
     return {
         **auth,
         # Who this is. Empty for projects created before teammates existed, and the
@@ -143,6 +164,15 @@ def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
         "BRANCH": task["branch"],
         "REPO": project["repo"],
         "GITHUB_TOKEN": owner_github_token(project),
+        # The git host to clone from. The local launcher would inherit this from
+        # the process environment, but a k8s worker gets only this dict — so
+        # without it a self-hosted git user's cloud workers silently clone from
+        # github.com and fail on a repository that is not there.
+        "GIT_WEB": config.GIT_WEB,
+        # Which engine builds. Empty for every project that predates non-Claude
+        # teammates, and the worker reads empty as "anthropic", so those are
+        # untouched.
+        "PROVIDER": provider,
         "MODEL": model,
         # Teammate a stuck worker can consult (always a capable model, even when the
         # worker itself is a cheap one — that is the point).
@@ -623,7 +653,12 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
     # If every candidate model is in cooldown, don't spend an attempt hammering a
     # throttled one — leave the task planned and let the scheduler retry after the
     # soonest window opens. This is what lets an overnight run ride out a limit.
-    if all(cooldown_left(m) > 0 for m in FALLBACK_ORDER):
+    #
+    # FALLBACK_ORDER is Claude models, so this only speaks for a Claude teammate.
+    # Holding a Gemini worker back because Anthropic is throttled would stall work
+    # that has nothing to do with the limit.
+    if team.provider_for(team.assign(task)) == "anthropic" and \
+            all(cooldown_left(m) > 0 for m in FALLBACK_ORDER):
         soonest = min(cooldown_left(m) for m in FALLBACK_ORDER)
         bus.emit(task["project_id"], task_id, "system", "waiting_on_cooldown",
                  {"seconds": soonest,
@@ -632,12 +667,18 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
                 f"in {soonest}s — task stays planned and will dispatch then")
 
     creds = owner_credentials(project)
-    if not any(creds.get(k) for k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")) \
+    # Any provider a worker can actually build on. Anthropic is no longer the only
+    # one: an OpenAI or Gemini teammate runs the agentic loop in worker/agentic.py,
+    # so refusing to dispatch without a Claude key would be the "bring your own
+    # keys" promise failing at the only step that matters.
+    if not any(creds.get(k) for k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN",
+                                      "OPENAI_API_KEY", "GEMINI_API_KEY")) \
             and project.get("owner_id"):
         owner = db.get_project(task["project_id"])
         db.update_task(task_id, status="failed",
-                       report="the project owner has no Anthropic API key or Claude "
-                              "subscription token, so no agent can run. Add one in Settings.")
+                       report="the project owner has no AI credentials (Anthropic key or "
+                              "Claude subscription token, OpenAI key, or Gemini key), so "
+                              "no agent can run. Add one in Settings.")
         bus.emit(task["project_id"], task_id, "system", "no_credentials", {})
         return "error: project owner has no AI credentials"
     running = db.count_running(task["project_id"])

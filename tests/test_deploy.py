@@ -184,3 +184,283 @@ def test_history_is_bounded(fresh_db, tmp_path, monkeypatch):
     for i in range(25):
         deploy._remember(p, {"ok": True, "workspace": f"w{i}"})
     assert len(deploy.history(p)) <= 10
+
+
+# ---- what the platform had and a user's app did not (G24) -----------------
+# The platform's deploy path grew content-hash image tags, a trial run before
+# promotion, and rollback from the ReplicaSet history. A user's app had none of
+# it: build, apply, hope. rollout.py is that difference, removed.
+
+import asyncio
+
+from app import provider, rollout
+
+
+def _cluster(monkeypatch, *, previous="", canary_ok=True, promote_ok=True):
+    """A whole cluster made of monkeypatches. Nothing here may reach a real one."""
+    seen = {"canary": None, "promoted": None, "applied": None, "built": None}
+
+    monkeypatch.setattr(deploy.shutil, "which", lambda _n: "/usr/bin/" + _n)
+    monkeypatch.setattr(deploy, "ingress_available", lambda: True)
+    monkeypatch.setattr(config, "APPS_DOMAIN", "apps.example.com")
+    monkeypatch.setattr(config, "K8S_NAMESPACE", "devteam")
+    monkeypatch.setenv("DEPLOY_REGISTRY", "reg.example.com/x")
+
+    def _kubectl(*args, stdin=None):
+        if "apply" in args:
+            seen["applied"] = stdin
+        import subprocess as sp
+        out = "kind-devteam" if "current-context" in args else ""
+        return sp.CompletedProcess(args, 0, out, "")
+    monkeypatch.setattr(deploy, "_kubectl", _kubectl)
+
+    def _build(dockerfile, context, tag, **kw):
+        seen["built"] = tag
+        return {"ok": True, "tag": tag}
+    monkeypatch.setattr(rollout, "build_image", _build)
+
+    def _canary(ns, name, image, **kw):
+        seen["canary"] = image
+        return {"ok": canary_ok, "error": "" if canary_ok else "CrashLoopBackOff: "}
+    monkeypatch.setattr(rollout, "canary", _canary)
+    monkeypatch.setattr(rollout, "running_image", lambda ns, n: (previous, "app"))
+
+    def _promote(ns, name, image, **kw):
+        seen["promoted"] = (name, image)
+        return {"ok": promote_ok, "error": "" if promote_ok else "timed out"}
+    monkeypatch.setattr(rollout, "promote", _promote)
+    monkeypatch.setattr(deploy.bus, "emit", lambda *a, **k: None)
+    return seen
+
+
+def _repo_for(monkeypatch, tmp_path, project_id, files=None):
+    root = tmp_path / str(project_id) / "repo"
+    root.mkdir(parents=True)
+    for name, body in (files or {"Dockerfile": "FROM x", "app.py": "print(1)"}).items():
+        (root / name).write_text(body)
+    monkeypatch.setattr(deploy, "workdir", lambda pid, branch="": root)
+    monkeypatch.setattr(deploy, "_log", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "_history_file", lambda pid: tmp_path / "h.json")
+
+    async def _sync(pid, branch=""):
+        return True, "checked out"
+    monkeypatch.setattr(deploy, "sync_code", _sync)
+    return root
+
+
+def test_a_users_app_is_run_once_before_it_replaces_the_one_that_works(
+        fresh_db, tmp_path, monkeypatch):
+    """Applying the manifest used to be the first time the image ran anywhere, so
+    a broken build became a broken app with the working one already gone."""
+    seen = _cluster(monkeypatch, previous="reg.example.com/x/devteam-app-7:old")
+    _repo_for(monkeypatch, tmp_path, 7)
+    r = asyncio.run(deploy.deploy_k8s(7))
+    assert r["ok"] is True and r["verified"] is True
+    assert seen["canary"] == seen["built"], "it promoted an image it had not tried"
+    assert seen["promoted"][1] == seen["built"]
+
+
+def test_an_image_that_fails_its_trial_run_never_reaches_the_app(
+        fresh_db, tmp_path, monkeypatch):
+    seen = _cluster(monkeypatch, previous="reg.example.com/x/devteam-app-7:old",
+                    canary_ok=False)
+    _repo_for(monkeypatch, tmp_path, 7)
+    r = asyncio.run(deploy.deploy_k8s(7))
+    assert r["ok"] is False and "trial run" in r["error"]
+    assert seen["promoted"] is None and seen["applied"] is None, \
+        "the running app was replaced by an image that could not start"
+
+
+def test_a_failed_trial_is_remembered_like_any_other_failure(
+        fresh_db, tmp_path, monkeypatch):
+    """A history of only successes cannot tell you three attempts from one branch
+    died the same way."""
+    _cluster(monkeypatch, previous="x:old", canary_ok=False)
+    _repo_for(monkeypatch, tmp_path, 7)
+    asyncio.run(deploy.deploy_k8s(7))
+    h = deploy.history(7)
+    assert h and h[0]["ok"] is False and "trial run" in h[0]["error"]
+
+
+def test_the_image_is_named_after_the_code_and_not_the_clock(
+        fresh_db, tmp_path, monkeypatch):
+    """A timestamp tag made two deploys of identical code two different artifacts,
+    which left "is production running my change?" with no answer but the clock."""
+    seen = _cluster(monkeypatch, previous="x:old")
+    root = _repo_for(monkeypatch, tmp_path, 7)
+    asyncio.run(deploy.deploy_k8s(7))
+    first = seen["built"]
+    asyncio.run(deploy.deploy_k8s(7))
+    assert seen["built"] == first, "identical code produced a different artifact"
+    (root / "app.py").write_text("print(2)")
+    asyncio.run(deploy.deploy_k8s(7))
+    assert seen["built"] != first
+
+
+def test_an_existing_deployment_has_its_image_changed_rather_than_reapplied(
+        fresh_db, tmp_path, monkeypatch):
+    """Applying a manifest that pins an image is how a rollout silently goes
+    BACKWARDS to whatever the file happens to say."""
+    seen = _cluster(monkeypatch, previous="reg.example.com/x/devteam-app-7:old")
+    _repo_for(monkeypatch, tmp_path, 7)
+    asyncio.run(deploy.deploy_k8s(7))
+    assert seen["applied"] is None and seen["promoted"] is not None
+
+
+def test_the_first_deploy_still_creates_the_service_and_ingress(
+        fresh_db, tmp_path, monkeypatch):
+    seen = _cluster(monkeypatch, previous="")      # nothing there yet
+    _repo_for(monkeypatch, tmp_path, 7)
+    asyncio.run(deploy.deploy_k8s(7))
+    assert seen["applied"] and "kind: Service" in seen["applied"]
+
+
+def test_a_cluster_rollback_does_not_rebuild(fresh_db, monkeypatch):
+    """Rebuilding to go backwards produces a NEW image from the same source, not
+    the one that was known to work."""
+    monkeypatch.setattr(deploy.shutil, "which", lambda _n: "/usr/bin/" + _n)
+    seen = {}
+    monkeypatch.setattr(rollout, "rollback",
+                        lambda ns, name: seen.update(target=name) or {"ok": True})
+    r = asyncio.run(deploy.rollback_k8s(7))
+    assert r["ok"] and seen["target"] == "devteam-app-7"
+
+
+# ---- per-branch previews (G25) --------------------------------------------
+
+def test_a_branch_preview_gets_its_own_name_and_host_not_the_deployed_apps(monkeypatch):
+    """A preview that shared the app's Deployment would be a deployment with
+    extra steps."""
+    monkeypatch.setattr(config, "APPS_DOMAIN", "apps.example.com")
+    assert deploy.app_name(7) == "devteam-app-7"
+    assert deploy.app_name(7, "feat/login") == "devteam-app-7-feat-login"
+    assert deploy.app_host(7, "feat/login") == "app-7-feat-login.apps.example.com"
+    assert deploy.app_host(7, "feat/login") != deploy.app_host(7)
+
+
+def test_a_preview_is_labelled_so_it_can_be_torn_down_on_its_own(monkeypatch):
+    """Previews are the objects most likely to be forgotten, and an unlabelled
+    forgotten object is one nothing can find to delete."""
+    monkeypatch.setattr(config, "APPS_DOMAIN", "apps.example.com")
+    for d in yaml.safe_load_all(deploy.manifests(7, "reg/img:1", branch="feat/login")):
+        labels = d["metadata"]["labels"]
+        assert labels["devteam/project"] == "7"
+        assert labels["devteam/branch"] == "feat-login"
+
+
+def test_stopping_the_app_does_not_discard_the_branches_someone_is_reading(monkeypatch):
+    """Stopping the deployed app and discarding every preview of it are different
+    intentions, and one button should not mean both."""
+    seen = {}
+    monkeypatch.setattr(deploy.shutil, "which", lambda _n: "/usr/bin/kubectl")
+    monkeypatch.setattr(deploy.subprocess, "run",
+                        lambda cmd, **k: seen.update(cmd=cmd) or
+                        __import__("subprocess").CompletedProcess(cmd, 0, "", ""))
+    deploy.stop(7)
+    assert "devteam/project=7,!devteam/branch" in seen["cmd"]
+    deploy.stop(7, "feat/login")
+    assert "devteam/project=7,devteam/branch=feat-login" in seen["cmd"]
+
+
+def test_a_branch_a_clone_would_misread_is_refused(fresh_db, monkeypatch):
+    """It reaches argv, not a shell, so this is not about quoting: a ref starting
+    with '-' is read by git as an option and '..' escapes the directory."""
+    for bad in ("--upload-pack=evil", "-x", "../../etc", "a b", ""):
+        assert deploy.safe_branch(bad) == "", bad
+    assert deploy.safe_branch("feat/login") == "feat/login"
+
+
+def test_a_hostile_branch_never_reaches_git(fresh_db, monkeypatch):
+    from app import github_client
+    monkeypatch.setattr(github_client, "enabled", lambda repo: True)
+    monkeypatch.setattr(github_client, "clone_url", lambda repo, tok: "https://x/y.git")
+
+    def _boom(*a, **k):
+        raise AssertionError("ran git with a ref it should have refused")
+    monkeypatch.setattr(deploy.subprocess, "run", _boom)
+    p = make_project(owner_id=1, repo="owner/repo")
+    ok, note = asyncio.run(deploy.sync_code(p, "--upload-pack=evil"))
+    assert ok is False and "refusing" in note
+
+
+def test_a_preview_never_becomes_the_thing_you_roll_back_to(fresh_db, tmp_path,
+                                                            monkeypatch):
+    """Rolling the deployed app back to a state that was only ever a branch
+    preview would ship, as production, something nobody chose to merge."""
+    p = make_project(owner_id=1)
+    monkeypatch.setattr(deploy, "_history_file", lambda pid: tmp_path / "h.json")
+    deploy._remember(p, {"ok": True, "workspace": "", "branch": "", "source": "main-1"})
+    deploy._remember(p, {"ok": True, "workspace": "", "branch": "", "source": "main-2"})
+    deploy._remember(p, {"ok": True, "workspace": "", "branch": "feat/x",
+                         "source": "branch"})
+    picked = {}
+
+    async def fake_deploy(pid, workspace="", branch=""):
+        picked["branch"] = branch
+        return {"ok": True}
+    monkeypatch.setattr(deploy, "deploy_local", fake_deploy)
+    r = asyncio.run(deploy.rollback(p))
+    assert r["rolled_back_to"]["source"] == "main-1"
+    assert picked["branch"] == ""
+
+
+def test_a_preview_and_the_deployed_app_do_not_share_a_checkout(monkeypatch):
+    """Sharing one would make the next rollback redeploy the branch."""
+    assert deploy.workdir(7) != deploy.workdir(7, "feat/login")
+    assert deploy.pid_file(7) != deploy.pid_file(7, "feat/login")
+    assert deploy.log_path(7) != deploy.log_path(7, "feat/login")
+
+
+def test_previews_are_read_from_the_cluster_not_from_memory(monkeypatch):
+    """A preview outlives the conductor process that started it, and a list that
+    forgets what is still running is how a namespace fills up."""
+    monkeypatch.setattr(deploy.shutil, "which", lambda _n: "/usr/bin/kubectl")
+    monkeypatch.setattr(config, "APPS_DOMAIN", "apps.example.com")
+    import subprocess as sp
+    monkeypatch.setattr(deploy, "_kubectl", lambda *a, **k:
+                        sp.CompletedProcess(a, 0, "feat-login|reg/img:1|1\n", ""))
+    got = deploy.previews(7)
+    assert got and got[0]["branch"] == "feat-login" and got[0]["ready"] is True
+    assert got[0]["url"] == "http://app-7-feat-login.apps.example.com"
+
+
+# ---- the provider seam (G4) ----------------------------------------------
+
+def test_the_registry_falls_back_to_whatever_the_cloud_provides(monkeypatch):
+    """DEPLOY_REGISTRY still wins so nothing configured today changes; on
+    DigitalOcean the fallback is DOCR, where the platform's images already live."""
+    monkeypatch.delenv("DEPLOY_REGISTRY", raising=False)
+    monkeypatch.setenv("DOCR_REGISTRY", "registry.digitalocean.com/pulkit")
+    assert deploy._registry() == "registry.digitalocean.com/pulkit"
+    monkeypatch.setenv("DEPLOY_REGISTRY", "reg.example.com/x")
+    assert deploy._registry() == "reg.example.com/x"
+
+
+def test_a_private_registry_means_the_app_pod_needs_a_pull_secret(monkeypatch):
+    """Without it the pod sits in ImagePullBackOff, which reads as "image not
+    found" and sends you hunting for a build problem that isn't there."""
+    monkeypatch.setenv("DOCR_REGISTRY", "registry.digitalocean.com/pulkit")
+    monkeypatch.delenv("DEPLOY_REGISTRY", raising=False)
+    assert "imagePullSecrets: [{name: docr-creds}]" in deploy.manifests(7, "img:1")
+
+
+def test_no_registry_means_no_pull_secret(monkeypatch):
+    monkeypatch.delenv("DOCR_REGISTRY", raising=False)
+    monkeypatch.delenv("DEPLOY_REGISTRY", raising=False)
+    assert "imagePullSecrets" not in deploy.manifests(7, "img:1")
+
+
+def test_a_preview_is_someones_and_not_everyones(root_client, make_user, monkeypatch):
+    """Every other project route checks ownership; a preview route that did not
+    would let anyone run — and read — a branch of someone else's app."""
+    monkeypatch.setattr(deploy, "previews", lambda pid: [])
+    p = make_project(owner_id=1)
+    assert root_client.get(f"/api/projects/{p}/previews").status_code == 200
+    _uid, other = make_user("someone-else")
+    assert other.get(f"/api/projects/{p}/previews").status_code in (403, 404)
+
+
+def test_the_preview_route_refuses_a_branch_git_would_misread(root_client):
+    p = make_project(owner_id=1)
+    r = root_client.post(f"/api/projects/{p}/previews", params={"branch": "-x"})
+    assert r.status_code == 400

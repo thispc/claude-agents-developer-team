@@ -19,9 +19,14 @@ import pytest
 pytestmark = pytest.mark.hostonly
 
 from conftest import make_project, make_task
-from app import config, envs
+from app import config, envs, rollout
 
 REPO = Path(__file__).resolve().parent.parent
+# The mechanics these tests pin — content tags, the build that yields no tag on
+# failure, a named promotion target, rollback — now live in rollout.py and are
+# shared with a user's app. The properties are unchanged; only the file that has
+# to hold them moved, so the source-reading tests read the source that has them.
+ROLLOUT = REPO / "conductor" / "app" / "rollout.py"
 
 
 # ---- naming: k8s and image tags are both fussy ---------------------------
@@ -144,9 +149,10 @@ def test_the_manifest_pins_the_exact_image():
 def test_promote_does_not_rebuild(monkeypatch):
     """The whole point: the bytes that served the preview are the bytes that
     serve production. A rebuild would reintroduce the drift this replaces."""
-    src = (REPO / "conductor" / "app" / "envs.py").read_text()
-    body = src.split("def promote(")[1].split("\ndef ")[0]
-    assert "docker build" not in body and "git pull" not in body
+    for src in ((REPO / "conductor" / "app" / "envs.py").read_text(), ROLLOUT.read_text()):
+        body = src.split("def promote(")[1].split("\ndef ")[0]
+        assert "docker build" not in body and "git pull" not in body
+    body = ROLLOUT.read_text().split("def promote(")[1].split("\ndef ")[0]
     assert '"set", "image"' in body      # kubectl set image, as separate argv
 
 
@@ -167,6 +173,10 @@ def _fake_kubectl(monkeypatch, calls, images=None):
     monkeypatch.setattr(envs, "_state", lambda: {"images": [{"tag": "img:1"}], "envs": {}})
     monkeypatch.setattr(envs, "_save", lambda st: None)
     monkeypatch.setattr(envs, "_sh", run)
+    monkeypatch.setattr(rollout, "sh", run)
+    # The trial run is exercised on its own below. Here it would poll a kubectl
+    # that answers every question with success and never report a ready replica.
+    monkeypatch.setattr(envs, "canary", lambda tag: {"ok": True})
 
 
 def test_promotion_names_the_deployment_it_is_changing(monkeypatch):
@@ -195,10 +205,12 @@ def test_the_target_is_named_and_never_selected(monkeypatch):
     """Verified against the live cluster: `kubectl set image deployment/<name>`
     exits 1 for a Deployment that is not there, but `--all` or a label selector
     matching nothing exits 0 and prints nothing at all — success, no rollout."""
-    src = (REPO / "conductor" / "app" / "envs.py").read_text()
-    body = "\n".join(l for l in src.split("def promote(")[1].split("\ndef ")[0].splitlines()
-                     if not l.strip().startswith("#"))
-    assert "--all" not in body and '"-l"' not in body
+    # Quoted forms only: both functions now EXPLAIN the trap in prose, and prose
+    # naming `--all` is the opposite of passing it.
+    for src in ((REPO / "conductor" / "app" / "envs.py").read_text(), ROLLOUT.read_text()):
+        body = "\n".join(l for l in src.split("def promote(")[1].split("\ndef ")[0].splitlines()
+                         if not l.strip().startswith("#"))
+        assert '"--all"' not in body and '"-l"' not in body
 
 
 def test_a_deployment_name_kubectl_would_read_as_something_else_is_refused(monkeypatch):
@@ -210,6 +222,7 @@ def test_a_deployment_name_kubectl_would_read_as_something_else_is_refused(monke
     def _boom(*a, **k):
         raise AssertionError("reached the cluster with a name it should have refused")
     monkeypatch.setattr(envs, "_sh", _boom)
+    monkeypatch.setattr(rollout, "sh", _boom)
     for bad in ("--all", "-l app=x", "statefulset/devteam-conductor", "   "):
         assert envs.promote("img:1", deployment=bad)["ok"] is False, bad
         assert envs.rollback(deployment=bad)["ok"] is False, bad
@@ -233,8 +246,7 @@ def test_rollback_undoes_the_deployment_it_was_asked_about(monkeypatch):
 
 def test_a_failed_rollout_is_undone(monkeypatch):
     """Half a rollout on the platform that runs your team is worse than none."""
-    src = (REPO / "conductor" / "app" / "envs.py").read_text()
-    body = src.split("def promote(")[1].split("\ndef ")[0]
+    body = ROLLOUT.read_text().split("def promote(")[1].split("\ndef ")[0]
     assert "rollout" in body and "undo" in body
 
 
@@ -324,10 +336,11 @@ def test_a_real_cluster_cross_builds_for_its_own_architecture():
     """kind reuses the host's arch, so local testing can never surface this: DOKS
     nodes are amd64, a Mac builds arm64, and that image dies on the node with
     "exec format error" — which says nothing about architecture."""
-    src = (REPO / "conductor" / "app" / "envs.py").read_text()
-    body = src.split("def build(")[1].split("\ndef ")[0]
-    assert "buildx" in body and "DEPLOY_PLATFORM" in body
-    assert "--push" in body
+    envs_src = (REPO / "conductor" / "app" / "envs.py").read_text()
+    caller = envs_src.split("def build(")[1].split("\ndef ")[0]
+    assert "DEPLOY_PLATFORM" in caller and "push=True" in caller
+    builder = ROLLOUT.read_text().split("def build_image(")[1].split("\ndef ")[0]
+    assert "buildx" in builder and "--push" in builder
 
 
 # ---- self-repair when there is no git checkout ---------------------------
@@ -504,3 +517,94 @@ async def test_a_registry_blip_never_takes_the_conductor_down(monkeypatch):
 def test_the_watcher_starts_only_in_a_cluster():
     src = (REPO / "conductor" / "app" / "main.py").read_text()
     assert "cloud.watch" in src and "cloud.in_cluster()" in src
+
+
+# ---- the cloud is one implementation, not the shape of the code (G4) ------
+# envs.py and cloud.py assumed DOCR's registry path, a pull secret called
+# docr-creds, and DigitalOcean's registry API — as if they were facts about
+# clusters. provider.py is where those four facts live now.
+
+def test_digitalocean_is_inferred_from_the_configuration_that_already_exists(monkeypatch):
+    """Nothing deployed today sets CLOUD_PROVIDER, and nothing deployed today
+    should have to. A DOCR registry is only ever DigitalOcean's."""
+    from app import provider
+    monkeypatch.delenv("CLOUD_PROVIDER", raising=False)
+    monkeypatch.delenv("DOCR_REGISTRY", raising=False)
+    assert provider.current().name == "generic"
+    monkeypatch.setenv("DOCR_REGISTRY", "registry.digitalocean.com/pulkit")
+    p = provider.current()
+    assert p.name == "digitalocean"
+    assert p.registry == "registry.digitalocean.com/pulkit"
+    assert p.pull_secret == "docr-creds"
+
+
+def test_the_cluster_pulls_by_the_providers_name_for_the_image(monkeypatch):
+    """A local tag means nothing to a remote node, and a registry prefix must not
+    be applied twice."""
+    from app import provider
+    monkeypatch.setenv("DOCR_REGISTRY", "registry.digitalocean.com/pulkit")
+    p = provider.current()
+    assert p.image_ref("devteam-conductor:abc") == \
+        "registry.digitalocean.com/pulkit/devteam-conductor:abc"
+    already = "registry.digitalocean.com/pulkit/devteam-conductor:abc"
+    assert p.image_ref(already) == already
+
+
+def test_a_provider_that_cannot_be_listed_reports_nothing_rather_than_failing(monkeypatch):
+    """"No candidate" is a state the update loop already handles; an exception on
+    the polling path is not."""
+    from app import provider
+    monkeypatch.delenv("DOCR_REGISTRY", raising=False)
+    monkeypatch.delenv("CLOUD_PROVIDER", raising=False)
+    import asyncio
+    assert asyncio.run(provider.current().published_tags("devteam-conductor")) == []
+
+
+def test_an_environment_is_never_exposed_by_the_providers_default(monkeypatch):
+    """DOKS reconciles k8s-public-access-<cluster> from the NodePort services it
+    finds and opens them to 0.0.0.0/0 — verified live: a fresh NodePort service
+    was world-reachable within seconds. That is a fact about the cloud, so it
+    belongs to the provider rather than to the preview code."""
+    from app import provider
+    for env in ("", "digitalocean"):
+        monkeypatch.setenv("CLOUD_PROVIDER", env)
+        assert provider.current().service_type == "ClusterIP"
+
+
+# ---- promotion of the platform now has the same gate a user's app has -----
+
+def test_the_platform_will_not_promote_an_image_that_cannot_start(monkeypatch):
+    """Kubernetes protects the worst case only AFTER the rollout has begun. The
+    cheap version of that protection is running the thing first."""
+    calls: list[tuple] = []
+    _fake_kubectl(monkeypatch, calls)
+    monkeypatch.setattr(envs, "canary",
+                        lambda tag: {"ok": False, "error": "CrashLoopBackOff: "})
+    r = envs.promote("img:1")
+    assert r["ok"] is False and r["verified"] is False
+    assert not any("set" in c and "image" in c for c in calls), \
+        "production was pointed at an image that could not start"
+
+
+def test_the_gate_can_be_stood_down_to_get_out_of_a_bad_state(monkeypatch):
+    """A gate that blocks the only route out of a broken deployment is worse than
+    no gate."""
+    calls: list[tuple] = []
+    _fake_kubectl(monkeypatch, calls)
+
+    def _boom(tag):
+        raise AssertionError("ran a trial when it was told not to")
+    monkeypatch.setattr(envs, "canary", _boom)
+    assert envs.promote("img:1", verify=False)["ok"] is True
+
+
+def test_the_trial_runs_on_a_scratch_database_and_never_on_production_data(monkeypatch):
+    """A migration that destroys data is exactly what this is meant to catch, so
+    it must destroy a copy."""
+    seen = {}
+    monkeypatch.setattr(rollout, "canary",
+                        lambda ns, name, image, **kw: seen.update(kw, name=name) or {"ok": True})
+    envs.canary("devteam-conductor:x")
+    assert seen["env"]["DB_PATH"].startswith("/tmp/")
+    assert seen["env"]["DEMO_MODE"] == "1"
+    assert seen["name"] != envs.PROD_DEPLOYMENT, "the trial was given production's name"

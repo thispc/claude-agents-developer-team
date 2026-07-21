@@ -26,7 +26,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import config, db
+from . import config, db, provider
 
 SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
 DEPLOYMENT = config._env("SELF_DEPLOYMENT", "devteam-conductor")
@@ -532,43 +532,24 @@ def rollback() -> dict[str, Any]:
 # an image that exists is a thing you can actually run, whereas a merged commit
 # might still be building or might have failed to build at all.
 
-REGISTRY = config._env("DOCR_REGISTRY")
+REGISTRY = provider.current().registry
 AUTO_UPDATE = config._env("AUTO_UPDATE") == "1"
 CHECK_SECONDS = int(config._env("UPDATE_CHECK_SECONDS", "300"))
-
-
-def _registry_name() -> str:
-    # registry.digitalocean.com/devteam-pulkit -> devteam-pulkit
-    return REGISTRY.rstrip("/").split("/")[-1] if REGISTRY else ""
+IMAGE_REPO = config._env("ENV_IMAGE_REPO", "devteam-conductor")
 
 
 async def available_images(limit: int = 10) -> list[dict[str, Any]]:
-    """Tags in the registry, newest first. Empty when we cannot look, never raises."""
-    import httpx
-    # A read-only registry token, NOT the account token. The account token can
-    # create and destroy clusters; a pod that only needs to list image tags has no
-    # business holding it. DOCR issues scoped, expiring credentials for exactly
-    # this, so least privilege costs nothing here.
-    token = config._env("DOCR_READ_TOKEN") or config._env("DIGITALOCEAN_API_TOKEN")
-    reg = _registry_name()
-    if not token or not reg:
-        return []
-    url = (f"https://api.digitalocean.com/v2/registry/{reg}"
-           f"/repositories/devteam-conductor/tags?per_page=50")
-    try:
-        async with httpx.AsyncClient(timeout=20) as c:
-            r = await c.get(url, headers={"Authorization": f"Bearer {token}"})
-            r.raise_for_status()
-            tags = r.json().get("tags", [])
-    except Exception:
-        return []
-    tags.sort(key=lambda t: t.get("updated_at", ""), reverse=True)
+    """Tags in the registry, newest first. Empty when we cannot look, never raises.
+
+    How to ask is the provider's business — DigitalOcean's registry API is not
+    anyone else's, and a provider that cannot be listed answers with nothing,
+    which reads here as "no candidate" rather than as an error.
+    """
+    tags = await provider.current().published_tags(IMAGE_REPO, limit)
     running = current_image()
-    return [{"tag": f"{REGISTRY}/devteam-conductor:{t['tag']}",
-             "short": t["tag"],
-             "updated_at": t.get("updated_at", ""),
-             "running": f"{REGISTRY}/devteam-conductor:{t['tag']}" == running}
-            for t in tags[:limit]]
+    for t in tags:
+        t["running"] = t["tag"] == running
+    return tags
 
 
 async def newer_than_running() -> dict[str, Any] | None:

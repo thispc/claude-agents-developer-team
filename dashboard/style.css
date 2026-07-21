@@ -1060,3 +1060,44 @@ pre.dim, .dim { color: var(--dim); }
              white-space: pre; background: var(--card-2); }
 /* Prose is reflowed; code never is — wrapping code is how you make it unreadable. */
 .file-doc { font: 13.5px/1.7 var(--ui); white-space: pre-wrap; background: var(--card); }
+
+/* Rendered markdown. #fileBody is a <pre>, so the inherited pre/pre-wrap has to be
+   undone or every block below inherits the source document's line breaks. */
+.file-md { font: 14px/1.65 var(--ui); white-space: normal; background: var(--card); }
+.file-md > :first-child { margin-top: 0; }
+.file-md h1, .file-md h2, .file-md h3,
+.file-md h4, .file-md h5, .file-md h6 { margin: 20px 0 8px; line-height: 1.3; }
+.file-md h1 { font-size: 20px; }
+.file-md h2 { font-size: 17px; border-bottom: 1px solid var(--line); padding-bottom: 5px; }
+.file-md h3 { font-size: 15px; }
+.file-md h4, .file-md h5, .file-md h6 { font-size: 13px; color: var(--muted); }
+.file-md p { margin: 0 0 11px; }
+.file-md ul, .file-md ol { margin: 0 0 11px; padding-left: 22px; }
+.file-md li { margin: 3px 0; }
+/* An item with a nested block under it is parsed as blocks, so its own text comes
+   back wrapped in <p>. Without this it gets paragraph spacing inside a bullet. */
+.file-md li > p { margin: 0; }
+.file-md blockquote { margin: 0 0 11px; padding: 2px 0 2px 12px;
+                      border-left: 3px solid var(--line); color: var(--muted); }
+.file-md hr { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
+.file-md code { font-family: var(--mono); font-size: 12px; background: var(--card-2);
+                padding: 1px 4px; border-radius: 4px; overflow-wrap: anywhere; }
+.file-md .md-code { background: var(--card-2); border: 1px solid var(--line);
+                    border-radius: 8px; padding: 10px 12px; margin: 0 0 12px;
+                    overflow-x: auto; white-space: pre; }
+.file-md .md-code code { background: none; padding: 0; }
+.file-md .md-figure { margin: 0 0 12px; }
+/* Diagrams are not drawn — no library ships with this page. The caption says so
+   rather than leaving a reader to wonder why the picture is missing. */
+.file-md figcaption { font-size: 11px; color: var(--muted); margin-bottom: 4px;
+                      text-transform: uppercase; letter-spacing: .04em; }
+.file-md .md-table { border-collapse: collapse; margin: 0 0 12px; font-size: 13px;
+                     display: block; overflow-x: auto; max-width: 100%; }
+.file-md .md-table th, .file-md .md-table td { border: 1px solid var(--line);
+                                               padding: 6px 10px; text-align: left; }
+.file-md .md-table th { background: var(--card-2); font-weight: 600; }
+.file-md .md-center { text-align: center; }
+.file-md .md-right { text-align: right; }
+/* A link the renderer refused. Visible, and visibly not a link. */
+.file-md .md-blocked { color: var(--muted); text-decoration: line-through dotted;
+                       cursor: not-allowed; }

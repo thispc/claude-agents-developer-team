@@ -32,10 +32,9 @@ import json
 import re
 import subprocess
 import time
-from pathlib import Path
 from typing import Any
 
-from . import config, sandbox, selfops
+from . import config, provider, rollout, sandbox, selfops
 
 BUILD_DIR = sandbox.SANDBOX_DIR / "build"
 STATE = sandbox.SANDBOX_DIR / "envs.json"
@@ -48,26 +47,12 @@ IMAGE_REPO = config._env("ENV_IMAGE_REPO", "devteam-conductor")
 KIND_CLUSTER = config._env("KIND_CLUSTER", "devteam")
 
 
-def _sh(*cmd: str, cwd: Path | None = None, timeout: int = 900) -> subprocess.CompletedProcess:
-    """Run a tool, treating "that tool isn't installed" as a failed run.
-
-    The conductor's own container has no docker and no kubectl — deliberately, so
-    it cannot build or run arbitrary images as itself. subprocess.run raises
-    FileNotFoundError in that case rather than returning non-zero, which turned
-    every Environments call into a 500 in the cluster: the page reported the
-    server was broken when the honest answer is "that tool is not here".
-    """
-    try:
-        return subprocess.run(cmd, cwd=str(cwd) if cwd else None,
-                              capture_output=True, text=True, timeout=timeout)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return subprocess.CompletedProcess(cmd, 127, "", f"{cmd[0]}: {e}")
-
-
-def _safe(name: str) -> str:
-    """A DNS-1123 label: k8s namespaces and image tags are both fussy."""
-    s = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")
-    return (s or "env")[:40].strip("-")
+# Both of these now belong to every deploy path, not just this one — a missing
+# binary is a failed run wherever it happens, and a name that k8s will not accept
+# is a name a user's app cannot use either. Kept as module names so the tests and
+# the rest of this file read unchanged.
+_sh = rollout.sh
+_safe = rollout.safe_label
 
 
 def _state() -> dict[str, Any]:
@@ -132,40 +117,26 @@ def build(source: str, note: str = "") -> dict[str, Any]:
         if not ok:
             return {"ok": False, "error": note_}
 
-    digest = _tree_hash(tree)
-    tag = f"{IMAGE_REPO}:{_safe(rest or kind)}-{digest[:10]}"
+    digest = rollout.tree_hash(tree)
+    tag = rollout.content_tag(IMAGE_REPO, rest or kind, digest)
     dockerfile = selfops.LIVE_TREE / "deploy" / "Dockerfile.conductor"
     if not dockerfile.exists():
         return {"ok": False, "error": "deploy/Dockerfile.conductor is missing"}
 
-    # Build for the architecture the CLUSTER runs, not the one this machine has.
-    #
-    # kind reuses the host's architecture, so local testing can never surface
-    # this — but DOKS nodes are amd64 and a Mac builds arm64 by default, and that
-    # image dies on the node with "exec format error", which says nothing about
-    # architecture. When the target is a real cluster we cross-build with buildx
-    # and push in the same step, because an amd64 image is not runnable here and
-    # there is nothing to be gained by loading it locally first.
+    # kind reuses the host's architecture and its nodes cannot see the host's
+    # daemon, so it wants a plain local build. A real cluster wants the opposite
+    # on both counts: cross-built for the nodes and pushed where they can pull.
     if on_kind():
-        r = _sh("docker", "build", "-f", str(dockerfile), "-t", tag, str(tree), timeout=1800)
+        r = rollout.build_image(str(dockerfile), tree, tag, timeout=1800)
     else:
         if not REGISTRY:
             return {"ok": False,
-                    "error": "this cluster pulls from a registry, but DOCR_REGISTRY is "
-                             "not set — there is nowhere to push the build"}
-        r = _sh("docker", "buildx", "build", "--platform", config.DEPLOY_PLATFORM,
-                "-f", str(dockerfile), "-t", registry_tag(tag), "--push",
-                str(tree), timeout=3600)
-    if r.returncode != 0:
-        blob = (r.stdout or "") + (r.stderr or "")
-        # Name the common cause rather than making the caller read a build log.
-        # Registry credentials are short-lived by design, so "unauthorized" here
-        # means expired login far more often than it means anything else.
-        why = ("the registry login has expired — run `doctl registry login`, or "
-               "fetch fresh docker credentials for the registry"
-               if "unauthorized" in blob.lower() or "authentication required" in blob.lower()
-               else "docker build failed")
-        return {"ok": False, "error": why, "log": blob[-2500:]}
+                    "error": "this cluster pulls from a registry, but none is "
+                             "configured — there is nowhere to push the build"}
+        r = rollout.build_image(str(dockerfile), tree, registry_tag(tag),
+                                platform=config.DEPLOY_PLATFORM, push=True)
+    if not r["ok"]:
+        return r
 
     st = _state()
     st["images"] = [i for i in st["images"] if i["tag"] != tag][:19]
@@ -175,32 +146,17 @@ def build(source: str, note: str = "") -> dict[str, Any]:
     return {"ok": True, "tag": tag, "digest": digest, "source": source}
 
 
-def _tree_hash(tree: Path) -> str:
-    """Content hash of what will actually be built.
-
-    A branch name is not an identity when uncommitted work is a legal source —
-    two builds of `live` an hour apart are different software and must not share
-    a tag, or promoting "the one I tested" becomes a guess.
-    """
-    import hashlib
-    h = hashlib.sha256()
-    for p in sorted(tree.rglob("*")):
-        if not p.is_file():
-            continue
-        rel = p.relative_to(tree)
-        if any(part in sandbox.SKIP for part in rel.parts):
-            continue
-        h.update(str(rel).encode())
-        try:
-            h.update(p.read_bytes())
-        except Exception:
-            pass
-    return h.hexdigest()
+_tree_hash = rollout.tree_hash
 
 
 # --- deploy --------------------------------------------------------------
 
-REGISTRY = config._env("DOCR_REGISTRY")      # e.g. registry.digitalocean.com/my-reg
+# Which registry, and what the pull credential is called, are the provider's
+# business rather than this module's — see provider.py. Read once here so the
+# rest of the file reads as "is there a registry?", which is the only question it
+# actually has.
+REGISTRY = provider.current().registry
+PULL_SECRET = provider.current().pull_secret
 
 
 def on_kind() -> bool:
@@ -238,21 +194,21 @@ def _publish(tag: str) -> tuple[bool, str]:
 def ensure_pull_secret(namespace: str) -> tuple[bool, str]:
     """Copy the registry credential into a namespace so its nodes can pull.
 
-    DOCR is private. Without this the pods sit in ImagePullBackOff, which surfaces
-    as "image can't be found" and sends you hunting for a build problem that isn't
-    there. The secret is copied from the default namespace rather than minted here,
-    so the credential lives in exactly one place.
+    A private registry — DOCR is one — leaves pods in ImagePullBackOff without
+    this, which surfaces as "image can't be found" and sends you hunting for a
+    build problem that isn't there. The secret is copied from the default
+    namespace rather than minted here, so the credential lives in one place.
     """
     if not REGISTRY:
         return True, "no registry configured; nothing to copy"
-    have = _sh("kubectl", "-n", namespace, "get", "secret", "docr-creds", timeout=30)
+    have = _sh("kubectl", "-n", namespace, "get", "secret", PULL_SECRET, timeout=30)
     if have.returncode == 0:
         return True, "already present"
-    dump = _sh("kubectl", "-n", "default", "get", "secret", "docr-creds",
+    dump = _sh("kubectl", "-n", "default", "get", "secret", PULL_SECRET,
                "-o", "yaml", timeout=30)
     if dump.returncode != 0:
-        return False, ("no 'docr-creds' secret in the default namespace to copy — "
-                       "create it once with `kubectl create secret docker-registry`")
+        return False, (f"no '{PULL_SECRET}' secret in the default namespace to copy — "
+                       f"create it once with `kubectl create secret docker-registry`")
     body = re.sub(r"^\s*namespace:.*$", f"  namespace: {namespace}",
                   dump.stdout, count=1, flags=re.M)
     body = re.sub(r"^\s*(resourceVersion|uid|creationTimestamp):.*$", "",
@@ -282,20 +238,16 @@ def manifests(env: str, tag: str, namespace: str) -> str:
     """
     host = f"{env}.{config.APPS_DOMAIN}" if config.APPS_DOMAIN else f"{env}.localhost"
     # A managed cluster bills for every LoadBalancer, and one per preview is how a
-    # credit disappears into networking rather than compute. NodePort reaches the
-    # same pod through the node's own IP for nothing; an ingress is worth it only
-    # once there is a wildcard domain to hang the previews off.
-    # ClusterIP everywhere. A NodePort on DOKS is opened to 0.0.0.0/0 by the
-    # platform's own controller (it reconciles k8s-public-access-<cluster> from
-    # the NodePort services it finds), so exposure becomes the default and any
-    # restriction is something you hold AGAINST that controller. A preview holds
-    # no secrets, but it does hold a login page with a known password, and
-    # `kubectl port-forward` costs nothing and exposes nothing.
-    expose = "ClusterIP"
-    # DOCR is private, so the node needs credentials to pull. Without this the
+    # credit disappears into networking rather than compute — so an ingress is
+    # worth it only once there is a wildcard domain to hang the previews off. What
+    # is left, ClusterIP or NodePort, is a question about the CLOUD rather than
+    # about previews, and provider.py answers it: on DOKS a NodePort is opened to
+    # 0.0.0.0/0 by the cloud's own controller, so it is never the safe default.
+    expose = provider.current().service_type
+    # A private registry means the node needs credentials to pull. Without this the
     # rollout sits in ImagePullBackOff, which reports as "image not found" and
     # sends you looking for a build problem that isn't there.
-    pull = ("      imagePullSecrets: [{name: docr-creds}]\n" if REGISTRY else "")
+    pull = (f"      imagePullSecrets: [{{name: {PULL_SECRET}}}]\n" if REGISTRY else "")
     ingress = f"""---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -392,7 +344,11 @@ def deploy_preview(tag: str, env: str) -> dict[str, Any]:
     r = subprocess.run(["kubectl", "apply", "-f", "-"], input=body,
                        capture_output=True, text=True, timeout=180)
     if r.returncode != 0:
-        return {"ok": False, "error": r.stderr[-500:], "kind_loaded": loaded}
+        # `kind_loaded: loaded` used to be reported here, and `loaded` was never
+        # assigned — so a failed apply raised NameError instead of returning
+        # kubectl's reason. The one path that most needed to explain itself was
+        # the one that crashed.
+        return {"ok": False, "error": r.stderr[-500:], "published": note}
 
     w = _sh("kubectl", "-n", namespace, "rollout", "status",
             "deployment/devteam-conductor", "--timeout=180s", timeout=200)
@@ -408,18 +364,29 @@ def deploy_preview(tag: str, env: str) -> dict[str, Any]:
 
 
 def _deployment_name(deployment: str) -> str:
-    """The Deployment to act on, refusing anything kubectl would read as a flag.
+    return rollout.deployment_name(deployment, PROD_DEPLOYMENT)
 
-    Arguments are passed as argv so there is no shell to inject into, but a name
-    beginning with '-' is still parsed by kubectl as an option, and a name with a
-    '/' in it changes which RESOURCE TYPE is addressed. Both turn "promote into
-    the wrong deployment" into "promote into something else entirely".
+
+def canary(tag: str) -> dict[str, Any]:
+    """Run a candidate platform image beside production, on a scratch database.
+
+    Not the same check as a preview environment, and not a replacement for one. A
+    preview is a whole environment a human looks at; this is the cheap gate on the
+    way to production for an image nobody previewed, and it answers only "does
+    this boot and serve its own health endpoint". DEMO_MODE and a /tmp database
+    mean the trial cannot touch real projects — a migration that destroys data
+    destroys the scratch copy, which is the entire reason to run it first.
     """
-    name = (deployment or PROD_DEPLOYMENT).strip()
-    return name if name and "/" not in name and not name.startswith("-") else ""
+    return rollout.canary(
+        PROD_NAMESPACE, f"{PROD_DEPLOYMENT}-canary", cluster_tag(tag),
+        port=8000, health="/api/health",
+        pull_secret=PULL_SECRET if REGISTRY else "",
+        env={"DB_PATH": "/tmp/canary.db", "DEMO_MODE": "1", "LAUNCHER": "local",
+             "ROOT_USERNAME": "root", "ROOT_PASSWORD": "canary",
+             "DEVTEAM_ENV": "canary"})
 
 
-def promote(tag: str, deployment: str = "") -> dict[str, Any]:
+def promote(tag: str, deployment: str = "", verify: bool = True) -> dict[str, Any]:
     """Ship the exact image that was previewed. No rebuild, no pull, no drift.
 
     This is the whole point of the module: `redeploy()` pulls main into the live
@@ -430,6 +397,10 @@ def promote(tag: str, deployment: str = "") -> dict[str, Any]:
     `deployment` names the target explicitly. It defaults to PROD_DEPLOYMENT and
     never to "whatever is in the namespace": picking for the caller is fine while
     there is one app to pick and silently wrong the moment there are two.
+
+    `verify` runs the image once beside production first. It is on by default and
+    exists to be turned OFF: when production is already broken, a second thing to
+    go wrong between you and a working image is not a safety feature.
     """
     if not kubectl_ok():
         return {"ok": False, "error": "no reachable Kubernetes cluster"}
@@ -441,49 +412,35 @@ def promote(tag: str, deployment: str = "") -> dict[str, Any]:
     target = _deployment_name(deployment)
     if not target:
         return {"ok": False, "error": f"{deployment!r} is not a Deployment name"}
-    # Resolve the target before touching it, and treat "not there" as fatal.
-    #
-    # `kubectl set image deployment/<name>` does exit 1 on a missing Deployment
-    # (checked against the live cluster: 'Error from server (NotFound)'), and also
-    # on a container name it cannot find — but it exits 0 and prints NOTHING when
-    # the target is expressed as `--all` or a label selector that matches nothing.
-    # So the target is always NAMED here, never selected, and a name that resolves
-    # to nothing stops here. A promote that no-ops is worse than one that errors:
-    # it reports the new image as live while production keeps serving the old one.
-    previous = _sh("kubectl", "-n", PROD_NAMESPACE, "get", "deployment",
-                   target, "-o",
-                   "jsonpath={.spec.template.spec.containers[0].image}").stdout.strip()
+    # Resolve the target before touching it, and treat "not there" as fatal. The
+    # reasoning — a named target because `--all` and label selectors exit 0 while
+    # doing nothing — now lives in rollout.promote, where it protects a user's app
+    # on exactly the same terms.
+    previous, container = rollout.running_image(PROD_NAMESPACE, target)
     if not previous:
         return {"ok": False,
                 "error": f"no '{target}' deployment in {PROD_NAMESPACE} to promote "
                          f"into (set PROD_DEPLOYMENT if production is called "
                          f"something else)"}
-    # Ask what the container is actually called rather than assuming "conductor".
-    # A production deployed from any other manifest would otherwise fail here with
-    # kubectl's own words ('unable to find container named "conductor"'), which
-    # reads like the image is wrong when the naming is.
-    name = _sh("kubectl", "-n", PROD_NAMESPACE, "get", "deployment",
-               target, "-o",
-               "jsonpath={.spec.template.spec.containers[0].name}").stdout.strip() or "conductor"
     published, note = _publish(tag)
     if not published:
         return {"ok": False, "error": f"the cluster could not be given the image: {note}"}
-    r = _sh("kubectl", "-n", PROD_NAMESPACE, "set", "image",
-            f"deployment/{target}", f"{name}={cluster_tag(tag)}", timeout=120)
-    if r.returncode != 0:
-        return {"ok": False, "error": r.stderr[-400:]}
-    w = _sh("kubectl", "-n", PROD_NAMESPACE, "rollout", "status",
-            f"deployment/{target}", "--timeout=180s", timeout=200)
-    if w.returncode != 0:
-        _sh("kubectl", "-n", PROD_NAMESPACE, "rollout", "undo",
-            f"deployment/{target}", timeout=120)
-        return {"ok": False, "rolled_back": True, "from": previous,
-                "deployment": target, "error": (w.stderr or w.stdout)[-400:]}
+    if verify:
+        c = canary(tag)
+        if not c["ok"]:
+            return {"ok": False, "verified": False, "canary": c,
+                    "error": f"the image did not pass a trial run, so production was "
+                             f"left alone: {c.get('error')}"}
+    r = rollout.promote(PROD_NAMESPACE, target, cluster_tag(tag),
+                        container=container or "conductor", previous=previous)
+    if not r["ok"]:
+        return r
     st = _state()
     st["production"] = {"tag": tag, "previous": previous, "deployment": target,
-                        "at": time.time()}
+                        "at": time.time(), "verified": verify}
     _save(st)
-    return {"ok": True, "tag": tag, "previous": previous, "deployment": target}
+    return {"ok": True, "tag": tag, "previous": previous, "deployment": target,
+            "verified": verify}
 
 
 def rollback(deployment: str = "") -> dict[str, Any]:
@@ -497,10 +454,7 @@ def rollback(deployment: str = "") -> dict[str, Any]:
     target = _deployment_name(deployment)
     if not target:
         return {"ok": False, "error": f"{deployment!r} is not a Deployment name"}
-    r = _sh("kubectl", "-n", PROD_NAMESPACE, "rollout", "undo",
-            f"deployment/{target}", timeout=120)
-    return {"ok": r.returncode == 0, "deployment": target,
-            "detail": (r.stdout or r.stderr)[-300:]}
+    return rollout.rollback(PROD_NAMESPACE, target)
 
 
 def destroy(env: str) -> dict[str, Any]:
@@ -528,4 +482,8 @@ def overview() -> dict[str, Any]:
             "kind": on_kind() if kubectl_ok() else False, "registry": REGISTRY,
             "production": st.get("production"), "images": st["images"][:10],
             "envs": st["envs"], "live_namespaces": live,
-            "prod_namespace": PROD_NAMESPACE, "prod_deployment": PROD_DEPLOYMENT}
+            "prod_namespace": PROD_NAMESPACE, "prod_deployment": PROD_DEPLOYMENT,
+            # Which cloud's assumptions are in force. Worth stating plainly: the
+            # same cluster read through a differently-configured provider would
+            # push to a different registry and pull with a different secret.
+            "cloud": provider.describe()}

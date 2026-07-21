@@ -86,6 +86,7 @@ task escalated to a stronger model. Click a node to open the task.
 | **↻ Rebuild & restart** | same | Fresh checkout, rebuild, restart. |
 | **■ Stop** 🛑 | `DELETE /projects/{id}/deploy` | Kills the deployment and frees the port. |
 | **Build & runtime log** | — | The actual build output — where a failed deploy explains itself. |
+| **A file in the Files list** | `GET /projects/{id}/file` | `.md` renders as a document, everything else keeps its whitespace as code. The document view escapes everything the file contains and drops any link that is not `http(s)`, `mailto:` or relative — the file was written by an agent in a cloned repo, so it is treated as hostile input rather than as content. ` ```mermaid ` blocks are labelled and shown as source; no diagram library is loaded. |
 
 The deployed app gets its **own origin** (a port, or a Service), never a path
 under the dashboard — otherwise its absolute `/api/...` calls would hit the
@@ -189,7 +190,7 @@ convene; nothing is built until you click Build.
 | **✕** on a seat | — | Removes it; refuses below 3. |
 | **seat warning** | — | Tells you when your table is homogeneous — the configuration research found does *not* beat asking one model once. |
 | **Moderator in the centre** | — | Which model synthesises. It weighs arguments, not head-counts. |
-| **Diverge only / Full debate** | — | Diverge = `N+1` calls (propose → synthesise). Debate = `3N+1` (adds critique + revise). Diverge is the shape the evidence supports for open-ended work; debate stress-tests but risks losing facts to consensus pressure. |
+| **Diverge only / Full debate** | — | Diverge (the default) = `N+1` calls (propose → synthesise). Debate = `3N+1` (adds critique + revise), so roughly 3× the money and the wait. Diverge is the shape the evidence supports for open-ended work; debate stress-tests but risks losing facts to consensus pressure. |
 | **▶ Convene the table** 💸 | `POST /tables` then `POST /tables/{id}/run` | Runs the chosen mode. A 4-seat table is 5 calls (diverge) or 13 (debate). |
 | **🚀 Build this with a team** 💸🤖🌐 | `POST /tables/{id}/build` | Creates a real project whose brief *is* the blueprint (dissent included) and whose roster is the proposed team, then starts the manager. |
 

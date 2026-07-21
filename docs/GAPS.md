@@ -3,7 +3,7 @@
 Audited against the stated product, not against the backlog. Each item says what
 is true today, because "missing" and "half-built" need different work.
 
-Legend: **✗** absent · **◐** partial · **⚠** defect in something that exists
+Legend: **✗** absent · **◐** partial · **⚠** defect in something that exists · **✓** closed
 
 ---
 
@@ -17,7 +17,7 @@ false, and the third is true only for DigitalOcean.
 | G1 | ✗ | **Workers are Claude-only.** `FALLBACK_ORDER` is three Claude models and the worker is built on the Claude Agent SDK. `providers.py` speaks to three vendors but is used only by plan mode and recruiting. "Any agent in any role" is true for *planning*, false for *building*. Weeks of work: an agentic loop with file/shell tools per provider. |
 | G2 | ✗ | **No per-role provider or model choice.** The roster is `{role, count, model}` where model is the string `worker` or `lead`, resolved to Claude ids. You cannot say "backend on Gemini, tester on Claude". |
 | G3 | ◐ | **Git host is configurable; the dashboard's links are not.** `GIT_API`/`GIT_WEB`/`GIT_PROVIDER` route every API call, clone and credential check, and Gitea's real divergences (merge verb and body key, no `head` filter on list-pulls, `limit` not `per_page`, paged trees) are handled. Still hardcoded: the `github.com` links built in `routes.py` and `dashboard/app.js`, and the k8s launcher does not pass `GIT_WEB` into the worker's env, so k8s workers still clone from github.com. |
-| G4 | ◐ | **Cloud means DigitalOcean.** `deploy.py` is generic k8s/docker, but `envs.py` and `cloud.py` assume DOCR, DO firewalls and DO load balancers. No AWS/GCP path, and the DOKS-specific knowledge is baked into code rather than a provider interface. |
+| G4 | ◐ | **Cloud means DigitalOcean, but it is now a seam rather than an assumption.** `provider.py` holds the four vendor facts that were spread through `envs.py` and `cloud.py`: which registry, what the pull secret is called, how published tags are listed, and why a preview is never a NodePort (DOKS opens them to 0.0.0.0/0 itself). DigitalOcean is inferred from `DOCR_REGISTRY`, so nothing configured today changes. Still absent: an AWS or GCP implementation, and DO's load-balancer costing is still reasoned about inline in the manifests. |
 | G5 | ✗ | **No custom model endpoints.** The provider list is fixed to Anthropic/OpenAI/Google. No Bedrock, Vertex, or self-hosted vLLM — which is the same "bring your own" promise applied to inference. |
 
 ## 2. The round table
@@ -25,7 +25,7 @@ false, and the third is true only for DigitalOcean.
 | | | |
 |---|---|---|
 | G6 | ◐ | **Blueprint → project handoff is thin.** A blueprint produces a team roster, but personas, provider choices and the manager's character do not carry across. The round table's output is mostly discarded at the moment it matters. |
-| G7 | ⚠ | **The UI defaults to `debate`, which the evidence does not support.** `diverge` is the mode the research favours for open-ended work and it is the non-default. The default should be the one that works. |
+| G7 | ✓ | **The UI defaults to `diverge`**, the mode the research favours for open-ended work, and the picker now prints what each costs (`N+1` vs `3N+1` calls) next to which one the evidence supports. The `roundtables.mode` column still defaults to `'debate'` on purpose: it is what every recorded table ran as, and changing a column default rewrites what past runs *were*. |
 | G8 | ✗ | **Seats cannot be personas from the eventual team.** You argue an idea with strangers, then hire different people to build it. |
 
 ## 3. Team, roles and personas
@@ -60,9 +60,9 @@ comes back; the scheduler dispatches whatever is unblocked.
 | G20 | ◐ | **Each sprint is frozen once the project leaves it.** `artifacts.py` writes the sprint's task record and the repo's file list into `sprint_artifacts`, so a later cycle reworking a task no longer rewrites what shipped earlier. Captured on read rather than at the sprint boundary, because the boundary lives in the manager session and would miss every project that already ran. Sprints from before this exists have no snapshot and read live, labelled as such. |
 | G21 | ◐ | **Release notes per sprint, assembled from the record.** Every line names the task it came from. A model may rewrite them into prose, but the draft is discarded whole if it cites a task the sprint did not contain, and the itemised facts are returned alongside either way. No dashboard surface yet. |
 | G22 | ◐ | **Per-teammate view over task artifacts**, not a second ownership model — `/api/projects/{id}/by-agent` groups tasks by `agent_id`, and projects from before teammates had names fall back to grouping by role. No dashboard surface yet. |
-| G23 | ◐ | **Non-code output is readable, not beautiful.** Files render as plain text — no markdown rendering, no diagrams, no document view. A blueprint project's output looks like a source dump. |
-| G24 | ◐ | **Two unrelated "run it" paths.** `deploy.py` (project apps) and `sandbox.py`/`envs.py` (the platform) do the same job with none of the same features. Project deploys have no canary, no image identity, no verification gate. |
-| G25 | ⚠ | **Project deploys can only go forward and back, not sideways.** Rollback exists now; there is still no preview-per-branch for a user's app. |
+| G23 | ◐ | **Markdown deliverables render as documents.** Headings, lists, tables, code blocks, quotes and links, from a renderer written here rather than a dependency the pod cannot install. It treats every file as hostile — agent-authored content from a cloned repo — so nothing reaches the page unescaped and only `http(s)`/`mailto`/relative URLs survive as links. Still no diagrams: a ` ```mermaid ` block is labelled and shown as source, because shipping a drawing library needs a CDN or a build step and there is neither. |
+| G24 | ◐ | **One set of shipping mechanics, used by both paths.** `rollout.py` holds content-hash tags, the build that returns no tag on failure, the trial run before promotion, promotion into a named Deployment, and rollback; `deploy.py` and `envs.py` both call it. A user's app is now identified by the code it was built from, is run once with nothing routed to it before it replaces the app that works, and is changed with `set image` rather than a re-applied manifest. Still separate on purpose: `cloud.py`, which patches the Deployment it is running inside from a pod with no kubectl. |
+| G25 | ◐ | **Per-branch previews for a user's app.** A branch gets its own image, Deployment, hostname and `devteam/branch` label, beside the deployed app rather than over it — locally on its own port, on the cluster behind the shared ingress. No dashboard surface yet: `/api/projects/{id}/previews`, GET, POST and DELETE. |
 
 ## 6. Sprints and the feedback loop
 
