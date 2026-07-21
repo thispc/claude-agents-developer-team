@@ -23,6 +23,7 @@ into every pod. No kubectl binary is needed.
 """
 
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -391,6 +392,11 @@ def staging_deploy(image: str) -> dict[str, Any]:
             "namespace": STAGING_NS}
 
 
+# The suite takes about five minutes on the shared node; this is generous enough
+# that a slow run is not mistaken for a hung one, and short enough that a hung one
+# is not waited on all day.
+VERIFY_TIMEOUT = int(config._env("STAGING_VERIFY_TIMEOUT", "1500"))
+
 def staging_verify(image: str) -> dict[str, Any]:
     """Run the test suite inside staging, against real credentials.
 
@@ -424,7 +430,15 @@ def staging_verify(image: str) -> dict[str, Any]:
             f"app={DEPLOYMENT} in {STAGING_NS}, none of them Running — deploy "
             f"staging first.")}
     try:
-        out = stream.stream(
+        # _preload_content=False and drain manually.
+        #
+        # The preloaded form buffers the whole exec and then decodes it, and on a
+        # command that runs for minutes the websocket has already been closed by
+        # the time it tries — which surfaces as "'NoneType' object has no
+        # attribute 'decode'", an error that says nothing about what went wrong.
+        # Draining explicitly also means a suite that hangs hits OUR deadline
+        # rather than an arbitrary one inside the client.
+        resp = stream.stream(
             core.connect_get_namespaced_pod_exec, pod, STAGING_NS,
             # Deselect tests that read the repository or drive host tooling: they
             # verify the checkout, not the artifact, and neither exists in here.
@@ -439,7 +453,24 @@ def staging_verify(image: str) -> dict[str, Any]:
                      "cd /app && python -m pytest tests -q -p no:cacheprovider "
                      "-m 'not live and not hostonly' 2>&1 | tail -20; "
                      "echo \"__EXIT__:${PIPESTATUS[0]:-$?}\""],
-            stderr=True, stdout=True, stdin=False, tty=False, _request_timeout=900)
+            stderr=True, stdout=True, stdin=False, tty=False,
+            _preload_content=False)
+        chunks: list[str] = []
+        deadline = time.time() + VERIFY_TIMEOUT
+        while resp.is_open():
+            if time.time() > deadline:
+                resp.close()
+                return {"ok": False, "image": image,
+                        "output": "".join(chunks)[-1500:],
+                        "error": f"the suite did not finish within "
+                                 f"{VERIFY_TIMEOUT // 60} minutes in staging"}
+            resp.update(timeout=5)
+            if resp.peek_stdout():
+                chunks.append(resp.read_stdout())
+            if resp.peek_stderr():
+                chunks.append(resp.read_stderr())
+        resp.close()
+        out = "".join(chunks)
     except Exception as e:
         forbidden = "403" in str(e) or "Forbidden" in str(e)
         return {"ok": False, "error": (
