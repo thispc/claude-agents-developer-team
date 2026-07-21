@@ -281,10 +281,18 @@ def cooldown_left(model: str) -> int:
 FALLBACK_ORDER = ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"]
 
 
-def pick_model(task: dict, project: dict | None = None) -> str:
+def pick_model(task: dict, project: dict | None = None, agent: dict | None = None) -> str:
     """Model precedence: an explicit reassignment by the manager > a fallback when the
-    previous run was rate-limited > escalation after repeated failures > the boss's
-    recruited per-role choice > the role's roles.json default > WORKER_MODEL."""
+    previous run was rate-limited > escalation after repeated failures > THIS teammate's
+    own model > the boss's recruited per-role choice > the role's roles.json default >
+    WORKER_MODEL.
+
+    A teammate's model sits below escalation on purpose, and getting that wrong broke
+    a live run. Taking the teammate's model unconditionally — which is what "the person
+    has their own model" naively means — silently disabled every rule above it: the
+    manager reassigned a failing task to sonnet-5, the dispatch ignored it and sent the
+    teammate's model again, and the task failed the same way a second time. Whose model
+    it is answers a different question from what to do when that model is not working."""
     # Only an EXPLICIT manager reassignment pins the model. task["model"] is just
     # what the last run used — reading it here would make every retry re-pick the
     # same model and silently disable escalation and rate-limit fallback.
@@ -307,6 +315,12 @@ def pick_model(task: dict, project: dict | None = None) -> str:
             nxt = FALLBACK_ORDER.index(prev) + 1
             return FALLBACK_ORDER[nxt] if nxt < len(FALLBACK_ORDER) else prev
         return config.ESCALATION_MODEL
+    # This particular teammate's model, if they were given one. Resolved through
+    # the same alias table as everything else — the roster speaks in tiers
+    # ("worker", "lead"), and passing one of those through as a model id reaches
+    # the vendor as a model called "worker" and fails the run outright.
+    if agent and agent.get("model"):
+        return config._resolve_model(agent["model"])
     if project:
         import json
         want = canon_role(task["role"])
@@ -705,7 +719,7 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
     # own model, and that choice has to win over the platform's default or
     # per-role model selection is decorative.
     agent = team.claim(task)
-    model = team.model_for(agent, pick_model(task, project))
+    model = pick_model(task, project, agent)
     # Record the model this run actually uses so it's visible in the UI and the
     # manager can reason about who is on what.
     # Clear the previous run's report on re-dispatch: pick_model reads it for

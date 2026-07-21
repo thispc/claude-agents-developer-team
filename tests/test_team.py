@@ -174,3 +174,63 @@ def test_an_unparseable_blueprint_yields_no_team_rather_than_an_error(fresh_db):
     assert team.from_blueprint("not json at all") == []
     assert team.from_blueprint(json.dumps({"team": "wrong type"})) == []
     assert team.from_blueprint(json.dumps({"team": [{"count": 3}]})) == []   # no role
+
+
+# --- what a dispatch actually runs on -------------------------------------
+#
+# Caught by a live run on staging, not by this suite. A teammate's model was
+# taken unconditionally, which broke two things at once and looked like one.
+
+def test_a_roster_tier_is_resolved_to_a_real_model_id(fresh_db):
+    """The roster speaks in tiers. Passing "worker" through as a model id reaches
+    the vendor as a model literally called "worker" and kills the task — which is
+    exactly what happened on the first live run."""
+    from app import config, launcher
+    pid = make_project(name="m1")
+    team.hire(pid, [{"role": "backend", "count": 1, "model": "worker"}])
+    agent = db.list_agents(pid)[0]
+    tid = make_task(pid, role="backend", title="x")
+
+    assert team.model_for(agent, "fallback") == config.WORKER_MODEL
+    assert launcher.pick_model(db.get_task(tid), db.get_project(pid), agent) \
+        == config.WORKER_MODEL
+
+
+def test_a_managers_reassignment_beats_the_teammates_own_model(fresh_db):
+    """The manager reassigned a failing task to sonnet-5 and the dispatch sent the
+    teammate's model again, so it failed the same way twice. Whose model it is
+    answers a different question from what to do when that model is not working."""
+    from app import launcher
+    pid = make_project(name="m2")
+    team.hire(pid, [{"role": "backend", "count": 1, "model": "claude-haiku-4-5"}])
+    agent = db.list_agents(pid)[0]
+    tid = make_task(pid, role="backend", title="x")
+    db.update_task(tid, pinned_model="claude-sonnet-5")
+
+    assert launcher.pick_model(db.get_task(tid), db.get_project(pid), agent) \
+        == "claude-sonnet-5"
+
+
+def test_escalation_still_happens_for_someone_with_their_own_model(fresh_db):
+    """Otherwise a teammate with a pinned cheap model retries on it forever."""
+    from app import launcher
+    pid = make_project(name="m3")
+    team.hire(pid, [{"role": "backend", "count": 1, "model": "claude-haiku-4-5"}])
+    agent = db.list_agents(pid)[0]
+    tid = make_task(pid, role="backend", title="x")
+    db.update_task(tid, attempts=2, model="claude-haiku-4-5")
+
+    picked = launcher.pick_model(db.get_task(tid), db.get_project(pid), agent)
+    assert picked != "claude-haiku-4-5"
+
+
+def test_a_teammates_model_still_wins_over_the_role_default(fresh_db):
+    """The point of per-role choice, which must survive the fix above."""
+    from app import launcher
+    pid = make_project(name="m4")
+    team.hire(pid, [{"role": "backend", "count": 1, "model": "claude-opus-4-8"}])
+    agent = db.list_agents(pid)[0]
+    tid = make_task(pid, role="backend", title="x")
+
+    assert launcher.pick_model(db.get_task(tid), db.get_project(pid), agent) \
+        == "claude-opus-4-8"

@@ -212,14 +212,22 @@ def system_addendum(agent: dict | None) -> str:
 
 
 def model_for(agent: dict | None, fallback: str) -> str:
-    """A teammate's own model, when they have been given one.
+    """A teammate's own model, resolved to something a vendor will accept.
 
-    This is how per-role model choice arrives: the roster carries it, the agent
-    row stores it, and the launcher asks here. An empty value means "use whatever
-    the platform would have picked", which keeps every existing project behaving
-    exactly as it did.
+    The roster speaks in tiers — "worker", "lead" — and those are aliases, not
+    model ids. Returning one unresolved sent a live worker off to ask for a model
+    literally called "worker", which failed the whole task. An empty value means
+    "use whatever the caller would have picked", so a project with no per-teammate
+    choice behaves exactly as it did.
+
+    NOTE: this answers "whose model is it", which is a different question from
+    "what should this dispatch run on". Dispatch goes through `launcher.pick_model`,
+    where a teammate's model sits BELOW an explicit reassignment and below
+    escalation — otherwise a task that keeps failing keeps failing on the same
+    model, and the manager's correction is silently discarded.
     """
-    return (agent or {}).get("model") or fallback
+    own = (agent or {}).get("model")
+    return config._resolve_model(own) if own else fallback
 
 
 def provider_for(agent: dict | None) -> str:
