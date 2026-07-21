@@ -293,3 +293,32 @@ def test_the_source_dropdown_degrades_instead_of_emptying():
     dropdown was empty and the feature looked dead."""
     js = (REPO / "dashboard" / "app.js").read_text()
     assert "d.sources || d.branches" in js
+
+
+# ---- a sandbox must not ask for keys it is designed not to have -----------
+
+def test_a_sandbox_does_not_demand_credentials(fresh_db, monkeypatch):
+    """Holding no credentials IS the guarantee. Asking for keys is backwards:
+    nothing will authenticate because no agent will ever run, and pasting a real
+    key into a throwaway build is the one thing to discourage."""
+    from app import auth
+    monkeypatch.setattr(config, "DEMO_MODE", True)
+    u = auth.get_user(1)
+    assert auth.has_own_ai_credentials(u) is True
+
+
+def test_the_live_app_still_demands_them(fresh_db, make_user, monkeypatch):
+    from app import auth
+    monkeypatch.setattr(config, "DEMO_MODE", False)
+    monkeypatch.setattr(config, "AUTH_CONFIGURED", False)
+    uid, _c = make_user("zoe")
+    assert auth.has_own_ai_credentials(auth.get_user(uid)) is False
+
+
+def test_a_project_can_be_created_in_a_sandbox(root_client, fresh_db, monkeypatch):
+    """The build you most want to click through must not be the only one you
+    cannot use."""
+    monkeypatch.setattr(config, "DEMO_MODE", True)
+    monkeypatch.setattr(config, "AUTH_CONFIGURED", False)
+    r = root_client.post("/api/projects", json={"name": "in sandbox", "brief": "try me"})
+    assert r.status_code == 200, r.text

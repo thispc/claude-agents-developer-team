@@ -780,3 +780,51 @@ def test_the_feed_hides_legacy_echo_events():
     js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
     body = js.split("function renderEvent(", 1)[1][:600]
     assert 'e.kind === "answer"' in body and "return" in body
+
+
+# ---- two workers must never share one task --------------------------------
+# On the mars-rover run the manager sent task #7 back while its agent was still
+# working. The scheduler dispatched a second one, both pushed to the same branch,
+# and the late report overwrote a task the manager had already accepted.
+
+def test_sending_work_back_retires_the_agent_still_on_it(fresh_db):
+    from app import manager as mgr
+    p = make_project(owner_id=1)
+    t = make_task(p, status="running")
+    launcher.ACTIVE[str(t)] = {"kind": "process", "pid": None, "proc": None,
+                               "project_id": p, "task_id": t}
+    mgr.build_team_server(p)
+    import asyncio
+    asyncio.run(mgr.HANDLERS[p]["handlers"]["request_changes"](
+        {"task_id": 1, "feedback": "please redo the error handling"}))
+    assert str(t) not in launcher.ACTIVE, "a second agent would have joined the first"
+    assert db.get_task(t)["status"] == "planned"
+
+
+def test_a_late_report_cannot_reopen_an_accepted_task(root_client, fresh_db):
+    """It flipped 'done' back to 'pushed' permanently — the project had finished,
+    so nothing was left running to move it on again."""
+    import os
+    p = make_project(owner_id=1)
+    t = make_task(p, status="done")
+    db.update_task(t, report="the work the manager accepted")
+    r = root_client.post("/internal/report",
+                         headers={"X-Worker-Token": os.environ["WORKER_TOKEN"]},
+                         json={"project_id": p, "task_id": t, "status": "pushed",
+                               "report": "a straggler reporting late", "cost_usd": 0.1})
+    assert r.status_code == 200 and r.json().get("ignored")
+    fresh = db.get_task(t)
+    assert fresh["status"] == "done", "an accepted task was dragged backwards"
+    assert fresh["report"] == "the work the manager accepted"
+
+
+def test_an_ordinary_report_still_lands(root_client, fresh_db):
+    import os
+    p = make_project(owner_id=1)
+    t = make_task(p, status="running")
+    r = root_client.post("/internal/report",
+                         headers={"X-Worker-Token": os.environ["WORKER_TOKEN"]},
+                         json={"project_id": p, "task_id": t, "status": "pushed",
+                               "report": "done the work", "cost_usd": 0.1})
+    assert r.status_code == 200 and not r.json().get("ignored")
+    assert db.get_task(t)["status"] == "pushed"

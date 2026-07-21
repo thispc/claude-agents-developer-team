@@ -133,6 +133,12 @@ def get_settings(user: dict) -> dict:
 def has_own_ai_credentials(user: dict) -> bool:
     """True when this user can run agents on their own account. Root also counts if
     the server itself is authenticated (its own key / token / machine CLI login)."""
+    # A sandbox deliberately holds no credentials — that is the guarantee. Asking
+    # it for keys is backwards: there is nothing to authenticate because no agent
+    # will ever run, and pasting a real key into a throwaway build is the one
+    # thing nobody should be encouraged to do.
+    if config.DEMO_MODE:
+        return True
     s = get_settings(user)
     if s.get("anthropic_api_key") or s.get("claude_oauth_token"):
         return True

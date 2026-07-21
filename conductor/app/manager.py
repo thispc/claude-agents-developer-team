@@ -473,6 +473,15 @@ def build_team_server(project_id: int):
         task_id = t["id"] if t else -1
         if not t:
             return _text("error: no such task")
+        # Sending work back marks the task 'planned', and the scheduler dispatches
+        # anything planned — so if an agent is STILL WORKING on it, a second one
+        # starts beside the first. Both then push to the same branch and both
+        # report, and whichever lands last overwrites the other's outcome. That
+        # happened on task #7 of the mars-rover run. Retire the old worker first.
+        from . import launcher
+        if str(task_id) in launcher.ACTIVE:
+            launcher.kill_task(task_id, "superseded: the manager sent this work back "
+                                        "while the agent was still on it")
         db.update_task(task_id, feedback=args["feedback"], status="planned")
         bus.emit(project_id, task_id, "manager", "changes_requested",
                  {"feedback": args["feedback"]})

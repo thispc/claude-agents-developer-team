@@ -793,10 +793,13 @@ async def create_project(body: NewProject, request: Request) -> dict:
         raise HTTPException(400, "Add your own Anthropic API key or Claude subscription "
                                  "token in Settings (⚙) before starting a project — "
                                  "agents run on your account, not the server's.")
-    if not owner["is_root"] and not auth.get_settings(owner).get("github_token"):
+    if (not config.DEMO_MODE and not owner["is_root"]
+            and not auth.get_settings(owner).get("github_token")):
         raise HTTPException(400, "Add your own GitHub token in Settings (⚙) — "
                                  "your team needs a repo it can push to.")
-    if not config.AUTH_CONFIGURED:
+    # A sandbox has no credentials by design; gating on them would make the one
+    # build you most want to click through the only one you cannot use.
+    if not config.AUTH_CONFIGURED and not config.DEMO_MODE:
         raise HTTPException(400, "Set ANTHROPIC_API_KEY (API billing) or "
                                  "CLAUDE_CODE_OAUTH_TOKEN (Pro/Max subscription) on the conductor")
     if config.LAUNCHER == "k8s" and config.CLI_LOGIN:
@@ -1274,6 +1277,20 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
         bus.emit(body.project_id, body.task_id, "system", "rate_limited",
                  {"model": model, "cooldown_s": cooldown_left(model),
                   "detail": body.report[:300]})
+    # A report from a superseded worker must not drag the task backwards.
+    #
+    # On the mars-rover run two workers ended up on task #7 at once (a re-dispatch
+    # while the first was still alive). The manager accepted the first one's work
+    # and closed the task; forty seconds later the second reported, and the task
+    # flipped from 'done' back to 'pushed' — permanently, because the project was
+    # already finished and nothing was left running to move it on again.
+    if task and task["status"] == "done":
+        bus.emit(body.project_id, body.task_id, "system", "late_report_ignored",
+                 {"status": status, "note": "this task was already accepted; a second "
+                                            "worker reported afterwards"})
+        db.add_project_cost(body.project_id, body.cost_usd)
+        return {"ok": True, "ignored": "task already accepted"}
+
     db.update_task(body.task_id, status=status, report=body.report,
                    verification=body.verification or "",
                    cost_usd=(task["cost_usd"] if task else 0) + body.cost_usd)
