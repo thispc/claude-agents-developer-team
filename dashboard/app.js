@@ -3605,11 +3605,78 @@ $("#newProjectForm").addEventListener("submit", async (ev) => {
   }
 });
 
+
+// The quality-versus-time slider.
+//
+// This was three tall tiles of prose, and the whole step read as a form to
+// survive rather than two decisions to make. A slider fits how the choice
+// actually feels — "how far along the fast-to-thorough line am I" — but a bare
+// slider only moves a word, so the strip underneath names what CHANGES at that
+// position. That is the part that makes it a trade rather than a vibe.
+const AMBITION_STOPS = [
+  {
+    id: "draft", name: "Draft",
+    says: "The smallest thing that shows the idea. Rough is fine, and you will "
+        + "see something running quickly.",
+    changes: ["fast model", "no rival attempts", "manager reviews alone"],
+  },
+  {
+    id: "standard", name: "Standard",
+    says: "Work you would be comfortable showing someone — finished, with the "
+        + "obvious failure cases handled.",
+    changes: ["cheap first, stronger on failure", "rivals if the manager asks",
+              "one teammate reviews"],
+  },
+  {
+    id: "exacting", name: "Exacting",
+    says: "Time is not the constraint. It plans in depth, refuses to accept a "
+        + "first attempt just because it works, and keeps going until the result "
+        + "is genuinely good. Expect it to take much longer and cost more.",
+    changes: ["strong model from the start", "rival attempts where approach matters",
+              "two teammates review", "escalates after one failure"],
+  },
+];
+
+function paintAmbition() {
+  const range = $("#ambitionRange");
+  if (!range) return;
+  const stop = AMBITION_STOPS[Number(range.value)] || AMBITION_STOPS[1];
+  $("#ambitionValue").value = stop.id;
+  $("#ambitionName").textContent = stop.name;
+  $("#ambitionSays").textContent = stop.says;
+  $("#ambitionChanges").innerHTML = stop.changes
+    .map((c) => `<span class="qtag">${escapeHtml(c)}</span>`).join("");
+  // Colour the filled part of the track, so the position reads before the words do.
+  range.style.setProperty("--fill", `${(Number(range.value) / 2) * 100}%`);
+}
+
+const AUTONOMY_SAYS = {
+  supervised: "Runs on its own, but stops and waits when a decision could hide a "
+    + "problem — approving work nobody delivered, merging past failing tests, giving "
+    + "up on a task. Other questions wait up to an hour, then it decides and tells "
+    + "you what it assumed.",
+  autonomous: "Never blocks on you. It still recognises those same decisions and "
+    + "records each one for you to audit — it just does not wait.",
+};
+
+function paintAutonomy() {
+  const picked = document.querySelector("[name=autonomy]:checked");
+  const el = $("#autonomySays");
+  if (picked && el) el.textContent = AUTONOMY_SAYS[picked.value] || "";
+}
+
+document.addEventListener("input", (ev) => {
+  if (ev.target.id === "ambitionRange") paintAmbition();
+  if (ev.target.name === "autonomy") paintAutonomy();
+});
+
 async function boot() {
   if (!(await loadMe())) return;      // show login screen until signed in
   await loadHealth();
   loadRepos();
   route();                    // restore whatever the URL points at
+  paintAmbition();
+  paintAutonomy();
   refreshBell();
   setInterval(refreshBell, 20000);
   if (!ws) connectWs();

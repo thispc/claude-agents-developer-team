@@ -493,14 +493,6 @@ dialog textarea { resize: vertical; min-height: 96px; line-height: 1.55; }
 .add-role { align-self: flex-start; border-style: dashed; color: var(--dim); }
 .add-role:hover { border-color: var(--accent); color: var(--accent); }
 .ctl-h { font-size: 13.5px; font-weight: 650; color: var(--text); }
-.autonomy-cards { display: flex; flex-direction: column; gap: 9px; }
-.acard { display: flex; gap: 11px; align-items: flex-start; padding: 13px 14px; border: 1px solid var(--line); border-radius: 11px; cursor: pointer; background: var(--card-2); }
-.acard:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
-.acard.danger-card:has(input:checked) { border-color: var(--bad); background: var(--bad-soft); }
-.acard input { margin-top: 3px; }
-.acard b { display: block; font-size: 13.5px; }
-.acard em { color: var(--bad); font-style: normal; font-size: 11.5px; }
-.acard span { display: block; font-size: 12px; color: var(--dim); margin-top: 3px; }
 .advanced { font-size: 12.5px; color: var(--dim); }
 .advanced summary { cursor: pointer; padding: 7px 0; }
 
@@ -1090,9 +1082,6 @@ pre.dim, .dim { color: var(--dim); }
 /* The two autonomy options are a real fork, so they get equal visual weight and
    a line saying WHEN you would pick each — the previous version marked one red
    and called it "bypass", which reads as a warning rather than a choice. */
-.acard-when { display: block; margin-top: 7px; font-size: 11.5px; font-style: normal;
-              color: var(--accent); font-weight: 550; }
-.acard { transition: border-color .12s ease, background .12s ease; }
 
 .sprint-row { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap;
               margin-bottom: 6px; }
@@ -1466,3 +1455,74 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .ev.outcome { font-weight: 550; color: var(--text); }
 .ev.outcome.good { border-left: 3px solid var(--good); }
 .ev.outcome.bad { border-left: 3px solid var(--bad); }
+
+/* ---------- the control step: a switch and a slider ----------
+ *
+ * This was five tall tiles of prose stacked down the page, and read as a form to
+ * survive rather than two decisions to make. The shapes now match the choices:
+ * autonomy is binary so it is a switch, quality-versus-time is a continuum so it
+ * is a slider. Both keep an explanation — one line that changes with the
+ * selection, rather than every option's paragraph shown at once.
+ */
+.seg {
+  display: inline-flex; padding: 3px; gap: 3px;
+  background: var(--card-2); border: 1px solid var(--line); border-radius: 9px;
+}
+.seg-opt { position: relative; }
+.seg-opt input { position: absolute; opacity: 0; inset: 0; cursor: pointer; margin: 0; }
+.seg-opt span {
+  display: block; padding: 7px 15px; border-radius: 7px; font-size: 13px;
+  font-weight: 550; color: var(--dim); cursor: pointer; white-space: nowrap;
+  transition: background .12s, color .12s;
+}
+.seg-opt input:checked + span { background: var(--card); color: var(--text); box-shadow: var(--shadow); }
+.seg-opt input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.seg-says {
+  font-size: 12.5px; line-height: 1.55; color: var(--dim);
+  margin: 9px 0 0; max-width: 62ch;
+}
+
+.qslider { margin-top: 4px; max-width: 460px; }
+.qslider input[type=range] {
+  -webkit-appearance: none; appearance: none; width: 100%; height: 22px;
+  background: transparent; padding: 0; border: 0; cursor: pointer;
+}
+/* The filled portion is set from JS, so the position reads before the words do. */
+.qslider input[type=range]::-webkit-slider-runnable-track {
+  height: 6px; border-radius: 3px;
+  background: linear-gradient(to right, var(--accent) var(--fill, 50%),
+                              var(--line) var(--fill, 50%));
+}
+.qslider input[type=range]::-moz-range-track {
+  height: 6px; border-radius: 3px;
+  background: linear-gradient(to right, var(--accent) var(--fill, 50%),
+                              var(--line) var(--fill, 50%));
+}
+.qslider input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; margin-top: -6px;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--card); border: 2px solid var(--accent); box-shadow: var(--shadow);
+}
+.qslider input[type=range]::-moz-range-thumb {
+  width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--accent);
+  background: var(--card); box-shadow: var(--shadow);
+}
+.qslider input[type=range]:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.qslider-ends {
+  display: flex; justify-content: space-between;
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--faint); margin-top: 2px;
+}
+
+.qsays { margin-top: 12px; max-width: 62ch; }
+.qsays b { font-size: 14.5px; color: var(--text); }
+.qsays p { font-size: 12.5px; line-height: 1.55; color: var(--dim); margin: 4px 0 0; }
+.qchanges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.qtag {
+  font-size: 11px; color: var(--accent); background: var(--accent-soft);
+  border: 1px solid var(--accent-soft); border-radius: 20px; padding: 3px 10px;
+}
+
+/* Headings were spaced for a page of tiles. */
+#step3 .ctl-h { margin-top: 26px; }
+#step3 .ctl-h:first-of-type { margin-top: 4px; }

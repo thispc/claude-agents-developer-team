@@ -130,9 +130,18 @@ def test_the_form_offers_the_choice_and_sends_it(fresh_db):
     root = Path(__file__).resolve().parent.parent / "dashboard"
     html = (root / "index.html").read_text()
     js = (root / "app.js").read_text()
-    assert 'name="ambition" value="exacting"' in html
-    assert 'How good does it have to be?' in html
+    # A slider, not three tiles: the choice is a continuum in the reader's head,
+    # and five tall blocks of prose made the step read as a form to survive.
+    assert 'id="ambitionRange"' in html
+    assert 'name="ambition"' in html          # the value the form still submits
+    assert "Quality or speed?" in html
     assert 'ambition: f.get("ambition")' in js
+    assert "AMBITION_STOPS" in js
+    # Every stop names what CHANGES at that position — otherwise a slider only
+    # moves a word and the trade stays a vibe.
+    for stop in ("draft", "standard", "exacting"):
+        assert f'id: "{stop}"' in js
+    assert "changes:" in js
 
 
 def test_creating_a_project_records_the_choice(fresh_db, root_client, root_can_run_agents):
@@ -146,3 +155,26 @@ def test_an_unknown_value_from_a_client_does_not_create_a_broken_project(
     r = root_client.post("/api/projects", json={
         "name": "typo", "brief": "b", "ambition": "maximum"})
     assert db.get_project(r.json()["id"])["ambition"] == "standard"
+
+
+def test_the_slider_and_the_switch_replace_five_tiles(fresh_db):
+    """Autonomy is binary so it is a switch; quality-versus-time is a continuum so
+    it is a slider. Shapes that match the choice, instead of five identical tall
+    cards each showing its own paragraph whether or not it was selected."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent / "dashboard"
+    html = (root / "index.html").read_text()
+    css = (root / "style.css").read_text()
+    assert 'class="seg"' in html and 'id="autonomySeg"' in html
+    assert "acard" not in html, "the old tiles are still in the markup"
+    assert "acard" not in css, "dead rules for markup that no longer exists"
+
+
+def test_the_slider_is_reachable_without_a_mouse(fresh_db):
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent / "dashboard"
+    html = (root / "index.html").read_text()
+    css = (root / "style.css").read_text()
+    assert 'aria-label="How good does it have to be"' in html
+    assert 'aria-describedby="ambitionSays"' in html
+    assert "focus-visible" in css

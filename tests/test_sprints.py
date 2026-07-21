@@ -300,14 +300,21 @@ def test_the_project_list_numbers_rows_not_database_ids():
 
 
 def test_the_autonomy_choice_says_when_to_pick_each():
-    """Marking one option red and calling it "bypass" reads as a warning, not a
-    choice — so nobody could tell which one they actually wanted."""
+    """Naming two modes without saying when each is right makes the reader guess.
+    It used to be two tall cards each carrying its own paragraph; it is a switch
+    with one line that changes, so the explanation is still there and only the
+    relevant one is shown."""
     from pathlib import Path
-    html = (Path(__file__).resolve().parent.parent / "dashboard" / "index.html").read_text()
-    step = html.split('id="step3"', 1)[1].split("Who is your manager?")[0]
-    assert "acard-when" in step
-    assert "danger-card" not in step, "one option is still styled as a hazard"
-    assert "overnight" in step
+    root = Path(__file__).resolve().parent.parent / "dashboard"
+    html = (root / "index.html").read_text()
+    js = (root / "app.js").read_text()
+    assert 'id="autonomySays"' in html
+    assert "AUTONOMY_SAYS" in js
+    says = js.split("AUTONOMY_SAYS")[1][:700]
+    for mode in ("supervised", "autonomous"):
+        assert mode in says, f"{mode} has no explanation"
+    # And the supervised copy still names what it actually stops for.
+    assert "merging past failing tests" in says
 
 
 def test_the_sprint_count_explains_what_it_costs():

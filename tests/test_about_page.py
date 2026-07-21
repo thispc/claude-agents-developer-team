@@ -208,9 +208,19 @@ def test_form_metrics_come_from_tokens_not_from_each_context():
         assert token in CSS, f"{token} is not defined"
 
     import re
-    # No form control may carry its own hardcoded padding any more.
-    offenders = [m for m in re.findall(r"[^\n{]*(?:input|textarea|select)[^{]*\{[^}]*\}", CSS)
-                 if re.search(r"padding:\s*\d", m)]
+    # Comments are stripped first, and the selector is matched on a word boundary.
+    # Without both, a comment containing the word "selection" made the rule that
+    # followed it look like a form-control rule, and the test failed on prose.
+    css = re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
+    offenders = []
+    for selector, body in re.findall(r"([^{}]+)\{([^}]*)\}", css):
+        if not re.search(r"\b(input|textarea|select)\b", selector):
+            continue
+        # `padding: 0` is a reset — stripping the browser's own chrome off a
+        # range input — not a spacing decision. Everything else must come from
+        # a token, which is the thing this test exists to enforce.
+        if re.search(r"padding:\s*(?!0\b)\d", body):
+            offenders.append(f"{selector.strip()} {{{body.strip()}}}")
     assert not offenders, "form controls still hardcode padding:\n" + "\n".join(offenders[:4])
 
 
