@@ -6,9 +6,9 @@ from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSoc
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from . import (auth, blockers, bus, config, credcheck, db, deploy, github_client, launcher,
-               manager, planner, preview, providers, roundtable, sandbox, scheduler,
-               selfops)
+from . import (auth, blockers, bus, config, credcheck, db, deploy,
+               envs, github_client, launcher, manager, planner, preview, providers,
+               roundtable, sandbox, scheduler, selfops)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -686,6 +686,61 @@ async def self_issue(payload: SelfIssue, request: Request) -> dict:
     else:
         res["manager"] = "already running — the issue was handed to it"
     return {"project_id": pid, **res}
+
+
+class EnvBuild(BaseModel):
+    source: str
+    note: str = ""
+
+
+class EnvDeploy(BaseModel):
+    tag: str
+    env: str
+
+
+class EnvTag(BaseModel):
+    tag: str
+
+
+@router.get("/api/self/envs")
+def envs_overview(request: Request) -> dict:
+    _root(request)
+    return envs.overview()
+
+
+@router.post("/api/self/envs/build")
+def envs_build(body: EnvBuild, request: Request) -> dict:
+    _root(request)
+    r = envs.build(body.source.strip(), body.note.strip())
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "build failed"))
+    return r
+
+
+@router.post("/api/self/envs/deploy")
+def envs_deploy(body: EnvDeploy, request: Request) -> dict:
+    _root(request)
+    r = envs.deploy_preview(body.tag.strip(), body.env.strip())
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "deploy failed"))
+    return r
+
+
+@router.post("/api/self/envs/promote")
+def envs_promote(body: EnvTag, request: Request) -> dict:
+    """Point production at an image that has already been previewed."""
+    _root(request)
+    r = envs.promote(body.tag.strip())
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "promotion failed"))
+    bus.emit(0, None, "system", "promoted", {"tag": r["tag"], "from": r.get("previous")})
+    return r
+
+
+@router.delete("/api/self/envs/{env}")
+def envs_destroy(env: str, request: Request) -> dict:
+    _root(request)
+    return envs.destroy(env)
 
 
 class SandboxReq(BaseModel):
