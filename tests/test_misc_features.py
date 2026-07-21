@@ -210,3 +210,49 @@ def test_settings_route_persists_every_credential(root_client, fresh_db):
     stored = auth.get_settings(auth.get_user(1))
     for f in Settings.model_fields:
         assert stored.get(f) == f"value-for-{f}", f"{f} was not persisted"
+
+
+# ---- artifacts: the output, not the activity -----------------------------
+
+def test_files_endpoint_refuses_a_path_that_escapes_the_repo(root_client, fresh_db):
+    from conftest import make_project as _mp
+    p = _mp(owner_id=1, repo="o/r")
+    assert root_client.get(f"/api/projects/{p}/file?path=../../etc/passwd").status_code == 400
+
+
+def test_files_endpoint_is_owner_scoped(client, make_user, fresh_db):
+    from conftest import make_project as _mp
+    p = _mp(owner_id=1, repo="o/r")
+    _uid, c2 = make_user("nosy")
+    assert c2.get(f"/api/projects/{p}/files").status_code == 404
+
+
+def test_files_says_why_when_there_is_no_repo(root_client, fresh_db):
+    from conftest import make_project as _mp
+    p = _mp(owner_id=1, repo="")
+    d = root_client.get(f"/api/projects/{p}/files").json()
+    assert d["files"] == [] and "no GitHub repo" in d["reason"]
+
+
+def test_the_artifacts_page_groups_files_by_what_they_are():
+    """"a README" and "a source file" are different kinds of thing to a reader,
+    even though git treats them identically."""
+    js = (DASH / "app.js").read_text()
+    assert "loadProjectFiles" in js and "FILE_ICON" in js
+    block = js.split("async function loadProjectFiles(", 1)[1][:1200]
+    for k in ("Documents", "Code", "Tests"):
+        assert k in block
+
+
+def test_code_is_not_reflowed_but_prose_is():
+    """Wrapping code is how you make it unreadable."""
+    css = (DASH / "style.css").read_text()
+    assert ".file-code" in css and "white-space: pre;" in css
+    assert ".file-doc" in css and "pre-wrap" in css
+
+
+def test_a_project_on_hold_can_be_restarted():
+    """A project on hold whose manager died is waiting for an answer nothing is
+    listening for — not restartable and not advanceable, i.e. stuck forever."""
+    src = (Path(config.__file__).resolve().parents[1] / "app" / "routes.py").read_text()
+    assert '("failed", "review", "cancelled", "hold")' in src

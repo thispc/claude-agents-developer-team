@@ -159,3 +159,30 @@ async def ensure_repo(repo: str) -> tuple[bool, str]:
         return True, f"created private repo {repo}"
     except httpx.HTTPStatusError as e:
         return False, f"could not create {repo}: {e.response.status_code} {e.response.text[:200]}"
+
+
+async def list_tree(repo: str, ref: str = "") -> list[dict]:
+    """Every file in the repo at `ref`, flat. The repo is the source of truth for
+    what the team produced — a local checkout is a copy that can be stale."""
+    if not ref:
+        ref = await default_branch(repo)
+    data = await _request("GET", f"/repos/{repo}/git/trees/{ref}?recursive=1")
+    skip = (".git/", "node_modules/", "__pycache__/", ".venv/", "dist/", "build/")
+    return [{"path": t["path"], "size": t.get("size", 0)}
+            for t in data.get("tree", [])
+            if t.get("type") == "blob" and not t["path"].startswith(skip)]
+
+
+async def read_file(repo: str, path: str, ref: str = "") -> str:
+    """One file's contents, decoded. Binary and oversized files are refused rather
+    than returned as mojibake."""
+    import base64
+    q = f"?ref={ref}" if ref else ""
+    data = await _request("GET", f"/repos/{repo}/contents/{path}{q}")
+    if data.get("encoding") != "base64" or data.get("size", 0) > 400_000:
+        raise ValueError("too large or not a text file")
+    raw = base64.b64decode(data["content"])
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError("not a text file")

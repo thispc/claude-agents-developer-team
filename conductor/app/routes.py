@@ -1139,7 +1139,11 @@ def get_project(project_id: int, request: Request) -> dict:
 async def restart_project(project_id: int, request: Request) -> dict:
     """Re-run the lead session on a failed/review/cancelled project (tasks are kept)."""
     project = owned_project(project_id, request)
-    if project["status"] not in ("failed", "review", "cancelled"):
+    # 'hold' belongs here too. A project on hold is waiting for an answer, and if
+    # its manager died while waiting, nothing is listening for one — answering
+    # resumes a session that no longer exists. Without this the project is stuck
+    # forever: not restartable, and not advanceable.
+    if project["status"] not in ("failed", "review", "cancelled", "hold"):
         raise HTTPException(400, f"cannot restart a project in status '{project['status']}'")
     existing = _manager_tasks.get(project_id)
     if existing and not existing.done():
@@ -1239,6 +1243,46 @@ def set_autonomy(project_id: int, body: Autonomy, request: Request) -> dict:
 def get_events(project_id: int, request: Request, after: int = 0) -> list[dict]:
     owned_project(project_id, request)
     return db.list_events(project_id, after_id=after)
+
+
+@router.get("/api/projects/{project_id}/files")
+async def project_files(project_id: int, request: Request) -> dict:
+    """What the team actually produced, as files you can open.
+
+    The Artifacts tab listed pull requests and task rows — a record of ACTIVITY.
+    The thing a person wants is the OUTPUT: the code, and the documents.
+    """
+    p = owned_project(project_id, request)
+    if not p["repo"] or not github_client.enabled(p["repo"]):
+        return {"files": [], "reason": "no GitHub repo attached to this project"}
+    try:
+        files = await github_client.list_tree(p["repo"])
+    except Exception as e:
+        return {"files": [], "reason": str(e)[:200]}
+    # Group by what it IS, because "a README" and "a source file" are different
+    # kinds of thing to a reader even though git treats them identically.
+    def kind(path: str) -> str:
+        low = path.lower()
+        if low.endswith((".md", ".txt", ".rst")):
+            return "doc"
+        if low.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")):
+            return "image"
+        if "test" in low:
+            return "test"
+        return "code"
+    return {"repo": p["repo"],
+            "files": [{**f, "kind": kind(f["path"])} for f in files]}
+
+
+@router.get("/api/projects/{project_id}/file")
+async def project_file(project_id: int, path: str, request: Request) -> dict:
+    p = owned_project(project_id, request)
+    if not p["repo"] or ".." in path:
+        raise HTTPException(400, "no repo, or a path that tries to escape it")
+    try:
+        return {"path": path, "text": await github_client.read_file(p["repo"], path)}
+    except Exception as e:
+        raise HTTPException(400, str(e)[:200])
 
 
 @router.get("/api/projects/{project_id}/artifacts")

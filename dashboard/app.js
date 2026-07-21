@@ -2343,6 +2343,7 @@ $("#directiveForm").addEventListener("submit", async (ev) => {
     });
   } catch (e) { alert(e.message); }
 });
+$("#closeFileBtn").addEventListener("click", () => $("#fileDialog").close());
 $("#closeTaskBtn").addEventListener("click", () => $("#taskDialog").close());
 $("#taskDialog").addEventListener("click", (ev) => {
   if (ev.target === $("#taskDialog")) $("#taskDialog").close();
@@ -2350,24 +2351,83 @@ $("#taskDialog").addEventListener("click", (ev) => {
 
 // --- ARTIFACTS TAB: the deliverable, documented ------------------------------
 let artifactsSig = "";      // only repaint when the content actually changed
+const FILE_ICON = { doc: "📄", code: "⌨", test: "✓", image: "🖼" };
+
+async function loadProjectFiles() {
+  const box = $("#filesPane");
+  if (!box) return;
+  let d;
+  try { d = await api(`/api/projects/${currentProject}/files`); }
+  catch (e) { box.innerHTML = `<p class="dim">${escapeHtml(e.message || e)}</p>`; return; }
+  if (!(d.files || []).length) {
+    box.innerHTML = `<p class="dim">${escapeHtml(d.reason || "Nothing has been merged yet.")}</p>`;
+    return;
+  }
+  // Grouped by what a reader would call them, not by directory: "the docs" and
+  // "the code" are different kinds of thing even though git treats them alike.
+  const order = ["doc", "code", "test", "image"];
+  const label = { doc: "Documents", code: "Code", test: "Tests", image: "Images" };
+  const groups = {};
+  d.files.forEach((f) => (groups[f.kind] ||= []).push(f));
+  box.innerHTML = order.filter((k) => groups[k]).map((k) => `
+    <div class="fgroup"><h4>${label[k]} <span class="hint">${groups[k].length}</span></h4>
+      <ul class="flist">${groups[k].map((f) => `
+        <li><button class="fopen" data-path="${escapeHtml(f.path)}">
+          ${FILE_ICON[k] || "•"} ${escapeHtml(f.path)}</button>
+          <span class="hint">${f.size > 1024 ? Math.round(f.size/1024)+" KB" : f.size+" B"}</span></li>`).join("")}
+      </ul></div>`).join("");
+  box.querySelectorAll(".fopen").forEach((b) =>
+    b.addEventListener("click", () => openProjectFile(b.dataset.path)));
+}
+
+async function openProjectFile(path) {
+  const dlg = $("#fileDialog");
+  $("#fileTitle").textContent = path;
+  $("#fileBody").textContent = "loading…";
+  dlg.showModal();
+  try {
+    const d = await api(`/api/projects/${currentProject}/file?path=${encodeURIComponent(path)}`);
+    const isDoc = /\.(md|txt|rst)$/i.test(path);
+    // Markdown gets read as prose; everything else keeps its whitespace, because
+    // reflowing code is how you make it unreadable.
+    $("#fileBody").className = isDoc ? "file-doc" : "file-code";
+    $("#fileBody").textContent = d.text;
+  } catch (e) {
+    $("#fileBody").textContent = String(e.message || e);
+  }
+}
+
 async function renderArtifacts(force) {
   const el = $("#artifacts");
   if (!currentProject || el.hidden) return;
-  if (force || !el.innerHTML) el.innerHTML = `<div class="pane"><p class="dim">Loading…</p></div>`;
+  if (force || !el.innerHTML) el.innerHTML = `<div class="pane"><p class="dim">Loading…</p></div>
+    <div class="pane" id="filesCard">
+      <h3>Files</h3>
+      <p class="hint">Everything the team merged, as things you can open — not a list
+        of the pull requests that produced them.</p>
+      <div id="filesPane"><p class="dim">loading…</p></div>
+    </div>`;
   let a;
   try { a = await api(`/api/projects/${currentProject}/artifacts`); }
   catch (e) { el.innerHTML = `<div class="pane"><p class="dim">${escapeHtml(e.message)}</p></div>`; return; }
-  // Repainting identical HTML on every event is what made this flicker.
   const sig = JSON.stringify(a);
   if (!force && sig === artifactsSig) return;
   artifactsSig = sig;
 
-  const demo = a.preview_url
-    ? `<a class="demo-btn" href="${a.preview_url}?t=${Date.now()}" target="_blank">▶ Open the demo app</a>
-       <button id="buildPreviewBtn">↻ Rebuild from latest main</button>
-       <span class="hint">${a.preview_synced || "built earlier"} · served here, sandboxed</span>`
-    : `<button id="buildPreviewBtn" class="primary">▶ Build the demo app</button>
-       <span class="hint">runs the built site here (static apps only)</span>`;
+  // Two objects, because that is what a person came here for: the thing you can
+  // RUN, and the things you can READ. The old page listed pull requests and task
+  // rows — a record of activity, not of output.
+  const dep = a.deployment || {};
+  const live = dep.url || a.preview_url;
+  const demo = live
+    ? `<a class="demo-btn" href="${live}?t=${Date.now()}" target="_blank">▶ Open it</a>
+       <button id="buildPreviewBtn">↻ Rebuild</button>
+       <span class="hint">${escapeHtml(a.preview_synced || "built earlier")}</span>`
+    : `<button id="buildPreviewBtn" class="primary">▶ Build &amp; run it</button>
+       <span class="hint">clones the repo, installs it, and serves it here</span>`;
+
+  // Files, loaded separately so a large repo never delays the deployable object.
+  loadProjectFiles();
 
   const prs = (a.prs || []).map((p) =>
     `<li><a href="${p.url}" target="_blank">PR #${p.number}</a>

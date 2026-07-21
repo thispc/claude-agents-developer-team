@@ -1037,3 +1037,26 @@ pre.dim, .dim { color: var(--dim); }
                color: var(--dim); background: var(--card-2); border: 1px solid var(--line);
                border-radius: 10px; padding: 11px 13px; margin: 0; }
 .sprint-says b { color: var(--text); }
+
+/* ---------- files: the OUTPUT, not the activity ---------- */
+.fgroup { margin-bottom: 16px; }
+.fgroup h4 { font-size: 11.5px; text-transform: uppercase; letter-spacing: .4px;
+             color: var(--faint); margin: 0 0 7px; }
+.flist { list-style: none; padding: 0; margin: 0; display: flex;
+         flex-direction: column; gap: 3px; }
+.flist li { display: flex; align-items: center; gap: 8px; }
+.fopen { flex: 1; text-align: left; font-family: var(--mono); font-size: 12px;
+         padding: 6px 9px; border-radius: 7px; border: 1px solid transparent;
+         background: none; color: var(--text); }
+.fopen:hover { background: var(--accent-soft); border-color: #c9d0f7; color: var(--accent); }
+
+.file-dlg { width: min(900px, 94vw); }
+.file-head { display: flex; align-items: center; gap: 12px; }
+.file-head h2 { font-family: var(--mono); font-size: 13px; font-weight: 600;
+                overflow-wrap: anywhere; }
+#fileBody { max-height: 68vh; overflow: auto; border-radius: 10px;
+            border: 1px solid var(--line); padding: 14px; margin: 0; }
+.file-code { font-family: var(--mono); font-size: 12px; line-height: 1.6;
+             white-space: pre; background: var(--card-2); }
+/* Prose is reflowed; code never is — wrapping code is how you make it unreadable. */
+.file-doc { font: 13.5px/1.7 var(--ui); white-space: pre-wrap; background: var(--card); }
