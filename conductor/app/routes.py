@@ -6,7 +6,7 @@ from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSoc
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from . import (auth, blockers, bus, config, credcheck, db, deploy,
+from . import (auth, blockers, bus, cloud, config, credcheck, db, deploy,
                envs, github_client, launcher, manager, planner, preview, providers,
                roundtable, sandbox, scheduler, selfops)
 
@@ -734,6 +734,38 @@ def envs_promote(body: EnvTag, request: Request) -> dict:
     if not r.get("ok"):
         raise HTTPException(400, r.get("error", "promotion failed"))
     bus.emit(0, None, "system", "promoted", {"tag": r["tag"], "from": r.get("previous")})
+    return r
+
+
+@router.get("/api/self/instance")
+def self_instance(request: Request) -> dict:
+    """What this instance is and whether it can ship a new version of itself."""
+    _root(request)
+    return cloud.describe()
+
+
+class SelfImage(BaseModel):
+    image: str
+    force: bool = False
+
+
+@router.post("/api/self/update")
+def self_update(body: SelfImage, request: Request) -> dict:
+    """Point our own Deployment at a new image. This pod is then replaced."""
+    _root(request)
+    r = cloud.self_update(body.image.strip(), body.force)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "self-update failed"))
+    bus.emit(0, None, "system", "self_update", {"from": r.get("from"), "to": r["to"]})
+    return r
+
+
+@router.post("/api/self/update/rollback")
+def self_update_rollback(request: Request) -> dict:
+    _root(request)
+    r = cloud.rollback()
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "rollback failed"))
     return r
 
 

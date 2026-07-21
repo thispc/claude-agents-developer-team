@@ -18,6 +18,14 @@ COPY worker/ worker/
 COPY agents/ agents/
 COPY dashboard/ dashboard/
 
+ARG DEVTEAM_COMMIT=""
+ARG DEVTEAM_IMAGE=""
+# Baked in so a container can report what it is running. The image carries no
+# .git on purpose: a checkout would bring the repo's remotes and stored
+# credentials into every worker's environment.
+ENV DEVTEAM_COMMIT=$DEVTEAM_COMMIT \
+    DEVTEAM_IMAGE=$DEVTEAM_IMAGE
+
 ENV AGENTS_DIR=/app/agents \
     DASHBOARD_DIR=/app/dashboard \
     WORKER_SCRIPT=/app/worker/worker.py \

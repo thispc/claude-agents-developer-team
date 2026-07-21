@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import make_project, make_task
 from app import config, envs
 
 REPO = Path(__file__).resolve().parent.parent
@@ -239,3 +240,77 @@ def test_a_real_cluster_cross_builds_for_its_own_architecture():
     body = src.split("def build(")[1].split("\ndef ")[0]
     assert "buildx" in body and "DEPLOY_PLATFORM" in body
     assert "--push" in body
+
+
+# ---- self-repair when there is no git checkout ---------------------------
+
+def test_a_container_is_detected_by_its_service_account(monkeypatch, tmp_path):
+    """selfops.redeploy() git-pulls the tree it runs from. In a pod there is no
+    tree, no .git, no docker and no kubectl — so the last step of self-repair,
+    the one that actually ships the fix, has nowhere to happen."""
+    from app import cloud
+    monkeypatch.setattr(cloud, "SA_DIR", tmp_path)
+    assert cloud.in_cluster() is False
+    (tmp_path / "token").write_text("x")
+    assert cloud.in_cluster() is True
+
+
+def test_a_restart_is_refused_while_agents_are_working(fresh_db, monkeypatch):
+    """Patching the Deployment kills this pod, and every worker is a child process
+    of it — an agent 80 turns into a task loses all of it."""
+    from app import cloud
+    monkeypatch.setattr(cloud, "in_cluster", lambda: True)
+    monkeypatch.setattr(cloud, "current_image", lambda: "img:1")
+    p = make_project(owner_id=1)
+    make_task(p, status="running")
+    r = cloud.self_update("img:2")
+    assert r["ok"] is False and r["busy"]
+
+
+def test_an_idle_instance_may_update_itself(fresh_db, monkeypatch):
+    from app import cloud
+    monkeypatch.setattr(cloud, "in_cluster", lambda: True)
+    monkeypatch.setattr(cloud, "current_image", lambda: "img:1")
+    make_task(make_project(owner_id=1), status="done")
+    assert cloud.can_self_update()["ok"] is True
+
+
+def test_it_refuses_to_ship_the_image_it_is_already_running(monkeypatch):
+    from app import cloud
+    monkeypatch.setattr(cloud, "in_cluster", lambda: True)
+    monkeypatch.setattr(cloud, "current_image", lambda: "img:1")
+    monkeypatch.setattr(cloud, "busy", lambda: [])
+    assert cloud.self_update("img:1")["ok"] is False
+
+
+def test_it_refuses_something_that_is_not_an_image(monkeypatch):
+    from app import cloud
+    monkeypatch.setattr(cloud, "in_cluster", lambda: True)
+    monkeypatch.setattr(cloud, "current_image", lambda: "img:1")
+    monkeypatch.setattr(cloud, "busy", lambda: [])
+    assert cloud.self_update("main")["ok"] is False
+
+
+def test_missing_rbac_is_explained_rather_than_just_failing(monkeypatch):
+    """'Forbidden' at the last step of self-repair reads like the feature is
+    broken. Name the actual cause."""
+    from app import cloud
+    monkeypatch.setattr(cloud, "in_cluster", lambda: True)
+    monkeypatch.setattr(cloud, "current_image", lambda: "")
+    r = cloud.can_self_update()
+    assert r["ok"] is False
+    assert "ServiceAccount" in " ".join(r["reasons"])
+
+
+def test_the_pod_is_given_a_service_account():
+    """Without it the pod runs as 'default', which cannot patch anything."""
+    y = (REPO / "deploy" / "k8s" / "doks-production.yaml").read_text()
+    assert "serviceAccountName: devteam-conductor" in y
+
+
+def test_ci_builds_but_does_not_roll_out():
+    """A rollout from CI would kill an agent mid-task; only the conductor knows
+    whether anything is in flight."""
+    wf = (REPO / ".github" / "workflows" / "build-image.yml").read_text()
+    assert "docker push" in wf
+    assert "kubectl" not in wf and "set image" not in wf

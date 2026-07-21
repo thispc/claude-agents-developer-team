@@ -1,0 +1,49 @@
+# Build the conductor image on every push to main and publish it to DOCR.
+#
+# This is the half of self-repair that cannot happen inside the cluster: the
+# conductor's own container has no docker daemon, and giving it one would mean
+# handing the platform the ability to build and run arbitrary images as itself.
+# A build runner is the right place for that, and it is also ~10x faster here —
+# GitHub runners are amd64, so there is no emulation, where a Mac cross-building
+# for DOKS takes minutes.
+#
+# Needs two repository secrets:
+#   DIGITALOCEAN_ACCESS_TOKEN   read/write token (registry scope is enough)
+#   DOCR_REGISTRY               e.g. registry.digitalocean.com/devteam-pulkit
+name: build image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to DOCR
+        run: |
+          echo "${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" | docker login registry.digitalocean.com \
+            -u "${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}" --password-stdin
+
+      # The commit is baked in so a running container can answer "what am I?"
+      # without a .git directory — which the image deliberately does not carry,
+      # because a checkout would bring the repo's remotes and credentials with it.
+      - name: Build and push
+        run: |
+          TAG="${{ secrets.DOCR_REGISTRY }}/devteam-conductor:main-${GITHUB_SHA::10}"
+          docker build -f deploy/Dockerfile.conductor \
+            --build-arg DEVTEAM_COMMIT="${GITHUB_SHA::10}" \
+            --build-arg DEVTEAM_IMAGE="$TAG" \
+            -t "$TAG" .
+          docker push "$TAG"
+          echo "built $TAG"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+
+      # Deliberately does NOT roll it out. The conductor decides when to take a
+      # new image, because only it knows whether agents are mid-task — a rollout
+      # from CI would kill an agent 80 turns into its work.
+      - name: Summary
+        run: echo "::notice::${{ env.TAG }} is in the registry. The conductor will offer it when no agents are working."

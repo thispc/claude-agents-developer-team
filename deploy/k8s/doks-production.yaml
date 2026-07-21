@@ -31,6 +31,9 @@ spec:
   template:
     metadata: {labels: {app: devteam-conductor}}
     spec:
+      # Without this the pod runs as 'default', which cannot read or patch its own
+      # Deployment — so self-repair reaches the last step and fails with Forbidden.
+      serviceAccountName: devteam-conductor
       imagePullSecrets: [{name: docr-creds}]
       containers:
         - name: conductor
