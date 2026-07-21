@@ -1322,3 +1322,10 @@ pre.dim, .dim { color: var(--dim); }
   .pulse, .gline { animation: none; }
   .gline { background: var(--line-soft); }
 }
+
+/* Inline code inside blocker copy. The server writes advice with backticks
+   around command names; they used to reach the page as literal characters. */
+.bl-detail code, .bl-fix code {
+  font-family: var(--mono); font-size: .86em; background: var(--card-2);
+  border: 1px solid var(--line-soft); border-radius: 3px; padding: 1px 4px;
+}

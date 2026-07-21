@@ -112,3 +112,63 @@ def test_can_redeploy_prefix_match_fix(fresh_db, monkeypatch):
     res = selfops.can_redeploy()
     assert "reasons" in res
     launcher.ACTIVE.clear()
+
+
+# --- what a blocker DOES vs how urgent it is -------------------------------
+#
+# Reported from a real run: a game project on staging, progressing normally with
+# a task actively running, showed "1 slowing it down". Nothing was slow. The one
+# blocker was "nothing is verifying this project", which is about evidence, not
+# pace — but the UI derived its wording from severity, and every warning became
+# the words "slowing it down".
+
+def test_a_blocker_says_what_it_does_not_only_how_bad_it_is(fresh_db):
+    from app import blockers
+    pid = make_project(name="impact")
+    t = make_task(pid, status="done")
+    db.update_task(t, verification="")
+    items = blockers.scan(pid)
+    unverified = [b for b in items if b["kind"] == "unverified"]
+    assert unverified, "the unverified blocker did not fire"
+    assert unverified[0]["impact"] == "evidence"
+    assert unverified[0]["impact"] != "pace"
+
+
+def test_every_blocker_kind_declares_an_impact(fresh_db):
+    """A kind added without one silently falls back to 'worth knowing', which is
+    how a stopping-the-project fault would come to read as a footnote."""
+    import re
+    from pathlib import Path
+    from app import blockers
+    src = (Path(__file__).resolve().parent.parent
+           / "conductor" / "app" / "blockers.py").read_text()
+    kinds = set(re.findall(r'_b\(\s*(?:"[a-z]+"|"[a-z]+" if [^,]+ else "[a-z]+"),\s*"([a-z_]+)"',
+                           src))
+    missing = kinds - set(blockers.IMPACT)
+    assert not missing, f"these blocker kinds have no declared impact: {sorted(missing)}"
+
+
+def test_things_that_genuinely_slow_a_project_are_still_marked_as_pace(fresh_db):
+    from app import blockers
+    for kind in ("slow_worker", "rate_limited", "awaiting_manager", "dep_blocked"):
+        assert blockers.IMPACT[kind] == "pace", kind
+
+
+def test_things_that_stop_a_project_outright_are_marked_stopped(fresh_db):
+    from app import blockers
+    for kind in ("task_failed", "budget", "run_cap", "no_credentials", "stalled"):
+        assert blockers.IMPACT[kind] == "stopped", kind
+
+
+def test_the_verification_advice_fits_a_project_with_no_test_suite(fresh_db):
+    """The advice listed pytest, go test and cargo test at a browser game. A build
+    or lint script is accepted by the checker and is the realistic answer there,
+    so it should not be buried behind four irrelevant ecosystems."""
+    from app import blockers
+    pid = make_project(name="advice")
+    t = make_task(pid, status="done")
+    db.update_task(t, verification="")
+    fix = [b for b in blockers.scan(pid) if b["kind"] == "unverified"][0]["fix"]
+    assert "does not have to be a test suite" in fix
+    assert fix.index("build") < fix.index("pytest"), \
+        "the realistic option for a web project is buried behind irrelevant ones"

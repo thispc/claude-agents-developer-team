@@ -1639,23 +1639,40 @@ async function renderBlockers() {
       <p>No failed work, no unanswered questions, no capacity or credential problems.</p></div>`;
     return;
   }
-  const label = { critical: "Stopping the project", warning: "Slowing it down", info: "Worth knowing" };
+  // The label describes what the blocker DOES, not how urgent it is. Both used to
+  // come from severity, so a project running perfectly on schedule with no test
+  // command was told it was "slowing down". It was not — it was running blind, and
+  // saying the wrong one sends you looking for a performance problem that is not
+  // there. Older servers send no impact; fall back to the severity wording.
+  const IMPACT_LABEL = {
+    stopped:  "Stopping the project",
+    pace:     "Slowing it down",
+    waiting:  "Waiting on you",
+    setup:    "Not set up yet",
+    evidence: "Running unverified",
+    heads_up: "Worth knowing",
+  };
+  const labelFor = (b) => IMPACT_LABEL[b.impact]
+    || (b.severity === "critical" ? "Stopping the project" : "Worth knowing");
+  const slowing = items.filter((b) => b.impact === "pace").length;
   el.innerHTML = `
     <div class="bl-head">
       <h2>🚧 Blockers</h2>
       <div class="bl-tally">${data.critical
         ? `<span class="pill crit">${data.critical} stopping work</span>` : ""}
-        ${data.warning ? `<span class="pill warn">${data.warning} slowing it down</span>` : ""}</div>
+        ${slowing ? `<span class="pill warn">${slowing} slowing it down</span>` : ""}
+        ${!data.critical && !slowing && data.warning
+          ? `<span class="pill warn">${data.warning} to look at — nothing is blocked</span>` : ""}</div>
     </div>
     ${items.map((b) => `
       <div class="bl-card ${b.severity}">
         <div class="bl-top">
-          <span class="pill ${b.severity === "critical" ? "crit" : "warn"}">${label[b.severity]}</span>
+          <span class="pill ${b.severity === "critical" ? "crit" : "warn"}">${labelFor(b)}</span>
           ${b.since ? `<span class="bl-since">${ago(b.since)}</span>` : ""}
         </div>
         <h3>${escapeHtml(b.title)}</h3>
-        <p class="bl-detail">${escapeHtml(b.detail)}</p>
-        ${b.fix ? `<p class="bl-fix"><b>What clears it:</b> ${escapeHtml(b.fix)}</p>` : ""}
+        <p class="bl-detail">${inlineCode(b.detail)}</p>
+        ${b.fix ? `<p class="bl-fix"><b>What clears it:</b> ${inlineCode(b.fix)}</p>` : ""}
         <div class="bl-acts">
           ${b.task_id ? `<button data-blview="${b.task_id}">Open task #${b.task_seq}</button>` : ""}
           ${b.action === "retry" ? `<button data-blretry="${b.task_id}" class="primary">↻ Re-run it</button>` : ""}
@@ -1764,6 +1781,14 @@ function escapeHtml(s) {
   if (s === null || s === undefined) return "";
   if (typeof s !== "string") s = String(s);
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// Backticks in server-written copy were reaching the page as literal characters,
+// so advice read "a `test` script in package.json". Escape FIRST, then promote
+// the spans: doing it the other way round would let a backticked fragment carry
+// markup through the escape.
+function inlineCode(text) {
+  return escapeHtml(text).replace(/`([^`]+)`/g, "<code>$1</code>");
 }
 
 function renderEvent(e) {

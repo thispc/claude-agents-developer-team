@@ -24,10 +24,36 @@ SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
 SLOW_SECONDS = 900
 
 
+# What a blocker DOES to the project, which is a different question from how
+# urgent it is. Severity was carrying both, and the UI turned every warning into
+# the words "slowing it down" — so a project running perfectly on schedule with
+# no test command was told its pace was suffering. It was not; it was running
+# blind. Both are worth saying, and neither is the other.
+IMPACT = {
+    "task_failed":     "stopped",
+    "dag_cycle":       "stopped",
+    "run_cap":         "stopped",
+    "budget":          "stopped",
+    "no_credentials":  "stopped",
+    "false_done":      "stopped",
+    "stalled":         "stopped",
+    "dep_blocked":     "pace",
+    "slow_worker":     "pace",
+    "rate_limited":    "pace",
+    "awaiting_manager": "pace",
+    "awaiting_boss":   "waiting",
+    "no_repo":         "setup",
+    "no_github_token": "setup",
+    "run_cap_near":    "heads_up",
+    "unverified":      "evidence",
+}
+
+
 def _b(severity: str, kind: str, title: str, detail: str,
        fix: str = "", task_seq: int | None = None, task_id: int | None = None,
        action: str = "", since: float | None = None) -> dict[str, Any]:
-    return {"severity": severity, "kind": kind, "title": title, "detail": detail,
+    return {"severity": severity, "kind": kind, "impact": IMPACT.get(kind, "heads_up"),
+            "title": title, "detail": detail,
             "fix": fix, "task_seq": task_seq, "task_id": task_id,
             "action": action, "since": since}
 
@@ -216,10 +242,12 @@ def scan(project_id: int) -> list[dict[str, Any]]:
             f"{len(finished)} task(s) have been submitted or merged, and not one was "
             f"checked by a test, build or lint command — the manager is judging the "
             f"worker's own account of its work.",
-            fix="Add a test command the repo declares: a `test` script in package.json, "
-                "a pytest suite, `go test`, `cargo test`, or a `test:` target in a "
-                "Makefile. The platform runs it itself and refuses to merge a branch "
-                "that fails it."))
+            fix="Anything the repo declares that exits non-zero when something is "
+                "broken counts — it does not have to be a test suite. For a web or "
+                "game project a `build` or `lint` script in package.json is usually "
+                "the quickest win; a `test` script, a pytest suite, `go test`, "
+                "`cargo test` or a `test:` Makefile target all work too. The platform "
+                "runs it itself and refuses to merge a branch that fails it."))
 
     out.sort(key=lambda b: (SEVERITY_RANK.get(b["severity"], 9), -(b["since"] or 0)))
     return out
