@@ -66,3 +66,45 @@ roleRef:
   kind: Role
   name: devteam-job-manager
   apiGroup: rbac.authorization.k8s.io
+---
+# What production is allowed to do INSIDE the staging namespace.
+#
+# The self-update gate asks staging to run its own test suite and vouch for an
+# image. Production drives that: it lists staging's pod, execs the suite inside
+# it, and updates staging's Deployment to the candidate image. Without these the
+# API returned "no running staging pod to test in" — which is what a 403 looks
+# like when the caller only catches Exception, and it sent an investigation
+# looking for a missing pod for several minutes.
+#
+# Deliberately NOT granted: secrets. Production creates staging's secret once at
+# provisioning time with a cluster-admin kubeconfig, not from inside the pod.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: devteam-staging-driver
+  namespace: devteam-staging
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  # Running the suite in there is an exec, which is a subresource create.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: devteam-conductor-drives-staging
+  namespace: devteam-staging
+subjects:
+  - kind: ServiceAccount
+    name: devteam-conductor
+    namespace: devteam
+roleRef:
+  kind: Role
+  name: devteam-staging-driver
+  apiGroup: rbac.authorization.k8s.io

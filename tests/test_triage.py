@@ -447,3 +447,58 @@ def test_the_image_carries_its_own_tests():
     from pathlib import Path
     df = (Path(__file__).resolve().parent.parent / "deploy" / "Dockerfile.conductor").read_text()
     assert "COPY tests/ tests/" in df and "pytest" in df
+
+
+# --- the self-update gate has to be trustworthy ----------------------------
+
+@pytest.mark.hostonly
+def test_staging_verify_judges_by_exit_code_not_by_reading_the_output():
+    """It decided whether an image could become production by searching pytest's
+    output for the word "failed". That is judging prose — the exact thing the
+    rest of this system refuses to do — and it would call a run green if a test
+    name avoided the word, or red because a passing run mentioned it in a warning."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "conductor" / "app" / "cloud.py").read_text()
+    body = src.split("def staging_verify(")[1].split("\ndef ")[0]
+    assert '" failed" not in' not in body, "still deciding by string match"
+    assert "__EXIT__" in body and "code != 0" in body
+    # An exit code that never arrived must not be read as success.
+    assert "did not report an exit code" in body
+
+
+@pytest.mark.hostonly
+def test_a_permissions_failure_does_not_masquerade_as_a_missing_pod():
+    """A 403 was reported as "no running staging pod to test in", which sent a
+    real investigation looking for a pod that was there the whole time."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "conductor" / "app" / "cloud.py").read_text()
+    body = src.split("def staging_verify(")[1].split("\ndef ")[0]
+    assert "Forbidden" in body and "rbac.yaml" in body
+
+
+@pytest.mark.hostonly
+def test_a_verdict_that_could_not_be_recorded_is_not_reported_as_success():
+    """Otherwise a suite passes, nothing is written, and the next self-update
+    refuses an image somebody just watched go green with no explanation."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "conductor" / "app" / "cloud.py").read_text()
+    assert "def _record_verified(image: str) -> tuple[bool, str]" in src
+    assert "could not be recorded" in src
+
+
+@pytest.mark.hostonly
+def test_production_is_granted_what_it_needs_in_the_staging_namespace():
+    """The gate cannot work without these, and the failure mode was a misleading
+    error rather than an obvious one."""
+    from pathlib import Path
+    rbac = (Path(__file__).resolve().parent.parent
+            / "deploy" / "k8s" / "rbac.yaml").read_text()
+    assert "namespace: devteam-staging" in rbac
+    assert "pods/exec" in rbac
+    # And NOT secrets: staging's secret is created at provisioning time with a
+    # real kubeconfig, not by the production pod.
+    driver = rbac.split("devteam-staging-driver")[1].split("---")[0]
+    assert "secrets" not in driver

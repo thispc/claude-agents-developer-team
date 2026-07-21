@@ -384,27 +384,73 @@ def staging_verify(image: str) -> dict[str, Any]:
         return {"ok": False, "error": "not in a cluster"}
     from kubernetes import client, stream
     core = client.CoreV1Api()
+    # A permissions failure and an absent pod are different problems with the
+    # same old message. "no running staging pod to test in" sent a real
+    # investigation looking for a missing pod when the actual answer was a 403
+    # from RBAC — production had no rights in the staging namespace at all.
     try:
         pods = core.list_namespaced_pod(STAGING_NS, label_selector=f"app={DEPLOYMENT}")
-        pod = next(p.metadata.name for p in pods.items if p.status.phase == "Running")
-    except Exception:
-        return {"ok": False, "error": "no running staging pod to test in"}
+    except Exception as e:
+        forbidden = "403" in str(e) or "Forbidden" in str(e)
+        return {"ok": False, "error": (
+            f"not allowed to look in {STAGING_NS} — production's service account "
+            f"needs the devteam-staging-driver role (kubectl apply -f "
+            f"deploy/k8s/rbac.yaml)" if forbidden
+            else f"could not list staging pods: {str(e)[:200]}")}
+    pod = next((p.metadata.name for p in pods.items
+                if p.status.phase == "Running"), None)
+    if not pod:
+        return {"ok": False, "error": (
+            f"no running staging pod. {len(pods.items)} pod(s) matched "
+            f"app={DEPLOYMENT} in {STAGING_NS}, none of them Running — deploy "
+            f"staging first.")}
     try:
         out = stream.stream(
             core.connect_get_namespaced_pod_exec, pod, STAGING_NS,
             # Deselect tests that read the repository or drive host tooling: they
             # verify the checkout, not the artifact, and neither exists in here.
+            #
+            # The exit code is echoed and read back, because this gate decides
+            # whether an image becomes production and it used to decide by
+            # searching the output for the word "failed". That is judging prose,
+            # which is precisely what the rest of this system refuses to do — and
+            # it would have called a run green if a test name happened to avoid
+            # the word, or red because a passing run mentioned it in a warning.
             command=["sh", "-c",
                      "cd /app && python -m pytest tests -q -p no:cacheprovider "
-                     "-m 'not live and not hostonly' 2>&1 | tail -20"],
-            stderr=True, stdout=True, stdin=False, tty=False, _request_timeout=600)
+                     "-m 'not live and not hostonly' 2>&1 | tail -20; "
+                     "echo \"__EXIT__:${PIPESTATUS[0]:-$?}\""],
+            stderr=True, stdout=True, stdin=False, tty=False, _request_timeout=900)
     except Exception as e:
-        return {"ok": False, "error": f"could not run the suite: {e}"}
-    tail = "\n".join((out or "").strip().splitlines()[-12:])
-    passed = " failed" not in (out or "") and "error" not in (out or "").lower()
-    if passed:
-        _record_verified(image)
-    return {"ok": passed, "output": tail, "image": image,
+        forbidden = "403" in str(e) or "Forbidden" in str(e)
+        return {"ok": False, "error": (
+            f"not allowed to run commands in {STAGING_NS} — production's service "
+            f"account needs pods/exec there (deploy/k8s/rbac.yaml)" if forbidden
+            else f"could not run the suite: {str(e)[:300]}")}
+
+    text = out or ""
+    code = None
+    for line in text.splitlines():
+        if line.startswith("__EXIT__:"):
+            try:
+                code = int(line.split(":", 1)[1].strip())
+            except ValueError:
+                code = None
+    tail = "\n".join(l for l in text.strip().splitlines()
+                     if not l.startswith("__EXIT__:"))[-1500:]
+    if code is None:
+        return {"ok": False, "image": image, "output": tail,
+                "error": "the suite ran but did not report an exit code, so its "
+                         "result cannot be trusted — refusing to vouch for this image"}
+    if code != 0:
+        return {"ok": False, "image": image, "output": tail, "exit_code": code,
+                "error": f"the suite exited {code} inside staging"}
+    recorded, why = _record_verified(image)
+    if not recorded:
+        return {"ok": False, "image": image, "output": tail,
+                "error": f"the suite passed but the verdict could not be recorded: {why}. "
+                         f"Production would still refuse this image, so nothing was gained."}
+    return {"ok": True, "output": tail, "image": image, "exit_code": 0,
             "note": "the suite ran inside staging, on the same image production "
                     "would take"}
 
@@ -412,19 +458,25 @@ def staging_verify(image: str) -> dict[str, Any]:
 VERIFIED_ANNOTATION = "devteam.io/staging-verified"
 
 
-def _record_verified(image: str) -> None:
+def _record_verified(image: str) -> tuple[bool, str]:
     """Remember which image passed, on the production Deployment itself.
 
     Stored as an annotation rather than in a file because the record has to
     outlive the pod that made it — and the pod that made it is the one about to
     be replaced by the very update this gates.
+
+    Returns whether it stuck. It used to swallow every failure, so a suite that
+    passed and a verdict that was never written looked identical to the caller —
+    and the next self-update would refuse an image somebody had just watched go
+    green, with nothing anywhere explaining why.
     """
     try:
         _api().patch_namespaced_deployment(
             DEPLOYMENT, namespace(),
             {"metadata": {"annotations": {VERIFIED_ANNOTATION: image}}})
-    except Exception:
-        pass
+        return True, ""
+    except Exception as e:
+        return False, str(e)[:200]
 
 
 def verified_image() -> str:
