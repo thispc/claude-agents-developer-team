@@ -219,9 +219,13 @@ function showStaleBanner() {
   if ($("#staleBanner")) return;
   const el = document.createElement("div");
   el.id = "staleBanner";
-  el.innerHTML = `<b>This page is newer than the server.</b> The dashboard files on
-    disk changed after the conductor started, so new screens may call endpoints this
-    process does not have yet. Restart the conductor to pick them up.`;
+  // Written for someone who did not build this. The first version said "the
+  // dashboard files on disk changed after the conductor started" — true, and
+  // meaningless unless you already knew what it meant.
+  el.innerHTML = `<b>The app is half-updated.</b> This page has newer code than the
+    server behind it, so some things may look empty or do nothing — that is not a
+    real fault. Restarting the server fixes it:
+    <code>PYTHONPATH=conductor .venv/bin/uvicorn app.main:app --port 8000</code>`;
   document.body.prepend(el);
 }
 

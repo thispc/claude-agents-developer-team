@@ -964,3 +964,6 @@ pre.dim, .dim { color: var(--dim); }
 #staleBanner b { color: #8a5a00; }
 #sandboxBanner { background: #eef2ff; color: #3730a3; border-bottom: 1px solid #c9d0f7;
                  padding: 9px 20px; font-size: 12.5px; line-height: 1.5; }
+#staleBanner code { font-family: var(--mono); font-size: 11px; background: #fff;
+                    border: 1px solid #f0d9a8; border-radius: 5px; padding: 1px 6px;
+                    margin-left: 4px; white-space: nowrap; }
