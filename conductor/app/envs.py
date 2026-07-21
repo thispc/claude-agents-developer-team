@@ -45,8 +45,19 @@ KIND_CLUSTER = config._env("KIND_CLUSTER", "devteam")
 
 
 def _sh(*cmd: str, cwd: Path | None = None, timeout: int = 900) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=str(cwd) if cwd else None,
-                          capture_output=True, text=True, timeout=timeout)
+    """Run a tool, treating "that tool isn't installed" as a failed run.
+
+    The conductor's own container has no docker and no kubectl — deliberately, so
+    it cannot build or run arbitrary images as itself. subprocess.run raises
+    FileNotFoundError in that case rather than returning non-zero, which turned
+    every Environments call into a 500 in the cluster: the page reported the
+    server was broken when the honest answer is "that tool is not here".
+    """
+    try:
+        return subprocess.run(cmd, cwd=str(cwd) if cwd else None,
+                              capture_output=True, text=True, timeout=timeout)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return subprocess.CompletedProcess(cmd, 127, "", f"{cmd[0]}: {e}")
 
 
 def _safe(name: str) -> str:

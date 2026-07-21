@@ -9,6 +9,8 @@ a running platform.
 
 from pathlib import Path
 
+import subprocess
+
 import pytest
 
 from conftest import make_project, make_task
@@ -314,3 +316,30 @@ def test_ci_builds_but_does_not_roll_out():
     wf = (REPO / ".github" / "workflows" / "build-image.yml").read_text()
     assert "docker push" in wf
     assert "kubectl" not in wf and "set image" not in wf
+
+
+def test_the_ui_offers_self_update_in_a_cluster_not_a_build_button():
+    """In a pod there is no Docker daemon, so "Environments need Docker" would be
+    both true and useless — the cloud equivalent is choosing when to take an image
+    CI already built."""
+    js = (REPO / "dashboard" / "app.js").read_text()
+    assert "renderCloudInstance" in js
+    assert "/api/self/instance" in js and "/api/self/update" in js
+    block = js.split("function renderCloudInstance(", 1)[1][:2000]
+    assert "busy" in block, "it must say when agents are working"
+
+
+def test_a_missing_tool_is_a_failed_run_not_a_crash(monkeypatch):
+    """The conductor's container has no docker and no kubectl on purpose.
+    subprocess.run raises rather than returning non-zero for a missing binary,
+    which turned every Environments call into a 500 in the cluster — the page
+    said the server was broken when the honest answer is "that tool isn't here"."""
+    r = envs._sh("definitely-not-a-real-binary-xyz", "--version")
+    assert r.returncode != 0 and "not" in (r.stderr or "").lower()
+
+
+def test_overview_survives_a_container_with_no_tooling(monkeypatch):
+    monkeypatch.setattr(envs, "_sh",
+                        lambda *c, **k: subprocess.CompletedProcess(c, 127, "", "missing"))
+    d = envs.overview()
+    assert d["docker"] is False and d["kubernetes"] is False

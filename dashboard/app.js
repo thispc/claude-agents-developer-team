@@ -342,12 +342,65 @@ function renderHome(projects) {
 
 // The platform working on itself. /api/self creates-or-returns the row for this
 // repo, so there is nothing for the user to set up first.
+function renderCloudInstance(el, inst) {
+  const can = inst.can_self_update || {};
+  const busy = can.busy || [];
+  el.innerHTML = `
+    <div class="env-prod">
+      <span class="env-dot"></span><b>This instance</b>
+      <code>${escapeHtml(inst.image || "unknown")}</code>
+      ${inst.build_commit ? `<span class="hint">built from ${escapeHtml(inst.build_commit)}</span>` : ""}
+    </div>
+    <p class="hint">Running in Kubernetes (<code>${escapeHtml(inst.namespace)}</code>), so it
+      builds nothing itself — CI publishes an image on every merge to main and this
+      instance decides when to take it. Updating replaces this pod, which is why it
+      waits for the team to be idle.</p>
+    ${busy.length ? `<p class="sbx-dirty">Not now — ${busy.length} agent(s) are working:
+        ${escapeHtml(busy.slice(0, 3).join("; "))}${busy.length > 3 ? "…" : ""}.
+        Updating would throw that work away.</p>` : ""}
+    ${(can.reasons || []).length ? `<p class="form-error">${escapeHtml(can.reasons.join("; "))}</p>` : ""}
+    <h4>Ship a new version</h4>
+    <div class="sbx-start">
+      <label>Image <input id="cloudImage" placeholder="registry.digitalocean.com/…/devteam-conductor:main-abc123"></label>
+      <button id="cloudUpdate" class="primary" ${busy.length ? "disabled" : ""}>Update this instance</button>
+      <button id="cloudRollback" class="danger">Roll back</button>
+    </div>
+    <p class="hint" id="cloudMsg">The pod is replaced, so this page will briefly lose its
+      connection. If the new image cannot start, Kubernetes keeps the old one running.</p>`;
+
+  $("#cloudUpdate").addEventListener("click", async () => {
+    const image = $("#cloudImage").value.trim();
+    if (!image) { $("#cloudMsg").textContent = "Paste the image tag CI published."; return; }
+    if (!confirm(`Replace this instance with:\n${image}\n\n`
+      + "The pod restarts, so you will be disconnected for a few seconds.")) return;
+    $("#cloudMsg").textContent = "Patching the Deployment — this pod is about to be replaced…";
+    try {
+      await api("/api/self/update", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image }) });
+      $("#cloudMsg").textContent = "Kubernetes is rolling it out. Reload in a few seconds.";
+    } catch (e) { $("#cloudMsg").textContent = String(e.message || e); }
+  });
+  $("#cloudRollback").addEventListener("click", async () => {
+    if (!confirm("Roll this instance back to the previous image?")) return;
+    try { await api("/api/self/update/rollback", { method: "POST" });
+          $("#cloudMsg").textContent = "Rolling back. Reload in a few seconds."; }
+    catch (e) { $("#cloudMsg").textContent = String(e.message || e); }
+  });
+}
+
 async function renderEnvs() {
   const el = $("#envsBody");
   if (!el) return;
   let d;
   try { d = await api("/api/self/envs"); }
   catch (e) { el.innerHTML = `<p class="empty">${escapeHtml(e.message || e)}</p>`; return; }
+
+  // In a cluster the platform cannot build anything — no Docker daemon, and
+  // giving it one would let it build and run arbitrary images as itself. There
+  // the loop is: CI builds, and this instance chooses when to take the result.
+  let inst = null;
+  try { inst = await api("/api/self/instance"); } catch { /* older server */ }
+  if (inst && inst.in_cluster) { renderCloudInstance(el, inst); return; }
 
   // Say plainly what is missing rather than showing dead buttons.
   if (!d.docker || !d.kubernetes) {
