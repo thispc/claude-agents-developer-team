@@ -436,6 +436,24 @@ async def deploy_app(project_id: int, request: Request, mode: str = "",
     return await deploy.deploy_local(project_id, workspace.strip())
 
 
+@router.post("/api/projects/{project_id}/deploy/rollback")
+async def rollback_app(project_id: int, request: Request) -> dict:
+    """Put back the last version of this project's app that came up healthy."""
+    owned_project(project_id, request)
+    r = await deploy.rollback(project_id)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "rollback failed"))
+    return r
+
+
+@router.get("/api/projects/{project_id}/deploy/history")
+def deploy_history(project_id: int, request: Request) -> dict:
+    """Every deploy attempt of this app, healthy or not — a record of only the
+    successes cannot tell you three attempts from one branch died the same way."""
+    owned_project(project_id, request)
+    return {"history": deploy.history(project_id)}
+
+
 @router.delete("/api/projects/{project_id}/deploy")
 def undeploy_app(project_id: int, request: Request) -> dict:
     owned_project(project_id, request)
@@ -843,6 +861,38 @@ def self_update(body: SelfImage, request: Request) -> dict:
         raise HTTPException(400, r.get("error", "self-update failed"))
     bus.emit(0, None, "system", "self_update", {"from": r.get("from"), "to": r["to"]})
     return r
+
+
+class StagingReq(BaseModel):
+    image: str
+
+
+@router.post("/api/self/staging")
+def staging_deploy(body: StagingReq, request: Request) -> dict:
+    """Run an image in staging: real credentials, its own identity."""
+    _root(request)
+    r = cloud.staging_deploy(body.image.strip())
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "staging deploy failed"))
+    bus.emit(0, None, "system", "staging_deployed", {"image": r["image"]})
+    return r
+
+
+@router.post("/api/self/staging/verify")
+def staging_verify(body: StagingReq, request: Request) -> dict:
+    """Run the test suite inside staging — the check a boot canary cannot make."""
+    _root(request)
+    r = cloud.staging_verify(body.image.strip())
+    bus.emit(0, None, "system",
+             "staging_passed" if r.get("ok") else "staging_failed",
+             {"image": body.image, "output": (r.get("output") or "")[:600]})
+    return r
+
+
+@router.delete("/api/self/staging")
+def staging_teardown(request: Request) -> dict:
+    _root(request)
+    return cloud.staging_teardown()
 
 
 @router.post("/api/self/update/rollback")

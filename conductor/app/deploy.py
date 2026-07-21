@@ -288,6 +288,46 @@ def stop(project_id: int) -> str:
     return "stopped"
 
 
+def _history_file(project_id: int) -> Path:
+    return workdir(project_id).parent / f"deploy-history-{project_id}.json"
+
+
+def _remember(project_id: int, entry: dict) -> None:
+    """What was deployed, and from where. Without this a broken deploy has nothing
+    to go back TO — the platform learned this for itself and the project side
+    never got it."""
+    try:
+        f = _history_file(project_id)
+        hist = json.loads(f.read_text()) if f.exists() else []
+        hist.insert(0, entry)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(hist[:10], indent=2))
+    except Exception:
+        pass
+
+
+def history(project_id: int) -> list[dict]:
+    try:
+        return json.loads(_history_file(project_id).read_text())
+    except Exception:
+        return []
+
+
+async def rollback(project_id: int) -> dict[str, Any]:
+    """Redeploy the last source that actually came up healthy.
+
+    A project deploy could previously only go forwards: if a deploy broke the app
+    the only move was to fix it and deploy again, with the app down in between.
+    """
+    prev = [h for h in history(project_id) if h.get("ok")]
+    if len(prev) < 2:
+        return {"ok": False, "error": "no earlier healthy deploy to return to"}
+    target = prev[1]
+    res = await deploy_local(project_id, target.get("workspace", ""))
+    res["rolled_back_to"] = target
+    return res
+
+
 async def deploy_local(project_id: int, workspace: str = "") -> dict[str, Any]:
     """Build and run the app as a subprocess on its own port.
 
@@ -300,6 +340,7 @@ async def deploy_local(project_id: int, workspace: str = "") -> dict[str, Any]:
 
     ok, note = (await sync_from_workspace(project_id, workspace) if workspace
                 else await sync_code(project_id))
+    _source = workspace or "default branch"
     _log(project_id, note)
     if not ok:
         return {"ok": False, "error": note}
@@ -359,7 +400,13 @@ async def deploy_local(project_id: int, workspace: str = "") -> dict[str, Any]:
             pass
         tail = log_path(project_id).read_text()[-1200:]
         _log(project_id, f"FAILED: {note}")
-        return {"ok": False, "spec": spec, "error": note, "log": tail}
+        # Record the failure too. A history of only successes cannot tell you that
+        # the last three attempts from this branch all died the same way.
+        _remember(project_id, {"ok": False, "workspace": workspace,
+                               "source": _source, "at": time.time(),
+                               "error": note[:200]})
+        return {"ok": False, "spec": spec, "error": note, "log": tail,
+                "can_roll_back": len([h for h in history(project_id) if h.get("ok")]) >= 1}
 
     RUNNING[project_id] = {"proc": proc, "port": port, "started": time.time(), "spec": spec}
     pid_file(project_id).write_text(json.dumps(
@@ -368,7 +415,11 @@ async def deploy_local(project_id: int, workspace: str = "") -> dict[str, Any]:
     url = f"http://localhost:{port}"
     bus.emit(project_id, None, "system", "app_deployed",
              {"mode": "local", "url": url, "kind": spec["kind"]})
-    return {"ok": True, "url": url, "port": port, "spec": spec, "mode": "local"}
+    _remember(project_id, {"ok": True, "workspace": workspace, "source": _source,
+                           "at": time.time(), "url": url})
+    return {"ok": True, "url": url, "port": port, "spec": spec, "mode": "local",
+            "source": _source,
+            "can_roll_back": len([h for h in history(project_id) if h.get("ok")]) >= 2}
 
 
 # --------------------------------------------------------------------------

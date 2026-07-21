@@ -190,6 +190,191 @@ def _delete_canary() -> None:
         pass          # already gone, which is the state we wanted anyway
 
 
+# --- staging: a real environment, not a boot check -------------------------
+#
+# The canary above answers "does this image start?". That is worth having and it
+# is not much. It runs with a scratch database and DEMO_MODE, so nothing it does
+# is real — a change that boots cleanly and then mishandles a live credential, a
+# real repo or a real migration passes it comfortably.
+#
+# Staging is the opposite trade: it persists, it holds REAL credentials, and the
+# test suite runs against it. The safety comes not from taking its power away but
+# from giving it a different identity:
+#
+#   - its own namespace and volume, so it cannot touch production's data
+#   - its own GitHub repo, so a bug pushes branches somewhere that does not matter
+#   - its own low run cap, so a runaway spends a little of the plan, not all of it
+#   - its own WORKER_TOKEN, so its workers cannot report into production
+#
+# "Full-fledged credentials" therefore means the same KIND of credentials, never
+# the same identity. Sharing production's identity would make staging a way to
+# damage production rather than a way to protect it.
+
+STAGING_NS = config._env("STAGING_NAMESPACE", "devteam-staging")
+STAGING_REPO = config._env("STAGING_GITHUB_REPO")
+STAGING_MAX_RUNS = config._env("STAGING_MAX_RUNS", "6")
+
+
+def _staging_secret(core, ns: str) -> tuple[bool, str]:
+    """Copy production's Secret, then override the identity-bearing parts."""
+    from kubernetes import client
+    try:
+        src = core.read_namespaced_secret("devteam-secrets", namespace())
+    except Exception as e:
+        return False, f"cannot read the production secret to derive one: {e}"
+    import base64
+    import secrets as _s
+    data = dict(src.data or {})
+
+    def _set(k: str, v: str) -> None:
+        data[k] = base64.b64encode(v.encode()).decode()
+
+    # A different identity, not less capability.
+    _set("WORKER_TOKEN", _s.token_hex(32))     # its workers cannot report to prod
+    _set("MAX_AGENT_RUNS", str(STAGING_MAX_RUNS))
+    _set("ROOT_PASSWORD", "staging")
+    if STAGING_REPO:
+        _set("GITHUB_REPO", STAGING_REPO)
+    else:
+        # No separate repo configured: better to have no GitHub than to let a
+        # staging bug open pull requests against the real one.
+        data.pop("GITHUB_TOKEN", None)
+        data.pop("GITHUB_REPO", None)
+    body = client.V1Secret(metadata=client.V1ObjectMeta(name="devteam-secrets",
+                                                        namespace=ns), data=data)
+    try:
+        core.replace_namespaced_secret("devteam-secrets", ns, body)
+    except Exception:
+        try:
+            core.create_namespaced_secret(ns, body)
+        except Exception as e:
+            return False, str(e)
+    note = (f"real credentials, staging identity"
+            + (f", pushing to {STAGING_REPO}" if STAGING_REPO
+               else ", GitHub withheld (set STAGING_GITHUB_REPO to enable it)"))
+    return True, note
+
+
+def staging_deploy(image: str) -> dict[str, Any]:
+    """Run `image` in staging with real credentials and its own everything."""
+    if not in_cluster():
+        return {"ok": False, "error": "not in a cluster"}
+    from kubernetes import client
+    api, core = _api(), client.CoreV1Api()
+    try:
+        core.create_namespace(client.V1Namespace(
+            metadata=client.V1ObjectMeta(name=STAGING_NS,
+                                         labels={"devteam-env": "staging"})))
+    except Exception:
+        pass          # already there
+
+    ok, note = _staging_secret(core, STAGING_NS)
+    if not ok:
+        return {"ok": False, "error": note}
+    # the registry pull secret has to exist here too
+    try:
+        pull = core.read_namespaced_secret("docr-creds", namespace())
+        core.replace_namespaced_secret("docr-creds", STAGING_NS, client.V1Secret(
+            metadata=client.V1ObjectMeta(name="docr-creds", namespace=STAGING_NS),
+            data=pull.data, type=pull.type))
+    except Exception:
+        try:
+            core.create_namespaced_secret(STAGING_NS, client.V1Secret(
+                metadata=client.V1ObjectMeta(name="docr-creds", namespace=STAGING_NS),
+                data=pull.data, type=pull.type))
+        except Exception:
+            pass
+
+    dep = client.V1Deployment(
+        metadata=client.V1ObjectMeta(name=DEPLOYMENT, namespace=STAGING_NS,
+                                     labels={"app": DEPLOYMENT, "devteam-env": "staging"}),
+        spec=client.V1DeploymentSpec(
+            replicas=1, strategy=client.V1DeploymentStrategy(type="Recreate"),
+            selector=client.V1LabelSelector(match_labels={"app": DEPLOYMENT}),
+            template=client.V1PodTemplateSpec(
+                metadata=client.V1ObjectMeta(labels={"app": DEPLOYMENT}),
+                spec=client.V1PodSpec(
+                    image_pull_secrets=[client.V1LocalObjectReference(name="docr-creds")],
+                    containers=[client.V1Container(
+                        name="conductor", image=image,
+                        env_from=[client.V1EnvFromSource(
+                            secret_ref=client.V1SecretEnvSource(name="devteam-secrets"))],
+                        env=[client.V1EnvVar(name="DB_PATH", value="/data/devteam.db"),
+                             client.V1EnvVar(name="WORKSPACES_DIR", value="/data/workspaces"),
+                             client.V1EnvVar(name="DEVTEAM_ENV", value="staging")],
+                        volume_mounts=[client.V1VolumeMount(name="data", mount_path="/data")],
+                        readiness_probe=client.V1Probe(
+                            http_get=client.V1HTTPGetAction(path="/api/health", port=8000),
+                            initial_delay_seconds=5, period_seconds=5),
+                    )],
+                    volumes=[client.V1Volume(
+                        name="data", empty_dir=client.V1EmptyDirVolumeSource())],
+                ))))
+    try:
+        api.replace_namespaced_deployment(DEPLOYMENT, STAGING_NS, dep)
+    except Exception:
+        try:
+            api.create_namespaced_deployment(STAGING_NS, dep)
+        except Exception as e:
+            return {"ok": False, "error": f"could not deploy to staging: {e}"}
+
+    import time as _t
+    deadline = _t.time() + 180
+    while _t.time() < deadline:
+        _t.sleep(4)
+        try:
+            d = api.read_namespaced_deployment(DEPLOYMENT, STAGING_NS)
+            if (d.status.ready_replicas or 0) >= 1:
+                return {"ok": True, "namespace": STAGING_NS, "image": image,
+                        "credentials": note}
+        except Exception:
+            pass
+    return {"ok": False, "error": "staging did not become ready within 180s",
+            "namespace": STAGING_NS}
+
+
+def staging_verify(image: str) -> dict[str, Any]:
+    """Run the test suite inside staging, against real credentials.
+
+    This is the check the boot-canary cannot make. The suite runs in the same
+    image that would become production, in an environment holding the same kind
+    of credentials — so a change that only fails when something is real fails here
+    instead of in front of you.
+    """
+    if not in_cluster():
+        return {"ok": False, "error": "not in a cluster"}
+    from kubernetes import client, stream
+    core = client.CoreV1Api()
+    try:
+        pods = core.list_namespaced_pod(STAGING_NS, label_selector=f"app={DEPLOYMENT}")
+        pod = next(p.metadata.name for p in pods.items if p.status.phase == "Running")
+    except Exception:
+        return {"ok": False, "error": "no running staging pod to test in"}
+    try:
+        out = stream.stream(
+            core.connect_get_namespaced_pod_exec, pod, STAGING_NS,
+            command=["python", "-m", "pytest", "/app/tests", "-q", "--timeout=300"],
+            stderr=True, stdout=True, stdin=False, tty=False, _request_timeout=600)
+    except Exception as e:
+        return {"ok": False, "error": f"could not run the suite: {e}"}
+    tail = "\n".join((out or "").strip().splitlines()[-12:])
+    passed = " failed" not in (out or "") and "error" not in (out or "").lower()
+    return {"ok": passed, "output": tail,
+            "note": "the suite ran inside staging, on the same image production "
+                    "would take"}
+
+
+def staging_teardown() -> dict[str, Any]:
+    if not in_cluster():
+        return {"ok": False, "error": "not in a cluster"}
+    from kubernetes import client
+    try:
+        client.CoreV1Api().delete_namespace(STAGING_NS)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def self_update(image: str, force: bool = False) -> dict[str, Any]:
     """Point our own Deployment at `image`. Kubernetes then replaces this pod.
 

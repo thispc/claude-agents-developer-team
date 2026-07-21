@@ -255,3 +255,55 @@ def test_the_healing_route_reports_what_happened(root_client, fresh_db):
     d = root_client.get("/api/self/healing").json()
     kinds = [i["kind"] for i in d["items"]]
     assert "self_healed" in kinds and "canary_failed" in kinds
+
+
+# ---- staging: real credentials, different identity -----------------------
+
+def test_staging_never_shares_productions_identity():
+    """"Full-fledged credentials" must mean the same KIND of credentials, never
+    the same identity — otherwise staging becomes a way to damage production
+    rather than a way to protect it."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "conductor" / "app" / "cloud.py").read_text()
+    body = src.split("def _staging_secret(")[1].split("\ndef ")[0]
+    assert '_set("WORKER_TOKEN"' in body, "its workers could report into production"
+    assert '_set("MAX_AGENT_RUNS"' in body, "a runaway would spend the whole plan"
+    assert '_set("ROOT_PASSWORD"' in body
+
+
+def test_staging_withholds_github_rather_than_using_the_real_repo():
+    """With no separate repo configured, no GitHub is safer than production's:
+    a staging bug must not be able to open pull requests against the real one."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "conductor" / "app" / "cloud.py").read_text()
+    body = src.split("def _staging_secret(")[1].split("\ndef ")[0]
+    assert 'data.pop("GITHUB_TOKEN", None)' in body
+
+
+def test_staging_has_its_own_namespace_and_volume():
+    from app import cloud
+    assert cloud.STAGING_NS != cloud.namespace()
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "conductor" / "app" / "cloud.py").read_text()
+    body = src.split("def staging_deploy(")[1].split("\ndef ")[0]
+    assert "empty_dir" in body, "staging must not mount production's volume"
+
+
+def test_staging_run_cap_is_small_by_default():
+    from app import cloud
+    assert int(cloud.STAGING_MAX_RUNS) <= 20
+
+
+def test_staging_verify_runs_the_real_suite():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent / "conductor" / "app" / "cloud.py").read_text()
+    body = src.split("def staging_verify(")[1].split("\ndef ")[0]
+    assert "pytest" in body and "/app/tests" in body
+
+
+def test_staging_routes_are_root_only(client, make_user, fresh_db, monkeypatch):
+    from app import config as cfg
+    monkeypatch.setattr(cfg, "SELFREPAIR_USERS", [])
+    _uid, c2 = make_user("mallory")
+    assert c2.post("/api/self/staging", json={"image": "x:1"}).status_code == 403
+    assert c2.delete("/api/self/staging").status_code == 403

@@ -9,6 +9,8 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
+from conftest import make_project, make_task
 import yaml
 
 from app import config, deploy
@@ -109,3 +111,76 @@ def test_local_child_env_has_no_platform_secrets(monkeypatch):
                  "CLAUDE_CODE_OAUTH_TOKEN"):
         assert leak not in env, f"deployed app can read {leak}"
     assert env["PORT"] == "8600"
+
+
+# ---- what the platform learned about itself, applied to project apps ------
+# deploy.py had no canary, no rollback, no history and no source choice, while
+# the platform side grew all four. That gap was the bug.
+
+def test_a_project_deploy_can_be_rolled_back(fresh_db, tmp_path, monkeypatch):
+    """A project deploy could only go forwards: if it broke the app, the only
+    move was to fix it and deploy again, with the app down in between."""
+    import asyncio
+    from app import deploy
+    p = make_project(owner_id=1)
+    monkeypatch.setattr(deploy, "_history_file", lambda pid: tmp_path / f"h{pid}.json")
+    deploy._remember(p, {"ok": True, "workspace": "task-1-a1", "source": "task-1-a1"})
+    deploy._remember(p, {"ok": True, "workspace": "task-2-a1", "source": "task-2-a1"})
+
+    called = {}
+
+    async def fake_deploy(pid, workspace=""):
+        called["workspace"] = workspace
+        return {"ok": True}
+    monkeypatch.setattr(deploy, "deploy_local", fake_deploy)
+    r = asyncio.run(deploy.rollback(p))
+    assert r["ok"] and called["workspace"] == "task-1-a1", "went back to the wrong one"
+
+
+def test_rollback_refuses_when_there_is_nothing_to_return_to(fresh_db, tmp_path,
+                                                             monkeypatch):
+    import asyncio
+    from app import deploy
+    p = make_project(owner_id=1)
+    monkeypatch.setattr(deploy, "_history_file", lambda pid: tmp_path / "h.json")
+    deploy._remember(p, {"ok": True, "workspace": "only-one"})
+    r = asyncio.run(deploy.rollback(p))
+    assert r["ok"] is False and "no earlier healthy deploy" in r["error"]
+
+
+def test_failures_are_recorded_too(fresh_db, tmp_path, monkeypatch):
+    """A history of only successes cannot tell you that three attempts from one
+    branch all died the same way."""
+    from app import deploy
+    p = make_project(owner_id=1)
+    monkeypatch.setattr(deploy, "_history_file", lambda pid: tmp_path / "h.json")
+    deploy._remember(p, {"ok": False, "workspace": "task-9-a1", "error": "port in use"})
+    h = deploy.history(p)
+    assert h and h[0]["ok"] is False and "port in use" in h[0]["error"]
+
+
+def test_rollback_only_considers_healthy_deploys(fresh_db, tmp_path, monkeypatch):
+    import asyncio
+    from app import deploy
+    p = make_project(owner_id=1)
+    monkeypatch.setattr(deploy, "_history_file", lambda pid: tmp_path / "h.json")
+    deploy._remember(p, {"ok": True, "workspace": "good-old"})
+    deploy._remember(p, {"ok": False, "workspace": "broken"})
+    deploy._remember(p, {"ok": True, "workspace": "good-new"})
+    picked = {}
+
+    async def fake_deploy(pid, workspace=""):
+        picked["w"] = workspace
+        return {"ok": True}
+    monkeypatch.setattr(deploy, "deploy_local", fake_deploy)
+    asyncio.run(deploy.rollback(p))
+    assert picked["w"] == "good-old", "rolled back to a deploy that had failed"
+
+
+def test_history_is_bounded(fresh_db, tmp_path, monkeypatch):
+    from app import deploy
+    p = make_project(owner_id=1)
+    monkeypatch.setattr(deploy, "_history_file", lambda pid: tmp_path / "h.json")
+    for i in range(25):
+        deploy._remember(p, {"ok": True, "workspace": f"w{i}"})
+    assert len(deploy.history(p)) <= 10
