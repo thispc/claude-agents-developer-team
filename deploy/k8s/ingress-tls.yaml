@@ -1,0 +1,28 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: devteam-conductor
+  namespace: devteam
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    # The dashboard posts task descriptions and reports that are far larger than
+    # nginx's 1MB default; without this they fail with 413 and nothing says why.
+    nginx.ingress.kubernetes.io/proxy-body-size: "16m"
+    # Agent sessions stream for minutes. The default 60s read timeout would cut
+    # the event WebSocket repeatedly.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [devteam.152-42-151-175.nip.io]
+      secretName: devteam-tls
+  rules:
+    - host: devteam.152-42-151-175.nip.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: devteam-conductor, port: {number: 80}}
