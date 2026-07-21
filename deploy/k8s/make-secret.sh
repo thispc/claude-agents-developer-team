@@ -19,7 +19,9 @@ set -a; . "$ENV_FILE"; set +a
 # Only these reach the cluster. Everything else in .env is either a local path,
 # a tuning knob that belongs in the manifest, or a credential the cluster has no
 # business holding (DIGITALOCEAN_API_TOKEN can create and destroy clusters — the
-# conductor never needs it, so it is not in this list).
+# conductor never needs it, so it is not in this list. DOCR_READ_TOKEN is the
+# scoped alternative: it can list image tags and nothing else, verified by it
+# returning 403 on /v2/account.)
 KEYS=(
   CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY
   GITHUB_TOKEN GITHUB_REPO
@@ -27,6 +29,7 @@ KEYS=(
   ROOT_USERNAME ROOT_PASSWORD
   GEMINI_API_KEY OPENAI_API_KEY
   SELFREPAIR_USERS
+  DOCR_READ_TOKEN DOCR_REGISTRY AUTO_UPDATE
 )
 
 # A conductor with neither is not merely misconfigured — every task it dispatches

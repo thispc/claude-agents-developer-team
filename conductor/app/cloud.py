@@ -174,7 +174,11 @@ def _registry_name() -> str:
 async def available_images(limit: int = 10) -> list[dict[str, Any]]:
     """Tags in the registry, newest first. Empty when we cannot look, never raises."""
     import httpx
-    token = config._env("DIGITALOCEAN_API_TOKEN")
+    # A read-only registry token, NOT the account token. The account token can
+    # create and destroy clusters; a pod that only needs to list image tags has no
+    # business holding it. DOCR issues scoped, expiring credentials for exactly
+    # this, so least privilege costs nothing here.
+    token = config._env("DOCR_READ_TOKEN") or config._env("DIGITALOCEAN_API_TOKEN")
     reg = _registry_name()
     if not token or not reg:
         return []
