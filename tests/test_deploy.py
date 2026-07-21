@@ -537,3 +537,38 @@ def test_an_undetectable_project_says_it_will_re_check_itself(fresh_db):
     from pathlib import Path
     js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
     assert "re-checks itself" in js
+
+
+def test_a_bundled_project_is_built_before_it_is_shown(fresh_db):
+    """A real run spent 17 tasks and $24 and produced a black screen. The project
+    was Vite: its index.html loads a module graph the bundler resolves, so serving
+    the raw checkout renders nothing and shows the dark background the page sets
+    before its own script runs. No error appears anywhere."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "conductor" / "app" / "preview.py").read_text()
+    assert "def _build_if_needed" in src
+    assert "npm" in src and "run" in src
+    # A failed build must be fatal: serving the source instead shows that same
+    # black screen and calls it success.
+    assert "return False, build_note" in src
+
+
+def test_build_output_is_preferred_over_source(fresh_db):
+    """The search started at the repo root, and a bundler's project has an
+    index.html there — the unbuilt one."""
+    from app import preview
+    order = list(preview._STATIC_SUBDIRS)
+    assert order.index("dist") < order.index("")
+    assert order.index("build") < order.index("")
+
+
+def test_the_per_teammate_view_is_actually_reachable(fresh_db):
+    """The endpoint existed from the day teammates became rows and nothing called
+    it, so auditing a seventeen-task run meant reading PR titles and guessing."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    js = (root / "dashboard" / "app.js").read_text()
+    routes = (root / "conductor" / "app" / "routes.py").read_text()
+    assert '/by-agent' in routes
+    assert "renderByAgent" in js and "/by-agent" in js

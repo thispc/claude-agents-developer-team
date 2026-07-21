@@ -7,13 +7,22 @@ apps can't be previewed this way (they'd need to run) — use the DOKS deploy fo
 """
 
 import asyncio
+import shutil
 import subprocess
 from pathlib import Path
 
 from . import config, db, github_client
 
 PREVIEW_DIR = Path(config._env("PREVIEW_DIR", str(config.ROOT / "previews")))
-_STATIC_SUBDIRS = ("", "docs", "web", "public", "dist", "build")
+# Build OUTPUT first, source last.
+#
+# The order used to start at the repo root, and a bundler's project has an
+# index.html there — the one that loads src/main.js as a module. Serving that
+# unbuilt is a black screen: the browser cannot resolve the module graph, nothing
+# draws, and all you see is the dark fallback background the page sets before its
+# script runs. Which is exactly what a real run produced after seventeen tasks
+# and $24 of agent time.
+_STATIC_SUBDIRS = ("dist", "build", "docs", "web", "public", "")
 
 
 def synced_at(project_id: int) -> str:
@@ -48,6 +57,42 @@ def _sh(*cmd: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
 
 
+def _build_if_needed(dest) -> tuple[bool, str]:
+    """Run the project's build when it declares one.
+
+    A Vite/webpack project is not servable as source: its index.html references
+    a module graph the bundler resolves. Previewing the raw checkout produced a
+    black screen and no error anyone could see, because the page renders its own
+    dark background before the script that fails.
+
+    Only runs when package.json declares a build AND there is no output already.
+    Returns (built, error) — an error is fatal to the preview, because serving the
+    source instead would show that same black screen and call it success.
+    """
+    import json as _json
+    pkg = dest / "package.json"
+    if not pkg.exists():
+        return False, ""
+    try:
+        scripts = (_json.loads(pkg.read_text()).get("scripts") or {})
+    except Exception:
+        return False, ""
+    if "build" not in scripts:
+        return False, ""
+    if any((dest / d / "index.html").exists() for d in ("dist", "build")):
+        return True, ""
+    if not shutil.which("npm"):
+        return False, ("this project needs `npm run build` before it can be shown, "
+                       "and npm is not installed on the server")
+    inst = _sh("npm", "install", "--no-audit", "--no-fund", cwd=dest)
+    if inst.returncode != 0:
+        return False, f"npm install failed: {(inst.stderr or inst.stdout)[-300:]}"
+    r = _sh("npm", "run", "build", cwd=dest)
+    if r.returncode != 0:
+        return False, f"the project's build failed: {(r.stderr or r.stdout)[-400:]}"
+    return True, ""
+
+
 async def sync(project_id: int) -> tuple[bool, str]:
     """Clone or pull the project's default branch into its preview dir."""
     project = db.get_project(project_id)
@@ -72,6 +117,10 @@ async def sync(project_id: int) -> tuple[bool, str]:
     ok, note = await asyncio.to_thread(_do)
     if not ok:
         return False, note
+
+    built, build_note = await asyncio.to_thread(_build_if_needed, dest)
+    if not built and build_note:
+        return False, build_note
     if preview_root(project_id) is None:
         return False, ("synced, but no static index.html found at repo root, /docs, or "
                        "/web — this looks like a server app, not a static site. Use the "

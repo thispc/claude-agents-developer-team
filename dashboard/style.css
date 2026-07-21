@@ -1526,3 +1526,15 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 /* Headings were spaced for a page of tiles. */
 #step3 .ctl-h { margin-top: 26px; }
 #step3 .ctl-h:first-of-type { margin-top: 4px; }
+
+/* ---------- who produced what ----------
+ * The by-agent endpoint existed from the day teammates became real rows and
+ * nothing ever called it, so auditing a seventeen-task run meant reading pull
+ * request titles and guessing who wrote them.
+ */
+.agent-group { padding: 11px 0; border-bottom: 1px solid var(--line-soft); }
+.agent-group:last-child { border-bottom: 0; }
+.agent-group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.agent-group-head b { font-size: 13.5px; }
+.agent-work { margin: 7px 0 0; padding-left: 18px; }
+.agent-work li { font-size: 12.5px; color: var(--dim); margin-bottom: 3px; }

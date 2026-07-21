@@ -2890,10 +2890,52 @@ async function openProjectFile(path) {
   }
 }
 
+// Per-teammate output. The endpoint existed from the day teammates became real
+// rows and nothing ever called it, so auditing a 17-task run meant reading pull
+// request titles and guessing who wrote them.
+async function renderByAgent() {
+  const pane = $("#byAgentPane");
+  if (!pane) return;
+  let d;
+  try { d = await api(`/api/projects/${currentProject}/by-agent`); }
+  catch (e) { pane.innerHTML = `<p class="dim">could not load: ${escapeHtml(e.message)}</p>`; return; }
+  const groups = d.agents || d.groups || [];
+  if (!groups.length) {
+    pane.innerHTML = `<p class="dim">Nothing attributed yet.</p>`;
+    return;
+  }
+  pane.innerHTML = groups.map((g) => {
+    const items = g.artifacts || g.work || g.tasks || [];
+    // Rework is the number worth surfacing per person: it says who kept being
+    // handed work they could not finish first time, which is a briefing problem
+    // invisible in any project-wide average.
+    const redone = items.filter((t) => (t.attempts || 1) > 1).length;
+    return `<div class="agent-group">
+      <div class="agent-group-head">
+        <b>${escapeHtml(g.name || g.role || "unattributed")}</b>
+        <span class="dim">${escapeHtml(g.role || "")}</span>
+        <span class="tag">${items.length} delivered</span>
+        ${redone ? `<span class="tag warn-t">${redone} needed more than one attempt</span>` : ""}
+      </div>
+      <ul class="agent-work">${items.map((t) => `
+        <li>${escapeHtml(t.title || "(untitled)")}
+          ${t.attempts > 1 ? `<span class="dim">· ${t.attempts} attempts</span>` : ""}
+          ${t.pr_number ? `<span class="dim">· PR #${t.pr_number}</span>` : ""}
+        </li>`).join("")}</ul>
+    </div>`;
+  }).join("");
+}
+
 async function renderArtifacts(force) {
   const el = $("#artifacts");
   if (!currentProject || el.hidden) return;
   if (force || !el.innerHTML) el.innerHTML = `<div class="pane"><p class="dim">Loading…</p></div>
+    <div class="pane" id="byAgentCard">
+      <h3>Who produced what</h3>
+      <p class="hint">Every teammate's output, and how often their work came back.
+        An audit reads by person; the pull request list reads by accident.</p>
+      <div id="byAgentPane"><p class="dim">loading…</p></div>
+    </div>
     <div class="pane" id="filesCard">
       <h3>Files</h3>
       <p class="hint">Everything the team merged, as things you can open — not a list
@@ -2921,6 +2963,7 @@ async function renderArtifacts(force) {
 
   // Files, loaded separately so a large repo never delays the deployable object.
   loadProjectFiles();
+  renderByAgent();
 
   const prs = (a.prs || []).map((p) =>
     `<li><a href="${p.url}" target="_blank">PR #${p.number}</a>
