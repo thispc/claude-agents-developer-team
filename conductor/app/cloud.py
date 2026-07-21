@@ -254,10 +254,16 @@ def _staging_secret(core, ns: str) -> tuple[bool, str]:
     # Branch prefix, so everything staging pushes is identifiable at a glance and
     # nothing it creates can be mistaken for production work.
     _set("BRANCH_PREFIX", "staging/")
-    # The one power it does not get. Opening a PR is the point; merging it is the
-    # human's, and a staging manager running autonomously would otherwise merge
-    # its own work into the branch production builds from.
-    _set("ALLOW_MERGE", "0")
+    # The one thing it must not merge into: the repository this platform is built
+    # from. Everything else it may merge normally.
+    #
+    # This used to be a blanket ALLOW_MERGE=0, and that was the wrong shape. The
+    # danger was never "staging merged something" — it was "staging merged into
+    # the code production builds from". Banning every merge also banned merging a
+    # pull request on a throwaway project in a scratch repository that production
+    # never reads, which left staging unable to rehearse the one workflow most
+    # worth rehearsing before it reaches production.
+    _set("PROTECTED_REPOS", config.SELF_REPO or "")
 
     creds = []
     tok = config._env("STAGING_GITHUB_TOKEN")

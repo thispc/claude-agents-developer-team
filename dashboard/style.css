@@ -1266,3 +1266,59 @@ pre.dim, .dim { color: var(--dim); }
    marker resolves currentColor against its OWN context, not the path pointing at
    it, so it would have rendered black whatever the arrow's colour. */
 #dArrowHead path { fill: var(--dim); }
+
+/* ---------- waiting for the first plan ----------
+ *
+ * Replaces a single centred "Assembling the team…". The problem was not the
+ * wording, it was that nothing on screen changed for the better part of a
+ * minute, which is indistinguishable from a hang. Ghost cards give the area
+ * shape, the pulse gives it life, and the manager's own words give it truth.
+ */
+.assembling { padding: 10px 2px 4px; }
+.assembling-head {
+  display: flex; align-items: center; gap: 9px;
+  font-weight: 600; font-size: 13.5px; color: var(--text); margin-bottom: 6px;
+}
+.pulse {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+  box-shadow: 0 0 0 0 var(--accent); animation: pulse 1.9s ease-out infinite;
+  flex: none;
+}
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(46,110,91,.45); }
+  70%  { box-shadow: 0 0 0 9px rgba(46,110,91,0); }
+  100% { box-shadow: 0 0 0 0 rgba(46,110,91,0); }
+}
+.assembling-say { color: var(--dim); font-size: 12.5px; line-height: 1.55; margin-bottom: 14px; }
+
+.ghost-team { display: flex; flex-wrap: wrap; gap: 10px; }
+.ghost-agent {
+  width: 268px; border: 1px dashed var(--line); border-radius: 9px;
+  padding: 11px 12px; background: var(--card-2);
+}
+.ghost-agent .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.ghost-agent .role { font-size: 12px; font-weight: 600; color: var(--dim); }
+.ghost-agent .st {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .06em;
+  text-transform: uppercase; color: var(--faint);
+}
+.gline {
+  height: 8px; border-radius: 3px; margin-top: 9px;
+  background: linear-gradient(90deg, var(--line-soft) 25%, var(--line) 37%, var(--line-soft) 63%);
+  background-size: 300% 100%; animation: shimmer 1.6s linear infinite;
+}
+.gline.w70 { width: 70%; } .gline.w45 { width: 45%; }
+@keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+
+/* Past the point where "it is still working" stops being a fair explanation. */
+.assembling.stalled .pulse { background: var(--warn); animation: none; }
+.assembling-stuck {
+  margin-top: 14px; padding: 11px 13px; border-radius: 8px;
+  background: var(--warn-soft); border-left: 3px solid var(--warn);
+  font-size: 12.5px; line-height: 1.55; color: var(--text);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse, .gline { animation: none; }
+  .gline { background: var(--line-soft); }
+}

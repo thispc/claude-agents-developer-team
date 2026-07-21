@@ -2,7 +2,8 @@
 #
 # Its own database (emptyDir — thrown away with the pod, which is the
 # point), its own worker token, a run cap of 6, branch prefix staging/,
-# and ALLOW_MERGE=0 so it opens pull requests and never merges one.
+# and PROTECTED_REPOS set to this platform's own repo, so it behaves like a real
+# instance everywhere except the one place a merge would change what runs.
 apiVersion: apps/v1
 kind: Deployment
 metadata: {name: devteam-conductor, namespace: devteam-staging, labels: {app: devteam-conductor, devteam-env: staging}}

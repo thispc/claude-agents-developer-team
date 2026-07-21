@@ -111,6 +111,30 @@ SELFREPAIR_USERS = [u.strip().lower() for u in _env("SELFREPAIR_USERS").split(",
 
 def may_self_repair(username: str, is_root: bool) -> bool:
     return bool(is_root or (username or "").lower() in SELFREPAIR_USERS)
+
+
+def may_merge(repo: str) -> tuple[bool, str]:
+    """Whether this instance may merge a pull request in this repository.
+
+    Two separate refusals, because they mean different things to whoever reads
+    them. ALLOW_MERGE=0 is "this instance does not merge, full stop". A protected
+    repository is "merge anywhere you like, but not into the code that decides
+    what this system is" — and that one holds even on an instance that is
+    otherwise allowed to merge, because it is a property of the target rather
+    than of the instance.
+
+    Returns (allowed, reason). The reason is written to be read by the manager
+    agent, so it says what to do instead rather than only what was refused.
+    """
+    if not ALLOW_MERGE:
+        return False, ("this environment cannot merge anything. Open the pull request "
+                       "and say it is ready — a human merges it.")
+    if (repo or "").strip().lower() in PROTECTED_REPOS:
+        return False, (f"`{repo}` is the repository this platform itself is built from, "
+                       f"and merging into it changes what the running system is. Open "
+                       f"the pull request and say it is ready — a human merges that one. "
+                       f"Everything else you can merge normally.")
+    return True, ""
 # Wildcard domain for deployed apps (e.g. apps.example.com -> app-11.apps.example.com).
 # Blank = fall back to a per-app LoadBalancer, which the cloud bills for per app.
 APPS_DOMAIN = _env("APPS_DOMAIN")
@@ -134,10 +158,25 @@ DB_PATH = str(Path(_env("DB_PATH", "devteam.db")) if Path(_env("DB_PATH", "devte
 # Never set this on a real instance — it makes the platform pretend to work.
 DEMO_MODE = _env("DEMO_MODE") == "1"
 
-# Staging opens pull requests but does not merge them: a branch is harmless, a
-# merge into the branch production builds from is not. Same repo, same account,
-# different power — which is what makes one shared repo safe for both.
+# Whether this instance may merge at all. A blunt instrument, kept for the case
+# where you want an instance that provably cannot write to any main branch.
+#
+# It used to be how staging was restrained, and that was too crude. The reasoning
+# was "a merge into the branch production builds from is dangerous" — true, but it
+# was enforced by banning ALL merges, which also banned merging a pull request on
+# a throwaway project in a scratch repository that production never reads. That
+# made staging unable to rehearse the one workflow most worth rehearsing.
 ALLOW_MERGE = _env("ALLOW_MERGE", "1") != "0"
+# The repositories this instance must never merge into, whatever else it is
+# allowed to do. This is the rule that actually matters: the danger was never
+# "staging merged something", it was "staging merged into the code production
+# builds from". Naming that directly lets staging behave like a real instance
+# everywhere else.
+#
+# Defaults to this platform's own repository, which is the only one whose main
+# branch changes what the running system is.
+PROTECTED_REPOS = [r.strip().lower() for r in
+                   _env("PROTECTED_REPOS", _env("SELF_REPO")).split(",") if r.strip()]
 # Everything this instance pushes is prefixed, so staging work is identifiable at
 # a glance and cannot be mistaken for production's.
 BRANCH_PREFIX = _env("BRANCH_PREFIX", "")

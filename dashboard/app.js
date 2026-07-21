@@ -2031,6 +2031,50 @@ function renderSprints(p) {
   </div>`;
 }
 
+// What to show between "you pressed create" and "there are tasks on screen".
+//
+// This was one centred grey sentence — "Assembling the team…" — with no motion,
+// no detail and no end. Planning legitimately takes half a minute or more, so the
+// most common first impression of the product was a screen that looked frozen.
+//
+// Three things fix that, and none of them is a spinner. The roster the boss just
+// chose is already known, so the shape of the team can be drawn before anyone is
+// hired. The manager's current thought is already streaming in, so the screen can
+// say what is actually happening rather than a canned phrase. And if it really
+// has been too long, saying so — with the thing to press — beats leaving someone
+// to wonder.
+function assemblingHtml(p, roster, thought) {
+  const waited = p.created_at ? (Date.now() / 1000 - p.created_at) : 0;
+  const stalled = waited > 210;
+
+  const ghosts = (roster || []).flatMap((m) =>
+    Array.from({ length: Math.max(1, Number(m.count) || 1) }, () => m.role))
+    .slice(0, 8)
+    .map((role) => `<div class="ghost-agent">
+        <div class="top"><span class="role">${wrapRole(role)}</span><span class="st">hiring</span></div>
+        <div class="gline w70"></div><div class="gline w45"></div>
+      </div>`).join("");
+
+  const said = (thought || "").trim();
+  return `<div class="assembling ${stalled ? "stalled" : ""}">
+    <div class="assembling-head">
+      <span class="pulse" aria-hidden="true"></span>
+      <span>${stalled
+        ? "The manager has not produced a plan yet"
+        : "Planning the work and hiring the team"}</span>
+    </div>
+    <p class="assembling-say">${said
+      ? escapeHtml(trim(said, 220))
+      : "Reading your brief, working out the pieces, and deciding who is needed. "
+        + "This usually takes under a minute."}</p>
+    ${ghosts ? `<div class="ghost-team">${ghosts}</div>` : ""}
+    ${stalled ? `<p class="assembling-stuck">It has been
+      ${Math.round(waited / 60)} minutes. If nothing has moved, use
+      <b>↻ Restart manager</b> in the bar above — it picks up where this left off
+      rather than starting the project again.</p>` : ""}
+  </div>`;
+}
+
 function renderCommand(p) {
   const el = $("#command");
   if (!el || el.hidden) return;
@@ -2177,7 +2221,7 @@ function renderCommand(p) {
       </div>
       <div class="fan"></div>
       <div class="section-label">The team</div>
-      ${agents || '<div class="empty">Assembling the team…</div>'}
+      ${agents || assemblingHtml(p, roster, managerThought || managerThinking)}
     </div>`;
 
   const attnBtn = el.querySelector("[data-attn]");

@@ -281,7 +281,8 @@ def test_staging_shares_the_repo_but_not_the_power_to_merge():
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent / "conductor" / "app" / "cloud.py").read_text()
     body = src.split("def _staging_secret(")[1].split("\ndef ")[0]
-    assert '_set("ALLOW_MERGE", "0")' in body, "staging could merge into main"
+    assert '_set("PROTECTED_REPOS"' in body, (
+        "staging could merge into the repository this platform is built from")
     assert '_set("BRANCH_PREFIX", "staging/")' in body
 
 
@@ -292,10 +293,40 @@ def test_a_no_merge_environment_actually_refuses_to_merge(fresh_db, monkeypatch)
     from app import config as cfg, manager
     monkeypatch.setattr(cfg, "ALLOW_MERGE", False)
     p = make_project(owner_id=1, repo="o/r")
-    t = make_task(p, status="review")
+    make_task(p, status="review")
     manager.build_team_server(p)
     out = str(asyncio.run(manager.HANDLERS[p]["handlers"]["merge_pr"]({"task_id": 1})))
-    assert "REFUSED" in out and "cannot merge" in out
+    assert "REFUSED" in out and "cannot merge anything" in out
+
+
+def test_the_platforms_own_repo_is_protected_even_where_merging_is_allowed(
+        fresh_db, monkeypatch):
+    """The rule that actually matters, and the reason the blanket ban could go.
+    It is a property of the TARGET, not of the instance — so it holds on an
+    instance that merges everything else quite happily."""
+    import asyncio
+    from app import config as cfg, manager
+    monkeypatch.setattr(cfg, "ALLOW_MERGE", True)
+    monkeypatch.setattr(cfg, "PROTECTED_REPOS", ["me/platform"])
+    p = make_project(owner_id=1, repo="Me/Platform")     # case must not matter
+    make_task(p, status="review")
+    manager.build_team_server(p)
+    out = str(asyncio.run(manager.HANDLERS[p]["handlers"]["merge_pr"]({"task_id": 1})))
+    assert "REFUSED" in out
+    assert "built from" in out
+    # And it says what CAN be done, rather than only what cannot.
+    assert "Everything else you can merge normally" in out
+
+
+def test_an_ordinary_project_on_staging_can_still_be_merged(fresh_db, monkeypatch):
+    """The point of the change. A pull request on a throwaway project in a scratch
+    repository is exactly the workflow worth rehearsing before production sees it,
+    and the blanket ban made rehearsing it impossible."""
+    from app import config as cfg
+    monkeypatch.setattr(cfg, "ALLOW_MERGE", True)
+    monkeypatch.setattr(cfg, "PROTECTED_REPOS", ["me/platform"])
+    allowed, why = cfg.may_merge("someone/scratch-project")
+    assert allowed and why == ""
 
 
 def test_branch_prefix_keeps_staging_work_identifiable(fresh_db, monkeypatch):

@@ -152,3 +152,45 @@ def test_the_stated_size_of_the_conductor_is_not_badly_stale():
     claimed = int(re.search(r"about ([\d,]+) lines", _handbook()).group(1).replace(",", ""))
     assert 0.75 * claimed <= actual <= 1.35 * claimed, (
         f"the handbook says about {claimed:,} lines; the conductor is now {actual:,}")
+
+
+# --- the wait between "create" and "there are tasks" -----------------------
+
+def test_the_first_wait_is_not_a_single_dead_sentence():
+    """It was one centred grey line with no motion and no end, shown for the
+    better part of a minute while the manager plans — indistinguishable from a
+    hang, and the most common first impression of the product."""
+    # Matched on the RENDERED markup, not the string anywhere in the file — the
+    # comment above the replacement quotes the old placeholder to explain itself,
+    # and a naive search flags that as the bug it is describing.
+    assert '<div class="empty">Assembling' not in JS, "the dead placeholder is back"
+    assert "function assemblingHtml" in JS
+
+
+def test_the_wait_shows_the_team_that_is_about_to_exist():
+    """The roster is already known when the boss presses create, so the shape of
+    the team can be drawn before anyone is hired. An empty area with a sentence
+    in it tells you nothing; five ghost cards tell you what is coming."""
+    body = JS.split("function assemblingHtml")[1][:1600]
+    assert "ghost-agent" in body
+    assert "roster" in body
+
+
+def test_the_wait_says_what_the_manager_is_actually_doing():
+    """Its thinking is already streaming in. Using it beats a canned phrase,
+    because a canned phrase is still there when the thing has died."""
+    assert "assemblingHtml(p, roster, managerThought || managerThinking)" in JS
+
+
+def test_the_wait_admits_when_it_has_gone_on_too_long():
+    """'Still working' stops being a fair explanation at some point, and the
+    honest answer names the thing to press rather than leaving someone guessing."""
+    body = JS.split("function assemblingHtml")[1][:1600]
+    assert "stalled" in body
+    assert "Restart manager" in body
+
+
+def test_the_waiting_animation_respects_reduced_motion():
+    assert "prefers-reduced-motion" in CSS
+    block = CSS.split("@media (prefers-reduced-motion: reduce)")[-1][:220]
+    assert ".pulse" in block and "animation: none" in block

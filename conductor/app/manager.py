@@ -785,14 +785,18 @@ def build_team_server(project_id: int):
         # A staging instance opens pull requests and stops there. Enforced here
         # rather than by prompt, because "please do not merge" is a request and
         # this is a rule.
-        if not config.ALLOW_MERGE:
-            return _text(
-                "REFUSED: this environment cannot merge. Open the pull request and "
-                "say it is ready — a human merges it. Continue with other work.")
         t = db.resolve_task(project_id, int(args["task_id"]))
         repo = project().get("repo", "")
         if not t:
             return _text("error: no such task")
+        # Checked against the TARGET repository, not just against the instance.
+        # A staging instance merging a pull request on a throwaway project in a
+        # scratch repository is harmless and is worth rehearsing; the same
+        # instance merging into the repository this platform is built from is
+        # not. Only the second is refused.
+        allowed, why = config.may_merge(repo)
+        if not allowed:
+            return _text(f"REFUSED: {why} Continue with other work.")
         # Hard gate: never merge work that failed the project's own checks. This is
         # the one judgement that does not depend on reading prose, so it is not left
         # to persuasion — an override needs the boss, not a convincing report.
