@@ -159,13 +159,24 @@ def release(task: dict, report: str = "", accepted: bool = False) -> None:
 
 
 def _gist(report: str) -> str:
-    """One line of what happened, from the report's own words."""
+    """One line of what happened, from the report's own words.
+
+    The worker appends its push result after a `---` rule, so the genuinely last
+    line of every report is "pushed branch task/17" — which is what this returned
+    on the first live run, making every teammate's memory a list of branch names
+    and nothing about what they built. The trailer is dropped first.
+    """
     text = (report or "").strip()
     if not text:
         return "done"
-    # The last non-empty line of an agent report is almost always its summary; the
-    # first is usually preamble about what it was asked to do.
-    lines = [ln.strip("-* ").strip() for ln in text.splitlines() if ln.strip()]
+    # Everything before the final horizontal rule: the agent's own summary.
+    body = text.rsplit("\n---\n", 1)[0].strip() or text
+    lines = [ln.strip("-*# ").strip() for ln in body.splitlines() if ln.strip()]
+    # The last substantive line, skipping trailing chatter too short to mean
+    # anything ("Done!", "Perfect."), which models emit freely.
+    for line in reversed(lines):
+        if len(line) >= 25:
+            return line[:200]
     return (lines[-1] if lines else "done")[:200]
 
 

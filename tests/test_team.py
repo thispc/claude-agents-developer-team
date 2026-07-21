@@ -234,3 +234,32 @@ def test_a_teammates_model_still_wins_over_the_role_default(fresh_db):
 
     assert launcher.pick_model(db.get_task(tid), db.get_project(pid), agent) \
         == "claude-opus-4-8"
+
+
+def test_a_teammates_memory_is_what_they_built_not_where_they_pushed_it(fresh_db):
+    """The first live run gave Priya the memory "pushed branch staging/task/1".
+    The worker appends its push result after a rule, so the genuinely last line of
+    every report is the branch name — and a teammate's memory was a list of
+    branches with nothing about the work in it."""
+    pid = make_project(name="g1")
+    team.hire(pid, [{"role": "backend", "count": 1}])
+    tid = make_task(pid, role="backend", title="slugify")
+    team.claim(db.get_task(tid))
+    team.release(db.get_task(tid),
+                 "Added slugify.py with accent stripping and 22 passing tests.\n"
+                 "\n---\npushed branch staging/task/1", accepted=True)
+
+    notes = db.list_agents(pid)[0]["notes"]
+    assert "accent stripping" in notes
+    assert "pushed branch" not in notes
+
+
+def test_trailing_chatter_is_skipped_for_something_that_says_anything(fresh_db):
+    pid = make_project(name="g2")
+    team.hire(pid, [{"role": "backend", "count": 1}])
+    tid = make_task(pid, role="backend", title="x")
+    team.claim(db.get_task(tid))
+    team.release(db.get_task(tid),
+                 "Rewrote the token refresh to retry on 401 once.\nDone!\n"
+                 "\n---\npushed branch task/9", accepted=True)
+    assert "token refresh" in db.list_agents(pid)[0]["notes"]
