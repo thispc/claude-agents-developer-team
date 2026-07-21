@@ -572,3 +572,22 @@ def test_the_per_teammate_view_is_actually_reachable(fresh_db):
     routes = (root / "conductor" / "app" / "routes.py").read_text()
     assert '/by-agent' in routes
     assert "renderByAgent" in js and "/by-agent" in js
+
+
+def test_built_assets_work_when_the_preview_is_not_at_the_domain_root(fresh_db, tmp_path):
+    """The bundle WAS built and WAS served — and the page asked for
+    /assets/index-abc.js while the files sat at /preview/4/assets/. Every request
+    404'd, no script ran, and the dark fallback background was the black screen."""
+    from app import preview
+    d = tmp_path / "repo"
+    (d / "dist").mkdir(parents=True)
+    (d / "dist" / "index.html").write_text(
+        '<script type="module" src="/assets/app.js"></script>'
+        '<link rel="stylesheet" href="/assets/app.css">'
+        '<a href="https://example.com/x">external</a>')
+    preview._relativise_assets(d)
+    out = (d / "dist" / "index.html").read_text()
+    assert 'src="./assets/app.js"' in out
+    assert 'href="./assets/app.css"' in out
+    # An absolute external URL is not a path on this site and must be left alone.
+    assert 'href="https://example.com/x"' in out

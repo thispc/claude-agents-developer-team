@@ -90,7 +90,33 @@ def _build_if_needed(dest) -> tuple[bool, str]:
     r = _sh("npm", "run", "build", cwd=dest)
     if r.returncode != 0:
         return False, f"the project's build failed: {(r.stderr or r.stdout)[-400:]}"
+    _relativise_assets(dest)
     return True, ""
+
+
+def _relativise_assets(dest) -> None:
+    """Make the built page work when it is not served from the domain root.
+
+    Bundlers emit absolute asset paths by default — `/assets/index-abc.js` — which
+    assume the site owns `/`. A preview is mounted at `/preview/<id>/`, so every
+    one of those 404s, no script runs, and the page shows the dark background it
+    sets before its own code loads. That is precisely the black screen a real run
+    produced: the bundle was built, served, and asking for files one directory
+    above where they were.
+
+    Rewriting to relative paths in the built output fixes it for any bundler and
+    any mount point, without needing to know the base URL at build time or to
+    special-case Vite.
+    """
+    import re as _re
+    for out in ("dist", "build"):
+        idx = dest / out / "index.html"
+        if not idx.exists():
+            continue
+        html = idx.read_text(errors="ignore")
+        fixed = _re.sub(r'((?:src|href)=")/(?!/)', r"\1./", html)
+        if fixed != html:
+            idx.write_text(fixed)
 
 
 async def sync(project_id: int) -> tuple[bool, str]:
