@@ -426,8 +426,11 @@ def create_task(project_id: int, role: str, title: str, description: str,
     # The sprint is stamped from the project so a retrospective can tell this cycle's
     # work from the previous one without guessing by timestamp.
     p = get_project(project_id)
+    # BRANCH_PREFIX lets a staging instance share the production repo without its
+    # work being mistakable for production's.
+    branch = f"{config.BRANCH_PREFIX}task/{task_id}"
     _execute("UPDATE tasks SET branch=?, seq=?, sprint=? WHERE id=?",
-             (f"task/{task_id}", next_seq(project_id), (p or {}).get("sprint", 1), task_id))
+             (branch, next_seq(project_id), (p or {}).get("sprint", 1), task_id))
     return task_id
 
 

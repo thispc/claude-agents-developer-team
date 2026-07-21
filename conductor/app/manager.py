@@ -633,6 +633,13 @@ def build_team_server(project_id: int):
           "override_failed_tests is a last resort and needs the boss's agreement first.",
           {"task_id": int, "override_failed_tests": bool})
     async def merge_pr(args: dict[str, Any]) -> dict[str, Any]:
+        # A staging instance opens pull requests and stops there. Enforced here
+        # rather than by prompt, because "please do not merge" is a request and
+        # this is a rule.
+        if not config.ALLOW_MERGE:
+            return _text(
+                "REFUSED: this environment cannot merge. Open the pull request and "
+                "say it is ready — a human merges it. Continue with other work.")
         t = db.resolve_task(project_id, int(args["task_id"]))
         repo = project().get("repo", "")
         if not t:

@@ -216,7 +216,22 @@ STAGING_MAX_RUNS = config._env("STAGING_MAX_RUNS", "6")
 
 
 def _staging_secret(core, ns: str) -> tuple[bool, str]:
-    """Copy production's Secret, then override the identity-bearing parts."""
+    """Derive staging's credentials from production's, overriding what identifies it.
+
+    An earlier version withheld GitHub entirely unless a *separate repo* was
+    configured. That was over-cautious and made staging much less useful: staging
+    works on its own branches and opens pull requests, so the repo is already
+    shared safely — branch namespacing is the isolation, not repository ownership.
+
+    What actually needs separating is narrower:
+
+      - the TOKEN, so it can be revoked without touching production and so the
+        audit log says which environment did something
+      - the ability to MERGE, because a branch is harmless and a merge to the
+        default branch is not. Same repo, same account, different power.
+      - the worker token and run cap, which are about blast radius rather than
+        identity
+    """
     from kubernetes import client
     try:
         src = core.read_namespaced_secret("devteam-secrets", namespace())
@@ -229,17 +244,35 @@ def _staging_secret(core, ns: str) -> tuple[bool, str]:
     def _set(k: str, v: str) -> None:
         data[k] = base64.b64encode(v.encode()).decode()
 
-    # A different identity, not less capability.
     _set("WORKER_TOKEN", _s.token_hex(32))     # its workers cannot report to prod
     _set("MAX_AGENT_RUNS", str(STAGING_MAX_RUNS))
-    _set("ROOT_PASSWORD", "staging")
+    _set("ROOT_PASSWORD", _s.token_urlsafe(18))
+    _set("DEVTEAM_ENV", "staging")
+    # Branch prefix, so everything staging pushes is identifiable at a glance and
+    # nothing it creates can be mistaken for production work.
+    _set("BRANCH_PREFIX", "staging/")
+    # The one power it does not get. Opening a PR is the point; merging it is the
+    # human's, and a staging manager running autonomously would otherwise merge
+    # its own work into the branch production builds from.
+    _set("ALLOW_MERGE", "0")
+
+    creds = []
+    tok = config._env("STAGING_GITHUB_TOKEN")
+    if tok:
+        _set("GITHUB_TOKEN", tok)
+        creds.append("its own GitHub token")
+    else:
+        creds.append("production's GitHub token (set STAGING_GITHUB_TOKEN to separate it)")
+    claude = config._env("STAGING_CLAUDE_TOKEN")
+    if claude:
+        _set("CLAUDE_CODE_OAUTH_TOKEN", claude)
+        creds.append("its own Claude token")
     if STAGING_REPO:
         _set("GITHUB_REPO", STAGING_REPO)
+        creds.append(f"repo {STAGING_REPO}")
     else:
-        # No separate repo configured: better to have no GitHub than to let a
-        # staging bug open pull requests against the real one.
-        data.pop("GITHUB_TOKEN", None)
-        data.pop("GITHUB_REPO", None)
+        creds.append("the same repo, on staging/* branches")
+
     body = client.V1Secret(metadata=client.V1ObjectMeta(name="devteam-secrets",
                                                         namespace=ns), data=data)
     try:
@@ -249,10 +282,7 @@ def _staging_secret(core, ns: str) -> tuple[bool, str]:
             core.create_namespaced_secret(ns, body)
         except Exception as e:
             return False, str(e)
-    note = (f"real credentials, staging identity"
-            + (f", pushing to {STAGING_REPO}" if STAGING_REPO
-               else ", GitHub withheld (set STAGING_GITHUB_REPO to enable it)"))
-    return True, note
+    return True, "; ".join(creds) + "; cannot merge"
 
 
 def staging_deploy(image: str) -> dict[str, Any]:

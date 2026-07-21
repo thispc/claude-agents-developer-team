@@ -37,7 +37,12 @@ spec:
       imagePullSecrets: [{name: docr-creds}]
       containers:
         - name: conductor
-          image: registry.digitalocean.com/devteam-pulkit/devteam-conductor:live-76874f889a
+          # WARNING: applying this manifest RESETS the running image to whatever
+          # is written here — including over a version the platform chose for
+          # itself. It happened once: an apply silently rolled production back
+          # several builds. Treat this file as the bootstrap; after that the
+          # image belongs to /api/self/update, and this line will be stale.
+          image: registry.digitalocean.com/devteam-pulkit/devteam-conductor:main-307d0865f0
           imagePullPolicy: IfNotPresent
           ports: [{containerPort: 8000}]
           envFrom:
@@ -67,7 +72,19 @@ apiVersion: v1
 kind: Service
 metadata: {name: devteam-conductor, namespace: devteam}
 spec:
-  # ClusterIP: production is NOT on the internet at all.
+  # NodePort: reachable at http://<node-ip>:30080.
+  #
+  # This exposes the HTTP API and nothing else — no SSH, no filesystem, and the
+  # stored credentials are never sent to a browser (auth.redacted returns only
+  # whether each key is set). What IS exposed is the control plane for your agents
+  # and your repo, so the password became the entire security boundary. Hence the
+  # two changes that had to land first: a generated 24-character root password,
+  # and a lockout after 8 failed attempts in 5 minutes.
+  #
+  # Still missing: TLS. Without it the login password crosses the internet in
+  # cleartext. Point a hostname here and it becomes an Ingress with Let's Encrypt
+  # — one LoadBalancer shared by every environment, which is the point at which
+  # $12/month buys something rather than just opening a hole.
   #
   # A NodePort here would be worse than it looks. DOKS reconciles a firewall
   # called k8s-public-access-<cluster> from the NodePort services it finds, and
@@ -84,6 +101,6 @@ spec:
   # When it needs a real URL: one Ingress with TLS, shared by every environment.
   # That is the point at which a LoadBalancer earns its $12/month, and TLS plus a
   # single reviewed entry point is a better answer than an open port anyway.
-  type: ClusterIP
+  type: NodePort
   selector: {app: devteam-conductor}
-  ports: [{port: 80, targetPort: 8000}]
+  ports: [{port: 80, targetPort: 8000, nodePort: 30080}]

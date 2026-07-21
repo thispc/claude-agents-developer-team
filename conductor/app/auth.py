@@ -44,8 +44,23 @@ def _hash(password: str, salt: str) -> str:
 def init() -> None:
     db._conn.executescript(SCHEMA)
     db._conn.commit()
-    if not get_user_by_name(ROOT_USERNAME):
+    existing = get_user_by_name(ROOT_USERNAME)
+    if not existing:
         create_user(ROOT_USERNAME, ROOT_PASSWORD, is_root=True)
+        return
+    # Rotating ROOT_PASSWORD used to do nothing at all: root was seeded on first
+    # boot and never touched again, so changing the secret and restarting left the
+    # old password working and the new one rejected — with no error anywhere to
+    # say so. Anyone who thought they had rotated a credential had not.
+    #
+    # Safe to reconcile on every boot because there is no way to change this
+    # password inside the app; the environment is the only source of truth for it.
+    if ROOT_PASSWORD and not hmac.compare_digest(
+            _hash(ROOT_PASSWORD, existing["pw_salt"]), existing["pw_hash"]):
+        salt = secrets.token_hex(16)
+        db._execute("UPDATE users SET pw_hash=?, pw_salt=? WHERE id=?",
+                    (_hash(ROOT_PASSWORD, salt), salt, existing["id"]))
+        print("[startup] root password updated from the environment")
 
 
 def create_user(username: str, password: str, is_root: bool = False) -> int:
@@ -67,13 +82,55 @@ def get_user(user_id: int) -> dict | None:
     return rows[0] if rows else None
 
 
+# Failed logins per username: [timestamps]. In memory, which is the right scope —
+# a restart clearing it is fine, because a restart is not something an attacker
+# can cause from the login form.
+_FAILED: dict[str, list[float]] = {}
+LOCKOUT_AFTER = int(config._env("LOGIN_LOCKOUT_AFTER", "8"))
+LOCKOUT_WINDOW = int(config._env("LOGIN_LOCKOUT_WINDOW", "300"))
+
+
+def locked_out(username: str) -> int:
+    """Seconds until this username may try again; 0 if it may try now."""
+    now = time.time()
+    tries = [t for t in _FAILED.get(username, []) if now - t < LOCKOUT_WINDOW]
+    _FAILED[username] = tries
+    if len(tries) < LOCKOUT_AFTER:
+        return 0
+    return int(LOCKOUT_WINDOW - (now - tries[0]))
+
+
 def verify(username: str, password: str) -> dict | None:
+    """Check a password, with a ceiling on how fast it can be guessed.
+
+    Unbounded attempts are only survivable behind a firewall. The moment this is
+    reachable from the internet the password becomes the entire security boundary,
+    and a boundary you can test a thousand times a second is not one.
+    """
+    if locked_out(username):
+        return None
     u = get_user_by_name(username)
     if not u:
+        # Record the attempt anyway: otherwise guessing USERNAMES is free, and
+        # "that account does not exist" is itself worth knowing to an attacker.
+        _FAILED.setdefault(username, []).append(time.time())
         return None
     if hmac.compare_digest(_hash(password, u["pw_salt"]), u["pw_hash"]):
+        _FAILED.pop(username, None)
         return u
+    _FAILED.setdefault(username, []).append(time.time())
     return None
+
+
+def password_is_weak(password: str) -> str:
+    """Why this password should not guard an internet-reachable control plane."""
+    if len(password) < 12:
+        return f"only {len(password)} characters — 12 is the practical minimum"
+    classes = sum(bool(__import__("re").search(p, password))
+                  for p in (r"[a-z]", r"[A-Z]", r"\d", r"[^A-Za-z0-9]"))
+    if classes < 3:
+        return "uses fewer than three character classes"
+    return ""
 
 
 def start_session(user_id: int) -> str:

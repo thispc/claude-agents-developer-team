@@ -169,6 +169,11 @@ def owned_project(project_id: int, request: Request) -> dict:
 
 @router.post("/api/login")
 def login(body: Login, response: Response) -> dict:
+    wait = auth.locked_out(body.username)
+    if wait:
+        # Say it plainly. A locked account that reports "wrong password" sends the
+        # owner hunting for a typo while an attacker learns nothing either way.
+        raise HTTPException(429, f"too many failed attempts — try again in {wait}s")
     u = auth.verify(body.username, body.password)
     if not u:
         raise HTTPException(401, "wrong username or password")
@@ -1004,7 +1009,8 @@ def health() -> dict:
         pass
     return {"ok": True, "launcher": config.LAUNCHER, "auth": config.auth_mode(),
             "github": bool(config.GITHUB_TOKEN) or config.DEMO_MODE,
-            "demo": config.DEMO_MODE, "stale_ui": stale_ui}
+            "demo": config.DEMO_MODE, "stale_ui": stale_ui,
+            "weak_password": auth.password_is_weak(auth.ROOT_PASSWORD)}
 
 
 @router.post("/api/suggest-team")

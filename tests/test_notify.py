@@ -181,3 +181,49 @@ def _async_ret(v):
     async def _f(*a, **k):
         return v
     return _f
+
+
+# ---- credentials must actually rotate -----------------------------------
+
+def test_changing_the_root_password_actually_changes_it(fresh_db, monkeypatch):
+    """It used to do nothing: root was seeded on first boot and never touched
+    again, so rotating the secret left the old password working and the new one
+    rejected, with no error anywhere to say so."""
+    from app import auth
+    assert auth.verify(auth.ROOT_USERNAME, "testpass")
+
+    monkeypatch.setattr(auth, "ROOT_PASSWORD", "a-much-longer-new-password")
+    auth.init()
+    assert auth.verify(auth.ROOT_USERNAME, "a-much-longer-new-password"), "rotation did nothing"
+    assert not auth.verify(auth.ROOT_USERNAME, "testpass"), "the old password still works"
+
+
+def test_login_locks_out_after_repeated_failures(fresh_db):
+    """Unbounded guessing is only survivable behind a firewall. The moment this is
+    reachable from the internet the password IS the security boundary."""
+    from app import auth
+    auth._FAILED.clear()
+    for _ in range(auth.LOCKOUT_AFTER):
+        auth.verify("root", "nope")
+    assert auth.locked_out("root") > 0
+    assert auth.verify("root", "testpass") is None, "correct password accepted while locked"
+    auth._FAILED.clear()
+
+
+def test_a_successful_login_clears_the_counter(fresh_db):
+    from app import auth
+    auth._FAILED.clear()
+    auth.verify("root", "nope")
+    assert auth.verify("root", "testpass")
+    assert auth.locked_out("root") == 0
+    auth._FAILED.clear()
+
+
+def test_guessing_usernames_is_not_free(fresh_db):
+    """Otherwise 'that account does not exist' is itself information worth having."""
+    from app import auth
+    auth._FAILED.clear()
+    for _ in range(auth.LOCKOUT_AFTER):
+        auth.verify("does-not-exist", "x")
+    assert auth.locked_out("does-not-exist") > 0
+    auth._FAILED.clear()

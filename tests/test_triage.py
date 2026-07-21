@@ -7,7 +7,9 @@ do, which is the property the whole thing rests on.
 
 import pytest
 
-from app import triage
+from conftest import make_project, make_task
+
+from app import db, triage
 
 
 # ---- the floor is deterministic ------------------------------------------
@@ -271,13 +273,43 @@ def test_staging_never_shares_productions_identity():
     assert '_set("ROOT_PASSWORD"' in body
 
 
-def test_staging_withholds_github_rather_than_using_the_real_repo():
-    """With no separate repo configured, no GitHub is safer than production's:
-    a staging bug must not be able to open pull requests against the real one."""
+def test_staging_shares_the_repo_but_not_the_power_to_merge():
+    """Withholding GitHub entirely was over-cautious and made staging useless.
+    Staging works on its own branches and opens PRs, so the repo is already
+    shared safely — branch namespacing is the isolation. What must be separate is
+    narrower: the ability to MERGE into the branch production builds from."""
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent / "conductor" / "app" / "cloud.py").read_text()
     body = src.split("def _staging_secret(")[1].split("\ndef ")[0]
-    assert 'data.pop("GITHUB_TOKEN", None)' in body
+    assert '_set("ALLOW_MERGE", "0")' in body, "staging could merge into main"
+    assert '_set("BRANCH_PREFIX", "staging/")' in body
+
+
+def test_a_no_merge_environment_actually_refuses_to_merge(fresh_db, monkeypatch):
+    """Enforced in the tool, not by prompt: "please do not merge" is a request,
+    this is a rule."""
+    import asyncio
+    from app import config as cfg, manager
+    monkeypatch.setattr(cfg, "ALLOW_MERGE", False)
+    p = make_project(owner_id=1, repo="o/r")
+    t = make_task(p, status="review")
+    manager.build_team_server(p)
+    out = str(asyncio.run(manager.HANDLERS[p]["handlers"]["merge_pr"]({"task_id": 1})))
+    assert "REFUSED" in out and "cannot merge" in out
+
+
+def test_branch_prefix_keeps_staging_work_identifiable(fresh_db, monkeypatch):
+    from app import config as cfg, db as _db
+    monkeypatch.setattr(cfg, "BRANCH_PREFIX", "staging/")
+    p = make_project(owner_id=1)
+    t = make_task(p)
+    assert _db.get_task(t)["branch"].startswith("staging/task/")
+
+
+def test_production_branches_are_unprefixed_by_default(fresh_db):
+    p = make_project(owner_id=1)
+    t = make_task(p)
+    assert db.get_task(t)["branch"].startswith("task/")
 
 
 def test_staging_has_its_own_namespace_and_volume():

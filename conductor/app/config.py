@@ -93,6 +93,15 @@ DB_PATH = str(Path(_env("DB_PATH", "devteam.db")) if Path(_env("DB_PATH", "devte
 # Never set this on a real instance — it makes the platform pretend to work.
 DEMO_MODE = _env("DEMO_MODE") == "1"
 
+# Staging opens pull requests but does not merge them: a branch is harmless, a
+# merge into the branch production builds from is not. Same repo, same account,
+# different power — which is what makes one shared repo safe for both.
+ALLOW_MERGE = _env("ALLOW_MERGE", "1") != "0"
+# Everything this instance pushes is prefixed, so staging work is identifiable at
+# a glance and cannot be mistaken for production's.
+BRANCH_PREFIX = _env("BRANCH_PREFIX", "")
+DEVTEAM_ENV = _env("DEVTEAM_ENV", "production")
+
 LAUNCHER = _env("LAUNCHER", "local")  # local | k8s
 WORKER_IMAGE = _env("WORKER_IMAGE", "devteam-worker:latest")
 K8S_NAMESPACE = _env("K8S_NAMESPACE", "devteam")
