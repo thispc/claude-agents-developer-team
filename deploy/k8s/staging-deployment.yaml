@@ -1,0 +1,34 @@
+# Staging: production's credentials, staging's identity.
+#
+# Its own database (emptyDir — thrown away with the pod, which is the
+# point), its own worker token, a run cap of 6, branch prefix staging/,
+# and ALLOW_MERGE=0 so it opens pull requests and never merges one.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: devteam-conductor, namespace: devteam-staging, labels: {app: devteam-conductor, devteam-env: staging}}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector: {matchLabels: {app: devteam-conductor}}
+  template:
+    metadata: {labels: {app: devteam-conductor}}
+    spec:
+      securityContext: {fsGroup: 10001, runAsUser: 10001, runAsGroup: 10001}
+      imagePullSecrets: [{name: docr-creds}]
+      containers:
+        - name: conductor
+          image: IMAGE  # set by envs/self-update; never pinned here, see TLS.md
+          envFrom: [{secretRef: {name: devteam-secrets}}]
+          env:
+            - {name: DB_PATH, value: /data/devteam.db}
+            - {name: WORKSPACES_DIR, value: /data/workspaces}
+            - {name: LAUNCHER, value: local}
+          resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {memory: 2Gi}}
+          volumeMounts: [{name: data, mountPath: /data}]
+          readinessProbe:
+            httpGet: {path: /api/health, port: 8000}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          emptyDir: {}
