@@ -11,11 +11,29 @@ path accepts a subscription OAuth token as well as an API key — the raw Messag
 API accepts only an API key, and most users here are on a subscription. OpenAI
 and Gemini are plain HTTPS calls; these are one-shot completions, not agent
 loops, so pulling in two more SDKs would buy nothing.
+
+The three vendors above are the ones this file knows by name. Everything else a
+user might own — a vLLM box on their own cluster, Ollama on a workstation, an
+Azure OpenAI deployment, a LiteLLM proxy in front of Bedrock — arrives as a
+*custom endpoint*: a base URL, an optional key, and a list of model ids. All of
+them are driven through `POST {base}/chat/completions` in OpenAI's request shape,
+which is the one wire format the whole ecosystem converged on. That is the entire
+reason this is cheap: no new client code per vendor, and a server that speaks the
+shape works the day it is configured rather than the day we get round to it.
+
+What that deliberately does NOT cover is anything whose *authentication* is not a
+static header. Bedrock's native runtime wants SigV4 request signing and Vertex
+wants a short-lived OAuth2 access token minted from a service account; neither is
+a string a user can paste into Settings and have keep working. Both are reachable
+here only through something that already terminates that auth — Bedrock's own
+OpenAI-compatible endpoint with a bearer API key, or a proxy the user runs. So
+this file makes them *configurable*, and says nothing about having tested them.
 """
 
 import asyncio
 import os
 import random
+import re
 from typing import Any
 
 import httpx
@@ -61,14 +79,101 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 
 TIMEOUT = 180
 
+# Custom endpoints live in the same per-user settings blob as the keys, under one
+# JSON list, and every provider id derived from one is prefixed. The prefix is
+# what keeps a user-supplied name from ever colliding with — or shadowing — a
+# built-in: someone who calls their Ollama box "openai" gets `custom:openai`, and
+# the real OpenAI keeps working.
+CUSTOM_SETTING = "custom_endpoints"
+CUSTOM_PREFIX = "custom:"
+
+# Header names we will send a key under. Bearer is the OpenAI convention that
+# almost everything copied; Azure OpenAI is the exception that matters, and it
+# wants the raw key under `api-key` with no scheme word.
+BEARER_HEADER = "Authorization"
+
 
 class ProviderError(RuntimeError):
     """A seat could not produce a turn. Carries a message safe to show the boss."""
 
 
-def catalog() -> list[dict]:
-    """Provider/model list for the seat picker, with the settings key each needs."""
-    return [{"id": name, **{k: v for k, v in p.items()}} for name, p in PROVIDERS.items()]
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (text or "").strip().lower()).strip("-")[:40]
+
+
+def _model_entry(raw: Any) -> dict | None:
+    """Accept `"llama-3.1-70b"` or `{"id": ..., "label": ...}`.
+
+    Users type model lists by hand and a bare string is what they type; refusing
+    it would make the common case the one that needs documentation.
+    """
+    if isinstance(raw, str):
+        return {"id": raw.strip(), "label": raw.strip()} if raw.strip() else None
+    if isinstance(raw, dict) and (raw.get("id") or "").strip():
+        return {"id": raw["id"].strip(), "label": (raw.get("label") or raw["id"]).strip()}
+    return None
+
+
+def normalise_endpoint(raw: dict) -> dict | None:
+    """One stored endpoint, in the shape the rest of this file assumes.
+
+    Returns None for anything without both an id and a base URL, because a
+    half-written endpoint in the catalog is worse than an absent one: it appears
+    in the picker, gets chosen, and fails at the moment work is dispatched.
+    """
+    if not isinstance(raw, dict):
+        return None
+    eid = _slug(raw.get("id") or raw.get("label") or "")
+    base = (raw.get("base_url") or "").strip().rstrip("/")
+    if not eid or not base:
+        return None
+    models = [m for m in (_model_entry(x) for x in (raw.get("models") or [])) if m]
+    return {
+        "id": eid,
+        "label": (raw.get("label") or eid).strip(),
+        "base_url": base,
+        "api_key": raw.get("api_key") or "",
+        "key_header": (raw.get("key_header") or BEARER_HEADER).strip() or BEARER_HEADER,
+        "models": models,
+    }
+
+
+def custom_endpoints(settings: dict | None) -> list[dict]:
+    """This user's own inference endpoints, bad rows dropped rather than raised."""
+    raw = (settings or {}).get(CUSTOM_SETTING) or []
+    if not isinstance(raw, list):
+        return []
+    return [e for e in (normalise_endpoint(r) for r in raw) if e]
+
+
+def endpoint(provider: str, settings: dict | None) -> dict | None:
+    """The endpoint behind a `custom:` provider id, or None if it isn't one."""
+    if not provider.startswith(CUSTOM_PREFIX):
+        return None
+    want = provider[len(CUSTOM_PREFIX):]
+    for e in custom_endpoints(settings):
+        if e["id"] == want:
+            return e
+    return None
+
+
+def catalog(settings: dict | None = None) -> list[dict]:
+    """Provider/model list for the seat picker, with the settings key each needs.
+
+    Custom endpoints are appended, never merged into the built-ins, and their keys
+    are not included — this answer goes to a browser.
+    """
+    out = [{"id": name, **{k: v for k, v in p.items()}} for name, p in PROVIDERS.items()]
+    for e in custom_endpoints(settings):
+        out.append({
+            "id": CUSTOM_PREFIX + e["id"],
+            "label": e["label"],
+            "custom": True,
+            "base_url": e["base_url"],
+            "key_setting": CUSTOM_SETTING,
+            "models": e["models"],
+        })
+    return out
 
 
 def available(settings: dict) -> list[str]:
@@ -80,6 +185,11 @@ def available(settings: dict) -> list[str]:
         out.append("openai")
     if settings.get("gemini_api_key"):
         out.append("google")
+    # A configured endpoint counts as available even with no key. Ollama and a
+    # plain vLLM server on a private network authenticate nobody, and demanding a
+    # key would make the commonest self-hosted case impossible to configure —
+    # exactly the users this exists for.
+    out += [CUSTOM_PREFIX + e["id"] for e in custom_endpoints(settings)]
     return out
 
 
@@ -90,7 +200,16 @@ def key_for(provider: str, settings: dict) -> str:
         return settings.get("openai_api_key", "")
     if provider == "google":
         return settings.get("gemini_api_key", "")
-    return ""
+    return (endpoint(provider, settings) or {}).get("api_key", "")
+
+
+def label_for(provider: str, settings: dict | None = None) -> str:
+    """A name to put in front of a user. Falls back to the id rather than to
+    nothing, so an error about an endpoint they deleted still says which one."""
+    if provider in PROVIDERS:
+        return PROVIDERS[provider]["label"]
+    ep = endpoint(provider, settings)
+    return ep["label"] if ep else provider
 
 
 # --------------------------------------------------------------------------
@@ -151,15 +270,22 @@ async def complete(provider: str, model: str, system: str, prompt: str,
     hands out freely on the free tier — permanently silenced a round-table seat, or
     dropped recruiting to the keyword heuristic, for a fault that clears in seconds.
     """
-    if provider not in PROVIDERS:
-        raise ProviderError(f"unknown provider {provider!r}")
-    if not key_for(provider, settings):
-        raise ProviderError(
-            f"no credentials for {PROVIDERS[provider]['label']} — add a key in Settings")
-    label = PROVIDERS[provider]["label"]
+    ep = endpoint(provider, settings)
+    if not ep and provider not in PROVIDERS:
+        # Says "no longer configured" rather than "unknown", because for a custom
+        # id the usual cause is an endpoint deleted out from under saved work — a
+        # round table or a set of release notes that still names it.
+        raise ProviderError(f"no provider or endpoint configured as {provider!r}")
+    label = label_for(provider, settings)
+    if not ep and not key_for(provider, settings):
+        raise ProviderError(f"no credentials for {label} — add a key in Settings")
 
     for attempt in range(RETRIES):
         try:
+            if ep:
+                return await _openai_compatible(
+                    ep["base_url"], ep["api_key"], ep["key_header"], model,
+                    system, prompt, max_tokens, label)
             if provider == "anthropic":
                 return await _anthropic(model, system, prompt, settings, max_tokens)
             if provider == "openai":
@@ -218,29 +344,78 @@ async def _anthropic(model: str, system: str, prompt: str, settings: dict,
     return text.strip()
 
 
-async def _openai(model: str, system: str, prompt: str, settings: dict,
-                  max_tokens: int) -> str:
-    key = settings["openai_api_key"]
+def chat_url(base_url: str) -> str:
+    """Where the chat-completions call goes for a given base URL.
+
+    Three shapes have to work, and the difference between them is not something a
+    user should have to reason about:
+
+    - `https://box.internal/v1` — vLLM, Ollama, LiteLLM. Append the path.
+    - `https://x.openai.azure.com/openai/deployments/gpt4o?api-version=2024-10-21`
+      — Azure carries the deployment in the path and the version in the query.
+      Appending naively would put `/chat/completions` after the query string and
+      produce a URL that 404s, so the query is detached and reattached.
+    - a full `.../chat/completions` someone pasted from a curl example. Appending
+      again would give `/chat/completions/chat/completions`.
+    """
+    base, sep, query = base_url.partition("?")
+    base = base.rstrip("/")
+    if not base.endswith("/chat/completions"):
+        base += "/chat/completions"
+    return base + sep + query
+
+
+def auth_headers(key: str, header: str = BEARER_HEADER) -> dict[str, str]:
+    """No key means no header at all — sending `Authorization: Bearer ` is not the
+    same as sending nothing, and some servers reject the empty credential rather
+    than treating the request as anonymous."""
+    if not key:
+        return {}
+    if header.lower() == BEARER_HEADER.lower():
+        return {BEARER_HEADER: f"Bearer {key}"}
+    return {header: key}
+
+
+async def _openai_compatible(base_url: str, key: str, key_header: str, model: str,
+                             system: str, prompt: str, max_tokens: int,
+                             label: str) -> str:
     body: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": prompt}],
     }
-    # The reasoning models reject temperature and rename the token budget.
+    # The reasoning models reject temperature and rename the token budget. Keyed on
+    # the model id rather than the host, because these ids reach us through Azure
+    # deployments and proxies too, where the URL says nothing about the model.
     if model.startswith(("o1", "o3", "o4", "gpt-5")):
         body["max_completion_tokens"] = max_tokens
     else:
         body["max_tokens"] = max_tokens
         body["temperature"] = 0.7
     async with httpx.AsyncClient(timeout=TIMEOUT) as c:
-        r = await c.post("https://api.openai.com/v1/chat/completions",
-                         headers={"Authorization": f"Bearer {key}"}, json=body)
+        r = await c.post(chat_url(base_url), headers=auth_headers(key, key_header),
+                         json=body)
         r.raise_for_status()
         data = r.json()
-    text = (data["choices"][0]["message"].get("content") or "").strip()
+    try:
+        text = (data["choices"][0]["message"].get("content") or "").strip()
+    except (KeyError, IndexError, TypeError):
+        # A 200 whose body is not a chat completion is the signature of a base URL
+        # pointing at something else entirely — a dashboard, a proxy's landing
+        # page. Saying so beats a KeyError the user cannot act on.
+        raise ProviderError(
+            f"{label} answered, but not with an OpenAI-shaped completion — check "
+            f"the base URL points at the API root")
     if not text:
-        raise ProviderError("OpenAI returned an empty response")
+        raise ProviderError(f"{label} returned an empty response")
     return text
+
+
+async def _openai(model: str, system: str, prompt: str, settings: dict,
+                  max_tokens: int) -> str:
+    return await _openai_compatible("https://api.openai.com/v1",
+                                    settings["openai_api_key"], BEARER_HEADER,
+                                    model, system, prompt, max_tokens, "OpenAI")
 
 
 async def _google(model: str, system: str, prompt: str, settings: dict,

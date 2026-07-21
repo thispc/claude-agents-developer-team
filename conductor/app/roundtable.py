@@ -130,10 +130,21 @@ def _synth_prompt(brief: str, transcript: str) -> str:
         '  "open_questions": ["things the boss should decide"],\n'
         '  "strongest_objection": "the best surviving criticism, and whether it was answered",\n'
         '  "milestones": ["ordered, buildable steps"],\n'
-        '  "team": [{"role": "snake_case_role", "count": 1, "why": "..."}]\n'
+        '  "team": [{"role": "snake_case_role", "count": 1, "why": "...",\n'
+        '             "persona": "how this person should work and what they should '
+        'care about, written as instructions to them",\n'
+        '             "from_seat": "the name of the seat whose perspective this role '
+        'carries, or \\"\\" if none"}]\n'
         "}\n"
         "Roles should fit the domain — do not default to backend/frontend/tester "
-        "unless this is genuinely that kind of project."
+        "unless this is genuinely that kind of project.\n\n"
+        "The personas matter as much as the roles. This deliberation worked out what "
+        "kind of judgement the work needs — a seat that kept insisting on failure "
+        "modes, or on shipping something small first, was right about this project "
+        "specifically. Write that into the persona of whoever will do the building, "
+        "so the argument survives into the work instead of ending with the blueprint. "
+        "A persona is standing instructions about judgement and priorities, not a "
+        "restatement of the role name."
     )
 
 

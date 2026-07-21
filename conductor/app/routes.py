@@ -9,8 +9,8 @@ from pydantic import BaseModel
 
 from . import (artifacts, auth, blockers, bus, cloud, config, credcheck, db, deploy,
                envs, findings, github_client, launcher, manager, metrics, notify,
-               planner, preview, providers, roundtable, sandbox, scheduler, selfops,
-               team, triage, tuning, upkeep)
+               planner, preview, process, providers, roundtable, sandbox, scheduler,
+               selfops, team, triage, tuning, upkeep)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -38,6 +38,10 @@ class NewProject(BaseModel):
     manager_model: str = ""
     manager_persona: str = ""
     sprints: int = 1
+    # agile | waterfall. Unset means agile, which is what the platform was already
+    # doing badly — planning in one pass with dependencies wired by role is
+    # waterfall in everything but name, and it was never a choice anyone made.
+    process: str = ""
 
 
 class BriefOnly(BaseModel):
@@ -1253,6 +1257,8 @@ async def create_project(body: NewProject, request: Request) -> dict:
         owner_id=(owner["id"] if owner else 0),
         sprints=sprints,
     )
+    db._execute("UPDATE projects SET process=? WHERE id=?",
+                (process.normalise(body.process), project_id))
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
     team.hire(project_id, roster)
     if scaled:

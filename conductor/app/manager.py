@@ -22,7 +22,7 @@ from claude_agent_sdk import (
     tool,
 )
 
-from . import bus, config, db, github_client, review, scheduler, team, tuning
+from . import bus, config, db, github_client, process, review, scheduler, team, tuning
 
 
 def role_catalog_text(project: dict) -> str:
@@ -979,6 +979,7 @@ async def run_manager(project_id: int) -> None:
         f"{autonomy_text}\n"
         f"{role_catalog_text(project)}\n"
         f"{roster_text}\n"
+        f"{process.guidance(project)}\n"
         f"Brief from the user:\n{project['brief']}\n\n"
         "Plan the work, run your team, and ship it. This may be a restarted session: "
         "call status first, and only create_tasks if none exist yet."
