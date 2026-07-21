@@ -34,6 +34,9 @@ spec:
       # Without this the pod runs as 'default', which cannot read or patch its own
       # Deployment — so self-repair reaches the last step and fails with Forbidden.
       serviceAccountName: devteam-conductor
+      # The image runs as uid 10001; without fsGroup the mounted volume stays
+      # root-owned and the database cannot be created.
+      securityContext: {fsGroup: 10001, runAsUser: 10001, runAsGroup: 10001}
       imagePullSecrets: [{name: docr-creds}]
       containers:
         - name: conductor

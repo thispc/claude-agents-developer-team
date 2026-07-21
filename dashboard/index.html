@@ -380,29 +380,46 @@
 
     <!-- Step 3: control level + go -->
     <div id="step3" class="wizard-step" hidden>
-      <h3 class="ctl-h">How much control does your manager have?</h3>
+      <!-- Three questions, each phrased as the consequence rather than the setting.
+           "How much control does your manager have?" put the reader in the wrong
+           frame: the real question is what happens while they are not watching. -->
+      <h3 class="ctl-h">When it hits a decision, what should it do?</h3>
       <div class="autonomy-cards">
         <label class="acard">
           <input type="radio" name="autonomy" value="supervised" checked>
-          <div><b>🧑‍💼 Keep me in the loop</b><span>The manager asks you before merging important work and before finishing. You approve the big calls.</span></div>
+          <div>
+            <b>Ask me</b>
+            <span>Stops for approval before merging real work and before finishing.
+              You will get questions; the run waits for you.</span>
+            <em class="acard-when">Choose this while you still want to see what it does.</em>
+          </div>
         </label>
-        <label class="acard danger-card">
+        <label class="acard">
           <input type="radio" name="autonomy" value="autonomous">
-          <div><b>⚡ Full autonomy <em>(bypass — hands off)</em></b><span>The manager decides everything and only interrupts you if truly stuck. Fast, but you won't be asked to approve.</span></div>
+          <div>
+            <b>Decide without me</b>
+            <span>Merges, plans and finishes on its own. Only interrupts you if it is
+              genuinely stuck and cannot proceed.</span>
+            <em class="acard-when">Choose this to leave it running overnight.</em>
+          </div>
         </label>
       </div>
-      <h3 class="ctl-h">How many sprints should it run?</h3>
-      <p class="ctl-sub">One sprint = decide what to build, build it, verify it, ship it.
-        After each one the manager reviews what exists, decides for itself what the
-        product still needs, and starts the next — <b>without asking you</b>. Ask for
-        several and you come back to a finished product, not a first draft.</p>
-      <div class="nums">
-        <label>Sprints <span class="hint">1 = a single pass</span>
-          <input name="sprints" type="number" min="1" max="20" value="1"></label>
-        <label>Agent-run cap <span class="hint">scales with sprints automatically</span>
-          <input name="max_runs" type="number" min="5" max="400" value="40"></label>
+
+      <h3 class="ctl-h">How many times should it come back and improve the product?</h3>
+      <div class="sprint-row">
+        <div class="sprint-pick">
+          <div class="sprint-chips" id="sprintChips">
+            <button type="button" class="schip active" data-n="1">1</button>
+            <button type="button" class="schip" data-n="3">3</button>
+            <button type="button" class="schip" data-n="6">6</button>
+            <button type="button" class="schip" data-n="10">10</button>
+          </div>
+          <input name="sprints" type="number" min="1" max="20" value="1" hidden>
+          <input name="max_runs" type="number" min="5" max="400" value="40" hidden>
+        </div>
+        <p class="sprint-says" id="sprintSays"></p>
       </div>
-      <h3 class="ctl-h">Who is your manager?</h3>
+<h3 class="ctl-h">Who is your manager?</h3>
       <div class="nums">
         <label>Manager's brain <span class="hint">stronger = better judgment</span>
           <select name="manager_model">

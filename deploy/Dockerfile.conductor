@@ -26,6 +26,21 @@ ARG DEVTEAM_IMAGE=""
 ENV DEVTEAM_COMMIT=$DEVTEAM_COMMIT \
     DEVTEAM_IMAGE=$DEVTEAM_IMAGE
 
+# Run as a non-root user.
+#
+# Not a hardening nicety — a hard requirement. The Claude Agent SDK launches the
+# CLI with --dangerously-skip-permissions, and the CLI REFUSES that flag for uid
+# 0: "cannot be used with root/sudo privileges for security reasons". As root
+# every agent call fails, so the manager never plans, recruiting silently falls
+# back to the keyword heuristic, and projects error out with nothing in the UI
+# explaining why. The container ran as root by default, so this affected every
+# agent in the cloud.
+RUN useradd --create-home --uid 10001 devteam \
+    && mkdir -p /data /home/devteam/.claude \
+    && chown -R devteam:devteam /app /data /home/devteam
+USER devteam
+ENV HOME=/home/devteam
+
 ENV AGENTS_DIR=/app/agents \
     DASHBOARD_DIR=/app/dashboard \
     WORKER_SCRIPT=/app/worker/worker.py \

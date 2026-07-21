@@ -297,7 +297,7 @@ async function loadProjects() {
     const opt = document.createElement("option");
     opt.value = p.id;
     opt.dataset.repo = p.repo || "";
-    opt.textContent = `#${p.id} ${p.name} [${p.status}]`;
+    opt.textContent = `${p.name} — ${p.status}`;
     sel.appendChild(opt);
   }
   if (currentProject) sel.value = currentProject;
@@ -308,7 +308,7 @@ function renderHome(projects) {
   const body = $("#projectsBody");
   body.innerHTML = "";
   $("#homeEmpty").hidden = projects.length > 0;
-  for (const p of projects) {
+  projects.forEach((p, idx) => {
     const tr = document.createElement("tr");
     const cls = STATUS_CLASS[p.status] || "";
     const label = STATUS_LABEL[p.status] || p.status;
@@ -322,7 +322,10 @@ function renderHome(projects) {
     const canRestart = ["failed", "review", "cancelled"].includes(p.status);
     if (p.is_self) tr.className = "self-row";
     tr.innerHTML = `
-      <td>${p.id}</td>
+      <!-- A position in YOUR list, not the database id. The platform's own
+           project takes row 1 and is hidden from this table, so the first
+           project anyone creates showed up as "2" and looked like a bug. -->
+      <td>${idx + 1}</td>
       <td class="pname">${escapeHtml(p.name)}${p.is_self
         ? ` <span class="self-tag" title="This project is the platform you are using right now">⟲ this platform</span>` : ""}</td>
       <td>${repoCell}</td>
@@ -338,7 +341,7 @@ function renderHome(projects) {
       </td>`;
     tr.addEventListener("click", () => openProject(p.id));
     body.appendChild(tr);
-  }
+  });
   body.querySelectorAll(".row-actions button").forEach((b) =>
     b.addEventListener("click", async (ev) => {
       ev.stopPropagation();
@@ -2813,6 +2816,7 @@ const openDialog = () => {
   $("#roster").innerHTML = "";
   showStep(1);
   dialog.showModal();
+  wireSprintChips();
 };
 $("#projectSelect").addEventListener("change", (e) => selectProject(e.target.value));
 $("#homeLink").addEventListener("click", () => showHome());
@@ -2941,6 +2945,32 @@ $("#toRecruitBtn").addEventListener("click", async () => {
     renderRoster(team);
   }, 450);
 });
+// The sprint count is the setting people most misjudge, because "6" says nothing
+// about what six means. Say the consequence in runs and rough wall-clock instead.
+function wireSprintChips() {
+  const chips = document.querySelectorAll("#sprintChips .schip");
+  const n = document.querySelector('#step3 [name=sprints]');
+  const cap = document.querySelector('#step3 [name=max_runs]');
+  const says = $("#sprintSays");
+  if (!chips.length || !n || !says) return;
+  const paint = () => {
+    const v = Number(n.value) || 1;
+    cap.value = Math.min(400, 40 * v);
+    const hrs = v * 1.5;
+    says.innerHTML = v === 1
+      ? `<b>One pass.</b> It plans, builds and verifies once, then stops and shows you
+         the result. Up to <b>${cap.value} agent runs</b>.`
+      : `<b>${v} rounds.</b> After each one it looks at what exists, decides for itself
+         what is still missing, and starts again — <b>without asking you</b>. Up to
+         <b>${cap.value} agent runs</b>, roughly <b>${hrs < 24 ? hrs + "h" : Math.round(hrs/24) + " days"}</b>
+         of unattended work.`;
+    chips.forEach((c) => c.classList.toggle("active", Number(c.dataset.n) === v));
+  };
+  chips.forEach((c) => c.addEventListener("click", () => { n.value = c.dataset.n; paint(); }));
+  n.addEventListener("input", paint);
+  paint();
+}
+
 $("#closeDialogBtn").addEventListener("click", () => dialog.close());
 dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
 $("#cancelBtn").addEventListener("click", async () => {

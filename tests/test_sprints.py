@@ -285,3 +285,36 @@ def test_a_single_sprint_project_is_not_scaled(root_client, fresh_db):
 def test_scaling_is_bounded(root_client, fresh_db):
     r = root_client.post("/api/projects", json={"name": "many", "brief": "b", "sprints": 20})
     assert db.get_project(r.json()["id"])["max_runs"] <= 400
+
+
+# ---- the wizard has to be answerable without knowing the internals --------
+
+def test_the_project_list_numbers_rows_not_database_ids():
+    """The platform's own project takes row 1 and is hidden from the table, so
+    the first project anyone created appeared as "2" and looked like a bug."""
+    from pathlib import Path
+    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    rows = js.split('body.innerHTML = "";', 1)[1][:1400]
+    assert "${idx + 1}" in rows
+    assert "<td>${p.id}</td>" not in rows
+
+
+def test_the_autonomy_choice_says_when_to_pick_each():
+    """Marking one option red and calling it "bypass" reads as a warning, not a
+    choice — so nobody could tell which one they actually wanted."""
+    from pathlib import Path
+    html = (Path(__file__).resolve().parent.parent / "dashboard" / "index.html").read_text()
+    step = html.split('id="step3"', 1)[1].split("Who is your manager?")[0]
+    assert "acard-when" in step
+    assert "danger-card" not in step, "one option is still styled as a hazard"
+    assert "overnight" in step
+
+
+def test_the_sprint_count_explains_what_it_costs():
+    """"6" says nothing about what six means. The consequence is runs and hours."""
+    from pathlib import Path
+    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    assert "wireSprintChips" in js
+    block = js.split("function wireSprintChips(", 1)[1][:1200]
+    assert "agent runs" in block and "unattended" in block
+    assert "cap.value = Math.min(400, 40 * v)" in block, "the cap must track the count"
