@@ -229,6 +229,27 @@ function showStaleBanner() {
   document.body.prepend(el);
 }
 
+// A JavaScript error was only ever visible to someone with DevTools open —
+// which, on a platform meant to run unattended, is nobody. Report it once per
+// distinct message so a render loop cannot hammer the endpoint.
+const _reported = new Set();
+function reportClientError(message, stack, url) {
+  const key = String(message).slice(0, 200);
+  if (_reported.has(key) || _reported.size > 20) return;
+  _reported.add(key);
+  fetch("/api/client-error", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message: String(message).slice(0, 500),
+                           stack: String(stack || "").slice(0, 1500),
+                           url: location.hash || location.pathname }),
+  }).catch(() => { /* if reporting fails, stay quiet: never a loop */ });
+}
+window.addEventListener("error", (e) =>
+  reportClientError(e.message, e.error && e.error.stack, e.filename));
+window.addEventListener("unhandledrejection", (e) =>
+  reportClientError("unhandled promise rejection: " + (e.reason && e.reason.message || e.reason),
+                    e.reason && e.reason.stack));
+
 async function loadHealth() {
   try {
     const h = await api("/api/health");

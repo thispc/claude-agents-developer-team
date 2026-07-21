@@ -6,7 +6,7 @@ from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSoc
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from . import (auth, blockers, bus, cloud, config, credcheck, db, deploy,
+from . import (auth, blockers, bus, cloud, config, credcheck, db, deploy, notify,
                envs, github_client, launcher, manager, planner, preview, providers,
                roundtable, sandbox, scheduler, selfops)
 
@@ -735,6 +735,33 @@ def envs_promote(body: EnvTag, request: Request) -> dict:
         raise HTTPException(400, r.get("error", "promotion failed"))
     bus.emit(0, None, "system", "promoted", {"tag": r["tag"], "from": r.get("previous")})
     return r
+
+
+class ClientError(BaseModel):
+    message: str
+    stack: str = ""
+    url: str = ""
+
+
+@router.post("/api/client-error")
+async def client_error(body: ClientError, request: Request) -> dict:
+    """A JavaScript error in the dashboard, reported by the page itself.
+
+    Console errors were invisible to everyone but whoever had DevTools open —
+    which, on an unattended platform, is nobody. A broken button stayed broken
+    until a human happened to click it.
+    """
+    u = auth.user_for_token(request.cookies.get("devteam_session"))
+    return await notify.report_error(
+        "dashboard error", f"{body.message}\n{body.stack[:1200]}",
+        {"page": body.url[:200], "user": (u or {}).get("username", "anonymous")})
+
+
+@router.get("/api/notify/status")
+def notify_status(request: Request) -> dict:
+    """So "no notifications" is provably "nothing broke", not "it is broken"."""
+    _root(request)
+    return notify.status()
 
 
 @router.get("/api/self/instance")

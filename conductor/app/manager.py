@@ -121,6 +121,14 @@ def sprint_gate(project_id: int, summary: str = "") -> str:
     bus.emit(project_id, None, "manager", "sprint_finished",
              {"sprint": n - 1, "of": p["sprints"], "delivered": len(shipped),
               "summary": summary[:400]})
+    # "Six sprints ran overnight, here is what came out" is the whole reason for
+    # asking for six sprints. Fire and forget — a digest must never block delivery.
+    try:
+        import asyncio as _a
+        from . import notify
+        _a.get_event_loop().create_task(notify.sprint_digest(project_id, n - 1))
+    except Exception:
+        pass
     delivered = "; ".join(f"#{t['seq']} {t['title']}" for t in shipped[:12]) or "nothing"
     return (
         f"SPRINT {n - 1} OF {p['sprints']} IS COMPLETE — do NOT finish the project.\n"
@@ -876,6 +884,15 @@ async def run_manager(project_id: int) -> None:
         db.abandon_questions(project_id)   # nothing is waiting on them now
         bus.emit(project_id, None, "manager", "error", detail)
         db.set_project_status(project_id, "failed", f"manager session failed: {detail[:400]}")
+        # The project is now dead and nothing else will move it. Unattended, this
+        # is the fault that costs a whole night, so it is the one worth waking for.
+        try:
+            from . import notify
+            await notify.report_error("manager crashed", detail,
+                                      {"project": project.get("name", "?"),
+                                       "project_id": project_id})
+        except Exception:
+            pass
         return
     finally:
         db.abandon_questions(project_id)   # session over — clear any unanswered ask
