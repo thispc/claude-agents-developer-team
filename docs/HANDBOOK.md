@@ -136,6 +136,135 @@ as a dependency rather than pretended to be parallel work.
 
 ---
 
+## Under the bonnet
+
+Everything above is true without knowing any of this. This is for someone who
+needs to evaluate, host or extend it.
+
+### What "the conductor" actually is
+
+One program: a Python web server of roughly 5,000 lines doing five jobs and no
+others.
+
+- **Serves the dashboard.** Plain HTML, CSS and JavaScript read off disk. No
+  build step, no framework — edit a file and reload.
+- **Answers the API.** Every action in the dashboard is a request to it.
+- **Holds the records.** A single *SQLite* file — a whole database in one file,
+  with no separate database server to install or maintain.
+- **Runs the manager.** The manager's AI session lives inside this process.
+- **Starts and stops teammates.** Each is a separate program, launched and watched.
+
+Deliberately one process rather than a set of services. A system where the
+scheduler, the API and the records are three programs that must find each other
+over a network has three ways to be half-running. This has one: it is up or it
+is not.
+
+### The API, in families
+
+An *API* is the list of requests a program will answer. There are 107; the
+dashboard uses them for you.
+
+| Family | Example | For |
+|---|---|---|
+| Projects | `/api/projects` | Create, list, cancel, restart, set budget and autonomy |
+| Tasks & activity | `/api/projects/1/events` | Live feed, task detail, raw agent logs |
+| The team | `/api/projects/1/team` | Who is on it; change a personality or model |
+| Talking to the manager | `/api/projects/1/directive` | Instructions, answers, notes on specific work |
+| Output | `/api/projects/1/artifacts` | What was produced, per sprint and per teammate |
+| Measurement | `/api/projects/1/metrics` | First-attempt acceptance, rework, cost per delivered task |
+| Settings | `/api/tuning` | The dials governing behaviour; keys and endpoints |
+| Deployment | `/api/projects/1/deploy` | Run an app, preview a branch, roll back |
+| Self-repair | `/api/self/…` | Findings, staging, update, rollback. Owner only |
+| Health | `/api/health` | Answers only if the database answers. Watched from outside |
+
+### Three doors, three different keys
+
+| Door | Who gets in | Why separate |
+|---|---|---|
+| `/api/…` | You, signed in | Normal use. Limited login attempts, surviving restarts |
+| `/internal/…` | Teammates, shared token | Three requests only: report work, post activity, look up a colleague. A teammate is not a user |
+| `/api/health` | Anyone | A monitor that had to sign in could not report that signing in was broken |
+
+### The live feed
+
+One long-lived connection — a *WebSocket*, which unlike a normal request stays
+open so the server can speak first. Every event is also written to the database,
+so nothing depends on you having been watching.
+
+### What the database holds
+
+Eighteen tables in one file. The ones worth knowing: **projects** and **tasks**
+(the work), **agents** (teammates and their memory), **runs** (one row per AI
+task — the source of all measurement), **events** (the permanent activity
+record), **findings** (what the platform believes is wrong with itself),
+**sprint_artifacts** (the sealed record of each round), **feedback** (your notes,
+attached to specific work), **tuning** (the dials, changeable without rebuilding).
+
+### Where things run
+
+| Shape | Where | What is isolated |
+|---|---|---|
+| Local | A program on your laptop | Nothing — real records, real keys |
+| Sandbox | A second program on your laptop | Own records; every credential blanked |
+| Staging | Its own space on the cluster | Own records and address; real keys, cannot approve its own changes |
+| Production | Its own space on the cluster | Own storage, real credentials. The live system |
+
+The sandbox is not a miniature cluster — it is one extra copy of the program on
+the same machine, records replaced with fake ones and credentials *blanked, not
+removed*, because a program inherits its parent's settings and an unset key would
+fall through to the real one.
+
+### The network path
+
+```
+your browser
+    │  HTTPS
+    ▼
+load balancer ......... one public address, the priciest line on the bill
+    │
+    ▼
+traffic router ........ reads the web address you asked for
+    ├── devteam.…  ──►  production space
+    └── staging.…  ──►  staging space
+                            │
+                            ▼
+                   the conductor, plus every teammate
+                            │
+              ┌─────────────┴─────────────┐
+              ▼                           ▼
+     permanent storage            outbound only:
+     records + working copies     AI providers, your repository
+```
+
+- **One public entrance**, shared by both environments, which is why staging
+  costs almost nothing to keep running.
+- **A router decides where to go** from the web address. Adding an environment
+  costs nothing extra.
+- **Encryption is automatic** — certificates renew unattended, and you are
+  emailed if one is close to expiring.
+- **Traffic only goes outward.** Nothing on the internet can start a conversation
+  with a teammate.
+- **Storage outlives the program.** Updating the software does not touch data.
+
+The public entrance means the sign-in page is internet-reachable, which makes
+your password the entire security boundary. Attempts are limited and the limit
+survives restarts, but the password itself is the thing to take seriously.
+
+### How an update reaches the server
+
+Code is packaged into a *container image* — a frozen copy of the program and
+everything it needs, identified by a fingerprint of its own contents. Two builds
+of identical code produce the same identity, so "is this the version I tested?"
+has a real answer rather than a guess from timestamps.
+
+The image is uploaded to a private registry, tried on staging, run once as a
+canary with no traffic, and only then does the live system switch to it. The
+switch changes one thing — which version runs — rather than re-applying the whole
+configuration, because re-applying has been observed to quietly roll the system
+back to whatever version the configuration file happened to name.
+
+---
+
 ## How the manager decides
 
 Grounded in published research on multi-agent AI performance rather than in
@@ -267,11 +396,21 @@ you it has crashed.
 | Disk space limits | Accumulated code copies filling the disk and stopping everything |
 
 **One honest caveat.** Teammates run with broad permissions inside their own copy
-of the code — they must run commands to build and test. On a properly configured
-server each is boxed into an isolated container. On a laptop that boundary is
-weaker: a teammate is a program on your machine with your files reachable. A
-deliberate trade, and the right one for the tool to be useful, but worth knowing
-rather than discovering.
+of the code — they must run commands to build and test.
+
+Be precise about how much separation that copy gives, because the intuitive
+answer is wrong. **As deployed today a teammate is a separate *process*, not a
+separate sealed box.** Every teammate runs inside the same container as the
+conductor, sharing its filesystem and memory allowance. They cannot overwrite
+each other's work, because each gets its own directory — but a teammate that went
+badly wrong could read the database file or another teammate's directory.
+
+The stronger arrangement is built: each teammate in its own sealed box, scheduled
+separately. It is a configuration change, not new work. It is not what runs,
+because one shared box is simpler and has been sufficient — and that should be a
+decision made knowingly rather than inherited from a document that implied
+otherwise. **The boundary that is real today is around the whole system, not
+between teammates.**
 
 ---
 
@@ -341,3 +480,8 @@ confirm the things you thought to check; running it for real finds the rest.
 | **Staging** | A full second copy used to try changes before they reach real users |
 | **Test suite** | Automated checks that the software still works. Run by the platform, not the AI |
 | **Version control** | The system storing code and remembering every change and who made it |
+| **API** | The list of requests a program will answer |
+| **Container image** | A frozen, complete copy of a program, identified by a fingerprint of its contents |
+| **Load balancer** | The single public entrance accepting traffic from the internet |
+| **SQLite** | A complete database kept in one file, with no server to maintain |
+| **WebSocket** | A connection that stays open so the server can send without being asked |

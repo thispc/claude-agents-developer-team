@@ -32,6 +32,7 @@
     <button id="bellBtn" title="Requests waiting on you">🔔<span id="bellCount" hidden>0</span></button>
     <div id="bellPanel" hidden></div>
   </div>
+  <button id="aboutBtn" title="What this is and how it works">?</button>
   <button id="settingsBtn" title="Your GitHub & API keys">⚙</button>
   <button id="logoutBtn" title="Sign out">⏻</button>
 </header>
@@ -148,6 +149,171 @@
   </div>
 
   <div id="blueprintPanel" hidden></div>
+</section>
+
+<!-- The About page is a DOCUMENT, so it deliberately breaks the app's typographic
+     register: a serif reading column instead of the UI sans used everywhere else.
+     The colour system is the same one, including the rule that brick means a human
+     is involved. -->
+<section id="aboutPage" hidden>
+  <article class="doc">
+    <header class="doc-head">
+      <p class="doc-eyebrow">Handbook</p>
+      <h2>What this is, and how it works</h2>
+      <p class="doc-standfirst">You describe what you want built. A manager plans it,
+        hires a team, and the team writes the code — on your accounts, on your
+        servers, in your version control. No coding knowledge assumed.</p>
+    </header>
+
+    <h3>The idea in one paragraph</h3>
+    <p>Imagine hiring a small software agency. A manager reads your brief, works out
+      the pieces, and hands each person a task. They go away, write the code, test it,
+      and submit it for review. The manager checks the work, sends back what is not
+      good enough, and approves what is. <strong>devteam is that agency, staffed by
+      AI.</strong> Not one chatbot playing every part — genuinely separate programs
+      running at once, each with its own instructions and its own copy of the code,
+      coordinating through tasks, handover notes, reviews and pull requests.</p>
+
+    <h3>Why everything is yours</h3>
+    <p>It runs on your machine or your cloud account, spends your AI credits, and
+      pushes to your code repository. There is no hosted service and no account to
+      sign up for. Each user's agents run on that user's own credentials — the
+      software refuses to spend one person's key on another person's work.</p>
+
+    <h3>Who is on the team</h3>
+    <dl class="doc-cast">
+      <div><dt>You</dt><dd><span class="doc-tag human">human</span>Write the brief, answer when asked, decide what ships.</dd></div>
+      <div><dt>The manager</dt><dd><span class="doc-tag">AI</span>Plans the work, assigns it, reviews it, decides. Deliberately cannot write code.</dd></div>
+      <div><dt>The teammates</dt><dd><span class="doc-tag">AI</span>Named people with a job, a personality and a memory of what they have built here.</dd></div>
+      <div><dt>The scheduler</dt><dd><span class="doc-tag plain">ordinary software</span>Decides what can start now. No AI, so it costs nothing to run.</dd></div>
+      <div><dt>The round table</dt><dd><span class="doc-tag">AI</span>Optional. Models from different companies argue about your idea before anyone builds.</dd></div>
+    </dl>
+
+    <h3>Why the manager cannot write code</h3>
+    <p>The manager can only create tasks, read reports, ask questions, send work back
+      and approve things. It physically cannot open a file or run a command.</p>
+    <p>An AI that can both assign work and do the work will, under pressure, quietly
+      do the work itself and report that the team delivered it. That is not
+      hypothetical — it happened during development, and the manager reported
+      completed work nobody had built. Removing the ability removes the temptation.</p>
+
+    <h3>What happens between your brief and a pull request</h3>
+    <ol class="doc-steps">
+      <li><strong>The manager plans.</strong> Your brief becomes concrete tasks, recording which must wait for others. Unrelated work runs side by side.</li>
+      <li><strong>The team is hired.</strong> Roles become named people with personalities.</li>
+      <li><strong>Tasks are handed out.</strong> Whatever is unblocked starts. When it cannot start everything, it starts whatever is holding up the most other work.</li>
+      <li><strong>A teammate builds.</strong> Their own private copy of the code, plus handover notes from whoever they build on top of.</li>
+      <li><strong>The platform runs the tests — not the AI.</strong> The raw result is recorded before the AI writes its summary.</li>
+      <li><strong>The work is reviewed.</strong> Test result first, write-up second. Teammates can review independently; the manager sees the disagreement, not a verdict.</li>
+      <li><strong>Approved or sent back.</strong> Approved work becomes a pull request. Two failures escalate to a stronger model.</li>
+    </ol>
+
+    <div class="doc-note">
+      <span class="doc-note-label">The single most important safeguard</span>
+      <p>Tests are run by the plain, non-AI part of the system, and the exit code is
+        recorded before any AI describes what it did. Without that you have only the
+        AI's word that it works, and AIs will describe broken code in glowing terms.
+        With it, the manager judges evidence rather than a claim.</p>
+    </div>
+
+    <h3>What the machine is made of</h3>
+    <p>Six pieces, and only two of them cost money to run.</p>
+    <table class="doc-table">
+      <thead><tr><th>Piece</th><th>What it does</th><th>Costs money?</th></tr></thead>
+      <tbody>
+        <tr><td>Dashboard</td><td>This page. Plain files read off disk — no build step.</td><td>No</td></tr>
+        <tr><td>Conductor</td><td>One web server: serves the dashboard, answers the API, holds the records, runs the manager, starts teammates.</td><td>No</td></tr>
+        <tr><td>Records</td><td>A single database file — no separate database server to maintain.</td><td>No</td></tr>
+        <tr><td>Scheduler</td><td>Decides what starts when and notices stalled work.</td><td>No</td></tr>
+        <tr><td>Manager</td><td>The AI that plans and supervises.</td><td>Yes</td></tr>
+        <tr><td>Teammates</td><td>Separate programs that write the code.</td><td>Yes</td></tr>
+      </tbody>
+    </table>
+    <p><strong>AI is used for judgement; ordinary software for bookkeeping.</strong>
+      Which tasks can start and who is free is arithmetic — asking an AI would cost
+      money on every check and occasionally be wrong in a way that is hard to spot.</p>
+
+    <h3>Three doors, three different keys</h3>
+    <table class="doc-table">
+      <thead><tr><th>Door</th><th>Who gets in</th><th>Why separate</th></tr></thead>
+      <tbody>
+        <tr><td><code>/api/…</code></td><td>You, signed in</td><td>Normal use. Login attempts are limited, and the limit survives a restart.</td></tr>
+        <tr><td><code>/internal/…</code></td><td>Teammates, with a shared token</td><td>Three requests only: report work, post activity, look up a colleague. A teammate is not a user.</td></tr>
+        <tr><td><code>/api/health</code></td><td>Anyone</td><td>A monitor that had to sign in could not tell you that signing in was broken.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Where things run</h3>
+    <table class="doc-table">
+      <thead><tr><th>Shape</th><th>Where</th><th>What is isolated</th></tr></thead>
+      <tbody>
+        <tr><td>Local</td><td>A program on your laptop</td><td>Nothing — your real records and keys.</td></tr>
+        <tr><td>Sandbox</td><td>A second program on your laptop</td><td>Own records; every credential blanked, not removed.</td></tr>
+        <tr><td>Staging</td><td>Its own space on the cluster</td><td>Own records and address. Real keys, but not allowed to approve its own changes.</td></tr>
+        <tr><td>Production</td><td>Its own space on the cluster</td><td>Own storage, real credentials. The live system.</td></tr>
+      </tbody>
+    </table>
+    <p>One public entrance serves every environment; which one you reach is decided by
+      the web address, not by a separate machine. That is why staging costs almost
+      nothing to keep running. Traffic only ever goes outward — nothing on the
+      internet can start a conversation with a teammate.</p>
+
+    <div class="doc-note limit">
+      <span class="doc-note-label">Honest about isolation</span>
+      <p>As deployed today a teammate is a separate <em>process</em>, not a separate
+        sealed box. They cannot overwrite each other's work, because each gets its own
+        directory — but they share one container, its filesystem and its memory. The
+        stronger arrangement is built and is a configuration change, not new work. The
+        boundary that is real today is around the whole system, not between teammates.</p>
+    </div>
+
+    <h3>How much you are involved</h3>
+    <table class="doc-table">
+      <thead><tr><th>Mode</th><th>What happens</th></tr></thead>
+      <tbody>
+        <tr><td>Ask me</td><td>Stops at every meaningful decision.</td></tr>
+        <tr><td>Supervised</td><td>Proceeds, but stops for decisions that could paper over a problem.</td></tr>
+        <tr><td>Autonomous</td><td>Decides everything, and records every judgement call for audit.</td></tr>
+      </tbody>
+    </table>
+    <p>At the end of each sprint you are asked what should change before the next one
+      is planned — the cheapest possible moment to redirect, because nothing has been
+      built yet. It does not block: an overnight run that stalled an hour per sprint
+      waiting for you would destroy the thing you asked for. Your answer is read
+      whenever it arrives.</p>
+
+    <h3>What it costs</h3>
+    <p>Nothing for the software. A small managed cluster runs the whole thing for
+      roughly <strong>$40 a month</strong> — the largest single item is the load
+      balancer, not the computing power. AI is billed by your provider directly: in a
+      measured run, a complete small feature written, tested and submitted cost about
+      <strong>ten cents</strong>.</p>
+
+    <h3>What is solid, and what is early</h3>
+    <p>The full loop is proven: brief, plan, build, test, review, pull request, run
+      live and repeatedly with real accounts. It has shipped a fix to itself. Over
+      seven hundred automated checks pass, including inside the deployed system.</p>
+    <div class="doc-note limit">
+      <span class="doc-note-label">Not finished, stated plainly</span>
+      <ul>
+        <li><strong>Teammates on OpenAI or Gemini are unproven.</strong> Built and tested against simulated responses, never a real call. Planning on those providers is proven; building is not.</li>
+        <li><strong>Amazon and Google's enterprise AI services are configurable, not supported.</strong> Both need authentication that is not a password in a settings box.</li>
+        <li><strong>One cloud provider is implemented.</strong> The seam for others exists but is untested by use.</li>
+        <li><strong>The manager does not interview you before it starts.</strong> It asks between sprints, not before the first.</li>
+      </ul>
+    </div>
+
+    <h3>Words used here</h3>
+    <dl class="doc-glossary">
+      <div><dt>API</dt><dd>The list of requests a program will answer — the difference between a system you can only click and one you can drive.</dd></div>
+      <div><dt>Branch</dt><dd>A parallel version of the code where work happens without affecting anyone else.</dd></div>
+      <div><dt>Canary</dt><dd>Starting a new version privately, with no real traffic, to see whether it works.</dd></div>
+      <div><dt>Pull request</dt><dd>A formal, reviewable proposal to add a change to the main codebase.</dd></div>
+      <div><dt>Sprint</dt><dd>One round of planning, building, testing and shipping.</dd></div>
+      <div><dt>Staging</dt><dd>A full second copy used to try changes before they reach real users.</dd></div>
+      <div><dt>Version control</dt><dd>The system that stores code and remembers every change and who made it.</dd></div>
+    </dl>
+  </article>
 </section>
 
 <section id="selfPage" hidden>

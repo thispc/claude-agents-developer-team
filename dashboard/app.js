@@ -89,6 +89,8 @@ function paintCredChips(s) {
   chip("#gmState", s.gemini_api_key_set);
 }
 
+$("#aboutBtn").addEventListener("click", () => openAbout());
+
 $("#settingsBtn").addEventListener("click", async () => {
   await loadMe();
   $("#settingsWho").textContent = `Signed in as ${me.username}${me.is_root ? " (root)" : ""}`;
@@ -673,6 +675,7 @@ async function renderSandbox() {
 async function openSelfRepair(skipHash) {
   $("#home").hidden = true; $("main").hidden = true;
   const pl = $("#plan"); if (pl) pl.hidden = true;
+  const ab = $("#aboutPage"); if (ab) ab.hidden = true;
   $("#projectBar").hidden = true;
   $("#selfPage").hidden = false;
   if (!skipHash) setHash("#/improve");
@@ -680,9 +683,21 @@ async function openSelfRepair(skipHash) {
   await renderSelf();
 }
 
+function openAbout(skipHash) {
+  $("#home").hidden = true; $("main").hidden = true;
+  const pl = $("#plan"); if (pl) pl.hidden = true;
+  const sp = $("#selfPage"); if (sp) sp.hidden = true;
+  $("#projectBar").hidden = true;
+  $("#aboutPage").hidden = false;
+  if (!skipHash) setHash("#/about");
+  currentProject = null;
+  window.scrollTo(0, 0);
+}
+
 function showHome(skipHash) {
   const pl = $("#plan"); if (pl) pl.hidden = true;
   const sp = $("#selfPage"); if (sp) sp.hidden = true;
+  const ab = $("#aboutPage"); if (ab) ab.hidden = true;
   if (!skipHash) setHash("#/");
   currentProject = null;
   // Fall back to is_root when the server predates may_self_repair — otherwise the
@@ -705,6 +720,7 @@ function showHome(skipHash) {
 
 function openProject(id, view, skipHash) {
   const sp = $("#selfPage"); if (sp) sp.hidden = true;
+  const ab = $("#aboutPage"); if (ab) ab.hidden = true;
   $("#home").hidden = true;
   $("main").hidden = false;
   $("#projectBar").hidden = false;
@@ -755,6 +771,7 @@ function route() {
     }
     return;
   }
+  if (location.hash.startsWith("#/about")) { openAbout(true); return; }
   if (location.hash.startsWith("#/improve")) { openSelfRepair(true); return; }
   const m = location.hash.match(/^#\/p\/(\d+)(?:\/(\w+))?/);
   if (m) openProject(Number(m[1]), m[2] || "command", true);
@@ -1064,6 +1081,7 @@ const PERSONA_PRESETS = [
 
 async function openPlan() {
   $("#home").hidden = true; $("main").hidden = true; $("#plan").hidden = false;
+  { const ab = $("#aboutPage"); if (ab) ab.hidden = true; }
   $("#projectBar").hidden = true;
   $("#planSetup").hidden = false; $("#planStage").hidden = true;
   $("#blueprintPanel").hidden = true;
