@@ -16,3 +16,6 @@ deployments/
 
 # sandbox worktree + throwaway db for trying a self-repair build
 .sandbox/
+
+# filled-in k8s secrets must never be committed
+deploy/k8s/secrets.yaml

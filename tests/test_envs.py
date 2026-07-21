@@ -110,9 +110,19 @@ def test_a_preview_runs_in_demo_mode_with_no_secrets():
     assert "devteam-secrets" not in m, "a preview must not mount production secrets"
 
 
-def test_a_preview_gets_its_own_hostname():
+def test_a_preview_gets_its_own_hostname_when_there_is_a_domain(monkeypatch):
+    """Only meaningful with a wildcard domain to hang it off. Without one there is
+    no Ingress at all, because an Ingress with nowhere to point costs a
+    LoadBalancer and buys nothing."""
+    monkeypatch.setattr(config, "APPS_DOMAIN", "apps.example.com")
     m = envs.manifests("pr-42", "img:1", "devteam-pr-42")
-    assert "host: pr-42." in m
+    assert "host: pr-42.apps.example.com" in m and "Ingress" in m
+
+
+def test_no_domain_means_no_ingress(monkeypatch):
+    monkeypatch.setattr(envs, "on_kind", lambda: False)
+    monkeypatch.setattr(config, "APPS_DOMAIN", "")
+    assert "Ingress" not in envs.manifests("pr-42", "img:1", "devteam-pr-42")
 
 
 def test_the_manifest_pins_the_exact_image():
