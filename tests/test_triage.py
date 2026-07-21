@@ -330,7 +330,8 @@ def test_staging_verify_runs_the_real_suite():
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent / "conductor" / "app" / "cloud.py").read_text()
     body = src.split("def staging_verify(")[1].split("\ndef ")[0]
-    assert "pytest" in body and "/app/tests" in body
+    assert "pytest" in body and "cd /app && python -m pytest tests" in body
+    assert "not hostonly" in body, "it would run repo tests that cannot pass in the image"
 
 
 def test_staging_routes_are_root_only(client, make_user, fresh_db, monkeypatch):

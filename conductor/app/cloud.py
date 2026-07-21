@@ -386,7 +386,11 @@ def staging_verify(image: str) -> dict[str, Any]:
     try:
         out = stream.stream(
             core.connect_get_namespaced_pod_exec, pod, STAGING_NS,
-            command=["python", "-m", "pytest", "/app/tests", "-q", "--timeout=300"],
+            # Deselect tests that read the repository or drive host tooling: they
+            # verify the checkout, not the artifact, and neither exists in here.
+            command=["sh", "-c",
+                     "cd /app && python -m pytest tests -q -p no:cacheprovider "
+                     "-m 'not live and not hostonly' 2>&1 | tail -20"],
             stderr=True, stdout=True, stdin=False, tty=False, _request_timeout=600)
     except Exception as e:
         return {"ok": False, "error": f"could not run the suite: {e}"}

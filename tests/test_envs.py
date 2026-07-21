@@ -13,6 +13,11 @@ import subprocess
 
 import pytest
 
+# These read files from the repository (manifests, workflows) or drive host
+# tooling like git and docker. Neither exists inside the shipped image, so they
+# verify the REPO rather than the ARTIFACT — staging deselects them.
+pytestmark = pytest.mark.hostonly
+
 from conftest import make_project, make_task
 from app import config, envs
 
