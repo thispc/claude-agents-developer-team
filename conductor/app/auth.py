@@ -119,12 +119,26 @@ def get_settings(user: dict) -> dict:
     if user["is_root"]:
         s.setdefault("github_token", config.GITHUB_TOKEN)
         s.setdefault("anthropic_api_key", config.ANTHROPIC_API_KEY)
+        # The rest of the operator's .env, on the same root-only rule. Without
+        # these, a key sitting in .env was invisible to everything that reads
+        # settings — the round table, the planner and the Settings dialog all
+        # reported "not set" for a key the operator had definitely configured.
+        s.setdefault("claude_oauth_token", config.CLAUDE_CODE_OAUTH_TOKEN)
+        s.setdefault("gemini_api_key", config.GEMINI_API_KEY)
+        s.setdefault("openai_api_key", config.OPENAI_API_KEY)
+        return {k: v for k, v in s.items() if v}   # drop the blanks setdefault added
     return s
 
 
 def has_own_ai_credentials(user: dict) -> bool:
     """True when this user can run agents on their own account. Root also counts if
     the server itself is authenticated (its own key / token / machine CLI login)."""
+    # A sandbox deliberately holds no credentials — that is the guarantee. Asking
+    # it for keys is backwards: there is nothing to authenticate because no agent
+    # will ever run, and pasting a real key into a throwaway build is the one
+    # thing nobody should be encouraged to do.
+    if config.DEMO_MODE:
+        return True
     s = get_settings(user)
     if s.get("anthropic_api_key") or s.get("claude_oauth_token"):
         return True
@@ -145,6 +159,14 @@ def save_settings(user_id: int, updates: dict) -> dict:
 
 def redacted(settings: dict) -> dict:
     """Never send secrets back to the browser — only whether they're set."""
+    if config.DEMO_MODE:
+        # A sandbox holds nothing, but showing every credential as "not set" makes
+        # the Settings screen under test look broken and nags for keys that would
+        # be pointless to enter. Report the configured shape instead.
+        return {k: True for k in ("github_token_set", "anthropic_api_key_set",
+                                  "claude_oauth_token_set")} | {
+            "openai_api_key_set": False, "gemini_api_key_set": False,
+            "github_login": "sandbox"}
     return {
         "github_token_set": bool(settings.get("github_token")),
         "anthropic_api_key_set": bool(settings.get("anthropic_api_key")),

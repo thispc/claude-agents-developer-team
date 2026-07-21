@@ -45,6 +45,10 @@ def _seat_system(seat: dict, brief: str, skeptic: bool) -> str:
         base += f"YOUR PERSPECTIVE:\n{persona}\n\n"
     base += (
         "House rules:\n"
+        "- START with one line, on its own, of the form `GIST: <your point in at most "
+        "16 words>`. A person is watching this conversation live and reads only the "
+        "GIST lines; write it as a sentence you would actually say out loud, not a "
+        "label. Then give the detail below it.\n"
         "- Be concrete. Name technologies, structures, sequences — not adjectives.\n"
         "- Short. Under 250 words. Padding is not thinking.\n"
         "- Disagreeing well is more useful than agreeing. Never agree merely to "
@@ -144,15 +148,34 @@ def _emit(table_id: int, project_id: int, kind: str, payload: Any) -> None:
 
 async def _seat_turn(seat: dict, system: str, prompt: str, settings: dict,
                      table_id: int, project_id: int, phase: str, rnd: int) -> dict:
-    """One seat speaking once. A failing seat is silenced, not fatal to the table."""
+    """One seat speaking once. A failing seat is silenced, not fatal to the table.
+
+    Silencing is a real cost, though: the whole argument for a mixed table is that
+    the other provider disagrees for different reasons, and a table where both
+    Gemini seats dropped out is just two Claudes talking. Free-tier Gemini returns
+    503 "high demand" readily, so a seat gets its own second chance on top of the
+    retries inside providers.complete — a longer, patient wait rather than a
+    tighter loop, because capacity clears on the order of seconds.
+    """
     started = time.time()
-    try:
-        text = await providers.complete(
-            seat["provider"], seat["model"], system, prompt, settings)
-        ok = True
-    except providers.ProviderError as e:
-        text = f"({seat['name']} could not speak: {e})"
-        ok = False
+    text, ok = "", False
+    for attempt in range(2):
+        try:
+            text = await providers.complete(
+                seat["provider"], seat["model"], system, prompt, settings)
+            ok = True
+            break
+        except providers.ProviderError as e:
+            text = f"({seat['name']} could not speak: {e})"
+            ok = False
+            retryable = any(s in str(e).lower() for s in
+                            ("high demand", "503", "429", "rate", "overload", "timeout"))
+            if attempt == 0 and retryable:
+                _emit(table_id, project_id, "seat_retry",
+                      {"seat_id": seat["id"], "seat": seat["name"], "why": str(e)[:200]})
+                await asyncio.sleep(12)
+                continue
+            break
     db.add_turn(table_id, seat["id"], phase, rnd, text, ok)
     _emit(table_id, project_id, "seat_spoke",
           {"seat_id": seat["id"], "seat": seat["name"], "phase": phase,

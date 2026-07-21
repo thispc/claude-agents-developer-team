@@ -34,11 +34,26 @@ AUTH_CONFIGURED = bool(ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN or CLI_LOGIN
 
 
 def auth_mode() -> str:
+    # A sandbox has no credentials on purpose, so it would report "none" — and the
+    # dashboard reads this to decide whether to show agent RUNS or DOLLARS. The
+    # candidate build would then render "$0.00 / $5.00" where the real one shows
+    # "9/40 runs", which is a difference in the thing under test rather than in
+    # the sandbox. The parent passes down the shape of its own auth, never the
+    # secret behind it.
+    if DEMO_MODE:
+        return _env("DEMO_AUTH_MODE", "subscription")
     if ANTHROPIC_API_KEY:
         return "api-key"
     if CLAUDE_CODE_OAUTH_TOKEN or CLI_LOGIN:
         return "subscription"
     return "none"
+# Other providers, for planning and the round table. Both are API-key only —
+# there is no subscription equivalent, so every call on these bills real money.
+# GEMINI_KEY is accepted as an alias because that is what people actually write
+# in a .env, and a variable the app never reads looks exactly like a broken key.
+GEMINI_API_KEY = _env("GEMINI_API_KEY") or _env("GEMINI_KEY")
+OPENAI_API_KEY = _env("OPENAI_API_KEY")
+
 LEAD_MODEL = _env("LEAD_MODEL", "claude-sonnet-5")
 WORKER_MODEL = _env("WORKER_MODEL", "claude-haiku-4-5")
 ESCALATION_MODEL = _env("ESCALATION_MODEL", "claude-sonnet-5")
@@ -47,6 +62,14 @@ GITHUB_TOKEN = _env("GITHUB_TOKEN")
 GITHUB_REPO = _env("GITHUB_REPO")
 # The repo holding this platform's own code. Blank = derive from the git remote.
 SELF_REPO = _env("SELF_REPO")
+# Non-root usernames allowed to run self-repair, comma-separated. Granted here and
+# not in the app on purpose: self-repair writes to the repo this server runs from,
+# so a compromised account must not be able to grant it to itself.
+SELFREPAIR_USERS = [u.strip().lower() for u in _env("SELFREPAIR_USERS").split(",") if u.strip()]
+
+
+def may_self_repair(username: str, is_root: bool) -> bool:
+    return bool(is_root or (username or "").lower() in SELFREPAIR_USERS)
 # Wildcard domain for deployed apps (e.g. apps.example.com -> app-11.apps.example.com).
 # Blank = fall back to a per-app LoadBalancer, which the cloud bills for per app.
 APPS_DOMAIN = _env("APPS_DOMAIN")
@@ -63,6 +86,12 @@ WORKER_TOKEN = _env("WORKER_TOKEN", "dev-token")
 # with no error at all.
 DB_PATH = str(Path(_env("DB_PATH", "devteam.db")) if Path(_env("DB_PATH", "devteam.db")).is_absolute()
               else ROOT / _env("DB_PATH", "devteam.db"))
+
+# A sandboxed candidate build of THIS platform runs with DEMO_MODE=1: no real
+# agent sessions, no credentials, no GitHub, seeded data instead. It exists so a
+# self-repair PR can be clicked through before it is deployed over the live app.
+# Never set this on a real instance — it makes the platform pretend to work.
+DEMO_MODE = _env("DEMO_MODE") == "1"
 
 LAUNCHER = _env("LAUNCHER", "local")  # local | k8s
 WORKER_IMAGE = _env("WORKER_IMAGE", "devteam-worker:latest")

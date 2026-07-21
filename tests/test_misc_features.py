@@ -164,3 +164,49 @@ def test_all_models_cooling_holds_the_task_instead_of_burning_an_attempt(fresh_d
 def test_autonomous_grace_is_short_enough_for_an_overnight_run():
     """A full-autonomy manager must not lose an hour to a sleeping boss."""
     assert config.AUTONOMOUS_QUESTION_GRACE <= 900
+
+
+# ---- the settings dialog must not silently drop credentials ---------------
+# The Save handler named three fields by hand, so the OpenAI and Gemini inputs
+# were decorative: paste a key, get a success toast, key never stored.
+
+import re as _re
+
+DASH = Path(config.__file__).resolve().parents[2] / "dashboard"
+
+
+def _settings_form_inputs() -> set[str]:
+    html = (DASH / "index.html").read_text()
+    form = html.split('id="settingsForm"', 1)[1].split("</form>", 1)[0]
+    return set(_re.findall(r'<input[^>]*\bname="([^"]+)"', form))
+
+
+def test_every_settings_input_is_a_field_the_backend_accepts():
+    from app.routes import Settings
+    assert _settings_form_inputs() <= set(Settings.model_fields), (
+        "the dialog collects a credential no route will store")
+
+
+def test_every_backend_credential_has_an_input():
+    from app.routes import Settings
+    assert set(Settings.model_fields) <= _settings_form_inputs(), (
+        "a credential the backend supports has no way to be entered")
+
+
+def test_save_handler_submits_the_whole_form_not_a_hand_written_list():
+    js = (DASH / "app.js").read_text()
+    handler = js.split('$("#settingsForm").addEventListener("submit"', 1)[1][:900]
+    assert "f.entries()" in handler, "the handler enumerates fields by hand again"
+    for dropped in ("openai_api_key", "gemini_api_key"):
+        assert f'body.{dropped} =' not in handler
+
+
+def test_settings_route_persists_every_credential(root_client, fresh_db):
+    from app import auth
+    from app.routes import Settings
+    payload = {f: f"value-for-{f}" for f in Settings.model_fields}
+    r = root_client.post("/api/settings", json=payload)
+    assert r.status_code == 200, r.text
+    stored = auth.get_settings(auth.get_user(1))
+    for f in Settings.model_fields:
+        assert stored.get(f) == f"value-for-{f}", f"{f} was not persisted"

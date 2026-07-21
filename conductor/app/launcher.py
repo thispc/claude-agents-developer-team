@@ -96,6 +96,26 @@ def handoff_context(task: dict) -> str:
             "you match their contracts and don't redo their work.\n\n" + "\n\n".join(parts))
 
 
+def prior_attempt(task: dict) -> str:
+    """What the previous attempt on THIS task got done before it stopped.
+
+    A retry used to start cold: the only context it received was manager feedback,
+    which a run that died on a session limit never has. So the agent re-derived
+    everything it had already worked out, and the expensive part of the work was
+    paid for twice. The branch carried the committed files, but not the reasoning.
+
+    On the mars-rover run six of eight agent runs were retries of this kind.
+    """
+    if not task.get("attempts") or not (task.get("report") or "").strip():
+        return ""
+    why = ("Your previous attempt was cut short by a capacity limit, not by a "
+           "mistake" if looks_rate_limited(task.get("report", ""))
+           else "Your previous attempt did not finish")
+    return (f"{why}. This is what it reported before stopping — the branch already "
+            f"has whatever it committed, so CONTINUE from here rather than starting "
+            f"over:\n\n{task['report'][:4000]}")
+
+
 def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
     auth = owner_credentials(project)
     return {
@@ -109,6 +129,7 @@ def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
         "TASK_TITLE": task["title"],
         "TASK_DESCRIPTION": task["description"],
         "TASK_FEEDBACK": task.get("feedback", ""),
+        "PRIOR_ATTEMPT": prior_attempt(task),
         "BRANCH": task["branch"],
         "REPO": project["repo"],
         "GITHUB_TOKEN": owner_github_token(project),
@@ -125,7 +146,14 @@ def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
 
 
 # Strong signals: their presence alone means we were throttled.
-RATE_LIMIT_MARKERS = ("rate limit", "rate_limit", "overloaded",
+#
+# "session limit" earns its place the hard way. Anthropic's subscription message is
+# "You've hit your session limit · resets 3pm", which matched none of the others —
+# so two deaths that were purely capacity got classified as QUALITY failures and
+# sent the task up the escalation ladder. On the mars-rover run that burned four
+# retries and the manager had to reassign by hand, writing "both prior attempts
+# died on a session/rate limit (not a quality failure)".
+RATE_LIMIT_MARKERS = ("rate limit", "rate_limit", "overloaded", "session limit",
                       "usage limit", "too many requests", "retry-after")
 # Weak signals: a task's own output can legitimately contain these (a tester
 # reporting an HTTP 429, code mentioning a quota). Only count them alongside a
@@ -230,6 +258,14 @@ def pick_model(task: dict, project: dict | None = None) -> str:
             if m != prev and not cooldown_left(m):
                 return m
     if task["attempts"] >= 2:
+        # Escalate RELATIVE to whatever just failed. Returning a fixed model made
+        # this a no-op whenever the recruited roster had already assigned that
+        # model: the mars-rover run "escalated" sonnet-5 to sonnet-5, spending a
+        # retry without changing anything about the attempt.
+        prev = task.get("model") or ""
+        if prev in FALLBACK_ORDER:
+            nxt = FALLBACK_ORDER.index(prev) + 1
+            return FALLBACK_ORDER[nxt] if nxt < len(FALLBACK_ORDER) else prev
         return config.ESCALATION_MODEL
     if project:
         import json
@@ -368,23 +404,49 @@ def kill_project(project_id: int, reason: str) -> list[str]:
     return notes
 
 
-def prune_workspaces(keep: int = 30) -> int:
+def prune_workspaces(keep: int = 8) -> int:
     """Delete old per-attempt worker clones, keeping the most recent `keep`.
 
     Every task attempt clones the repo into its own dir and nothing removed them,
     so workspaces/ grew without bound (1.2 GB before this existed).
     """
+    import re
     import shutil
     base = config.WORKSPACES_DIR
     if not base.exists():
         return 0
+
+    # A clone whose task is finished has nothing left in it that isn't on the
+    # branch it pushed. Keeping 30 of them regardless of state meant a project
+    # with retries sat on hundreds of megabytes of dead checkouts — the mars-rover
+    # run left 246 MB across 5 attempts of a single task. Live work is never
+    # touched, however old it looks.
+    live: set[int] = set()
+    try:
+        for t in _rows_of_live_tasks():
+            live.add(t["id"])
+    except Exception:
+        return 0        # if we cannot tell what is live, delete nothing
+
+    def task_of(d) -> int | None:
+        m = re.match(r"task-(\d+)", d.name)
+        return int(m.group(1)) if m else None
+
     dirs = sorted((d for d in base.iterdir() if d.is_dir()),
                   key=lambda d: d.stat().st_mtime, reverse=True)
+    finished = [d for d in dirs if (task_of(d) not in live)]
     removed = 0
-    for d in dirs[keep:]:
+    # Keep a handful of the most recent finished clones for post-mortems.
+    for d in finished[keep:]:
         shutil.rmtree(d, ignore_errors=True)
         removed += 1
     return removed
+
+
+def _rows_of_live_tasks() -> list[dict]:
+    """Tasks whose workspace must survive: still queued, running, or awaiting review."""
+    return db._rows(
+        "SELECT id FROM tasks WHERE status IN ('queued','running','pushed','review')")
 
 
 def sweep_orphans() -> int:
@@ -486,6 +548,12 @@ def get_launcher():
 
 async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
     """Shared dispatch path (used by the DAG scheduler)."""
+    # A sandboxed candidate build must not be able to spend a run, touch a repo or
+    # load a credential — so the mock engine intercepts before any of that happens,
+    # not inside the worker where a bug could still slip past.
+    if config.DEMO_MODE:
+        from . import demo
+        return await demo.simulate(task_id)
     task = db.get_task(task_id)
     if not task:
         return f"error: task {task_id} not found"

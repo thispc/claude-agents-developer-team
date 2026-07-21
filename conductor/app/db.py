@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS projects (
     manager_model TEXT NOT NULL DEFAULT '',       -- '' = server default
     manager_persona TEXT NOT NULL DEFAULT '',     -- extra character instructions
     is_self INTEGER NOT NULL DEFAULT 0,           -- this row is the platform's own codebase
+    sprints INTEGER NOT NULL DEFAULT 1,           -- how many delivery cycles to run
+    sprint INTEGER NOT NULL DEFAULT 1,            -- which one is in progress
     cost_usd REAL NOT NULL DEFAULT 0,
     summary TEXT NOT NULL DEFAULT '',
     created_at REAL NOT NULL
@@ -161,6 +163,9 @@ def init() -> None:
         "ALTER TABLE tasks ADD COLUMN compete INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE tasks ADD COLUMN seq INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE projects ADD COLUMN is_self INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE projects ADD COLUMN sprints INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE projects ADD COLUMN sprint INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE tasks ADD COLUMN sprint INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE roundtables ADD COLUMN mode TEXT NOT NULL DEFAULT 'debate'",
         "ALTER TABLE tasks ADD COLUMN verification TEXT NOT NULL DEFAULT ''",
         # roundtables/seats/turns are created by SCHEMA above (CREATE TABLE IF NOT
@@ -200,15 +205,41 @@ def _rows(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
 def create_project(name: str, brief: str, repo: str, budget_usd: float,
                    max_workers: int, max_runs: int = 40, team: list | None = None,
                    autonomy: str = "supervised", manager_model: str = "",
-                   manager_persona: str = "", owner_id: int = 0) -> int:
+                   manager_persona: str = "", owner_id: int = 0, sprints: int = 1) -> int:
     cur = _execute(
         "INSERT INTO projects (name, brief, repo, budget_usd, max_workers, max_runs, team, "
-        "autonomy, manager_model, manager_persona, owner_id, created_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "autonomy, manager_model, manager_persona, owner_id, sprints, created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (name, brief, repo, budget_usd, max_workers, max_runs, json.dumps(team or []),
-         autonomy, manager_model, manager_persona, owner_id, time.time()),
+         autonomy, manager_model, manager_persona, owner_id, max(1, int(sprints)),
+         time.time()),
     )
     return cur.lastrowid
+
+
+def advance_sprint(project_id: int) -> int:
+    """Move the project into its next delivery cycle. Returns the new sprint number."""
+    _execute("UPDATE projects SET sprint = sprint + 1 WHERE id=?", (project_id,))
+    p = get_project(project_id)
+    return (p or {}).get("sprint", 1)
+
+
+def set_max_runs(project_id: int, max_runs: int) -> None:
+    _execute("UPDATE projects SET max_runs=? WHERE id=?", (max(1, int(max_runs)), project_id))
+
+
+def set_sprints(project_id: int, sprints: int) -> None:
+    """Change the target number of cycles mid-run — the boss may want more or fewer
+    once they have seen what one sprint actually produces."""
+    _execute("UPDATE projects SET sprints=? WHERE id=?", (max(1, int(sprints)), project_id))
+
+
+def sprint_summary(project_id: int) -> list[dict]:
+    """What each completed sprint delivered — the input to planning the next one."""
+    return _rows(
+        "SELECT sprint, COUNT(*) n, "
+        "SUM(status='done') done, SUM(status='failed') failed "
+        "FROM tasks WHERE project_id=? GROUP BY sprint ORDER BY sprint", (project_id,))
 
 
 # --- round tables ---------------------------------------------------------
@@ -391,9 +422,12 @@ def create_task(project_id: int, role: str, title: str, description: str,
         (project_id, role, title, description, json.dumps(deps or []), origin, now, now),
     )
     task_id = cur.lastrowid
-    # branch stays keyed on the global id so branch names are unique across projects
-    _execute("UPDATE tasks SET branch=?, seq=? WHERE id=?",
-             (f"task/{task_id}", next_seq(project_id), task_id))
+    # branch stays keyed on the global id so branch names are unique across projects.
+    # The sprint is stamped from the project so a retrospective can tell this cycle's
+    # work from the previous one without guessing by timestamp.
+    p = get_project(project_id)
+    _execute("UPDATE tasks SET branch=?, seq=?, sprint=? WHERE id=?",
+             (f"task/{task_id}", next_seq(project_id), (p or {}).get("sprint", 1), task_id))
     return task_id
 
 

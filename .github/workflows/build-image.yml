@@ -33,7 +33,11 @@ jobs:
       # because a checkout would bring the repo's remotes and credentials with it.
       - name: Build and push
         run: |
-          TAG="${{ secrets.DOCR_REGISTRY }}/devteam-conductor:main-${GITHUB_SHA::10}"
+          # Name the tag after the ref it was actually built from. Hard-coding
+          # "main-" made a manual build of a feature branch look like main, which
+          # is the one thing a version tag must never lie about.
+          REF="$(echo "${GITHUB_REF_NAME}" | tr '/' '-' | tr -cd 'a-zA-Z0-9._-' | cut -c1-30)"
+          TAG="${{ secrets.DOCR_REGISTRY }}/devteam-conductor:${REF}-${GITHUB_SHA::10}"
           docker build -f deploy/Dockerfile.conductor \
             --build-arg DEVTEAM_COMMIT="${GITHUB_SHA::10}" \
             --build-arg DEVTEAM_IMAGE="$TAG" \

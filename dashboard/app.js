@@ -73,36 +73,119 @@ $("#logoutBtn").addEventListener("click", async () => {
   location.reload();
 });
 
+// Faint grey "— currently set ✓" read as decoration next to the label. A chip
+// reads as state. Note it still only means "stored" — "works" needs a Check.
+function paintCredChips(s) {
+  const chip = (id, isSet) => {
+    const el = $(id);
+    if (!el) return;
+    el.textContent = isSet ? "saved" : "not set";
+    el.className = "chip " + (isSet ? "ok" : "off");
+  };
+  chip("#ghState", s.github_token_set);
+  chip("#keyState", s.anthropic_api_key_set);
+  chip("#subState", s.claude_oauth_token_set);
+  chip("#oaState", s.openai_api_key_set);
+  chip("#gmState", s.gemini_api_key_set);
+}
+
 $("#settingsBtn").addEventListener("click", async () => {
   await loadMe();
-  const s = me.settings || {};
   $("#settingsWho").textContent = `Signed in as ${me.username}${me.is_root ? " (root)" : ""}`;
-  $("#ghState").textContent = s.github_token_set ? "— currently set ✓" : "— not set";
-  const oa = $("#oaState"), gm = $("#gmState");
-  if (oa) oa.textContent = s.openai_api_key_set ? "— currently set ✓" : "— not set";
-  if (gm) gm.textContent = s.gemini_api_key_set ? "— currently set ✓" : "— not set";
-  $("#keyState").textContent = s.anthropic_api_key_set ? "— currently set ✓" : "— not set";
-  $("#subState").textContent = s.claude_oauth_token_set ? "— currently set ✓" : "— not set";
+  paintCredChips(me.settings || {});
   $("#settingsError").hidden = true;
   $("#settingsForm").reset();
+  // Last visit's verdicts are stale the moment the dialog reopens.
+  document.querySelectorAll("#settingsForm .check-result").forEach((el) => {
+    el.hidden = true;
+    el.textContent = "";
+  });
   $("#settingsDialog").showModal();
 });
 $("#closeSettingsBtn").addEventListener("click", () => $("#settingsDialog").close());
+$("#closeSettingsX").addEventListener("click", () => $("#settingsDialog").close());
+
+// --- live credential verification ------------------------------------------
+// "saved" only ever meant "we stored the characters you typed". A retired model,
+// a Google project without billing, a GitHub token missing a scope and an expired
+// subscription token all looked identical to a working setup — and you found out
+// hours later when a project died. These check for real, on the spot.
+
+function showCheck(kind, state, detail, hint) {
+  const el = document.querySelector(`[data-result="${kind}"]`);
+  if (!el) return;
+  el.hidden = false;
+  el.className = "check-result " + state;
+  const icon = state === "ok" ? "✓" : state === "bad" ? "✕" : "…";
+  el.innerHTML = `${icon} ${escapeHtml(detail)}` +
+    (hint ? `<span class="why">${escapeHtml(hint)}</span>` : "");
+}
+
+async function verifyCred(kind) {
+  const input = document.querySelector(`#settingsForm [name="${kind}"]`);
+  const btn = document.querySelector(`[data-check="${kind}"]`);
+  const typed = (input && input.value.trim()) || "";
+  showCheck(kind, "working", typed ? "checking what you entered…"
+                                   : "checking the saved credential…");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api("/api/settings/verify", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, value: typed }),
+    });
+    showCheck(kind, r.ok ? "ok" : "bad", r.detail || "", r.hint || "");
+    return r.ok;
+  } catch (e) {
+    showCheck(kind, "bad", e.message || "the check could not run");
+    return false;
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+document.querySelectorAll("[data-check]").forEach((b) =>
+  b.addEventListener("click", () => verifyCred(b.dataset.check)));
 $("#settingsForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const f = new FormData(ev.target);
+  // Send every credential the form carries. This used to name three fields by
+  // hand, so the OpenAI and Gemini inputs were decorative: you could paste a key,
+  // hit Save, get a success, and have it silently dropped on the floor.
   const body = {};
-  if (f.get("github_token")) body.github_token = f.get("github_token");
-  if (f.get("anthropic_api_key")) body.anthropic_api_key = f.get("anthropic_api_key");
-  if (f.get("claude_oauth_token")) body.claude_oauth_token = f.get("claude_oauth_token");
+  for (const [k, v] of f.entries()) {
+    const val = (v || "").trim();
+    if (val) body[k] = val;
+  }
+  const submitBtn = ev.target.querySelector("button[type=submit]");
   try {
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = "Saving…"; }
     await api("/api/settings", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    $("#settingsDialog").close();
-    loadMe().then(loadRepos);   // token may have just been added
-  } catch (e) { $("#settingsError").textContent = e.message; $("#settingsError").hidden = false; }
+    await loadMe();
+    paintCredChips(me.settings || {});
+    loadRepos();                       // a GitHub token may have just been added
+
+    const kinds = Object.keys(body);
+    if (!kinds.length) { $("#settingsDialog").close(); return; }
+    // Verify before the user walks away believing a broken key is fine. Saving
+    // still succeeds either way — a key can be valid while the provider is having
+    // a bad minute, and refusing to store it would be the wrong call.
+    if (submitBtn) submitBtn.textContent = "Verifying…";
+    const results = await Promise.all(kinds.map(verifyCred));
+    if (results.every(Boolean)) {
+      toast("Credentials saved and verified");
+      setTimeout(() => $("#settingsDialog").close(), 1200);
+    } else {
+      toast("Saved, but some credentials did not verify");
+    }
+  } catch (e) {
+    $("#settingsError").textContent = e.message;
+    $("#settingsError").hidden = false;
+  } finally {
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = "Save & verify"; }
+  }
 });
 
 async function loadRepos() {
@@ -123,10 +206,39 @@ $("#personaPreset").addEventListener("change", (e) => {
 });
 const taskCost = (t) => (authMode === "subscription" ? "" : ` · $${t.cost_usd.toFixed(2)}`);
 
+function showSandboxBanner() {
+  if ($("#sandboxBanner")) return;
+  const el = document.createElement("div");
+  el.id = "sandboxBanner";
+  el.innerHTML = `<b>Sandbox build.</b> Agents are simulated, GitHub is mocked and no
+    credentials are loaded — everything here is fake except the code you are testing.`;
+  document.body.prepend(el);
+}
+
+function showStaleBanner() {
+  if ($("#staleBanner")) return;
+  const el = document.createElement("div");
+  el.id = "staleBanner";
+  // Written for someone who did not build this. The first version said "the
+  // dashboard files on disk changed after the conductor started" — true, and
+  // meaningless unless you already knew what it meant.
+  el.innerHTML = `<b>The app is half-updated.</b> This page has newer code than the
+    server behind it, so some things may look empty or do nothing — that is not a
+    real fault. Restarting the server fixes it:
+    <code>PYTHONPATH=conductor .venv/bin/uvicorn app.main:app --port 8000</code>`;
+  document.body.prepend(el);
+}
+
 async function loadHealth() {
   try {
     const h = await api("/api/health");
     authMode = h.auth || "none";
+    // The dashboard is served from disk; the API is whatever process is running.
+    // Change both and the page runs ahead of the server, which looks like a broken
+    // feature — an empty dropdown, a button that does nothing — rather than a
+    // conductor that needs restarting. Say which it is.
+    if (h.stale_ui) showStaleBanner();
+    if (h.demo) showSandboxBanner();
     const b = $("#authBadge");
     // Say what it MEANS, not what it is called. "auth: Max subscription" told you
     // nothing about whether you were about to be charged.
@@ -153,7 +265,8 @@ async function loadHealth() {
 }
 
 const STATUS_CLASS = { done: "ok", failed: "bad", cancelled: "bad", review: "warn", hold: "warn", planning: "run", running: "run" };
-const STATUS_LABEL = { hold: "on hold — needs you", review: "in review" };
+const STATUS_LABEL = { hold: "on hold — needs you", review: "in review",
+                       idle: "idle — nothing running" };
 
 async function loadProjects() {
   const projects = await api("/api/projects");
@@ -227,24 +340,312 @@ function renderHome(projects) {
     }));
 }
 
+// The platform working on itself. /api/self creates-or-returns the row for this
+// repo, so there is nothing for the user to set up first.
+function renderCloudInstance(el, inst) {
+  const can = inst.can_self_update || {};
+  const busy = can.busy || [];
+  el.innerHTML = `
+    <div class="env-prod">
+      <span class="env-dot"></span><b>This instance</b>
+      <code>${escapeHtml(inst.image || "unknown")}</code>
+      ${inst.build_commit ? `<span class="hint">built from ${escapeHtml(inst.build_commit)}</span>` : ""}
+    </div>
+    <p class="hint">Running in Kubernetes (<code>${escapeHtml(inst.namespace)}</code>), so it
+      builds nothing itself — CI publishes an image on every merge to main and this
+      instance decides when to take it. Updating replaces this pod, which is why it
+      waits for the team to be idle.</p>
+    ${busy.length ? `<p class="sbx-dirty">Not now — ${busy.length} agent(s) are working:
+        ${escapeHtml(busy.slice(0, 3).join("; "))}${busy.length > 3 ? "…" : ""}.
+        Updating would throw that work away.</p>` : ""}
+    ${(can.reasons || []).length ? `<p class="form-error">${escapeHtml(can.reasons.join("; "))}</p>` : ""}
+    <div id="cloudImages"><p class="hint">looking for published versions…</p></div>
+    <h4>Ship a new version</h4>
+    <div class="sbx-start">
+      <label>Image <input id="cloudImage" placeholder="registry.digitalocean.com/…/devteam-conductor:main-abc123"></label>
+      <button id="cloudUpdate" class="primary" ${busy.length ? "disabled" : ""}>Update this instance</button>
+      <button id="cloudRollback" class="danger">Roll back</button>
+    </div>
+    <p class="hint" id="cloudMsg">The pod is replaced, so this page will briefly lose its
+      connection. If the new image cannot start, Kubernetes keeps the old one running.</p>`;
+
+  // What CI has actually published. Pasting a tag by hand was the last manual
+  // step in a loop that is otherwise autonomous.
+  api("/api/self/images").then((d) => {
+    const box = $("#cloudImages");
+    if (!box) return;
+    if (!(d.images || []).length) {
+      box.innerHTML = `<p class="hint">No published images visible. CI publishes one on
+        every merge to main; check DIGITALOCEAN_API_TOKEN and DOCR_REGISTRY are set.</p>`;
+      return;
+    }
+    const c = d.candidate;
+    box.innerHTML = `
+      ${c ? `<div class="sbx live"><div class="sbx-head"><span class="sbx-dot"></span>
+          <b>A newer version is waiting</b><span class="hint">${escapeHtml(c.short)}</span></div>
+        <div class="sbx-actions"><button data-take="${escapeHtml(c.tag)}" class="primary"
+          ${(d.busy || []).length ? "disabled" : ""}>Take it</button></div>
+        ${(d.busy || []).length ? `<p class="hint">Waiting for ${d.busy.length} agent(s) to finish
+          — updating now would throw their work away.</p>` : ""}
+        ${d.auto_update ? `<p class="hint">AUTO_UPDATE is on, so this happens by itself
+          once the team is idle.</p>` : ""}</div>`
+        : `<p class="hint">Running the newest published image.</p>`}
+      <h4>Published</h4>
+      ${d.images.map((i) => `<div class="env-row"><div><code>${escapeHtml(i.short)}</code>
+        <span class="hint">${i.running ? "running now" : escapeHtml(i.updated_at || "")}</span></div>
+        ${i.running ? "" : `<div class="env-acts"><button data-take="${escapeHtml(i.tag)}"
+          ${(d.busy || []).length ? "disabled" : ""}>Use this</button></div>`}</div>`).join("")}`;
+    box.querySelectorAll("[data-take]").forEach((b) => b.addEventListener("click", () => {
+      $("#cloudImage").value = b.dataset.take;
+      $("#cloudUpdate").click();
+    }));
+  }).catch(() => { const b = $("#cloudImages"); if (b) b.innerHTML = ""; });
+
+  $("#cloudUpdate").addEventListener("click", async () => {
+    const image = $("#cloudImage").value.trim();
+    if (!image) { $("#cloudMsg").textContent = "Paste the image tag CI published."; return; }
+    if (!confirm(`Replace this instance with:\n${image}\n\n`
+      + "The pod restarts, so you will be disconnected for a few seconds.")) return;
+    $("#cloudMsg").textContent = "Patching the Deployment — this pod is about to be replaced…";
+    try {
+      await api("/api/self/update", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image }) });
+      $("#cloudMsg").textContent = "Kubernetes is rolling it out. Reload in a few seconds.";
+    } catch (e) { $("#cloudMsg").textContent = String(e.message || e); }
+  });
+  $("#cloudRollback").addEventListener("click", async () => {
+    if (!confirm("Roll this instance back to the previous image?")) return;
+    try { await api("/api/self/update/rollback", { method: "POST" });
+          $("#cloudMsg").textContent = "Rolling back. Reload in a few seconds."; }
+    catch (e) { $("#cloudMsg").textContent = String(e.message || e); }
+  });
+}
+
+async function renderEnvs() {
+  const el = $("#envsBody");
+  if (!el) return;
+  let d;
+  try { d = await api("/api/self/envs"); }
+  catch (e) { el.innerHTML = `<p class="empty">${escapeHtml(e.message || e)}</p>`; return; }
+
+  // In a cluster the platform cannot build anything — no Docker daemon, and
+  // giving it one would let it build and run arbitrary images as itself. There
+  // the loop is: CI builds, and this instance chooses when to take the result.
+  let inst = null;
+  try { inst = await api("/api/self/instance"); } catch { /* older server */ }
+  if (inst && inst.in_cluster) { renderCloudInstance(el, inst); return; }
+
+  // Say plainly what is missing rather than showing dead buttons.
+  if (!d.docker || !d.kubernetes) {
+    const missing = [!d.docker && "Docker", !d.kubernetes && "a Kubernetes cluster"]
+      .filter(Boolean).join(" and ");
+    el.innerHTML = `<p class="empty">Environments need ${escapeHtml(missing)}.
+      The sandbox below works without either.</p>`;
+    return;
+  }
+
+  const prod = d.production;
+  const envRows = Object.entries(d.envs || {}).map(([name, e]) => `
+    <div class="env-row">
+      <div><b>${escapeHtml(name)}</b>
+        <span class="hint">${escapeHtml(e.host)} · ${escapeHtml(e.tag)} · ${ago(e.at)}</span></div>
+      <div class="env-acts">
+        <button data-promote="${escapeHtml(e.tag)}" class="primary">Promote to production</button>
+        <button data-destroy="${escapeHtml(name)}" class="danger">Destroy</button>
+      </div>
+    </div>`).join("") || `<p class="hint">No preview environments running.</p>`;
+
+  const imgRows = (d.images || []).map((i) => `
+    <div class="env-row">
+      <div><code>${escapeHtml(i.tag)}</code>
+        <span class="hint">from ${escapeHtml(i.source)} · ${ago(i.built_at)}${
+          i.note ? " · " + escapeHtml(i.note) : ""}</span></div>
+      <div class="env-acts">
+        <button data-try="${escapeHtml(i.tag)}">Try it</button>
+        <button data-promote="${escapeHtml(i.tag)}">Promote</button>
+      </div>
+    </div>`).join("") || `<p class="hint">Nothing built yet.</p>`;
+
+  el.innerHTML = `
+    <div class="env-prod">
+      <span class="env-dot"></span><b>Production</b>
+      <code>${escapeHtml(prod ? prod.tag : "not managed from here yet")}</code>
+      ${prod ? `<span class="hint">promoted ${ago(prod.at)}</span>` : ""}
+      ${prod ? `<button id="envRollback" class="danger">Roll back</button>` : ""}
+    </div>
+
+    <h4>Build a new one</h4>
+    <div class="sbx-start">
+      <label>From <select id="envSource"></select></label>
+      <label>Label <input id="envNote" placeholder="what is in it — e.g. sprint archive"></label>
+      <button id="envBuild" class="primary">Build image</button>
+    </div>
+    <p class="hint" id="envMsg">Building takes about a minute. The tag includes a hash of
+      the exact files, so two builds of the same branch are never confused.</p>
+
+    <h4>Preview environments</h4>${envRows}
+    <h4>Artifacts</h4>${imgRows}`;
+
+  // reuse the sandbox's source list — same sources, same meaning
+  try {
+    const sb = await api("/api/self/sandbox");
+    $("#envSource").innerHTML = (sb.sources || []).map((s) =>
+      `<option value="${escapeHtml(s.id)}">${escapeHtml(s.label)} — ${escapeHtml(s.detail)}</option>`).join("");
+  } catch { /* the select stays empty; the button will say why */ }
+
+  const msg = (t) => { $("#envMsg").textContent = t; };
+  $("#envBuild").addEventListener("click", async () => {
+    const b = $("#envBuild"); b.disabled = true; b.textContent = "building…";
+    msg("Building — this takes about a minute.");
+    try {
+      const r = await api("/api/self/envs/build", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source: $("#envSource").value, note: $("#envNote").value }) });
+      toast(`Built ${r.tag}`);
+      renderEnvs();
+    } catch (e) { msg(String(e.message || e)); b.disabled = false; b.textContent = "Build image"; }
+  });
+
+  el.querySelectorAll("[data-try]").forEach((b) => b.addEventListener("click", async () => {
+    const name = prompt("Name this environment (it gets its own namespace, database and host):",
+                        "try-" + Math.random().toString(36).slice(2, 6));
+    if (!name) return;
+    b.disabled = true; b.textContent = "deploying…";
+    try {
+      const r = await api("/api/self/envs/deploy", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag: b.dataset.try, env: name }) });
+      toast(`${r.env} is up at ${r.host}`);
+    } catch (e) { toast(String(e.message || e)); }
+    renderEnvs();
+  }));
+
+  el.querySelectorAll("[data-promote]").forEach((b) => b.addEventListener("click", async () => {
+    // Promotion replaces the platform everyone is using. Name the artifact in the
+    // confirm, so this cannot be a reflex click.
+    if (!confirm(`Point production at ${b.dataset.promote}?\n\n`
+      + "This is the exact image you previewed — nothing is rebuilt. "
+      + "If it fails to come up it rolls back automatically.")) return;
+    b.disabled = true; b.textContent = "promoting…";
+    try {
+      const r = await api("/api/self/envs/promote", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag: b.dataset.promote }) });
+      toast(`Production is now ${r.tag}`);
+    } catch (e) { toast(String(e.message || e)); }
+    renderEnvs();
+  }));
+
+  el.querySelectorAll("[data-destroy]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm(`Destroy ${b.dataset.destroy} and its database?`)) return;
+    try { await api(`/api/self/envs/${encodeURIComponent(b.dataset.destroy)}`, { method: "DELETE" }); }
+    catch (e) { toast(String(e.message || e)); }
+    renderEnvs();
+  }));
+
+  const rb = $("#envRollback");
+  if (rb) rb.addEventListener("click", async () => {
+    if (!confirm("Roll production back to the previous image?")) return;
+    try { await api("/api/self/envs/rollback", { method: "POST" }); toast("Rolled back"); }
+    catch (e) { toast(String(e.message || e)); }
+    renderEnvs();
+  });
+}
+
+async function renderSandbox() {
+  const el = $("#sandboxBody");
+  if (!el) return;
+  let d;
+  try { d = await api("/api/self/sandbox"); }
+  catch (e) { el.innerHTML = `<p class="empty">${escapeHtml(e.message || e)}</p>`; return; }
+
+  if (d.running) {
+    const mins = Math.max(0, Math.round((Date.now() / 1000 - d.started_at) / 60));
+    el.innerHTML = `
+      <div class="sbx live">
+        <div class="sbx-head"><span class="sbx-dot"></span>
+          <b>Sandbox running</b><span class="hint">${escapeHtml(d.origin || d.ref)} · ${escapeHtml(d.commit)} · up ${mins}m</span></div>
+        ${d.dirty ? `<p class="sbx-dirty">Includes ${d.dirty} uncommitted change(s) — this is code that exists nowhere else yet.</p>` : ""}
+        <p class="sbx-sub">${escapeHtml(d.subject || "")}</p>
+        <div class="sbx-actions">
+          <a class="btn-like primary" href="${escapeHtml(d.url)}" target="_blank" rel="noopener">↗ Open the sandbox</a>
+          <button id="sbxStop" class="danger">Stop &amp; clean up</button>
+        </div>
+        <p class="hint">Sign in there as <code>root</code> / <code>sandbox</code>. It has
+          its own database seeded with demo data — nothing you do in it touches this app.</p>
+      </div>`;
+    $("#sbxStop").addEventListener("click", async () => {
+      const b = $("#sbxStop"); b.disabled = true; b.textContent = "stopping…";
+      try { await api("/api/self/sandbox", { method: "DELETE" }); } catch (e) { toast(String(e.message || e)); }
+      renderSandbox();
+  renderEnvs();
+    });
+    return;
+  }
+
+  // Sources are ordered by immediacy: this working tree, then agent workspaces,
+  // then branches. Nothing here needs a commit — waiting on one is what made
+  // trying a change slower than making it.
+  const opts = (d.sources || d.branches || []).map((s) =>
+    `<option value="${escapeHtml(s.id || ("ref:" + s.ref))}">${escapeHtml(s.label || s.name)} — ${escapeHtml(s.detail || s.subject || "")}</option>`).join("");
+  el.innerHTML = `
+    ${d.died ? `<p class="form-error">The last sandbox exited on its own.
+       <details><summary>log</summary><pre class="sbx-log">${escapeHtml(d.log_tail || "")}</pre></details></p>` : ""}
+    <div class="sbx-start">
+      <label>What to run <select id="sbxRef">${opts || "<option value=''>nothing to run</option>"}</select></label>
+      <button id="sbxStart" class="primary">▶ Boot the sandbox</button>
+    </div>`;
+  $("#sbxStart").addEventListener("click", async () => {
+    const ref = $("#sbxRef").value;
+    if (!ref) return;
+    const b = $("#sbxStart"); b.disabled = true; b.textContent = "booting…";
+    try {
+      await api("/api/self/sandbox", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ref }) });
+      toast("Sandbox is up");
+    } catch (e) { toast(String(e.message || e)); }
+    renderSandbox();
+  });
+}
+
+async function openSelfRepair(skipHash) {
+  $("#home").hidden = true; $("main").hidden = true;
+  const pl = $("#plan"); if (pl) pl.hidden = true;
+  $("#projectBar").hidden = true;
+  $("#selfPage").hidden = false;
+  if (!skipHash) setHash("#/improve");
+  currentProject = null;
+  await renderSelf();
+}
+
 function showHome(skipHash) {
   const pl = $("#plan"); if (pl) pl.hidden = true;
+  const sp = $("#selfPage"); if (sp) sp.hidden = true;
   if (!skipHash) setHash("#/");
   currentProject = null;
+  // Fall back to is_root when the server predates may_self_repair — otherwise the
+  // tile silently vanishes for the one account that definitely has the right.
+  const improve = $("#modeImprove");
+  const mayFix = me && (me.may_self_repair ?? me.is_root);
+  if (improve) improve.hidden = !mayFix;
   $("#home").hidden = false;
   $("main").hidden = true;
-  $("#projectSelect").hidden = true;
+  // The whole project bar goes away with the project — none of it means anything
+  // on the home screen, which is why it never belonged in the global header.
+  $("#projectBar").hidden = true;
   $("#costBadge").hidden = true;
   $("#statusBadge").hidden = true;
+  $("#sprintBadge").hidden = true;
   $("#restartBtn").hidden = true;
   $("#cancelBtn").hidden = true;
   loadProjects();
 }
 
 function openProject(id, view, skipHash) {
+  const sp = $("#selfPage"); if (sp) sp.hidden = true;
   $("#home").hidden = true;
   $("main").hidden = false;
-  $("#projectSelect").hidden = false;
+  $("#projectBar").hidden = false;
   currentProject = Number(id);
   // Must finish before selectProject sets .value, or the assignment lands on an
   // empty <select> and is silently dropped (the dropdown then shows the wrong project).
@@ -292,6 +693,7 @@ function route() {
     }
     return;
   }
+  if (location.hash.startsWith("#/improve")) { openSelfRepair(true); return; }
   const m = location.hash.match(/^#\/p\/(\d+)(?:\/(\w+))?/);
   if (m) openProject(Number(m[1]), m[2] || "command", true);
   else showHome(true);
@@ -376,22 +778,57 @@ async function renderSelf() {
 
     <div class="self-card">
       <h3>Raise an issue against this platform</h3>
+      <!-- Say it however you'd say it out loud; the draft step turns that into a
+           ticket. A vague ticket is the cheapest way to waste a sprint — the team
+           builds the wrong thing, competently. -->
+      <div class="rough-row">
+        <textarea id="roughIssue" rows="2"
+          placeholder="Describe it however you'd say it — e.g. &quot;the blockers tab looks broken and I can't read the text&quot;"></textarea>
+        <button type="button" id="refineBtn">✨ Draft the ticket</button>
+      </div>
+      <p class="hint" id="refineNote">Drafting reads your words and fills in the form
+        below — what happens now, what should happen, where it probably lives, and how
+        to check the fix. You edit it before anything is filed.</p>
+
       <form id="selfIssueForm">
-        <label>What's wrong (or what should be better)
+        <label>Title
           <input name="title" required placeholder="e.g. Agents tab loses scroll position" autocomplete="off"></label>
         <label>Details <span class="hint">steps to reproduce, what you expected, which page</span>
-          <textarea name="body" rows="5" required placeholder="Be specific — this becomes the spec a worker builds against."></textarea></label>
-        <label>Kind
-          <select name="severity">
-            <option value="bug">Bug — something is broken</option>
-            <option value="improvement">Improvement — it works but could be better</option>
-            <option value="urgent">Urgent — breaking the platform right now</option>
-          </select></label>
+          <textarea name="body" rows="8" required placeholder="Be specific — this becomes the spec a worker builds against."></textarea></label>
+        <div class="issue-opts">
+          <label>Kind
+            <select name="severity">
+              <option value="bug">Bug — something is broken</option>
+              <option value="improvement">Improvement — it works but could be better</option>
+              <option value="urgent">Urgent — breaking the platform right now</option>
+            </select></label>
+          <label>Sprints <span class="hint">cycles it may take to get this right</span>
+            <input name="sprints" type="number" min="1" max="10" value="1"></label>
+        </div>
         <p id="selfErr" class="form-error" hidden></p>
         <button type="submit" class="primary">🔧 Put the team on it</button>
-        <p class="hint">Your manager plans the fix, assigns it, and reviews the PR.
-        Nothing reaches the running app until you deploy it above.</p>
+        <p class="hint">This runs <b>autonomously</b>: the team plans the fix, writes it,
+        runs the tests and opens a PR without stopping to ask. Nothing reaches the
+        running app until you deploy it above.</p>
       </form>
+    </div>
+
+    <div class="self-card" id="envsCard">
+      <h3>Environments</h3>
+      <p class="hint">An environment is an <b>image</b>, not a folder. Build one from
+        any source — including work you haven't committed — try it on its own
+        namespace and database, then promote <i>that exact image</i> to production.
+        Nothing is rebuilt on the way, so what you tested is what ships.</p>
+      <div id="envsBody"><p class="hint">loading…</p></div>
+    </div>
+
+    <div class="self-card" id="sandboxCard">
+      <h3>Try it before it goes live</h3>
+      <p class="hint">A diff tells you the code is plausible. Only running it tells you
+        the app still works. This boots the candidate build beside the live one — its
+        own database, no credentials, agents simulated — so you can click through the
+        fix before deploying it over the app you are using.</p>
+      <div id="sandboxBody" class="sandbox-body"><p class="hint">loading…</p></div>
     </div>
 
     <div class="self-card">
@@ -408,7 +845,37 @@ async function renderSelf() {
           t.pr ? ` — PR #${t.pr}` : ""}</li>`).join("")}</ul>` : ""}
     </div>`;
 
+  renderSandbox();
+
   const form = $("#selfIssueForm");
+
+  const refine = $("#refineBtn");
+  if (refine) refine.addEventListener("click", async () => {
+    const rough = $("#roughIssue").value.trim();
+    const note = $("#refineNote");
+    if (rough.length < 8) { note.textContent = "Say a little more about what's wrong."; return; }
+    refine.disabled = true; refine.textContent = "drafting…";
+    note.textContent = "Reading what you wrote and drafting a ticket…";
+    try {
+      const d = await api("/api/self/refine", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rough }) });
+      form.querySelector("[name=title]").value = d.title || "";
+      form.querySelector("[name=body]").value = d.body || "";
+      if (d.severity) form.querySelector("[name=severity]").value = d.severity;
+      // Say plainly when the draft is just the user's own words echoed back —
+      // otherwise a silent fallback looks like the AI agreed it was already perfect.
+      note.textContent = d.refined
+        ? "Draft ready — edit anything that's wrong, then file it."
+        : "No provider could draft this, so your own words were kept. Add detail by hand.";
+      form.querySelector("[name=body]").focus();
+    } catch (e) {
+      note.textContent = `Could not draft it: ${e.message || e}. Write the ticket by hand.`;
+    } finally {
+      refine.disabled = false; refine.textContent = "✨ Draft the ticket";
+    }
+  });
+
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const f = new FormData(form);
@@ -418,7 +885,8 @@ async function renderSelf() {
       const r = await api("/api/self/issue", { method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: f.get("title"), body: f.get("body"),
-                               severity: f.get("severity") }) });
+                               severity: f.get("severity"),
+                               sprints: Number(f.get("sprints")) || 1 }) });
       openProject(r.project_id, "command");
     } catch (e) {
       $("#selfErr").hidden = false; $("#selfErr").textContent = String(e.message || e);
@@ -499,6 +967,7 @@ const PERSONA_PRESETS = [
 
 async function openPlan() {
   $("#home").hidden = true; $("main").hidden = true; $("#plan").hidden = false;
+  $("#projectBar").hidden = true;
   $("#planSetup").hidden = false; $("#planStage").hidden = true;
   $("#blueprintPanel").hidden = true;
   setHash("#/plan");
@@ -625,25 +1094,141 @@ function renderModSelect() {
 
 // ---- the circle ----------------------------------------------------------
 
-function renderCircle(seatInfo, activeIds, phase) {
+// --- the table as a conversation, not a log --------------------------------
+// Turns arrive from the poll in batches of whole 250-word essays, which is
+// unreadable while it is happening. Each seat opens with a `GIST:` line, and the
+// circle plays those back one speaker at a time so the round can be followed at
+// a glance. The full text stays one click away.
+
+let tableState = null;       // last payload from /api/tables/:id
+let seenTurns = new Set();   // turn ids already played
+let speechQueue = [];        // turns waiting to be played
+let speechTimer = null;
+let bubbles = {};            // seat id (or "mod") -> {text, phase, ok}
+let speaking = null;
+
+function stripMd(line) {
+  return (line || "")
+    .replace(/^[#>\s]*/, "")            // headings, quotes
+    .replace(/^[-*+]\s+/, "")           // bullets
+    .replace(/^\d+[.)]\s*/, "")         // "1." / "1)"
+    .replace(/\*\*|__|`|\*/g, "")       // emphasis
+    .trim();
+}
+
+function gistOf(text) {
+  const t = (text || "").trim();
+  const m = t.match(/^[ \t]*GIST:[ \t]*(.+)$/im);
+  if (m) return stripMd(m[1]).slice(0, 160);
+  // No GIST line — an older turn, or a model that ignored the rule. Taking the
+  // first line gave bubbles reading "## Systems Architect — opening proposal",
+  // which is a heading, not a point. Skip the scaffolding and find the first line
+  // that is actually a sentence: long enough to say something, or ending in
+  // sentence punctuation.
+  for (const raw of t.split("\n")) {
+    const line = stripMd(raw);
+    if (!line) continue;
+    const looksLikeHeading = line.length < 46 && !/[.!?:][)"']?$/.test(line);
+    if (looksLikeHeading) continue;
+    const stop = line.search(/[.!?](\s|$)/);
+    const sentence = (stop > 0 ? line.slice(0, stop + 1) : line).trim();
+    if (sentence.length >= 12) return sentence.slice(0, 160);
+  }
+  const any = t.split("\n").map(stripMd).find(Boolean) || "";
+  return any.slice(0, 160) || "…";
+}
+
+/** A provider error in words a person can act on, not a stack of HTTP prose. */
+function shortErr(text) {
+  const t = (text || "").toLowerCase();
+  if (t.includes("high demand") || t.includes("503")) return "the model was busy";
+  if (t.includes("limit is 0") || t.includes("not entitled")) return "not on your plan";
+  if (t.includes("429") || t.includes("quota") || t.includes("rate")) return "rate limited";
+  if (t.includes("no credentials")) return "no key for this provider";
+  return "a provider error";
+}
+
+function seatAngles(n) {
+  return Array.from({ length: n }, (_, i) => (i / n) * 2 * Math.PI - Math.PI / 2);
+}
+
+function renderCircle(seatInfo, phase) {
   const el = $("#circle");
+  if (!el) return;
   const n = seatInfo.length;
-  const R = 40;   // % radius inside the square wrapper
+  const R = 38;
+  const angs = seatAngles(n);
   el.innerHTML = seatInfo.map((s, i) => {
-    const ang = (i / n) * 2 * Math.PI - Math.PI / 2;
-    const x = 50 + R * Math.cos(ang), y = 50 + R * Math.sin(ang);
-    const state = activeIds.includes(s.id) ? "speaking" : (s.done ? "done" : "");
+    const x = 50 + R * Math.cos(angs[i]), y = 50 + R * Math.sin(angs[i]);
+    const isSpeaking = String(speaking) === String(s.id);
+    const state = isSpeaking ? "speaking" : (s.done ? "done" : "");
+    const b = bubbles[s.id];
+    // Push the bubble outward from the centre so it never covers another seat.
+    const side = Math.cos(angs[i]) >= 0 ? "right" : "left";
+    const bubble = b ? `<div class="sn-bubble ${side} ${b.ok ? "" : "bad"}"
+        data-full="${escapeHtml(s.id)}">${escapeHtml(b.text)}</div>` : "";
     return `<div class="seat-node ${state} prov-${s.provider}"
         style="left:${x}%; top:${y}%" data-seat="${s.id}" title="${escapeHtml(s.model)}">
+      <div class="sn-dot">${escapeHtml((s.name || "?").slice(0, 1).toUpperCase())}</div>
       <div class="sn-name">${escapeHtml(s.name)}</div>
       <div class="sn-model">${escapeHtml(providerLabel(s.provider))}</div>
       ${s.skeptic ? `<span class="sn-badge" title="Holds the standing skeptic brief">skeptic</span>` : ""}
+      ${bubble}
     </div>`;
   }).join("") + `
     <div class="mod-node ${phase === "synthesis" ? "speaking" : ""}">
       <div class="sn-name">Moderator</div>
       <div class="sn-model">${phase === "synthesis" ? "writing the blueprint…" : "listening"}</div>
     </div>`;
+  // Clicking a bubble opens that seat's full turn in the transcript.
+  el.querySelectorAll(".sn-bubble").forEach((b) =>
+    b.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const tr = $("#turnDetails");
+      if (tr) { tr.open = true; tr.scrollIntoView({ behavior: "smooth", block: "nearest" }); }
+    }));
+}
+
+function seatInfoFrom(t) {
+  const spoken = {};
+  (t.turns || []).forEach((x) => { if (x.seat_id) spoken[x.seat_id] = x; });
+  return (t.seats || []).map((s, i) => ({
+    id: s.id, name: s.name, provider: s.provider, model: s.model,
+    skeptic: i === (t.seats || []).length - 1,
+    done: !!spoken[s.id],
+  }));
+}
+
+function paintTable() {
+  const t = tableState;
+  if (!t) return;
+  const phase = (t.turns || []).slice(-1)[0]?.phase || "propose";
+  renderCircle(seatInfoFrom(t), t.status === "running" ? phase : "");
+}
+
+/** Play new turns one speaker at a time so it reads as a conversation. */
+function playTurns(t) {
+  const fresh = (t.turns || []).filter((x) => !seenTurns.has(x.id));
+  fresh.forEach((x) => seenTurns.add(x.id));
+  speechQueue.push(...fresh);
+  if (speechTimer) return;
+  const step = () => {
+    const x = speechQueue.shift();
+    if (!x) { speechTimer = null; speaking = null; paintTable(); return; }
+    if (x.phase === "synthesis") { speaking = "mod"; } else {
+      // A new round starts a clean slate — old gists belong to the last round.
+      if (bubbles.__phase && bubbles.__phase !== x.phase) bubbles = {};
+      bubbles.__phase = x.phase;
+      // A seat that couldn't speak must SAY so. Rendering nothing left two of the
+      // four seats permanently blank with no hint that anything had gone wrong.
+      const text = x.ok ? gistOf(x.text) : `couldn't speak — ${shortErr(x.text)}`;
+      bubbles[x.seat_id] = { text, phase: x.phase, ok: x.ok };
+      speaking = x.seat_id;
+    }
+    paintTable();
+    speechTimer = setTimeout(step, 1200);
+  };
+  speechTimer = setTimeout(step, 80);
 }
 
 const PHASE_NOTE = {
@@ -691,17 +1276,20 @@ async function pollTable(id) {
     let t;
     try { t = await api(`/api/tables/${id}`); } catch { return; }
     currentTable = id;
-    const spoken = {};
-    (t.turns || []).forEach((x) => { if (x.seat_id) spoken[x.seat_id] = x; });
+    tableState = t;
     const lastPhase = (t.turns || []).slice(-1)[0]?.phase || "propose";
-    const info = (t.seats || []).map((s, i) => ({
-      id: s.id, name: s.name, provider: s.provider, model: s.model,
-      skeptic: i === t.seats.length - 1,
-      done: !!spoken[s.id],
-    }));
-    renderCircle(info, [], t.status === "running" ? lastPhase : "");
+    playTurns(t);              // animates the circle; paintTable does the drawing
+    paintTable();
+    const spokenN = (t.turns || []).filter((x) => x.phase === lastPhase).length;
+    const seatN = (t.seats || []).length;
     $("#phasePill").textContent = t.status === "done" ? "blueprint ready"
-      : t.status === "failed" ? "failed" : `round ${({propose:1,critique:2,revise:3,synthesis:4})[lastPhase] || 1} · ${lastPhase}`;
+      : t.status === "failed" ? "failed"
+      : `round ${({ propose: 1, critique: 2, revise: 3, synthesis: 4 })[lastPhase] || 1} · ${lastPhase}`;
+    const prog = $("#phaseProgress");
+    if (prog) {
+      prog.hidden = t.status !== "running" || lastPhase === "synthesis";
+      prog.textContent = `${Math.min(spokenN, seatN)} of ${seatN} have spoken`;
+    }
     $("#phaseNote").textContent = t.status === "running" ? (PHASE_NOTE[lastPhase] || "") : "";
     renderTurns(t);
     if (t.status === "done" || t.status === "failed") {
@@ -719,18 +1307,23 @@ function renderTurns(t) {
   const sig = (t.turns || []).map((x) => x.id).join(",");
   if (el.dataset.sig === sig) return;      // don't repaint unchanged
   el.dataset.sig = sig;
-  el.innerHTML = (t.turns || []).map((x) => {
+  // Collapsed by design: the circle is how you follow the conversation, and this
+  // is the record you open when a gist makes you want the argument behind it.
+  const rows = (t.turns || []).filter((x) => x.phase !== "synthesis").map((x) => {
     const s = byId[x.seat_id];
     const who = s ? s.name : "Moderator";
-    if (x.phase === "synthesis") return "";
+    const body = (x.text || "").replace(/^[ \t]*GIST:[ \t]*.+\n?/im, "").trim();
     return `<div class="turn ${x.ok ? "" : "turn-bad"} phase-${x.phase}">
       <div class="turn-head"><b>${escapeHtml(who)}</b>
         <span class="pill">${escapeHtml(x.phase)}</span>
         ${s ? `<span class="hint">${escapeHtml(providerLabel(s.provider))} · ${escapeHtml(s.model)}</span>` : ""}</div>
-      <div class="turn-body">${escapeHtml(x.text)}</div>
+      <div class="turn-gist">${escapeHtml(gistOf(x.text))}</div>
+      <div class="turn-body">${escapeHtml(body || x.text)}</div>
     </div>`;
   }).join("");
-  el.scrollTop = el.scrollHeight;
+  el.innerHTML = `<details id="turnDetails"><summary>Full transcript
+      <span class="hint">${(t.turns || []).length} turns</span></summary>
+    <div class="turn-list">${rows}</div></details>`;
 }
 
 function renderBlueprint(t) {
@@ -983,8 +1576,8 @@ async function refreshBoard() {
   let p;
   try { p = await api(`/api/projects/${currentProject}`); } catch { return; }
   lastTasks = p.tasks;
-  const st = $("#selfTab");
-  if (st) st.hidden = !p.is_self;
+  // Self-repair is its own page now, reached from the landing tile — it is not a
+  // tab on an ordinary project, which is what let it linger after switching.
   renderBlockers();          // keeps the 🚧 badge honest even when the tab is closed
   currentRepo = p.repo || "";
   lastProject = p;
@@ -1003,6 +1596,16 @@ async function refreshBoard() {
   } else {
     $("#costBadge").textContent = `$${p.cost_usd.toFixed(2)} / $${p.budget_usd.toFixed(2)} · ${runs} runs`;
     $("#costBadge").title = "Estimated API spend / budget cap. Authoritative balance is at console.anthropic.com.";
+  }
+  // Which delivery cycle we're in. Only shown when there's more than one, so a
+  // one-shot project doesn't carry sprint vocabulary it never uses.
+  const sb = $("#sprintBadge");
+  if (sb) {
+    const total = p.sprints ?? 1;
+    sb.hidden = total <= 1;
+    sb.textContent = `sprint ${p.sprint ?? 1}/${total}`;
+    sb.title = `The manager plans and ships ${total} cycles on its own, deciding each ` +
+      "sprint's scope itself. It only stops for you if it's genuinely blocked.";
   }
   const badge = $("#statusBadge");
   badge.hidden = false;
@@ -1047,6 +1650,10 @@ function escapeHtml(s) {
 
 function renderEvent(e) {
   if (e.project_id !== currentProject) return;
+  // Legacy 'answer' events are the manager echoing what the boss had just said,
+  // so every boss message appeared twice — once as typed, once prefixed "The boss
+  // replied: ". The emit is gone; this hides the ones already in the history.
+  if (e.kind === "answer") return;
   const div = document.createElement("div");
   let cls = e.source.startsWith("worker") ? "worker" : e.source;
   if (e.source === "scheduler") cls = "system";
@@ -1262,6 +1869,50 @@ const STATUS_WORD = {
 
 function trim(s, n) { s = (s || "").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
+/** The delivery cycles, current one open and finished ones archived.
+ *
+ * Tasks accumulate across sprints, so by sprint 4 the board is a wall of work
+ * mostly finished three cycles ago. This separates "what the team is doing now"
+ * from "what it has already shipped", without hiding the latter. */
+function renderSprints(p) {
+  const total = p.sprints ?? 1;
+  if (total <= 1) return "";
+  const cur = p.sprint ?? 1;
+  const bySprint = {};
+  for (const t of p.tasks || []) (bySprint[t.sprint || 1] ||= []).push(t);
+
+  const line = (n) => {
+    const ts = bySprint[n] || [];
+    const done = ts.filter((t) => t.status === "done").length;
+    const failed = ts.filter((t) => t.status === "failed").length;
+    const live = ts.filter((t) => ["running", "queued"].includes(t.status)).length;
+    const state = n < cur ? "shipped" : n === cur ? "current" : "upcoming";
+    const titles = ts.map((t) =>
+      `<li class="sp-task ${t.status}"><b>#${t.seq}</b> ${escapeHtml(t.title)}
+         <span class="hint">${escapeHtml(t.role)} · ${t.status}</span></li>`).join("");
+    const body = ts.length
+      ? `<ul class="sp-tasks">${titles}</ul>`
+      : `<p class="hint">Not planned yet — the manager decides this sprint's scope
+           when the previous one ships.</p>`;
+    // Only the current sprint is open by default; finished ones are archive.
+    return `<details class="sp ${state}" ${state === "current" ? "open" : ""}>
+      <summary>
+        <span class="sp-n">Sprint ${n}</span>
+        <span class="sp-state">${state === "current" ? "in progress"
+          : state === "shipped" ? "shipped" : "not started"}</span>
+        <span class="sp-counts">${ts.length ? `${done}/${ts.length} done` : "—"}${
+          live ? ` · ${live} running` : ""}${failed ? ` · ${failed} failed` : ""}</span>
+      </summary>${body}</details>`;
+  };
+
+  return `<div class="sprints-card">
+    <div class="bl">🗓 Sprints <span class="hint">${cur} of ${total}</span></div>
+    <p class="hint sp-lede">The manager plans each cycle itself and rolls straight
+      into the next — it only stops for you if it is genuinely blocked.</p>
+    ${Array.from({ length: total }, (_, i) => line(i + 1)).join("")}
+  </div>`;
+}
+
 function renderCommand(p) {
   const el = $("#command");
   if (!el || el.hidden) return;
@@ -1382,6 +2033,7 @@ function renderCommand(p) {
     <div class="chain">
       ${attnHtml}
       ${askHtml}
+      ${renderSprints(p)}
       <div class="node boss" id="bossNode" title="Click to read your full request">
         <div class="who">👑 Boss</div>
         <div class="name">${escapeHtml(me.username || "You")}</div>
@@ -2071,8 +2723,10 @@ const openDialog = () => {
 $("#projectSelect").addEventListener("change", (e) => selectProject(e.target.value));
 $("#homeLink").addEventListener("click", () => showHome());
 $("#homeLink").style.cursor = "pointer";
-$("#newProjectBtn").addEventListener("click", openDialog);
-$("#homePlanBtn").addEventListener("click", openPlan);
+$("#modeBuild").addEventListener("click", openDialog);
+$("#modeShape").addEventListener("click", openPlan);
+$("#modeImprove").addEventListener("click", () => openSelfRepair());
+$("#selfBackBtn").addEventListener("click", () => showHome());
 $("#planBackBtn").addEventListener("click", () => {
   clearInterval(tablePoll); $("#plan").hidden = true; showHome();
 });
@@ -2125,7 +2779,6 @@ $("#whyCircle").addEventListener("click", (e) => {
     + "\u2022 3-6 seats. Past ~7, deliberation degrades.\n\n"
     + "See docs/ROUNDTABLE_DESIGN.md for the papers.");
 });
-$("#homeNewBtn").addEventListener("click", openDialog);
 $("#backToBriefBtn").addEventListener("click", () => showStep(1));
 $("#backToTeamBtn").addEventListener("click", () => showStep(2));
 $("#addRoleBtn").addEventListener("click", () =>
@@ -2231,6 +2884,7 @@ $("#newProjectForm").addEventListener("submit", async (ev) => {
         team: readRoster(), autonomy: f.get("autonomy") || "supervised",
         manager_model: f.get("manager_model") || "",
         manager_persona: f.get("manager_persona") || "",
+        sprints: Number(f.get("sprints")) || 1,
       }),
     });
     dialog.close();

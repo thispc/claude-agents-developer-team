@@ -6,8 +6,9 @@ from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSoc
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from . import (auth, blockers, bus, config, db, deploy, github_client, launcher, manager,
-               planner, preview, providers, roundtable, scheduler, selfops)
+from . import (auth, blockers, bus, cloud, config, credcheck, db, deploy,
+               envs, github_client, launcher, manager, planner, preview, providers,
+               roundtable, sandbox, scheduler, selfops)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -30,6 +31,7 @@ class NewProject(BaseModel):
     autonomy: str = "supervised"
     manager_model: str = ""
     manager_persona: str = ""
+    sprints: int = 1
 
 
 class BriefOnly(BaseModel):
@@ -205,6 +207,7 @@ def me(request: Request) -> dict:
     s = auth.get_settings(u)
     return {"signed_in": True, "username": u["username"], "is_root": bool(u["is_root"]),
             "has_ai_credentials": auth.has_own_ai_credentials(u),
+            "may_self_repair": config.may_self_repair(u["username"], bool(u["is_root"])),
             "settings": auth.redacted(s)}
 
 
@@ -213,6 +216,25 @@ def save_settings(body: Settings, request: Request) -> dict:
     u = current_user(request)
     auth.save_settings(u["id"], body.model_dump(exclude_none=True))
     return auth.redacted(auth.get_settings(auth.get_user(u["id"])))
+
+
+class VerifyCred(BaseModel):
+    kind: str
+    value: str = ""      # blank = check the one already stored
+
+
+@router.post("/api/settings/verify")
+async def verify_credential(body: VerifyCred, request: Request) -> dict:
+    """Prove a credential works before the user finds out by losing a project.
+
+    Checks the value being typed if there is one, otherwise the stored value —
+    so 'Check' is useful both while entering a key and long afterwards.
+    """
+    u = current_user(request)
+    if body.kind not in credcheck.KINDS:
+        raise HTTPException(400, f"cannot verify {body.kind!r}")
+    value = body.value.strip() or auth.get_settings(u).get(body.kind, "")
+    return await credcheck.check(body.kind, value)
 
 
 @router.get("/api/github/repos")
@@ -400,13 +422,18 @@ def deploy_status(project_id: int, request: Request) -> dict:
 
 
 @router.post("/api/projects/{project_id}/deploy")
-async def deploy_app(project_id: int, request: Request, mode: str = "") -> dict:
-    """Build and run the project's real app — backend included."""
+async def deploy_app(project_id: int, request: Request, mode: str = "",
+                     workspace: str = "") -> dict:
+    """Build and run the project's real app — backend included.
+
+    `workspace` runs an agent's own checkout rather than the merged default
+    branch, so a change can be exercised before it is committed.
+    """
     owned_project(project_id, request)
     mode = mode or ("k8s" if config.LAUNCHER == "k8s" else "local")
     if mode == "k8s":
         return await deploy.deploy_k8s(project_id)
-    return await deploy.deploy_local(project_id)
+    return await deploy.deploy_local(project_id, workspace.strip())
 
 
 @router.delete("/api/projects/{project_id}/deploy")
@@ -578,9 +605,16 @@ def get_blockers(project_id: int, request: Request) -> dict:
 # --- the platform working on itself (root only) ---
 
 def _root(request: Request) -> dict:
+    """Who may point the team at this platform's own codebase.
+
+    Root always may. Beyond that it is an operator decision, not a user one —
+    self-repair writes to the repo this server runs from, so it is granted in the
+    server's own environment (SELFREPAIR_USERS) rather than from inside the app,
+    where a compromised account could grant it to itself.
+    """
     u = current_user(request)
-    if not u["is_root"]:
-        raise HTTPException(403, "only the root operator can work on the platform itself")
+    if not config.may_self_repair(u["username"], bool(u["is_root"])):
+        raise HTTPException(403, "you are not allowed to work on the platform itself")
     return u
 
 
@@ -606,6 +640,26 @@ class SelfIssue(BaseModel):
     title: str
     body: str
     severity: str = "bug"
+    sprints: int = 1
+
+
+class RoughIssue(BaseModel):
+    rough: str
+
+
+@router.post("/api/self/refine")
+async def self_refine(payload: RoughIssue, request: Request) -> dict:
+    """Turn a one-line complaint into a ticket worth handing to an agent.
+
+    A vague ticket is the cheapest way to waste a sprint — the team builds the
+    wrong thing, competently. This is a draft for the human to edit, never
+    submitted on their behalf.
+    """
+    u = _root(request)
+    rough = payload.rough.strip()
+    if len(rough) < 8:
+        raise HTTPException(400, "say a little more about what's wrong")
+    return await selfops.refine_issue(rough, auth.get_settings(u))
 
 
 @router.post("/api/self/issue")
@@ -614,6 +668,14 @@ async def self_issue(payload: SelfIssue, request: Request) -> dict:
     if not payload.title.strip() or not payload.body.strip():
         raise HTTPException(400, "describe the issue and give it a title")
     pid = selfops.ensure_project(u["id"])
+    # Self-repair is meant to run start-to-finish on its own: fix, verify, ship.
+    # Asking the operator to approve each step of a fix they already asked for is
+    # the interruption this feature exists to remove.
+    sprints = max(1, min(10, payload.sprints or 1))
+    db.set_sprints(pid, sprints)
+    db.set_project_autonomy(pid, "autonomous")
+    if sprints > 1:
+        db.set_max_runs(pid, min(400, config.MAX_AGENT_RUNS * sprints))
     res = await selfops.file_issue(pid, payload.title.strip(), payload.body.strip(),
                                    payload.severity)
     # The manager plans the fix. If one is already running it picks the issue up as
@@ -624,6 +686,144 @@ async def self_issue(payload: SelfIssue, request: Request) -> dict:
     else:
         res["manager"] = "already running — the issue was handed to it"
     return {"project_id": pid, **res}
+
+
+class EnvBuild(BaseModel):
+    source: str
+    note: str = ""
+
+
+class EnvDeploy(BaseModel):
+    tag: str
+    env: str
+
+
+class EnvTag(BaseModel):
+    tag: str
+
+
+@router.get("/api/self/envs")
+def envs_overview(request: Request) -> dict:
+    _root(request)
+    return envs.overview()
+
+
+@router.post("/api/self/envs/build")
+def envs_build(body: EnvBuild, request: Request) -> dict:
+    _root(request)
+    r = envs.build(body.source.strip(), body.note.strip())
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "build failed"))
+    return r
+
+
+@router.post("/api/self/envs/deploy")
+def envs_deploy(body: EnvDeploy, request: Request) -> dict:
+    _root(request)
+    r = envs.deploy_preview(body.tag.strip(), body.env.strip())
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "deploy failed"))
+    return r
+
+
+@router.post("/api/self/envs/promote")
+def envs_promote(body: EnvTag, request: Request) -> dict:
+    """Point production at an image that has already been previewed."""
+    _root(request)
+    r = envs.promote(body.tag.strip())
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "promotion failed"))
+    bus.emit(0, None, "system", "promoted", {"tag": r["tag"], "from": r.get("previous")})
+    return r
+
+
+@router.get("/api/self/instance")
+def self_instance(request: Request) -> dict:
+    """What this instance is and whether it can ship a new version of itself."""
+    _root(request)
+    return cloud.describe()
+
+
+@router.get("/api/self/images")
+async def self_images(request: Request) -> dict:
+    """What CI has published, and whether a newer one is waiting."""
+    _root(request)
+    imgs = await cloud.available_images()
+    return {"images": imgs, "candidate": await cloud.newer_than_running(),
+            "auto_update": cloud.AUTO_UPDATE, "busy": cloud.busy()}
+
+
+class SelfImage(BaseModel):
+    image: str
+    force: bool = False
+
+
+@router.post("/api/self/update")
+def self_update(body: SelfImage, request: Request) -> dict:
+    """Point our own Deployment at a new image. This pod is then replaced."""
+    _root(request)
+    r = cloud.self_update(body.image.strip(), body.force)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "self-update failed"))
+    bus.emit(0, None, "system", "self_update", {"from": r.get("from"), "to": r["to"]})
+    return r
+
+
+@router.post("/api/self/update/rollback")
+def self_update_rollback(request: Request) -> dict:
+    _root(request)
+    r = cloud.rollback()
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "rollback failed"))
+    return r
+
+
+@router.post("/api/self/envs/rollback")
+def envs_rollback(request: Request) -> dict:
+    """k8s keeps the previous ReplicaSet, so this needs no artifact and no guesswork."""
+    _root(request)
+    r = envs.rollback()
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("detail") or r.get("error", "rollback failed"))
+    bus.emit(0, None, "system", "rolled_back", {"detail": r.get("detail", "")})
+    return r
+
+
+@router.delete("/api/self/envs/{env}")
+def envs_destroy(env: str, request: Request) -> dict:
+    _root(request)
+    return envs.destroy(env)
+
+
+class SandboxReq(BaseModel):
+    ref: str          # a source id from sandbox.sources(): live | workspace:… | ref:…
+
+
+@router.get("/api/self/sandbox")
+def sandbox_status(request: Request) -> dict:
+    _root(request)
+    return {**sandbox.status(), "sources": sandbox.sources()}
+
+
+@router.post("/api/self/sandbox")
+def sandbox_start(body: SandboxReq, request: Request) -> dict:
+    """Boot the candidate build beside the live one so it can be clicked through.
+
+    A diff says the code is plausible; only running it says the app still works.
+    """
+    _root(request)
+    res = sandbox.start(body.ref.strip())
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error", "the sandbox would not start"))
+    bus.emit(0, None, "system", "sandbox_started",
+             {"ref": res["ref"], "commit": res["commit"], "port": res["port"]})
+    return res
+
+
+@router.delete("/api/self/sandbox")
+def sandbox_stop(request: Request) -> dict:
+    _root(request)
+    return sandbox.stop()
 
 
 @router.post("/api/self/redeploy")
@@ -665,15 +865,29 @@ def notifications(request: Request) -> dict:
 
 @router.get("/api/health")
 def health() -> dict:
+    # The dashboard is static and served straight from disk, but the API is
+    # whichever process is running. Edit both and the page silently runs ahead of
+    # the server — which looks exactly like a broken feature (an empty dropdown,
+    # a button that does nothing) rather than a conductor that needs restarting.
+    stale_ui = False
+    try:
+        js = config.DASHBOARD_DIR / "app.js"
+        from .main import STARTED_AT
+        stale_ui = js.stat().st_mtime > STARTED_AT
+    except Exception:
+        pass
     return {"ok": True, "launcher": config.LAUNCHER, "auth": config.auth_mode(),
-            "github": bool(config.GITHUB_TOKEN)}
+            "github": bool(config.GITHUB_TOKEN) or config.DEMO_MODE,
+            "demo": config.DEMO_MODE, "stale_ui": stale_ui}
 
 
 @router.post("/api/suggest-team")
 async def suggest_team(body: BriefOnly, request: Request) -> dict:
     """Recruiting: propose a starting team from the brief for the boss to tweak."""
-    current_user(request)   # spends tokens — never anonymous
-    return {"team": await planner.suggest_team(body.brief),
+    u = current_user(request)   # spends tokens — never anonymous
+    # Their own credentials, on their own provider. Without this the planner had
+    # nothing to authenticate with and every user silently got the keyword heuristic.
+    return {"team": await planner.suggest_team(body.brief, auth.get_settings(u)),
             "known_roles": [r["name"] for r in config.load_roles()]}
 
 
@@ -687,10 +901,13 @@ async def create_project(body: NewProject, request: Request) -> dict:
         raise HTTPException(400, "Add your own Anthropic API key or Claude subscription "
                                  "token in Settings (⚙) before starting a project — "
                                  "agents run on your account, not the server's.")
-    if not owner["is_root"] and not auth.get_settings(owner).get("github_token"):
+    if (not config.DEMO_MODE and not owner["is_root"]
+            and not auth.get_settings(owner).get("github_token")):
         raise HTTPException(400, "Add your own GitHub token in Settings (⚙) — "
                                  "your team needs a repo it can push to.")
-    if not config.AUTH_CONFIGURED:
+    # A sandbox has no credentials by design; gating on them would make the one
+    # build you most want to click through the only one you cannot use.
+    if not config.AUTH_CONFIGURED and not config.DEMO_MODE:
         raise HTTPException(400, "Set ANTHROPIC_API_KEY (API billing) or "
                                  "CLAUDE_CODE_OAUTH_TOKEN (Pro/Max subscription) on the conductor")
     if config.LAUNCHER == "k8s" and config.CLI_LOGIN:
@@ -700,17 +917,31 @@ async def create_project(body: NewProject, request: Request) -> dict:
     repo = body.repo or config.GITHUB_REPO
     team = [m.model_dump() for m in body.team]
     autonomy = "autonomous" if body.autonomy == "autonomous" else "supervised"
+    sprints = max(1, min(20, body.sprints or 1))
+    # A run cap sized for one pass starves a multi-sprint run: it stops somewhere
+    # inside sprint 2 with the product half-built, which looks like the team giving
+    # up rather than hitting a guard rail. Scale it with the cycles asked for, but
+    # only when the boss left the cap at its default — an explicit number is a
+    # decision, not an oversight.
+    runs = body.max_runs or config.MAX_AGENT_RUNS
+    scaled = runs <= config.MAX_AGENT_RUNS and sprints > 1
+    if scaled:
+        runs = min(400, runs * sprints)
     project_id = db.create_project(
         body.name, body.brief, repo,
         body.budget_usd or config.PROJECT_BUDGET_USD,
         body.max_workers or config.MAX_CONCURRENT_WORKERS,
-        body.max_runs or config.MAX_AGENT_RUNS,
+        runs,
         team=team, autonomy=autonomy,
         manager_model=body.manager_model.strip(),
         manager_persona=body.manager_persona.strip(),
         owner_id=(owner["id"] if owner else 0),
+        sprints=sprints,
     )
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
+    if scaled:
+        bus.emit(project_id, None, "system", "run_cap_scaled",
+                 {"runs": runs, "sprints": sprints})
     # Make sure the target repo exists before the team tries to clone it. This is
     # why manual repo creation is unnecessary — the token creates a private repo.
     if repo and github_client.enabled(repo):
@@ -723,7 +954,9 @@ async def create_project(body: NewProject, request: Request) -> dict:
 @router.get("/api/projects")
 def list_projects(request: Request) -> list[dict]:
     u = current_user(request)
-    projects = [p for p in db.list_projects() if can_see(p, u)]
+    # The platform's own row is not one of "your projects" — it has its own way in
+    # (the Improve tile) and listing it invited people to drive it like a normal one.
+    projects = [p for p in db.list_projects() if can_see(p, u) and not p["is_self"]]
     for p in projects:
         p["task_count"] = len(db.list_tasks(p["id"]))
     return projects
@@ -1152,6 +1385,20 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
         bus.emit(body.project_id, body.task_id, "system", "rate_limited",
                  {"model": model, "cooldown_s": cooldown_left(model),
                   "detail": body.report[:300]})
+    # A report from a superseded worker must not drag the task backwards.
+    #
+    # On the mars-rover run two workers ended up on task #7 at once (a re-dispatch
+    # while the first was still alive). The manager accepted the first one's work
+    # and closed the task; forty seconds later the second reported, and the task
+    # flipped from 'done' back to 'pushed' — permanently, because the project was
+    # already finished and nothing was left running to move it on again.
+    if task and task["status"] == "done":
+        bus.emit(body.project_id, body.task_id, "system", "late_report_ignored",
+                 {"status": status, "note": "this task was already accepted; a second "
+                                            "worker reported afterwards"})
+        db.add_project_cost(body.project_id, body.cost_usd)
+        return {"ok": True, "ignored": "task already accepted"}
+
     db.update_task(body.task_id, status=status, report=body.report,
                    verification=body.verification or "",
                    cost_usd=(task["cost_usd"] if task else 0) + body.cost_usd)

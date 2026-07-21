@@ -15,6 +15,7 @@ loops, so pulling in two more SDKs would buy nothing.
 
 import asyncio
 import os
+import random
 from typing import Any
 
 import httpx
@@ -44,10 +45,16 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     "google": {
         "label": "Gemini",
         "key_setting": "gemini_api_key",
+        # The `-latest` aliases are stable pointers; pinned ids go away without
+        # warning. `gemini-2.5-flash` was hard-coded here and had already been
+        # retired — the ListModels endpoint still advertises it, but generateContent
+        # answers "no longer available to new users", so a seat using it just died.
+        # Pro-tier models 429 on the free tier; flash-tier works without billing.
         "models": [
-            {"id": "gemini-2.5-pro", "label": "Gemini 2.5 Pro"},
-            {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash — cheap"},
-            {"id": "gemini-2.0-flash", "label": "Gemini 2.0 Flash"},
+            {"id": "gemini-flash-latest", "label": "Gemini Flash (latest) — free tier"},
+            {"id": "gemini-3.5-flash", "label": "Gemini 3.5 Flash"},
+            {"id": "gemini-flash-lite-latest", "label": "Gemini Flash Lite — cheapest"},
+            {"id": "gemini-pro-latest", "label": "Gemini Pro (latest) — needs a paid plan"},
         ],
     },
 }
@@ -89,32 +96,97 @@ def key_for(provider: str, settings: dict) -> str:
 # --------------------------------------------------------------------------
 
 
+# Transient by nature: throttling and capacity. Anything else is a real error and
+# retrying it just burns time and quota.
+RETRY_STATUS = {408, 429, 500, 502, 503, 529}
+RETRIES = 3
+
+
+def _error_message(resp: httpx.Response) -> str:
+    try:
+        return resp.json().get("error", {}).get("message", "")[:300]
+    except Exception:
+        return resp.text[:200]
+
+
+def not_entitled(resp: httpx.Response) -> bool:
+    """A 429 that will never clear: the account is not allowed this model at all.
+
+    Google returns the same RESOURCE_EXHAUSTED for "you are going too fast" and
+    for "your free-tier allowance for this model is zero" — but the second says
+    `limit: 0`, and no amount of waiting fixes it. Retrying it wastes the caller's
+    time and teaches the platform to treat an entitlement wall as a throttle.
+    """
+    try:
+        msg = resp.json().get("error", {}).get("message", "")
+    except Exception:
+        return False
+    return "limit: 0" in msg
+
+
+def _retry_after(resp: httpx.Response) -> float:
+    """How long the provider asked us to wait, in seconds; 0 if it didn't say.
+
+    Google doesn't use the Retry-After header — it buries the delay in
+    error.details[].retryDelay as a duration string like "38s".
+    """
+    hdr = resp.headers.get("retry-after", "")
+    if hdr.strip().replace(".", "", 1).isdigit():
+        return float(hdr)
+    try:
+        for d in resp.json().get("error", {}).get("details", []):
+            raw = str(d.get("retryDelay", ""))
+            if raw.endswith("s") and raw[:-1].replace(".", "", 1).isdigit():
+                return float(raw[:-1])
+    except Exception:
+        pass
+    return 0.0
+
+
 async def complete(provider: str, model: str, system: str, prompt: str,
                    settings: dict, max_tokens: int = 2000) -> str:
-    """One completion from any provider. Raises ProviderError with a readable cause."""
+    """One completion from any provider. Raises ProviderError with a readable cause.
+
+    Retries throttles and capacity blips. Without this a single 503 — which Gemini
+    hands out freely on the free tier — permanently silenced a round-table seat, or
+    dropped recruiting to the keyword heuristic, for a fault that clears in seconds.
+    """
     if provider not in PROVIDERS:
         raise ProviderError(f"unknown provider {provider!r}")
     if not key_for(provider, settings):
         raise ProviderError(
             f"no credentials for {PROVIDERS[provider]['label']} — add a key in Settings")
-    try:
-        if provider == "anthropic":
-            return await _anthropic(model, system, prompt, settings, max_tokens)
-        if provider == "openai":
-            return await _openai(model, system, prompt, settings, max_tokens)
-        return await _google(model, system, prompt, settings, max_tokens)
-    except ProviderError:
-        raise
-    except httpx.HTTPStatusError as e:
-        body = ""
+    label = PROVIDERS[provider]["label"]
+
+    for attempt in range(RETRIES):
         try:
-            body = e.response.json().get("error", {}).get("message", "")
-        except Exception:
-            body = e.response.text[:200]
-        raise ProviderError(
-            f"{PROVIDERS[provider]['label']} returned {e.response.status_code}: {body}") from e
-    except Exception as e:
-        raise ProviderError(f"{PROVIDERS[provider]['label']} call failed: {e}") from e
+            if provider == "anthropic":
+                return await _anthropic(model, system, prompt, settings, max_tokens)
+            if provider == "openai":
+                return await _openai(model, system, prompt, settings, max_tokens)
+            return await _google(model, system, prompt, settings, max_tokens)
+        except ProviderError:
+            raise
+        except httpx.HTTPStatusError as e:
+            status, body = e.response.status_code, _error_message(e.response)
+            if status == 429 and not_entitled(e.response):
+                raise ProviderError(
+                    f"{label}: this account is not entitled to {model} (free-tier "
+                    f"limit is 0). Enable billing on the key's project, or pick a "
+                    f"model your plan includes.") from e
+            if status not in RETRY_STATUS or attempt == RETRIES - 1:
+                raise ProviderError(f"{label} returned {status}: {body}") from e
+            # Honour the provider's own hint; otherwise exponential with jitter, so
+            # concurrent seats don't retry in lockstep into the same capacity wall.
+            wait = _retry_after(e.response) or (1.5 * 2 ** attempt)
+            await asyncio.sleep(min(wait, 30) + random.random())
+        except (httpx.TimeoutException, httpx.TransportError) as e:
+            if attempt == RETRIES - 1:
+                raise ProviderError(f"{label} was unreachable: {e}") from e
+            await asyncio.sleep(1.5 * 2 ** attempt + random.random())
+        except Exception as e:
+            raise ProviderError(f"{label} call failed: {e}") from e
+    raise ProviderError(f"{label} failed after {RETRIES} attempts")
 
 
 async def _anthropic(model: str, system: str, prompt: str, settings: dict,
