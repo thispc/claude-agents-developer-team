@@ -48,10 +48,29 @@ def namespace() -> str:
         return config._env("K8S_NAMESPACE", "devteam")
 
 
-def _api():
-    from kubernetes import client, config as kconfig
+def _load():
+    """Point the client at the cluster we are running inside.
+
+    Every client needs this and only _api() used to do it, so anything that built
+    a CoreV1Api directly got a client with no host and failed with "No host
+    specified" — which reads like a networking problem and is not. Depending on
+    another function's side effect for something this load-bearing is how that
+    happens.
+    """
+    from kubernetes import config as kconfig
     kconfig.load_incluster_config()
+
+
+def _api():
+    from kubernetes import client
+    _load()
     return client.AppsV1Api()
+
+
+def _core():
+    from kubernetes import client
+    _load()
+    return client.CoreV1Api()
 
 
 def current_image() -> str:
@@ -121,7 +140,7 @@ def canary(image: str) -> dict[str, Any]:
     if not in_cluster():
         return {"ok": False, "error": "not in a cluster"}
     from kubernetes import client
-    api, core = _api(), client.CoreV1Api()
+    api, core = _api(), _core()
     ns = namespace()
     body = client.V1Deployment(
         metadata=client.V1ObjectMeta(name=CANARY, namespace=ns,
@@ -299,7 +318,7 @@ def staging_deploy(image: str) -> dict[str, Any]:
     if not in_cluster():
         return {"ok": False, "error": "not in a cluster"}
     from kubernetes import client
-    api, core = _api(), client.CoreV1Api()
+    api, core = _api(), _core()
     try:
         core.create_namespace(client.V1Namespace(
             metadata=client.V1ObjectMeta(name=STAGING_NS,
@@ -382,8 +401,8 @@ def staging_verify(image: str) -> dict[str, Any]:
     """
     if not in_cluster():
         return {"ok": False, "error": "not in a cluster"}
-    from kubernetes import client, stream
-    core = client.CoreV1Api()
+    from kubernetes import stream
+    core = _core()
     # A permissions failure and an absent pod are different problems with the
     # same old message. "no running staging pod to test in" sent a real
     # investigation looking for a missing pod when the actual answer was a 403
@@ -495,7 +514,7 @@ def staging_teardown() -> dict[str, Any]:
         return {"ok": False, "error": "not in a cluster"}
     from kubernetes import client
     try:
-        client.CoreV1Api().delete_namespace(STAGING_NS)
+        _core().delete_namespace(STAGING_NS)
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -570,7 +589,7 @@ def rollback() -> dict[str, Any]:
         return {"ok": False, "error": "not running in Kubernetes"}
     try:
         from kubernetes import client
-        rs = client.AppsV1Api().list_namespaced_replica_set(
+        rs = _api().list_namespaced_replica_set(
             namespace(), label_selector=f"app={DEPLOYMENT}")
         old = sorted((r for r in rs.items
                       if (r.spec.replicas or 0) == 0 and r.spec.template.spec.containers),

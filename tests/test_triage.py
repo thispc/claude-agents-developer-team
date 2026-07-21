@@ -502,3 +502,21 @@ def test_production_is_granted_what_it_needs_in_the_staging_namespace():
     # real kubeconfig, not by the production pod.
     driver = rbac.split("devteam-staging-driver")[1].split("---")[0]
     assert "secrets" not in driver
+
+
+@pytest.mark.hostonly
+def test_no_kubernetes_client_is_built_without_being_pointed_at_the_cluster():
+    """Only _api() loaded the config, so anything constructing a CoreV1Api
+    directly got a client with no host and failed with "No host specified" —
+    which reads as a networking problem and is not. Depending on another
+    function's side effect for something this load-bearing is how that happens."""
+    import re
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "conductor" / "app" / "cloud.py").read_text()
+    # Strip the two constructors that are allowed to do it, then look for others.
+    for helper in ("def _api():", "def _core():"):
+        block = src.split(helper)[1].split("\ndef ")[0]
+        src = src.replace(block, "")
+    stray = re.findall(r"client\.(?:CoreV1Api|AppsV1Api)\(\)", src)
+    assert not stray, f"{len(stray)} client(s) built outside _api()/_core()"
