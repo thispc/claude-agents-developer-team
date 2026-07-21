@@ -1,0 +1,1033 @@
+<!doctype html><html lang="en" data-theme="light"><head><meta charset="utf-8"><meta name="color-scheme" content="light"><title>devteam — how it works</title>
+
+<style>
+  :root {
+    --paper:      #FBFAF7;
+    --paper-sunk: #F2F0EA;
+    --card:       #FFFFFF;
+    --ink:        #1B2021;
+    --ink-soft:   #40484A;
+    --grey:       #6B7573;
+    --rule:       #DFDCD4;
+    --accent:     #2E6E5B;
+    --accent-dim: #E3EDE8;
+    --human:      #A9503A;
+    --human-dim:  #F6E9E4;
+    --warn:       #8A6A1F;
+    --warn-dim:   #F7EFDC;
+
+    --serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, Charter, Georgia, serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace;
+
+    --measure: 68ch;
+    --step--1: clamp(0.82rem, 0.80rem + 0.10vw, 0.88rem);
+    --step-0:  clamp(1.03rem, 1.00rem + 0.16vw, 1.14rem);
+    --step-1:  clamp(1.22rem, 1.15rem + 0.34vw, 1.42rem);
+    --step-2:  clamp(1.48rem, 1.35rem + 0.62vw, 1.86rem);
+    --step-3:  clamp(1.85rem, 1.60rem + 1.15vw, 2.55rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:      #14181A;
+      --paper-sunk: #1B2124;
+      --card:       #1E2427;
+      --ink:        #E6E4DE;
+      --ink-soft:   #BFC4C2;
+      --grey:       #8E9997;
+      --rule:       #2E3639;
+      --accent:     #6FB79A;
+      --accent-dim: #1D2E29;
+      --human:      #D5866C;
+      --human-dim:  #2E211D;
+      --warn:       #C7A356;
+      --warn-dim:   #2A2415;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:      #14181A;
+    --paper-sunk: #1B2124;
+    --card:       #1E2427;
+    --ink:        #E6E4DE;
+    --ink-soft:   #BFC4C2;
+    --grey:       #8E9997;
+    --rule:       #2E3639;
+    --accent:     #6FB79A;
+    --accent-dim: #1D2E29;
+    --human:      #D5866C;
+    --human-dim:  #2E211D;
+    --warn:       #C7A356;
+    --warn-dim:   #2A2415;
+  }
+  :root[data-theme="light"] {
+    --paper:      #FBFAF7;
+    --paper-sunk: #F2F0EA;
+    --card:       #FFFFFF;
+    --ink:        #1B2021;
+    --ink-soft:   #40484A;
+    --grey:       #6B7573;
+    --rule:       #DFDCD4;
+    --accent:     #2E6E5B;
+    --accent-dim: #E3EDE8;
+    --human:      #A9503A;
+    --human-dim:  #F6E9E4;
+    --warn:       #8A6A1F;
+    --warn-dim:   #F7EFDC;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: var(--step-0);
+    line-height: 1.62;
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 1.4rem 6rem;
+  }
+
+  @media (min-width: 1000px) {
+    .shell {
+      grid-template-columns: 15.5rem minmax(0, 1fr);
+      gap: 3.5rem;
+      padding-right: 2.5rem;
+    }
+  }
+
+  /* ---- masthead ---- */
+  .masthead {
+    grid-column: 1 / -1;
+    border-bottom: 1px solid var(--rule);
+    padding: 3.5rem 0 2.2rem;
+    margin-bottom: 3rem;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--grey);
+    margin: 0 0 1rem;
+  }
+  .masthead h1 {
+    font-size: var(--step-3);
+    line-height: 1.08;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+    margin: 0 0 1.1rem;
+    max-width: 22ch;
+  }
+  .standfirst {
+    font-size: var(--step-1);
+    color: var(--ink-soft);
+    max-width: 58ch;
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  /* ---- contents rail ---- */
+  .rail { display: none; }
+  @media (min-width: 1000px) {
+    .rail {
+      display: block;
+      position: sticky;
+      top: 2rem;
+      align-self: start;
+      max-height: calc(100vh - 4rem);
+      overflow-y: auto;
+      border-right: 1px solid var(--rule);
+      padding-right: 1.5rem;
+    }
+  }
+  .rail p {
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--grey);
+    margin: 0 0 0.9rem;
+  }
+  .rail ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.55rem; }
+  .rail a {
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    line-height: 1.35;
+    color: var(--ink-soft);
+    text-decoration: none;
+    display: block;
+    border-left: 2px solid transparent;
+    padding-left: 0.7rem;
+  }
+  .rail a:hover, .rail a:focus-visible { color: var(--accent); border-left-color: var(--accent); }
+
+  /* ---- reading column ---- */
+  main { min-width: 0; }
+  section { margin-bottom: 4.5rem; scroll-margin-top: 1.5rem; }
+  section > * { max-width: var(--measure); }
+
+  h2 {
+    font-size: var(--step-2);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+    text-wrap: balance;
+    margin: 0 0 0.4rem;
+    padding-top: 0.9rem;
+    border-top: 2px solid var(--ink);
+  }
+  .kicker {
+    font-family: var(--mono);
+    font-size: var(--step--1);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 1.6rem;
+  }
+  h3 {
+    font-size: var(--step-1);
+    font-weight: 600;
+    line-height: 1.28;
+    text-wrap: balance;
+    margin: 2.6rem 0 0.6rem;
+  }
+  p { margin: 0 0 1.15rem; }
+  ul, ol { margin: 0 0 1.15rem; padding-left: 1.3rem; }
+  li { margin-bottom: 0.5rem; }
+  strong { font-weight: 600; }
+  a { color: var(--accent); }
+
+  /* plain-English gloss for jargon */
+  code {
+    font-family: var(--mono);
+    font-size: 0.86em;
+    background: var(--paper-sunk);
+    padding: 0.1em 0.35em;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+
+  .term {
+    font-family: var(--mono);
+    font-size: 0.9em;
+    background: var(--accent-dim);
+    color: var(--ink);
+    padding: 0.08em 0.34em;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+
+  /* ---- cast cards ---- */
+  .cast {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    max-width: var(--measure);
+    margin-bottom: 1.5rem;
+  }
+  .cast article { background: var(--card); padding: 1.4rem 1.3rem; }
+  .cast h4 {
+    font-size: var(--step-0);
+    font-weight: 600;
+    margin: 0 0 0.15rem;
+  }
+  .cast .role {
+    font-family: var(--mono);
+    font-size: 0.76rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--grey);
+    margin: 0 0 0.7rem;
+  }
+  .cast p { font-size: 0.95rem; margin: 0; color: var(--ink-soft); line-height: 1.55; }
+
+  /* ---- numbered sequence ---- */
+  .steps { list-style: none; padding: 0; margin: 0 0 1.5rem; max-width: var(--measure); counter-reset: step; }
+  .steps > li {
+    counter-increment: step;
+    display: grid;
+    grid-template-columns: 2.6rem minmax(0, 1fr);
+    gap: 1.1rem;
+    padding: 1.3rem 0;
+    border-top: 1px solid var(--rule);
+    margin: 0;
+  }
+  .steps > li:last-child { border-bottom: 1px solid var(--rule); }
+  .steps > li::before {
+    content: counter(step, decimal-leading-zero);
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    color: var(--accent);
+    padding-top: 0.28rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .steps h4 { font-size: var(--step-0); font-weight: 600; margin: 0 0 0.35rem; }
+  .steps p { margin: 0 0 0.6rem; }
+  .steps p:last-child { margin-bottom: 0; }
+  .steps .who {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--grey);
+  }
+  .steps .who.human { color: var(--human); }
+
+  /* ---- callouts ---- */
+  .note {
+    max-width: var(--measure);
+    background: var(--paper-sunk);
+    border-left: 3px solid var(--accent);
+    padding: 1.1rem 1.3rem;
+    margin: 0 0 1.6rem;
+  }
+  .note.human { border-left-color: var(--human); background: var(--human-dim); }
+  .note.limit { border-left-color: var(--warn); background: var(--warn-dim); }
+  .note p:last-child { margin-bottom: 0; }
+  .note .label {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--grey);
+    display: block;
+    margin-bottom: 0.5rem;
+  }
+  .note.human .label { color: var(--human); }
+  .note.limit .label { color: var(--warn); }
+
+  /* ---- tables ---- */
+  .table-wrap { max-width: var(--measure); overflow-x: auto; margin: 0 0 1.6rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.94rem; }
+  th, td { text-align: left; padding: 0.62rem 0.9rem 0.62rem 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th {
+    font-family: var(--mono);
+    font-size: 0.74rem;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--grey);
+    font-weight: 400;
+    border-bottom: 1px solid var(--ink);
+  }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* ---- diagrams ---- */
+  figure { margin: 0 0 1.8rem; max-width: var(--measure); }
+  .diagram {
+    background: var(--card);
+    border: 1px solid var(--rule);
+    padding: 1.4rem 1rem;
+    overflow-x: auto;
+  }
+  figcaption {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: var(--grey);
+    margin-top: 0.7rem;
+  }
+
+  /* ---- glossary ---- */
+  dl.glossary { max-width: var(--measure); margin: 0; }
+  dl.glossary div {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.2rem;
+    padding: 0.9rem 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  @media (min-width: 640px) {
+    dl.glossary div { grid-template-columns: 13rem minmax(0, 1fr); gap: 1.2rem; }
+  }
+  dl.glossary dt { font-family: var(--mono); font-size: 0.86rem; color: var(--ink); padding-top: 0.15rem; }
+  dl.glossary dd { margin: 0; color: var(--ink-soft); font-size: 0.96rem; }
+
+  .colophon {
+    max-width: var(--measure);
+    border-top: 1px solid var(--rule);
+    padding-top: 1.4rem;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    line-height: 1.6;
+    color: var(--grey);
+  }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+<style>
+  /* ---- print ----
+     The screen layout has a sticky contents rail and a viewport-height column;
+     neither means anything on paper. Page breaks are told to keep a heading with
+     what follows it, and never to split a table row or a figure. */
+  @page { size: A4; margin: 18mm 16mm 20mm; }
+  @media print {
+    .rail { display: none !important; }
+    .shell { display: block !important; max-width: none !important; padding: 0 !important; }
+    body { font-size: 10.5pt; line-height: 1.5; background: #fff; }
+    .masthead { padding-top: 0; margin-bottom: 1.6rem; break-after: avoid; }
+    section { margin-bottom: 1.9rem; break-inside: auto; }
+    h2 { break-after: avoid; page-break-after: avoid; font-size: 15pt; }
+    h3 { break-after: avoid; page-break-after: avoid; font-size: 12pt; }
+    .kicker { break-after: avoid; }
+    table, .note, .cast article, figure, .pfig { break-inside: avoid; }
+    tr, li { break-inside: avoid; }
+    .cast { grid-template-columns: repeat(2, 1fr); }
+    a { color: inherit; text-decoration: none; }
+    .table-wrap { overflow: visible; }
+  }
+  /* Figures that need no JavaScript, so they survive being printed. */
+  .pfig {
+    border: 1px solid var(--rule); background: var(--card);
+    padding: 0.9rem 1rem; display: flex; flex-direction: column; gap: 0.5rem;
+  }
+  .prow { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+  .prow.indent { padding-left: 1.6rem; }
+  .pbox {
+    border: 1px solid var(--accent); background: var(--accent-dim);
+    border-radius: 3px; padding: 0.2rem 0.55rem; font-size: 0.82rem;
+  }
+  .pbox.human { border-color: var(--human); background: var(--human-dim); }
+  .pbox.plain { border-color: var(--rule); background: var(--paper-sunk); color: var(--ink-soft); }
+  .parr { color: var(--grey); font-size: 0.9rem; }
+  .pdec { font-size: 0.82rem; font-weight: 600; }
+  .pyes, .pno {
+    font-family: var(--mono); font-size: 0.72rem; text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .pyes { color: var(--accent); } .pno { color: var(--human); }
+  .pmuted { color: var(--grey); font-size: 0.78rem; }
+</style>
+
+
+<div class="shell">
+
+  <header class="masthead">
+    <p class="eyebrow">Handbook · written for a non-technical reader</p>
+    <h1>devteam: a software team that works while you sleep</h1>
+    <p class="standfirst">You describe what you want built. A manager plans it, hires a team, and the team writes the code — on your accounts, on your servers, in your version control. This explains exactly how, with no coding knowledge assumed.</p>
+  </header>
+
+  <nav class="rail" aria-label="Contents">
+    <p>Contents</p>
+    <ol>
+      <li><a href="#what">What it actually is</a></li>
+      <li><a href="#yours">Why "your own" matters</a></li>
+      <li><a href="#cast">Who is on the team</a></li>
+      <li><a href="#life">The life of a project</a></li>
+      <li><a href="#machine">What the machine looks like</a></li>
+      <li><a href="#bonnet">Under the bonnet</a></li>
+      <li><a href="#decides">How the manager decides</a></li>
+      <li><a href="#sprints">Sprints and your involvement</a></li>
+      <li><a href="#output">Where the work ends up</a></li>
+      <li><a href="#itself">How it looks after itself</a></li>
+      <li><a href="#rails">The safety rails</a></li>
+      <li><a href="#cost">What it costs</a></li>
+      <li><a href="#honest">Solid, and not yet</a></li>
+      <li><a href="#glossary">Glossary</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <!-- ============================================ -->
+    <section id="what">
+      <h2>What it actually is</h2>
+      <p class="kicker">Start here</p>
+
+      <p>Imagine hiring a small software agency. You give them a description of what you want. A manager reads it, works out the pieces, decides who is needed, and hands each person a task. They go away, write the code, test it, and submit it for review. The manager checks the work, sends back what is not good enough, and approves what is. Every so often they come back and ask you what you think.</p>
+
+      <p><strong>devteam is that agency, staffed by AI instead of people.</strong> The manager is an AI. The engineers are AI. They are not a single chatbot pretending to be a team — they are genuinely separate programs, running at the same time, each with its own instructions, its own copy of the code, and no ability to see inside each other's heads. They coordinate the way a real team does: through tasks, written handover notes, reviews and pull requests.</p>
+
+      <p>The thing that makes it unusual is not the AI. It is the ownership. Most AI coding products run on the vendor's computers, with the vendor's accounts, and your code passes through their systems. devteam runs on <em>your</em> computer or <em>your</em> cloud account, spends <em>your</em> AI credits, and pushes to <em>your</em> code repository. Nothing is hosted for you, and there is no account to sign up for.</p>
+
+      <div class="note">
+        <span class="label">The short version</span>
+        <p>A manager AI plans the work and supervises. Worker AIs do the building. A plain, non-AI program does the scheduling and the bookkeeping, because that part should be predictable and should not cost money every time it runs.</p>
+      </div>
+    </section>
+
+    <!-- ============================================ -->
+    <section id="yours">
+      <h2>Why "your own" matters</h2>
+      <p class="kicker">The founding idea</p>
+
+      <p>Three things belong to you, and each one is a deliberate choice with a real consequence.</p>
+
+      <h3>Your own AI keys</h3>
+      <p>An <span class="term">API key</span> is a password that lets a program use an AI model and bills you for it. In devteam you supply your own. That means you see the exact cost, you can switch models, and no one is reselling you access at a markup. It also means each person using the system spends their own money — the software deliberately refuses to let one user's projects run on another user's credit.</p>
+      <p>It supports Claude, OpenAI and Gemini, and can also talk to an AI model you run yourself on your own hardware.</p>
+
+      <h3>Your own cloud</h3>
+      <p>The whole system is a program you run. On a laptop for trying it out; on a rented server for running it properly. There is no version of this where your code sits on somebody else's machine because that is the only way it works.</p>
+
+      <h3>Your own version control</h3>
+      <p><span class="term">Version control</span> is the system that stores code and remembers every change ever made to it — the industry's shared filing cabinet. GitHub is the best-known one. devteam works with GitHub, with a company's private GitHub, and with self-hosted alternatives. If your organisation keeps its code inside its own network, the team can work there without anything leaving.</p>
+
+      <div class="note human">
+        <span class="label">What this means for you</span>
+        <p>You are the client, and you are also the landlord. Nothing runs that you did not start, nothing is billed that you did not authorise, and if you switch the server off, the entire system is off. There is no service still running somewhere with your code in it.</p>
+      </div>
+    </section>
+
+    <!-- ============================================ -->
+    <section id="cast">
+      <h2>Who is on the team</h2>
+      <p class="kicker">The cast</p>
+
+      <p>Five kinds of participant. Understanding who does what is most of understanding the system.</p>
+
+      <div class="cast">
+        <article>
+          <h4>You</h4>
+          <p class="role">The boss</p>
+          <p>You write the brief, answer questions when asked, review what comes back, and decide when something is finished. How often you are interrupted is a setting you choose.</p>
+        </article>
+        <article>
+          <h4>The manager</h4>
+          <p class="role">AI · plans and supervises</p>
+          <p>Reads your brief, breaks it into tasks, works out what depends on what, assigns the work, reviews it, and decides whether it ships. Deliberately given no ability to write code — it can only manage.</p>
+        </article>
+        <article>
+          <h4>The teammates</h4>
+          <p class="role">AI · do the building</p>
+          <p>Named people with a job, a personality, and a memory of what they have already built on this project. Each works alone in their own private copy of the code.</p>
+        </article>
+        <article>
+          <h4>The scheduler</h4>
+          <p class="role">Ordinary software · no AI</p>
+          <p>The office administrator. Decides what can start now, launches it, notices when something has gone quiet, and keeps the records. Costs nothing to run because no AI is involved.</p>
+        </article>
+        <article>
+          <h4>The round table</h4>
+          <p class="role">AI · optional, before you start</p>
+          <p>A circle of AIs from different companies who argue about your idea before anyone builds anything, and produce a plan. Optional, and useful when you are not yet sure what you want.</p>
+        </article>
+      </div>
+
+      <h3>Why the manager cannot write code</h3>
+      <p>This is one of the most important design decisions in the system, and it is easy to miss. The manager physically cannot open a file or run a command. It can only create tasks, read reports, ask you questions, send work back, and approve things.</p>
+      <p>The reason is that an AI which can both assign work and do the work will, under pressure, quietly do the work itself and report that the team delivered it. That is not hypothetical — it happened during development, and the manager reported completed work that no one had built. Removing the ability removes the temptation.</p>
+
+      <h3>Why teammates have names</h3>
+      <p>Each teammate is a real, persistent record: a name, a role, a personality, which AI model they run on, and short notes about what they have built so far. When a task comes back for a second attempt, it goes to the same person, who still remembers the first attempt.</p>
+      <p>This sounds cosmetic and is not. "Send it back to Priya, she wrote it" is a different instruction from "run the backend task again". The first keeps the context; the second throws it away and pays to rediscover it.</p>
+    </section>
+
+    <!-- ============================================ -->
+    <section id="life">
+      <h2>The life of a project</h2>
+      <p class="kicker">Start to finish, in order</p>
+
+      <p>This is the sequence every project follows. The numbers matter here — each step depends on the one before it.</p>
+
+      <ol class="steps">
+        <li>
+          <div>
+            <h4>You write a brief</h4>
+            <p class="who human">You</p>
+            <p>A paragraph or two describing what you want. You also choose how many rounds of work to run, how independent the team should be, and — optionally — who is on the team and what they are like.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h4>Optionally, a round table argues about it first</h4>
+            <p class="who">Several AIs, different companies</p>
+            <p>If your idea is still fuzzy, you can convene a round table. Between three and eight AIs from different companies each propose an approach, then critique each other's, then revise. Six is the recommended ceiling — past that you are mostly paying for agreement. A moderator writes up what survived, what was rejected and why, the risks, and what kind of team the work needs.</p>
+            <p>Using AIs from genuinely different companies is the point: two copies of the same model tend to agree with each other, and agreement is not the same as being right.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h4>The manager plans the work</h4>
+            <p class="who">Manager</p>
+            <p>It breaks the brief into concrete tasks and records which ones must wait for others. "Build the login screen" waits for "build the login system"; two unrelated features do not wait for each other and run side by side.</p>
+            <p>This produces a map of the work — what can start immediately, and what is blocked behind something else.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h4>The team is hired</h4>
+            <p class="who">Manager and scheduler</p>
+            <p>Roles become actual named people with personalities. If the round table decided this project needed someone who distrusts data they did not check themselves, that instruction is written into that teammate's standing brief and shapes everything they do.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h4>Tasks are handed out</h4>
+            <p class="who">Scheduler</p>
+            <p>Anything not waiting on something else is started, up to a limit you set on how many can run at once. When it cannot start everything, it starts whatever is holding up the most other work — the task three people are waiting behind goes before the one nobody needs.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h4>A teammate does the work</h4>
+            <p class="who">Teammate</p>
+            <p>They get their own private copy of the code, read the handover notes from whoever they are building on top of, and work: reading files, writing files, running commands, testing as they go. If they get stuck, they can ask a specific colleague — who answers with their own actual work in front of them, not as a generic helper.</p>
+            <p>When finished, they save their work on a separate <span class="term">branch</span> — a parallel version of the code that cannot affect anything until it is approved.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h4>The platform tests it — not the AI</h4>
+            <p class="who">Ordinary software · no AI</p>
+            <p>This is the single most important safeguard. The project's own tests are run by the plain, non-AI part of the system, and the raw result is recorded before the AI writes its summary.</p>
+            <p>Without this, you have only the AI's word that it works, and AIs are famously willing to describe broken code in glowing terms. With it, the manager is judging evidence rather than a claim. When tests fail, the exact failures are named, so the feedback is "this specific check broke" rather than "the tests failed".</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h4>The work is reviewed</h4>
+            <p class="who">Manager, and optionally teammates</p>
+            <p>The manager reads the test result first and the write-up second. It can also ask teammates to review — they read independently, never seeing each other's opinions, and the author is never asked to review their own work.</p>
+            <p>The manager is shown the disagreement, not a verdict: "two of three would approve, and here is why the third would not". The disagreement is the part it could not have worked out alone.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h4>Approved, or sent back</h4>
+            <p class="who">Manager</p>
+            <p>Approved work becomes a <span class="term">pull request</span> — a formal proposal to add the change to the main codebase, which you can read and comment on. Rejected work goes back to the same teammate with specific feedback.</p>
+            <p>If something fails twice, it moves to a more capable and more expensive AI model. If it keeps failing, that is treated as a planning problem rather than an effort problem, and the manager is told to rethink rather than retry.</p>
+          </div>
+        </li>
+        <li>
+          <div>
+            <h4>The round ends and you are asked</h4>
+            <p class="who human">You, if you are around</p>
+            <p>At the end of each round of work, you get a summary of what shipped and are asked whether anything should change before the next round. If you do not answer, it carries on — an overnight run must not stall waiting for someone who is asleep. Your answer is read whenever it arrives.</p>
+          </div>
+        </li>
+      </ol>
+
+      <figure>
+        <div class="diagram">
+<div class="pfig">
+  <div class="prow"><span class="pbox human">You write a brief</span><span class="parr">→</span><span class="pbox">Manager asks about it</span><span class="parr">→</span><span class="pbox">Manager plans the tasks</span></div>
+  <div class="prow"><span class="pbox">Team is hired</span><span class="parr">→</span><span class="pbox">Scheduler starts what is ready</span><span class="parr">→</span><span class="pbox">Teammate writes the code</span></div>
+  <div class="prow"><span class="pbox plain">Platform runs the tests</span><span class="parr">→</span><span class="pdec">Did they pass?</span></div>
+  <div class="prow indent"><span class="pno">no</span><span class="parr">→</span><span class="pbox">Sent back with the exact failures</span><span class="parr">↺</span><span class="pmuted">back to the teammate</span></div>
+  <div class="prow indent"><span class="pyes">yes</span><span class="parr">→</span><span class="pbox">Manager and teammates review</span><span class="parr">→</span><span class="pbox">Pull request for you to read</span></div>
+  <div class="prow"><span class="pbox human">End of round: you are asked what to change</span><span class="parr">↺</span><span class="pmuted">feeds back into planning</span></div>
+</div>
+        </div>
+        <figcaption>The loop a project runs in. The only two places a human appears are writing the brief and answering at the end of a round — everything else runs without you.</figcaption>
+      </figure>
+    </section>
+
+    <!-- ============================================ -->
+    <section id="machine">
+      <h2>What the machine looks like</h2>
+      <p class="kicker">Architecture, in plain terms</p>
+
+      <p>Six pieces. Only two of them cost money to run.</p>
+
+      <figure>
+        <div class="diagram">
+<div class="pfig">
+  <div class="prow"><span class="pbox human">Your browser</span><span class="parr">→</span><span class="pbox">Load balancer — one public address</span><span class="parr">→</span><span class="pbox">Router reads the web address</span></div>
+  <div class="prow indent"><span class="pmuted">devteam.…</span><span class="parr">→</span><span class="pbox">Production space</span><span class="pmuted">&nbsp;&nbsp;staging.…</span><span class="parr">→</span><span class="pbox">Staging space</span></div>
+  <div class="prow"><span class="pbox">The conductor, plus every teammate</span><span class="parr">→</span><span class="pbox plain">Permanent storage — records and working copies</span></div>
+  <div class="prow"><span class="pmuted">outbound only</span><span class="parr">→</span><span class="pbox plain">AI providers and your code repository</span></div>
+</div>
+        </div>
+        <figcaption>Everything inside "your server" is one program you run. The teammates are separate programs it starts and stops. The only things reaching outside are AI requests and code being saved.</figcaption>
+      </figure>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Piece</th><th>What it does</th><th>Costs money?</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Dashboard</strong></td><td>The web page you look at. Shows projects, live activity, the team, costs and results.</td><td>No</td></tr>
+            <tr><td><strong>Conductor</strong></td><td>The central program. Serves the dashboard, holds the records, starts everything else.</td><td>No</td></tr>
+            <tr><td><strong>Records</strong></td><td>A single file on disk holding every project, task, teammate, message and result.</td><td>No</td></tr>
+            <tr><td><strong>Scheduler</strong></td><td>Decides what starts when, notices stalled work, opens pull requests automatically.</td><td>No</td></tr>
+            <tr><td><strong>Manager</strong></td><td>The AI that plans and supervises.</td><td>Yes</td></tr>
+            <tr><td><strong>Teammates</strong></td><td>Separate AI programs that write the code, one per task.</td><td>Yes</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Why the scheduler is not an AI</h3>
+      <p>Deciding "task 4 is waiting on tasks 1 and 2, both are finished, so task 4 can start" is arithmetic. Asking an AI to do it would cost money on every check, take seconds instead of milliseconds, and occasionally get it wrong in a way that is hard to spot.</p>
+      <p>So the rule is: <strong>AI is used for judgement, ordinary software for bookkeeping.</strong> Which tasks can start, who is free, what has gone quiet, what has already been paid for — all bookkeeping. Is this code good enough, what should we build next, is this failure the model's fault or the plan's — all judgement.</p>
+
+      <h3>Why teammates are separate programs</h3>
+      <p>Each teammate runs as its own program with its own private copy of the code. It cannot see or disturb what anyone else is doing. If one crashes, hangs, or runs up an unexpected bill, it is killed on its own without touching the rest.</p>
+      <p>This also makes a genuine failure mode visible rather than mysterious: if two teammates were ever pointed at the same file at the same time, they would overwrite each other. The system treats that as a dependency — one waits for the other — rather than pretending it is parallel work.</p>
+
+      <h3>How you see what is happening</h3>
+      <p>The dashboard keeps a live connection open to the conductor, so activity appears as it happens rather than when you refresh. Every meaningful event is also written down permanently, so you can read back through exactly what occurred and when, long after the fact.</p>
+    </section>
+
+    <!-- ============================================ -->
+    <section id="bonnet">
+      <h2>Under the bonnet</h2>
+      <p class="kicker">For a technical reader, or a curious one</p>
+
+      <p>Everything above is true without knowing any of this. This section is for someone who needs to evaluate, host or extend the thing — or who simply wants to know what the words mean.</p>
+
+      <h3>What "the conductor" actually is</h3>
+      <p>The conductor is one program: a Python web server of about 13,500 lines that does five jobs and no others.</p>
+      <ul>
+        <li><strong>Serves the dashboard.</strong> The pages you look at are plain HTML, CSS and JavaScript files read straight off the disk. There is no build step and no framework — you can edit a file and reload the page.</li>
+        <li><strong>Answers the API.</strong> Every action in the dashboard is a request to the conductor.</li>
+        <li><strong>Holds the records.</strong> A single <span class="term">SQLite</span> file — a whole database in one file, needing no separate database server to be installed or maintained.</li>
+        <li><strong>Runs the manager.</strong> The manager's AI session lives inside the conductor's own process.</li>
+        <li><strong>Starts and stops teammates.</strong> Each is launched as a separate program and watched.</li>
+      </ul>
+      <p>It is deliberately one process rather than a collection of services. A system where the scheduler, the API and the record-keeping are three separate programs that must find each other over a network has three ways to be half-running. This has one: it is up, or it is not.</p>
+
+      <h3>The API, in families</h3>
+      <p>An <span class="term">API</span> is the list of requests a program will answer — the difference between a system you can only click and one you can drive. There are 108. You never need to touch them; the dashboard uses them for you. They group like this:</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Family</th><th>Example</th><th>What it is for</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Projects</strong></td><td><code>/api/projects</code></td><td>Create, list, cancel, restart. Set the budget and how independent the team is.</td></tr>
+            <tr><td><strong>Tasks &amp; activity</strong></td><td><code>/api/projects/1/events</code></td><td>The live feed, task detail, and the raw logs from a specific agent.</td></tr>
+            <tr><td><strong>The team</strong></td><td><code>/api/projects/1/team</code></td><td>Who is on it, what they have built, and changing someone's personality or model.</td></tr>
+            <tr><td><strong>Talking to the manager</strong></td><td><code>/api/projects/1/directive</code></td><td>Send an instruction, answer a question it asked, leave notes on a specific piece of work.</td></tr>
+            <tr><td><strong>Output</strong></td><td><code>/api/projects/1/artifacts</code></td><td>What was produced, per sprint and per teammate; files; release notes.</td></tr>
+            <tr><td><strong>Measurement</strong></td><td><code>/api/projects/1/metrics</code></td><td>First-attempt acceptance, rework, cost per delivered task.</td></tr>
+            <tr><td><strong>Settings</strong></td><td><code>/api/tuning</code></td><td>The dials that govern how the team behaves, and your keys and endpoints.</td></tr>
+            <tr><td><strong>Deployment</strong></td><td><code>/api/projects/1/deploy</code></td><td>Run a built app, preview a branch, roll back.</td></tr>
+            <tr><td><strong>Self-repair</strong></td><td><code>/api/self/…</code></td><td>The platform working on itself: findings, staging, update, rollback. Restricted to the owner.</td></tr>
+            <tr><td><strong>Health</strong></td><td><code>/api/health</code></td><td>Answers only if the database also answers. Watched from outside.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Three doors, three different keys</h3>
+      <p>Not everything is protected the same way, and the differences are deliberate.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Door</th><th>Who gets in</th><th>Why it is separate</th></tr></thead>
+          <tbody>
+            <tr><td><code>/api/…</code></td><td>You, after signing in</td><td>Normal use. Limited login attempts, and a lockout that survives a restart.</td></tr>
+            <tr><td><code>/internal/…</code></td><td>Teammates only, with a shared token</td><td>Just three requests: report finished work, post activity, look up a colleague. A teammate is not a user and should not hold a user's powers.</td></tr>
+            <tr><td><code>/api/health</code></td><td>Anyone</td><td>A monitor that needed to sign in could not tell you that signing in was broken.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>The live feed</h3>
+      <p>The dashboard holds one long-lived connection open — a <span class="term">WebSocket</span>, which unlike a normal request stays open so the server can speak first. That is why activity appears as it happens rather than when you refresh. Every event is also written to the database, so nothing depends on you having been watching.</p>
+
+      <h3>What the database holds</h3>
+      <p>Eighteen tables in one file. The ones worth knowing: <em>projects</em> and <em>tasks</em> (the work), <em>agents</em> (the teammates and their memory), <em>runs</em> (one row per AI task, which is where all the measurement comes from), <em>events</em> (the permanent activity record), <em>findings</em> (what the platform believes is wrong with itself), <em>sprint_artifacts</em> (the sealed record of each round), <em>feedback</em> (your notes, attached to specific work), and <em>tuning</em> (the dials, so they can be changed without rebuilding anything).</p>
+
+      <h3>Where things actually run</h3>
+      <p>The same code runs in four shapes, and they are genuinely different.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Shape</th><th>Where</th><th>What is isolated</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Local</strong></td><td>A program on your laptop</td><td>Nothing. Your real records, your real keys.</td></tr>
+            <tr><td><strong>Sandbox</strong></td><td>A second program on your laptop</td><td>Its own records, and every credential deliberately blanked. Used to click through a proposed change to the platform itself before accepting it.</td></tr>
+            <tr><td><strong>Staging</strong></td><td>Its own space on the cluster</td><td>Own records and web address. Real keys, but not permitted to approve its own changes. Its storage is deliberately throwaway — a restart wipes it, which is what you want of a rehearsal.</td></tr>
+            <tr><td><strong>Production</strong></td><td>Its own space on the cluster</td><td>Own storage, holds the real credentials. The live system.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The sandbox is worth a sentence of its own, because the obvious guess is wrong: it is not a miniature cluster. It is one extra copy of the program on the same machine, with its records replaced by fake ones and every credential blanked out — <em>blanked, not removed</em>, because a program inherits its parent's settings, and an unset key would silently fall through to the real one.</p>
+
+      <h3>The network path, end to end</h3>
+      <p>Following a single click from your browser to the code:</p>
+
+      <figure>
+        <div class="diagram">
+<div class="pfig">
+  <div class="prow"><span class="pbox human">Your browser</span><span class="parr">→</span><span class="pmuted">HTTPS</span><span class="parr">→</span><span class="pbox">Load balancer</span><span class="parr">→</span><span class="pbox">Router</span></div>
+  <div class="prow indent"><span class="pmuted">by web address</span><span class="parr">→</span><span class="pbox">Production</span><span class="pmuted">&nbsp;/&nbsp;</span><span class="pbox">Staging</span></div>
+  <div class="prow"><span class="pbox">Conductor + teammates</span><span class="parr">→</span><span class="pbox plain">Storage</span><span class="parr">→</span><span class="pmuted">outbound only to AI providers and git</span></div>
+</div>
+        </div>
+        <figcaption>One public address serves both environments. Which one you reach is decided by the web address you typed, not by a separate machine — which is why staging costs almost nothing to keep running.</figcaption>
+      </figure>
+
+      <ul>
+        <li><strong>One public entrance.</strong> A single load balancer holds the public address. Not the largest line on the bill, but the one you pay for <em>per environment</em> — which is exactly why there is one and everything shares it.</li>
+        <li><strong>A router decides where to go.</strong> It reads the web address you asked for and forwards to the right environment. Adding a new environment costs nothing extra.</li>
+        <li><strong>Encryption is automatic.</strong> Certificates are requested and renewed without anyone doing anything, and you are emailed if one is ever close to expiring.</li>
+        <li><strong>Traffic only goes outward.</strong> Nothing on the internet can start a conversation with a teammate. Teammates reach out to AI providers and to your code repository; nothing reaches in.</li>
+        <li><strong>Storage outlives the program.</strong> Records and working copies sit on a separate disk that survives restarts and updates. Updating the software does not touch your data.</li>
+      </ul>
+
+      <div class="note limit">
+        <span class="label">Worth knowing before you host it</span>
+        <p>The public entrance means the sign-in page is reachable from the internet, which makes your password the entire security boundary. Login attempts are limited and the limit survives restarts — but the password itself is the thing to take seriously, and the system will tell you when you have chosen a weak one.</p>
+      </div>
+
+      <h3>How an update actually reaches the server</h3>
+      <p>Code is packaged into a <span class="term">container image</span> — a frozen, complete copy of the program and everything it needs, identified by a fingerprint of its own contents. That fingerprint matters: two builds of identical code produce the same identity, so "is this the version I tested?" has a real answer rather than a guess based on timestamps.</p>
+      <p>The image is uploaded to a private registry, tried on staging, run once as a canary with no traffic, and only then does the live system switch to it. The switch changes one thing — which version runs — rather than re-applying the whole configuration, because re-applying has been observed to quietly roll the system backwards to whatever version the configuration file happened to name.</p>
+    </section>
+
+    <!-- ============================================ -->
+    <section id="decides">
+      <h2>How the manager decides</h2>
+      <p class="kicker">The judgement calls</p>
+
+      <p>This part is deliberately grounded in published research on how multiple AIs working together actually perform, rather than in intuition about what sounds clever.</p>
+
+      <h3>More opinions, gathered properly</h3>
+      <p>The tempting idea is: run the same task three times with three different AIs and pick the best result. That does help, but far less than expected. The research finding that shaped this system is that <strong>how you combine the opinions matters several times more than how many opinions you gather.</strong></p>
+      <p>So the system spends its effort on the combining. One teammate reviews by default, and that number is a setting rather than a constant. Reviewers read the work independently and never see each other's opinions — because a second reviewer who reads the first one's verdict tends to agree with it, and you have paid twice for one opinion. Their disagreements are preserved and handed to the manager rather than averaged away.</p>
+
+      <h3>Competitions, used sparingly</h3>
+      <p>For a genuinely uncertain task, the manager can run two or three teammates on it at once, each on a different AI model and each in their own copy of the code. It then compares the results and picks a winner. This is capped deliberately low, because the value comes from judging well, not from the number of entries.</p>
+
+      <h3>Cheap first, expensive when earned</h3>
+      <p>Work starts on a fast, cheap model. If it fails twice, it moves up to a stronger one, and then to the strongest. The ladder is relative to whatever just failed, so "escalating" never accidentally means running the same model again.</p>
+      <p>Crucially, the system distinguishes between <em>the AI could not do this</em> and <em>the AI provider was too busy right now</em>. The second is not a failure of quality, and treating it as one burns money moving to an expensive model to solve a problem that would have cleared up on its own. Capacity problems get a retry; quality problems get an upgrade.</p>
+
+      <h3>Working in slices, or in layers</h3>
+      <p>You choose how the work is broken up, and both options have a real cost the manager is told about.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Approach</th><th>How work is split</th><th>What you give up</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Agile</strong><br><span style="color:var(--grey)">the default</span></td><td>By outcome. Every task delivers something you can actually see working, however narrow. Something runs on day one.</td><td>More friction, because slices keep touching the same files.</td></tr>
+            <tr><td><strong>Waterfall</strong></td><td>By layer. Foundations first, then what sits on them. Right when the shape is already known — a migration, or building to a written specification.</td><td>Nothing is demonstrable until late, so a misunderstanding of your brief survives until it is expensive.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Everything is measured</h3>
+      <p>Every single time an AI is asked to do a task, the system records what it was, which model, which attempt number, what it cost, how long it took, and whether the work was ultimately accepted.</p>
+      <p>From that it can answer the question that actually matters: <strong>how often is work accepted on the first attempt?</strong> That number is the honest measure of whether the planning and briefing are working, because it is the one thing that cannot be improved by simply spending more money. Two settings can then be compared directly rather than argued about.</p>
+
+      <div class="note">
+        <span class="label">Why this is unusual</span>
+        <p>Most AI tooling reports what it cost. This reports how much of what it cost was wasted — work that was done, paid for, and then thrown away and redone. That is the number you tune against.</p>
+      </div>
+    </section>
+
+    <!-- ============================================ -->
+    <section id="sprints">
+      <h2>Sprints and your involvement</h2>
+      <p class="kicker">How present you need to be</p>
+
+      <p>Work runs in <span class="term">sprints</span> — rounds of building, testing and shipping. You say roughly how many you want at the start; the manager can revise that number once it understands the work, because your original guess was made before anyone had read anything.</p>
+
+      <h3>Three levels of independence</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Mode</th><th>What happens</th><th>Suits</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Ask me</strong></td><td>Stops and waits for you at every meaningful decision.</td><td>Watching it work; anything you care about deeply.</td></tr>
+            <tr><td><strong>Supervised</strong></td><td>Proceeds on its own, but stops for decisions that could paper over a problem.</td><td>Most work.</td></tr>
+            <tr><td><strong>Autonomous</strong></td><td>Decides everything itself, but records every judgement call so you can audit it afterwards.</td><td>Overnight runs.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>The decisions it always flags</h3>
+      <p>Some decisions are dangerous specifically because a confident manager makes them smoothly. Three are singled out: approving work nobody actually delivered, shipping code whose tests are failing, and giving up on a task after repeated failure. In supervised mode these stop and ask you. In autonomous mode they proceed — you asked for that — but each is recorded loudly and permanently for review.</p>
+
+      <div class="note human">
+        <span class="label">Being asked without being blocked</span>
+        <p>At the end of each sprint you are asked what should change before the next one is planned. This is the cheapest possible moment to redirect: nothing has been built yet, so changing course costs nothing, whereas the same correction three sprints later means discarding finished work.</p>
+        <p>The question does not block. An unattended overnight run that stalled an hour per sprint waiting for you would have destroyed the thing you asked for. Your answer is read whenever it arrives, even days later — and it is labelled with which sprint it was about, so nobody tries to rewrite history that has already been sealed.</p>
+      </div>
+    </section>
+
+    <!-- ============================================ -->
+    <section id="output">
+      <h2>Where the work ends up</h2>
+      <p class="kicker">What you actually get</p>
+
+      <h3>Code, in your repository</h3>
+      <p>Every task's work lives on its own branch and arrives as a pull request — a formal, reviewable proposal you can read line by line, comment on, and accept or reject. Nothing lands in your main codebase without passing through that gate.</p>
+
+      <h3>A record of each sprint, frozen</h3>
+      <p>When a sprint ends, what it produced is sealed: which tasks were delivered, by whom, with which pull request, and whether the tests passed. Later sprints cannot rewrite it. Without this, sprint three quietly overwrites sprint one and you lose the ability to say what shipped when.</p>
+
+      <h3>Release notes built from facts</h3>
+      <p>Each sprint gets a summary of what changed, assembled from what actually happened — the delivered tasks, their pull requests, their test results. Every line traces back to a real task. If an AI is used to write the prose, its draft is discarded entirely if it mentions work the sprint did not contain, and the underlying facts stay visible next to it. A release note that cannot be traced back to a task is worse than no release note.</p>
+
+      <h3>Documents, for non-code projects</h3>
+      <p>The system is not limited to software — it can produce research, strategy documents and plans. These are rendered properly rather than shown as raw text.</p>
+
+      <h3>Running previews</h3>
+      <p>A branch can be deployed on its own so you can click through a change before deciding on it, without disturbing the live version.</p>
+    </section>
+
+    <!-- ============================================ -->
+    <section id="itself">
+      <h2>How it looks after itself</h2>
+      <p class="kicker">The self-repair loop</p>
+
+      <p>devteam's own source code can be given to devteam as a project. It can read its own code, plan a fix, write it, test it, and propose it — the same as any other project, through the same review gate.</p>
+
+      <h3>The daily check</h3>
+      <p>Once a day, without being asked, it reviews everything that went wrong: failures to start work, agents that went silent, errors in the dashboard, requests that failed. Each distinct fault becomes a tracked item that is counted rather than merely logged.</p>
+      <p>This distinction matters more than it sounds. Previously all of this was recorded in a running activity feed — visible only to someone already watching it. A fault that happened forty times over a weekend looked exactly like one that happened once, because neither was ever counted.</p>
+
+      <h3>How it ranks what is wrong</h3>
+      <ul>
+        <li><strong>Severity sets the band, frequency ranks within it.</strong> A rare serious fault always outranks a common trivial one. Ranking purely by frequency would put a chatty warning above a data-loss bug.</li>
+        <li><strong>Old problems sink.</strong> Something that stopped happening a week ago was probably fixed by something else. Without this the top of the list becomes a museum.</li>
+        <li><strong>A problem that comes back after being fixed reopens loudly.</strong> A repair that did not hold is more interesting than a fresh fault, and quietly re-filing it as new would hide that.</li>
+      </ul>
+
+      <h3>What it will and will not do alone</h3>
+      <p>Looking, counting and ranking are free and happen automatically. Raising a ticket is cheap and reversible and happens automatically. <strong>Rewriting its own running code is neither, and does not happen because something scored highly.</strong> An unattended process that both decides what is wrong and rewrites the program it is running inside, with nobody watching, is a specific and bad idea unless the operator has explicitly said otherwise.</p>
+
+      <h3>Updating itself safely</h3>
+      <p>When a new version is ready, there is a sequence and each step can stop it:</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Stage</th><th>What happens</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Staging</strong></td><td>A complete second copy, with its own separate database, running the new version. It can propose changes but is not permitted to approve them.</td></tr>
+            <tr><td><strong>The full test suite</strong></td><td>Over six hundred automated checks run inside the new version itself, not on a developer's laptop.</td></tr>
+            <tr><td><strong>Canary</strong></td><td>The new version is started once, privately, with no traffic sent to it, purely to see whether it starts and answers at all. It is then removed either way.</td></tr>
+            <tr><td><strong>Promotion</strong></td><td>Only now does the live version change, and only by swapping which version runs — never by re-applying the whole configuration, which has been observed to silently roll a system backwards.</td></tr>
+            <tr><td><strong>Rollback</strong></td><td>One step back to the previously known-good version, kept in history rather than rebuilt. Rebuilding to go backwards produces a <em>new</em> version from old instructions, not the one you know worked.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Watched from outside</h3>
+      <p>A separate service checks the live site from three continents every few minutes and emails if it stops answering, or if its security certificate is close to expiring. This has to come from outside for a reason that is obvious once said: <strong>the platform cannot send you a message telling you it has crashed.</strong></p>
+    </section>
+
+    <!-- ============================================ -->
+    <section id="rails">
+      <h2>The safety rails</h2>
+      <p class="kicker">What stops it running away</p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Rail</th><th>What it prevents</th></tr></thead>
+          <tbody>
+            <tr><td><strong>A limit on AI tasks per project</strong></td><td>A stuck loop burning through your credits overnight. This is the primary limit — on a flat-rate subscription it is more meaningful than a money cap.</td></tr>
+            <tr><td><strong>A spending cap</strong></td><td>The same thing, in money, when you are billed per use.</td></tr>
+            <tr><td><strong>Tests run by the platform</strong></td><td>An AI describing broken code as working. The exit code is evidence; the write-up is a claim.</td></tr>
+            <tr><td><strong>The manager cannot write code</strong></td><td>The manager quietly doing the work itself and reporting that the team delivered it.</td></tr>
+            <tr><td><strong>Staging cannot approve its own changes</strong></td><td>A test environment accidentally shipping to production.</td></tr>
+            <tr><td><strong>Everyone spends their own credits</strong></td><td>One user's work being billed to another's account.</td></tr>
+            <tr><td><strong>Limited login attempts</strong></td><td>Someone guessing your password. This survives restarts — it used to reset every time the system restarted, which meant an attacker only had to wait for an ordinary update.</td></tr>
+            <tr><td><strong>A watchdog on silent work</strong></td><td>A crashed teammate leaving a project waiting forever for a report that will never arrive.</td></tr>
+            <tr><td><strong>Disk space limits</strong></td><td>Accumulated copies of code filling the disk, which stops everything, because every teammate needs somewhere to work.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>One honest caveat about permissions</h3>
+      <p>Teammates run with broad permissions inside their own copy of the code — they need to run commands to build and test things, and asking permission for each would defeat the purpose.</p>
+      <p>It is worth being precise about how much separation that copy actually gives, because the intuitive answer is wrong. <strong>As currently deployed, a teammate is a separate <em>process</em>, not a separate sealed box.</strong> Every teammate runs inside the same container as the conductor, sharing its filesystem and its memory allowance. They cannot overwrite each other's work, because each gets its own directory — but a teammate that went badly wrong could read the database file, or another teammate's working directory.</p>
+      <p>The stronger arrangement exists and is built: each teammate gets its own sealed box, scheduled separately. It is a configuration change, not new work. It is not what runs today, because one shared box is simpler and has been sufficient — and that trade should be a decision you make knowingly rather than one you inherit from a document that implied otherwise.</p>
+      <div class="note limit">
+        <span class="label">Read this as</span>
+        <p>The boundary that is real today is around the <em>whole system</em>: the container it runs in, and the server you put it on. The boundary between one teammate and another is about tidiness and crash isolation, not security.</p>
+      </div>
+    </section>
+
+    <!-- ============================================ -->
+    <section id="cost">
+      <h2>What it costs</h2>
+      <p class="kicker">Two separate bills</p>
+
+      <p>There is no charge for the software. You pay two other people.</p>
+
+      <h3>The server</h3>
+      <p>About <strong>$42 a month</strong>, or $1.40 a day. The breakdown is worth seeing, because the shape of it is the interesting part.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Item</th><th class="num">Monthly</th></tr></thead>
+          <tbody>
+            <tr><td>One machine — 2 processors, 4&nbsp;GB memory</td><td class="num">$24</td></tr>
+            <tr><td>Load balancer — the public entrance</td><td class="num">$12</td></tr>
+            <tr><td>Private registry, holding the packaged versions</td><td class="num">$5</td></tr>
+            <tr><td>Storage, 11&nbsp;GB</td><td class="num">~$1</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The machine is the biggest single line, but the <strong>load balancer is the one that multiplies</strong>. You pay per entrance, so giving staging its own would add another $12 for something serving a handful of requests a day. That is why every environment shares one — and why adding a fourth costs nothing at all.</p>
+
+      <h3>The AI</h3>
+      <p>Billed by your AI provider, directly to you. In a measured real run, a complete small feature — written, tested, and submitted for review — cost around <strong>ten cents</strong>. A retry after a provider outage took it to roughly forty cents. Larger work costs more, and the per-project limits are there so it cannot surprise you.</p>
+      <p>On a flat-rate AI subscription there is no per-task charge at all, and the meaningful limit becomes how many tasks you are allowed, not what they cost.</p>
+    </section>
+
+    <!-- ============================================ -->
+    <section id="honest">
+      <h2>Solid, and not yet</h2>
+      <p class="kicker">An honest status</p>
+
+      <p>Any documentation that only lists strengths is marketing. This is the real state of things.</p>
+
+      <h3>Proven</h3>
+      <ul>
+        <li>The full loop works end to end: brief, plan, build, test, review, pull request. It has been run live, repeatedly, with real accounts.</li>
+        <li>It has shipped a fix to <em>itself</em> — written the change, tested it, and deployed it over its own running version.</li>
+        <li>The safety check has been proven by deliberately giving it a broken version, which it correctly rejected while the live system carried on serving.</li>
+        <li>Over seven hundred automated checks, all passing, including inside the deployed system rather than only on a developer's machine.</li>
+        <li>It handles real-world trouble correctly: during testing an AI provider had an outage mid-task, and the manager correctly identified it as a temporary capacity problem rather than bad work, retried, and shipped.</li>
+      </ul>
+
+      <h3>Early</h3>
+      <div class="note limit">
+        <span class="label">Not finished, stated plainly</span>
+        <ul style="margin-bottom:0">
+          <li><strong>Non-Claude teammates are unproven.</strong> The ability to have OpenAI or Gemini write code is built and tested against simulated responses, but has never made a real call. Treat it as beta. Planning and discussion on those providers are proven; building is not.</li>
+          <li><strong>Amazon and Google's enterprise AI services are configurable, not supported.</strong> Both need a kind of authentication that is not simply a password pasted into a settings box. Saying otherwise would be a lie of omission.</li>
+          <li><strong>Only one cloud provider is implemented.</strong> The seam for adding others exists but nothing has been built through it, so it is untested by use.</li>
+          <li><strong>The manager does not interview you before it starts.</strong> It plans from your brief alone. It asks between sprints, but not before the first one.</li>
+        </ul>
+      </div>
+
+      <h3>A note on how the bugs above were found</h3>
+      <p>Three real defects were caught not by the seven hundred automated checks but by running the system for real on a staging copy. In one, a teammate's assigned AI model silently overrode the manager's decision to escalate a failing task — so the manager correctly diagnosed a problem, correctly issued a correction, and the system discarded it and repeated the same failure.</p>
+      <p>That is worth knowing as a user of any AI system: automated checks confirm the things you thought to check. Running it for real is what finds the rest.</p>
+    </section>
+
+    <!-- ============================================ -->
+    <section id="glossary">
+      <h2>Glossary</h2>
+      <p class="kicker">Every technical term used above</p>
+
+      <dl class="glossary">
+        <div><dt>API key</dt><dd>A password that lets a program use a paid service, such as an AI model, and bills the owner of the key.</dd></div>
+        <div><dt>Branch</dt><dd>A parallel version of the code where someone can work without affecting anyone else. Merged in once approved, or thrown away.</dd></div>
+        <div><dt>Canary</dt><dd>Starting a new version once, privately, with no real traffic, purely to see whether it works before anyone relies on it.</dd></div>
+        <div><dt>API</dt><dd>The list of requests a program will answer — the difference between a system you can only click and one you can drive.</dd></div>
+        <div><dt>Cluster</dt><dd>A group of rented computers managed as one, so a program can be moved, restarted or scaled without anyone touching a specific machine.</dd></div>
+        <div><dt>Container</dt><dd>A sealed box containing a program and everything it needs. It behaves identically wherever it runs, and cannot easily reach outside itself.</dd></div>
+        <div><dt>Container image</dt><dd>A frozen, complete copy of a program and everything it needs, identified by a fingerprint of its own contents.</dd></div>
+        <div><dt>Load balancer</dt><dd>The single public entrance that accepts traffic from the internet and passes it inward. Usually the priciest line on a cloud bill.</dd></div>
+        <div><dt>Pull request</dt><dd>A formal proposal to add a change to the main codebase, which others can read, comment on, and approve or reject.</dd></div>
+        <div><dt>Repository</dt><dd>The stored home of a codebase, including the full history of every change ever made to it.</dd></div>
+        <div><dt>Rollback</dt><dd>Returning to the previous working version after a bad update.</dd></div>
+        <div><dt>SQLite</dt><dd>A complete database kept in a single file, needing no separate database server to install or maintain.</dd></div>
+        <div><dt>Sprint</dt><dd>One round of planning, building, testing and shipping. Borrowed from how human software teams organise their time.</dd></div>
+        <div><dt>Staging</dt><dd>A complete second copy of the system used to try changes safely before they reach the version people actually use.</dd></div>
+        <div><dt>Test suite</dt><dd>A collection of automated checks that confirm the software still does what it is supposed to. Run by the platform, not by the AI.</dd></div>
+        <div><dt>Version control</dt><dd>The system that stores code and remembers every change, who made it and why. GitHub is the best-known example.</dd></div>
+        <div><dt>WebSocket</dt><dd>A connection that stays open, so the server can send you something without being asked. How the live activity feed works.</dd></div>
+      </dl>
+
+      <p class="colophon">This handbook describes devteam as built and running. Figures for cost and test counts are from measured runs rather than estimates. Where something is unfinished it is marked as such in "Solid, and not yet" — that section is not a disclaimer, it is part of the specification.</p>
+    </section>
+
+  </main>
+</div>
+</body></html>
