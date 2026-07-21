@@ -25,7 +25,15 @@ os.environ["ROOT_USERNAME"] = "root"
 os.environ["ROOT_PASSWORD"] = "testpass"
 os.environ["WORKER_TOKEN"] = "test-worker-token"
 os.environ["WORKSPACES_DIR"] = str(Path(_TMP) / "workspaces")
-os.environ.pop("ANTHROPIC_API_KEY", None)   # force subscription-mode assertions
+# Blank EVERY credential, not just the Anthropic key. Sourcing .env into the
+# shell before running pytest made the suite behave differently — triage would
+# reach a real provider and classify a vague test fixture as "substantial",
+# failing an unrelated assertion. A test whose outcome depends on what happens to
+# be exported is not a test.
+for _k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GEMINI_API_KEY",
+           "GEMINI_KEY", "OPENAI_API_KEY", "GITHUB_TOKEN", "DOCR_READ_TOKEN",
+           "DOCR_REGISTRY", "DIGITALOCEAN_API_TOKEN", "AUTO_UPDATE", "DEMO_MODE"):
+    os.environ.pop(_k, None)
 
 from app import auth, db  # noqa: E402
 
