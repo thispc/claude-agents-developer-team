@@ -658,7 +658,7 @@ async def build_from_blueprint(table_id: int, body: BuildFromBlueprint,
                "model": m.get("model") or "worker"}
               for m in team.from_blueprint(bp)]
     brief = _brief_from_blueprint(t["brief"], bp)
-    repo = body.repo.strip() or config.GITHUB_REPO
+    repo = body.repo.strip() or (config.GITHUB_REPO if u["is_root"] else "")
     pid = db.create_project(
         body.name.strip() or (t["title"] or "planned project"), brief, repo,
         config.PROJECT_BUDGET_USD, config.MAX_CONCURRENT_WORKERS,
@@ -1336,7 +1336,10 @@ async def create_project(body: NewProject, request: Request) -> dict:
         raise HTTPException(400, "k8s workers cannot inherit local CLI credentials — "
                                  "set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) "
                                  "or ANTHROPIC_API_KEY")
-    repo = body.repo or config.GITHUB_REPO
+    # The operator's default repo is a default for the operator, not for a guest
+    # who left the field blank — that was the other half of the cascade, a user's
+    # project pointed at the operator's repository.
+    repo = body.repo or (config.GITHUB_REPO if owner and owner["is_root"] else "")
     roster = [m.model_dump() for m in body.team]
     autonomy = "autonomous" if body.autonomy == "autonomous" else "supervised"
     sprints = max(1, min(20, body.sprints or 1))

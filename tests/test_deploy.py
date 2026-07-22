@@ -372,8 +372,12 @@ def test_a_branch_a_clone_would_misread_is_refused(fresh_db, monkeypatch):
 
 def test_a_hostile_branch_never_reaches_git(fresh_db, monkeypatch):
     from app import github_client
-    monkeypatch.setattr(github_client, "enabled", lambda repo: True)
-    monkeypatch.setattr(github_client, "clone_url", lambda repo, tok: "https://x/y.git")
+    # Signatures now carry a token — enabled(repo, token) and token_for(project) —
+    # because a project's git operations run under its OWNER'S token, not the
+    # server's. The stubs match that; the test itself is about branch sanitising.
+    monkeypatch.setattr(github_client, "enabled", lambda repo, token="": True)
+    monkeypatch.setattr(github_client, "token_for", lambda project: "t")
+    monkeypatch.setattr(github_client, "clone_url", lambda repo, tok="": "https://x/y.git")
 
     def _boom(*a, **k):
         raise AssertionError("ran git with a ref it should have refused")

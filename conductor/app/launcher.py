@@ -69,13 +69,14 @@ def owner_credentials(project: dict) -> dict[str, str]:
 
 
 def owner_github_token(project: dict) -> str:
-    from . import auth as auth_mod
-    owner = auth_mod.get_user(project.get("owner_id") or 0)
-    if owner:
-        tok = auth_mod.get_settings(owner).get("github_token")
-        if tok:
-            return tok
-    return config.GITHUB_TOKEN
+    """The token a worker clones and pushes with — the project owner's.
+
+    A non-root user with no token of their own used to fall through to the
+    operator's here, so their worker cloned and pushed as the operator. Resolved
+    through the one place that gets this right for everyone.
+    """
+    from . import github_client
+    return github_client.token_for(project)
 
 
 def handoff_context(task: dict) -> str:

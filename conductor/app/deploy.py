@@ -291,12 +291,15 @@ def checkout(project_id: int, branch: str = "") -> tuple[bool, str]:
     project = db.get_project(project_id)
     if not project or not project["repo"]:
         return False, "no repo attached to this project"
-    if not github_client.enabled(project["repo"]):
+    # The project OWNER'S token, not the server's. Cloning a user's repo with the
+    # operator's credentials is the same leak as opening their PRs with it.
+    gh = github_client.token_for(project)
+    if not github_client.enabled(project["repo"], gh):
         return False, "GitHub is not configured, so the code can't be fetched"
     if branch and not safe_branch(branch):
         return False, f"refusing {branch!r} as a git branch"
     dest = workdir(project_id, branch)
-    url = github_client.clone_url(project["repo"], config.GITHUB_TOKEN)
+    url = github_client.clone_url(project["repo"], gh)
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)

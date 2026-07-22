@@ -1,4 +1,15 @@
-"""Thin async git-host REST wrapper. Only the conductor holds the token for API calls.
+"""Thin async git-host REST wrapper.
+
+Every call carries the token it should run under, and callers pass the token of
+the PROJECT'S OWNER — never the server's by default. That distinction is the whole
+point of this rewrite: the module used to take no token at all and fall through to
+config.GITHUB_TOKEN on every request, so a normal user's project opened issues,
+pull requests and merges on the OPERATOR'S GitHub identity. A friend who added
+their own key saw it ignored while the runs cascaded onto someone else's account.
+
+`token_for(project)` resolves the right one, and for a non-root user with no key
+of their own it returns "" rather than the server token — which makes enabled()
+false and the operation refuse, instead of silently borrowing the operator's.
 
 The host comes from config, not from a constant. Three shapes are supported:
 
@@ -39,14 +50,22 @@ def auth_headers(token: str = "") -> dict:
     }
 
 
-def enabled(repo: str) -> bool:
+# Distinguishes "no token argument was given" (an operator/self-repair caller —
+# fall back to the server token) from "a token was resolved and it is empty" (a
+# guest with no key of their own — stay disabled, do not borrow the operator's).
+# A plain "" default cannot tell those apart, and telling them apart is the fix.
+_UNSET = object()
+
+
+def enabled(repo: str, token=_UNSET) -> bool:
     # A sandbox holds no GitHub token, but reporting "GitHub isn't connected"
     # there is a lie about the CANDIDATE, not about the sandbox: it renders a
     # blocker the real build would not show, hides the PR links a reviewer needs
     # to look at, and makes the copy under test different from the copy shipped.
     if config.DEMO_MODE:
         return bool(repo)
-    return bool(config.GITHUB_TOKEN and repo)
+    tok = config.GITHUB_TOKEN if token is _UNSET else token
+    return bool(tok and repo)
 
 
 # ---- human-facing links --------------------------------------------------
@@ -84,7 +103,7 @@ def clone_url(repo: str, token: str = "") -> str:
            f"{config.GIT_WEB.split('://', 1)[-1]}/{repo}.git"
 
 
-async def _request(method: str, path: str, **kwargs) -> dict:
+async def _request(method: str, path: str, token: str = "", **kwargs) -> dict:
     # Single choke point for every call, so the sandbox cannot reach GitHub even
     # if some future code path forgets to check DEMO_MODE.
     if config.DEMO_MODE:
@@ -92,33 +111,50 @@ async def _request(method: str, path: str, **kwargs) -> dict:
         return demo.github_call(method, path, kwargs)
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.request(method, f"{config.GIT_API}{path}",
-                                    headers=auth_headers(), **kwargs)
+                                    headers=auth_headers(token), **kwargs)
         resp.raise_for_status()
         return resp.json() if resp.content else {}
 
 
-async def create_issue(repo: str, title: str, body: str) -> int:
-    data = await _request("POST", f"/repos/{repo}/issues", json={"title": title, "body": body})
+def token_for(project: dict) -> str:
+    """The GitHub token a project's operations must run under: its owner's.
+
+    A non-root owner with no token of their own gets "" — deliberately, so the
+    operation refuses rather than falling through to the operator's credentials.
+    An owner-less legacy project (owner_id 0) keeps the server token, which is the
+    single-tenant behaviour those projects were created under.
+    """
+    from . import auth
+    owner = auth.get_user((project or {}).get("owner_id") or 0)
+    if not owner:
+        return config.GITHUB_TOKEN          # legacy single-tenant project
+    # get_settings already backfills the server token for root and only for root,
+    # so a non-root user's own token (or nothing) is exactly what comes back.
+    return auth.get_settings(owner).get("github_token") or ""
+
+
+async def create_issue(repo: str, title: str, body: str, token: str = "") -> int:
+    data = await _request("POST", f"/repos/{repo}/issues", token=token, json={"title": title, "body": body})
     return data["number"]
 
 
-async def comment_issue(repo: str, number: int, body: str) -> None:
-    await _request("POST", f"/repos/{repo}/issues/{number}/comments", json={"body": body})
+async def comment_issue(repo: str, number: int, body: str, token: str = "") -> None:
+    await _request("POST", f"/repos/{repo}/issues/{number}/comments", token=token, json={"body": body})
 
 
-async def close_issue(repo: str, number: int) -> None:
-    await _request("PATCH", f"/repos/{repo}/issues/{number}", json={"state": "closed"})
+async def close_issue(repo: str, number: int, token: str = "") -> None:
+    await _request("PATCH", f"/repos/{repo}/issues/{number}", token=token, json={"state": "closed"})
 
 
-async def create_pr(repo: str, head: str, base: str, title: str, body: str) -> int:
+async def create_pr(repo: str, head: str, base: str, title: str, body: str, token: str = "") -> int:
     data = await _request(
-        "POST", f"/repos/{repo}/pulls",
+        "POST", f"/repos/{repo}/pulls", token=token,
         json={"head": head, "base": base, "title": title, "body": body},
     )
     return data["number"]
 
 
-async def find_pr_for_branch(repo: str, branch: str) -> int | None:
+async def find_pr_for_branch(repo: str, branch: str, token: str = "") -> int | None:
     """The open PR for this branch, if one already exists.
 
     A worker with Bash can open its own PR before the scheduler gets there. The
@@ -136,42 +172,43 @@ async def find_pr_for_branch(repo: str, branch: str) -> int | None:
             # `limit` is capped server-side at 50; a branch whose PR falls beyond
             # that page reads as "not found" and we open a second PR — noisy, but
             # not wrong.
-            data = await _request("GET", f"/repos/{repo}/pulls?state=open&limit=50")
+            data = await _request("GET", f"/repos/{repo}/pulls?state=open&limit=50", token=token)
             for pr in data or []:
                 if (pr.get("head") or {}).get("ref") == branch:
                     return pr["number"]
             return None
         data = await _request(
-            "GET", f"/repos/{repo}/pulls?head={owner}:{branch}&state=open&per_page=5")
+            "GET", f"/repos/{repo}/pulls?head={owner}:{branch}&state=open&per_page=5",
+            token=token)
     except Exception:
         return None
     return data[0]["number"] if data else None
 
 
-async def merge_pr(repo: str, number: int) -> bool:
+async def merge_pr(repo: str, number: int, token: str = "") -> bool:
     try:
         if _gitea():
             # POST, not PUT, and the method goes in `Do`. Capitalised on purpose:
             # up to 1.25 the Go field carries no json tag, so the decoder matches
             # the field name; 1.26+ accepts either. Getting the key wrong is not
             # an error there — the PR merges with the wrong strategy.
-            await _request("POST", f"/repos/{repo}/pulls/{number}/merge", json={"Do": "squash"})
+            await _request("POST", f"/repos/{repo}/pulls/{number}/merge", token=token, json={"Do": "squash"})
         else:
-            await _request("PUT", f"/repos/{repo}/pulls/{number}/merge",
+            await _request("PUT", f"/repos/{repo}/pulls/{number}/merge", token=token,
                            json={"merge_method": "squash"})
         return True
     except httpx.HTTPStatusError:
         return False
 
 
-async def default_branch(repo: str) -> str:
-    data = await _request("GET", f"/repos/{repo}")
+async def default_branch(repo: str, token: str = "") -> str:
+    data = await _request("GET", f"/repos/{repo}", token=token)
     return data.get("default_branch", "main")
 
 
-async def repo_exists(repo: str) -> bool:
+async def repo_exists(repo: str, token: str = "") -> bool:
     try:
-        await _request("GET", f"/repos/{repo}")
+        await _request("GET", f"/repos/{repo}", token=token)
         return True
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 404:
@@ -208,51 +245,51 @@ async def create_user_repo(token: str, name: str, private: bool = True) -> tuple
         return True, resp.json()["full_name"]
 
 
-async def list_prs(repo: str) -> list[dict]:
+async def list_prs(repo: str, token: str = "") -> list[dict]:
     q = "state=all&limit=30" if _gitea() else "state=all&per_page=30"
-    data = await _request("GET", f"/repos/{repo}/pulls?{q}")
+    data = await _request("GET", f"/repos/{repo}/pulls?{q}", token=token)
     return [{"number": p["number"], "title": p["title"], "state": p["state"],
              "merged": bool(p.get("merged_at")), "url": p["html_url"]} for p in data]
 
 
-async def list_branches(repo: str) -> list[str]:
+async def list_branches(repo: str, token: str = "") -> list[str]:
     # `per_page` is not an error on Gitea, it is ignored — which silently gives
     # back the 30-item default page and looks like a repo with fewer branches.
     q = "limit=50" if _gitea() else "per_page=50"
-    data = await _request("GET", f"/repos/{repo}/branches?{q}")
+    data = await _request("GET", f"/repos/{repo}/branches?{q}", token=token)
     return [b["name"] for b in data]
 
 
 
 
-async def ensure_repo(repo: str) -> tuple[bool, str]:
+async def ensure_repo(repo: str, token: str = "") -> tuple[bool, str]:
     """Create the repo (private, initialized) if it doesn't exist.
     Returns (ok, note). `repo` is 'owner/name'; the token's user must be the owner
     (or the org must allow it). Personal repos are created for the token's own user."""
-    if not enabled(repo):
+    if not enabled(repo, token):
         return False, "GitHub not configured"
-    if await repo_exists(repo):
+    if await repo_exists(repo, token):
         return True, "repo already exists"
     owner, _, name = repo.partition("/")
-    me = await _request("GET", "/user")
+    me = await _request("GET", "/user", token=token)
     body = {"name": name, "private": True, "auto_init": True,
             "description": "Created automatically by devteam"}
     try:
         if owner and owner.lower() != me.get("login", "").lower():
             # owner is an org the token can create in
-            await _request("POST", f"/orgs/{owner}/repos", json=body)
+            await _request("POST", f"/orgs/{owner}/repos", token=token, json=body)
         else:
-            await _request("POST", "/user/repos", json=body)
+            await _request("POST", "/user/repos", token=token, json=body)
         return True, f"created private repo {repo}"
     except httpx.HTTPStatusError as e:
         return False, f"could not create {repo}: {e.response.status_code} {e.response.text[:200]}"
 
 
-async def list_tree(repo: str, ref: str = "") -> list[dict]:
+async def list_tree(repo: str, ref: str = "", token: str = "") -> list[dict]:
     """Every file in the repo at `ref`, flat. The repo is the source of truth for
     what the team produced — a local checkout is a copy that can be stale."""
     if not ref:
-        ref = await default_branch(repo)
+        ref = await default_branch(repo, token)
     skip = (".git/", "node_modules/", "__pycache__/", ".venv/", "dist/", "build/")
     entries: list[dict] = []
     page = 1
@@ -262,7 +299,7 @@ async def list_tree(repo: str, ref: str = "") -> list[dict]:
         # `truncated` means it gave up — paging there would be a second identical
         # request, so only Gitea loops.
         q = f"?recursive=1&page={page}&per_page=1000" if _gitea() else "?recursive=1"
-        data = await _request("GET", f"/repos/{repo}/git/trees/{ref}{q}")
+        data = await _request("GET", f"/repos/{repo}/git/trees/{ref}{q}", token=token)
         entries += data.get("tree", [])
         if not (_gitea() and data.get("truncated")):
             break
@@ -272,12 +309,12 @@ async def list_tree(repo: str, ref: str = "") -> list[dict]:
             if t.get("type") == "blob" and not t["path"].startswith(skip)]
 
 
-async def read_file(repo: str, path: str, ref: str = "") -> str:
+async def read_file(repo: str, path: str, ref: str = "", token: str = "") -> str:
     """One file's contents, decoded. Binary and oversized files are refused rather
     than returned as mojibake."""
     import base64
     q = f"?ref={ref}" if ref else ""
-    data = await _request("GET", f"/repos/{repo}/contents/{path}{q}")
+    data = await _request("GET", f"/repos/{repo}/contents/{path}{q}", token=token)
     if data.get("encoding") != "base64" or data.get("size", 0) > 400_000:
         raise ValueError("too large or not a text file")
     raw = base64.b64decode(data["content"])

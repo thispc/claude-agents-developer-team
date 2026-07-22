@@ -269,11 +269,12 @@ def build_team_server(project_id: int):
                         deps.append(prior["id"])
             db.update_task(task_id, deps=json.dumps(sorted(set(deps))))
             issue_line = ""
-            if github_client.enabled(repo):
+            gh = github_client.token_for(project())
+            if github_client.enabled(repo, gh):
                 try:
                     n = await github_client.create_issue(
                         repo, f"[{item['role']}] {item['title']}",
-                        item["description"] + f"\n\n_devteam task {task_id}_")
+                        item["description"] + f"\n\n_devteam task {task_id}_", token=gh)
                     db.update_task(task_id, issue_number=n)
                     issue_line = f" (issue #{n})"
                 except Exception as e:
@@ -739,9 +740,10 @@ def build_team_server(project_id: int):
         bus.emit(project_id, task_id, "manager", "changes_requested",
                  {"feedback": args["feedback"]})
         repo = project().get("repo", "")
-        if github_client.enabled(repo) and t["pr_number"]:
+        gh = github_client.token_for(project())
+        if github_client.enabled(repo, gh) and t["pr_number"]:
             try:
-                await github_client.comment_issue(repo, t["pr_number"], args["feedback"])
+                await github_client.comment_issue(repo, t["pr_number"], args["feedback"], token=gh)
             except Exception:
                 pass
         return _text(f"task {t['seq']} queued for rework; the scheduler will re-dispatch it. "
@@ -918,17 +920,18 @@ def build_team_server(project_id: int):
                 f"Send it back with request_changes quoting this output. If you truly "
                 f"believe the check itself is broken (not the code), ask the boss first "
                 f"with ask_boss, then retry with override_failed_tests=true.")
-        if not github_client.enabled(repo) or not t["pr_number"]:
+        gh = github_client.token_for(project())
+        if not github_client.enabled(repo, gh) or not t["pr_number"]:
             db.update_task(t["id"], status="done")
             db.judge_run(t["id"], "accepted", "no PR; accepted")
             return _text("no PR to merge; task marked done.")
-        ok = await github_client.merge_pr(repo, t["pr_number"])
+        ok = await github_client.merge_pr(repo, t["pr_number"], token=gh)
         if ok:
             db.update_task(t["id"], status="done")
             db.judge_run(t["id"], "accepted", "merged")
             if t["issue_number"]:
                 try:
-                    await github_client.close_issue(repo, t["issue_number"])
+                    await github_client.close_issue(repo, t["issue_number"], token=gh)
                 except Exception:
                     pass
             bus.emit(project_id, t["id"], "manager", "pr_merged", {"pr": t["pr_number"]})
@@ -1133,9 +1136,11 @@ async def run_manager(project_id: int) -> None:
     # Make sure the target repo exists before the team tries to clone it. Projects
     # created before auto-create (or whose repo was deleted) would otherwise ask the
     # boss about a missing repo on every restart instead of just fixing it.
-    if project["repo"] and github_client.enabled(project["repo"]):
+    if project["repo"] and github_client.enabled(project["repo"],
+                                                  github_client.token_for(project)):
         try:
-            ok, note = await github_client.ensure_repo(project["repo"])
+            ok, note = await github_client.ensure_repo(
+                project["repo"], token=github_client.token_for(project))
             if ok and "created" in note:
                 bus.emit(project_id, None, "system", "repo_ready", note)
         except Exception as e:
