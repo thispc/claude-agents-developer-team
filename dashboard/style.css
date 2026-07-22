@@ -1629,3 +1629,50 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
   .fig-emblem { animation: none !important; }
   .fig-aura { transition: none; }
 }
+
+/* ---- Studio: the composer drawer (no popups) and inline editing ---- */
+.studio-detail.composing { width: 360px; }
+.sc-name {
+  width: 100%; font-size: 15px; font-weight: 650; border: 0; border-bottom: 1px solid var(--line);
+  background: none; padding: 2px 0; color: var(--text);
+}
+.sc-name:focus { outline: none; border-bottom-color: var(--accent); }
+.sc-preview { font-family: var(--serif); font-style: italic; color: var(--dim); font-size: 13px; margin-top: 5px; min-height: 1.4em; }
+.sc-label { font-family: var(--mono); font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--faint); margin: 14px 0 7px; }
+.sc-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.sc-chip {
+  font-size: 12px; padding: 4px 11px; border-radius: 20px; cursor: pointer;
+  background: var(--card-2); border: 1px solid var(--line); color: var(--dim);
+  transition: all .12s;
+}
+.sc-chip:hover { border-color: var(--accent); }
+.sc-chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 550; }
+.sc-seg { margin-top: 2px; }
+.sc-hint { font-size: 11.5px; color: var(--dim); margin: 6px 0 0; }
+.sc-input {
+  width: 100%; font-size: 13px; padding: var(--ctl-pad-y) var(--ctl-pad-x); border-radius: 8px;
+  border: 1px solid var(--line); background: var(--card-2); color: var(--text); resize: vertical;
+}
+.sc-input:focus { outline: none; border-color: var(--accent); background: var(--card); }
+.sc-actions { margin-top: 16px; }
+.sd-edit { cursor: pointer; }
+.sd-edit:hover { border-color: var(--accent); color: var(--accent); }
+.sd-persona { cursor: pointer; }
+
+/* ---- the world's right-click menu ---- */
+.ctx-menu {
+  position: fixed; z-index: 200; min-width: 190px; padding: 5px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+}
+.ctx-item {
+  display: block; width: 100%; text-align: left; border: 0; background: none;
+  font-size: 13px; padding: 8px 10px; border-radius: 7px; cursor: pointer; color: var(--text);
+}
+.ctx-item:hover { background: var(--accent-soft); }
+.ctx-item.soon { color: var(--faint); cursor: default; }
+.ctx-item.soon span {
+  font-family: var(--mono); font-size: 9px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--faint); margin-left: 6px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px;
+}
+.ctx-sep { height: 1px; background: var(--line-soft); margin: 4px 2px; }

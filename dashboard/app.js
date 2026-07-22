@@ -3776,6 +3776,13 @@ async function renderStudio() {
     ? `${budget.spent}/${budget.cap} tokens today` : "";
 
   $("#studioEmpty").hidden = studioAgents.length > 0;
+  if (!floor.dataset.ctxWired) {
+    floor.addEventListener("contextmenu", (ev) => {
+      if (ev.target.closest(".figure")) return;   // figures have their own menu
+      studioFloorMenu(ev);
+    });
+    floor.dataset.ctxWired = "1";
+  }
 
   const pos = studioPositions();
   // Keep the empty-state node; replace the figures.
@@ -3797,6 +3804,7 @@ async function renderStudio() {
       ${done ? `<div class="fig-shelf" title="${done} jobs, ${a.memory_chars} chars of memory">${
         "•".repeat(Math.min(5, Math.ceil(done / 3)))}</div>` : ""}`;
     makeDraggable(el, a.id);
+    el.addEventListener("contextmenu", (ev) => studioAgentMenu(ev, a));
     el.addEventListener("click", (ev) => {
       if (el.dataset.dragged === "1") { el.dataset.dragged = ""; return; }
       openAgentDetail(a.id);
@@ -3843,19 +3851,20 @@ async function openAgentDetail(id) {
   const memText = Object.entries(mem).filter(([, v]) => (v || "").trim())
     .map(([k, v]) => `<div class="mem-sec"><b>${escapeHtml(k)}</b>${escapeHtml(v)}</div>`).join("")
     || `<p class="dim">No memory yet — it forms as they work.</p>`;
+  box.className = "studio-detail";
   box.innerHTML = `
     <div class="sd-head">
       <div class="fig-emblem prov-${escapeHtml(a.provider)}" style="background:${sigil(a.name, a.provider)}">
         <span class="fig-initial">${escapeHtml(a.name[0])}</span></div>
-      <div>
+      <div style="flex:1">
         <h3>${escapeHtml(a.name)}</h3>
-        <p class="sd-persona">${escapeHtml(a.persona || "no character set")}</p>
+        <p class="sd-persona" id="sdPersona" title="click to edit">${escapeHtml(a.persona || "click to give them a character")}</p>
       </div>
       <button class="sd-close" id="sdClose">✕</button>
     </div>
     <div class="sd-facts">
-      <span>${escapeHtml(a.degree || "generalist")}</span>
-      <span>on ${escapeHtml(a.model || "role default")}${a.model_locked ? " 🔒" : ""}</span>
+      <span class="sd-edit" id="sdDegree" title="click to change">${escapeHtml(a.degree || "generalist")}</span>
+      <span class="sd-edit" id="sdModel" title="click to change">on ${escapeHtml(a.model || "role default")}${a.model_locked ? " 🔒" : ""}</span>
       <span>${a.lifetime_tasks} jobs · ${a.lifetime_accepted} accepted · ${a.lifetime_rework} reworked</span>
     </div>
     <div class="sd-mem"><div class="sd-label">Memory</div>${memText}</div>
@@ -3864,23 +3873,206 @@ async function openAgentDetail(id) {
         ${escapeHtml(e.from_model)} → ${escapeHtml(e.to_model)}
         <span class="dim">${escapeHtml(e.reason)}</span></div>`).join("")}</div>` : ""}`;
   $("#sdClose").addEventListener("click", () => box.hidden = true);
+
+  // Everything editable in place — click the thing, a control replaces it.
+  $("#sdPersona").addEventListener("click", () => {
+    const cur = a.persona || "";
+    const ta = document.createElement("textarea");
+    ta.className = "sc-input"; ta.rows = 2; ta.value = cur;
+    $("#sdPersona").replaceWith(ta); ta.focus();
+    ta.addEventListener("blur", () => { if (ta.value !== cur) patchAgent(id, { persona: ta.value }); else openAgentDetail(id); });
+  });
+  $("#sdModel").addEventListener("click", () => {
+    const sel = document.createElement("select");
+    sel.className = "mgr-model";
+    sel.innerHTML = TIERS.map((t) => `<option value="${t.id}"${t.id === a.model ? " selected" : ""}>${t.label} — ${t.note}</option>`).join("");
+    $("#sdModel").replaceWith(sel); sel.focus();
+    sel.addEventListener("change", () => patchAgent(id, { model: sel.value }));
+  });
+  $("#sdDegree").addEventListener("click", () => {
+    const sel = document.createElement("select");
+    sel.className = "mgr-model";
+    sel.innerHTML = DISCIPLINES.map((x) => `<option${x === a.degree ? " selected" : ""}>${x}</option>`).join("");
+    $("#sdDegree").replaceWith(sel); sel.focus();
+    sel.addEventListener("change", () => patchAgent(id, { degree: sel.value }));
+  });
 }
 
-async function studioNewHire() {
-  const name = prompt("Name (leave blank to auto-name):", "");
-  if (name === null) return;
-  const degree = prompt("Their discipline (e.g. backend, law, design):", "") || "";
-  const persona = prompt("One line of character — who are they?\n(e.g. a confident junior lawyer who's never lost):", "") || "";
+// The controlled way to build a person — assembled inline, never in a browser
+// dialog. A composer
+// drawer where a character is ASSEMBLED from parts: a discipline, a model tier
+// (shown as what it means, not a model id), temperament traits you toggle, an
+// optional reference, and free elaboration. The persona string is composed live
+// from those choices so you can see who you are making.
+const DISCIPLINES = ["backend", "frontend", "design", "product", "research",
+                     "qa", "writer", "law", "finance", "strategy"];
+const TRAITS = ["confident", "meticulous", "skeptical", "warm", "terse", "bold",
+                "cautious", "playful", "relentless", "diplomatic"];
+const TIERS = [
+  { id: "claude-haiku-4-5", label: "Quick", note: "fast & cheap" },
+  { id: "claude-sonnet-5",  label: "Balanced", note: "the default" },
+  { id: "claude-opus-4-8",  label: "Careful", note: "most capable" },
+];
+
+// draft holds the composer state; null when the drawer is closed.
+let hireDraft = null;
+
+function composePersona(d) {
+  const bits = [];
+  if (d.traits.length) bits.push(d.traits.join(", "));
+  if (d.reference.trim()) bits.push(`in the mould of ${d.reference.trim()}`);
+  const lead = bits.join(", ");
+  return [lead ? lead.charAt(0).toUpperCase() + lead.slice(1) + "." : "",
+          d.elaboration.trim()].filter(Boolean).join(" ");
+}
+
+function chip(label, on, attr) {
+  return `<button class="sc-chip${on ? " on" : ""}" ${attr}>${escapeHtml(label)}</button>`;
+}
+
+function renderHirePanel() {
+  const box = $("#studioDetail");
+  const d = hireDraft;
+  box.hidden = false;
+  box.className = "studio-detail composing";
+  box.innerHTML = `
+    <div class="sd-head">
+      <div class="fig-emblem" style="background:${sigil(d.name || "New", "anthropic")}">
+        <span class="fig-initial">${escapeHtml((d.name || "?")[0])}</span></div>
+      <div style="flex:1">
+        <input class="sc-name" id="scName" placeholder="Name (or leave blank)"
+               value="${escapeHtml(d.name)}" autocomplete="off">
+        <p class="sc-preview">${escapeHtml(composePersona(d) || "a blank slate — add a few traits")}</p>
+      </div>
+      <button class="sd-close" id="scClose">✕</button>
+    </div>
+
+    <div class="sc-label">Discipline</div>
+    <div class="sc-row">${DISCIPLINES.map((x) => chip(x, d.degree === x, `data-deg="${x}"`)).join("")}</div>
+
+    <div class="sc-label">How careful should they be?</div>
+    <div class="seg sc-seg">${TIERS.map((t) =>
+      `<label class="seg-opt"><input type="radio" name="sctier" ${t.id === d.model ? "checked" : ""}
+        data-model="${t.id}"><span>${t.label}</span></label>`).join("")}</div>
+    <p class="sc-hint" id="scTierNote">${escapeHtml((TIERS.find((t) => t.id === d.model) || {}).note || "")}</p>
+
+    <div class="sc-label">Temperament</div>
+    <div class="sc-row">${TRAITS.map((x) => chip(x, d.traits.includes(x), `data-trait="${x}"`)).join("")}</div>
+
+    <div class="sc-label">A reference, if it helps <span class="dim">(optional)</span></div>
+    <input class="sc-input" id="scRef" placeholder="e.g. Mike Ross from Suits"
+           value="${escapeHtml(d.reference)}" autocomplete="off">
+
+    <div class="sc-label">Anything else <span class="dim">(optional)</span></div>
+    <textarea class="sc-input" id="scElab" rows="2"
+              placeholder="a confident junior lawyer who has never lost a case…">${escapeHtml(d.elaboration)}</textarea>
+
+    <div class="sc-actions">
+      <button class="primary" id="scHire">Bring them in</button>
+    </div>`;
+
+  const rerender = () => renderHirePanel();
+  $("#scName").addEventListener("input", (e) => { d.name = e.target.value; d._nameEdited = true;
+    box.querySelector(".sc-preview").textContent = composePersona(d) || "a blank slate — add a few traits"; });
+  $("#scRef").addEventListener("input", (e) => { d.reference = e.target.value; });
+  $("#scElab").addEventListener("input", (e) => { d.elaboration = e.target.value; });
+  box.querySelectorAll("[data-deg]").forEach((b) =>
+    b.addEventListener("click", () => { d.degree = d.degree === b.dataset.deg ? "" : b.dataset.deg; rerender(); }));
+  box.querySelectorAll("[data-trait]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const t = b.dataset.trait;
+      d.traits = d.traits.includes(t) ? d.traits.filter((x) => x !== t) : [...d.traits, t];
+      rerender();
+    }));
+  box.querySelectorAll("[data-model]").forEach((r) =>
+    r.addEventListener("change", () => { d.model = r.dataset.model; rerender(); }));
+  $("#scClose").addEventListener("click", () => { hireDraft = null; box.hidden = true; });
+  $("#scHire").addEventListener("click", doHire);
+}
+
+function openHirePanel(at) {
+  hireDraft = { name: "", degree: "", model: "claude-sonnet-5", traits: [],
+                reference: "", elaboration: "", at: at || null };
+  renderHirePanel();
+}
+
+async function doHire() {
+  const d = hireDraft;
   try {
-    await api("/api/home", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: name.trim(), degree: degree.trim(), persona: persona.trim() }) });
+    const r = await api("/api/home", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: d.name.trim(), degree: d.degree,
+                             model: d.model, persona: composePersona(d) }) });
+    // Drop the new figure where the world was right-clicked, if anywhere.
+    if (d.at && r.agent) saveStudioPos(r.agent.id, d.at.x, d.at.y);
+    hireDraft = null;
+    $("#studioDetail").hidden = true;
     await renderStudio();
   } catch (e) { toast(`Could not hire: ${e.message}`); }
 }
 
+// A patch to one agent, re-rendering both the detail card and the floor.
+async function patchAgent(id, fields) {
+  try {
+    await api(`/api/home/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(fields) });
+    await renderStudio();
+    await openAgentDetail(id);
+  } catch (e) { toast(`Could not update: ${e.message}`); }
+}
+
 $("#studioBack") && $("#studioBack").addEventListener("click", () => showHome());
-$("#studioHire") && $("#studioHire").addEventListener("click", studioNewHire);
-$("#studioHire2") && $("#studioHire2").addEventListener("click", studioNewHire);
+$("#studioHire") && $("#studioHire").addEventListener("click", () => openHirePanel());
+$("#studioHire2") && $("#studioHire2").addEventListener("click", () => openHirePanel());
+
+// The world is right-clickable. A menu on empty floor to bring someone in where
+// you clicked or to tidy the room; a menu on a person to talk, edit or bench them
+// (talk/scenes arrive in the next sprint and are shown as what is coming).
+function studioMenu(x, y, items) {
+  document.querySelectorAll(".ctx-menu").forEach((m) => m.remove());
+  const m = document.createElement("div");
+  m.className = "ctx-menu";
+  m.style.left = x + "px"; m.style.top = y + "px";
+  // Built with createElement + textContent, never innerHTML — a menu label can
+  // carry an agent's name, which is free text, and textContent cannot be an
+  // injection the way an interpolated innerHTML string can.
+  items.forEach((it) => {
+    if (it.sep) { const d = document.createElement("div"); d.className = "ctx-sep"; m.appendChild(d); return; }
+    const b = document.createElement("button");
+    b.className = "ctx-item" + (it.soon ? " soon" : "");
+    b.textContent = it.label;
+    if (it.soon) { b.disabled = true; const s = document.createElement("span"); s.textContent = "soon"; b.appendChild(s); }
+    else b.addEventListener("click", () => { m.remove(); it.act(); });
+    m.appendChild(b);
+  });
+  document.body.appendChild(m);
+  const close = (e) => { if (!m.contains(e.target)) { m.remove(); document.removeEventListener("pointerdown", close); } };
+  setTimeout(() => document.addEventListener("pointerdown", close), 0);
+}
+
+function studioFloorMenu(ev) {
+  ev.preventDefault();
+  const floor = $("#studioFloor").getBoundingClientRect();
+  const at = { x: ((ev.clientX - floor.left) / floor.width) * 100,
+               y: ((ev.clientY - floor.top) / floor.height) * 100 };
+  studioMenu(ev.clientX, ev.clientY, [
+    { label: "＋ Bring someone in here", act: () => openHirePanel(at) },
+    { label: "Tidy the room", act: () => { localStorage.removeItem("studio-pos"); renderStudio(); } },
+    { sep: true },
+    { label: "Set a scene", soon: true },
+    { label: "Ask the manager to run it", soon: true },
+  ]);
+}
+
+function studioAgentMenu(ev, a) {
+  ev.preventDefault(); ev.stopPropagation();
+  studioMenu(ev.clientX, ev.clientY, [
+    { label: `Open ${a.name}`, act: () => openAgentDetail(a.id) },
+    { label: "Talk to them", soon: true },
+    { sep: true },
+    { label: "Send home (archive)", act: async () => {
+        await api(`/api/home/${a.id}`, { method: "DELETE" }); renderStudio(); } },
+  ]);
+}
 
 
 async function boot() {

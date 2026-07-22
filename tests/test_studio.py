@@ -476,11 +476,17 @@ def test_no_agent_text_is_written_as_unescaped_innerhtml():
     js = _dash("app.js")
     studio = js.split("The Studio — where globally-persistent")[1].split("async function boot")[0]
     import re
-    for field in ("a.persona", "a.name", "a.degree", "e.reason", "e.from_model"):
-        # each interpolation of a free-text field must be wrapped in escapeHtml
-        for m in re.finditer(re.escape("${" + field), studio):
-            window = studio[max(0, m.start() - 20):m.start() + 5]
-            assert "escapeHtml(" in window, f"{field} reaches the DOM unescaped"
+    # Only interpolations that land in an innerHTML assignment are an injection
+    # risk; menu labels now go through textContent (createElement) and are safe by
+    # construction. Scan each `innerHTML = ` ... backtick block.
+    blocks = re.findall(r"innerHTML\s*=\s*`.*?`", studio, re.S)
+    for block in blocks:
+        for field in ("a.persona", "a.name", "a.degree", "e.reason", "e.from_model",
+                      "d.name", "d.reference", "d.elaboration"):
+            for m in re.finditer(re.escape("${" + field), block):
+                window = block[max(0, m.start() - 22):m.start() + 5]
+                assert "escapeHtml(" in window or "sigil(" in window, \
+                    f"{field} reaches innerHTML unescaped"
 
 
 @pytest.mark.hostonly
@@ -518,3 +524,42 @@ def test_provider_colour_is_a_rim_never_a_fill():
     for prov in ("anthropic", "openai", "google"):
         rule = css.split(f".fig-emblem.prov-{prov}")[1].split("}")[0]
         assert "outline" in rule and "background" not in rule
+
+
+@pytest.mark.hostonly
+def test_hiring_and_editing_use_no_browser_popups():
+    """The owner asked for a controlled, sophisticated way to build a person — not
+    a prompt() box, the same complaint that retired the autonomy tiles. The Studio
+    must assemble a persona from parts in an inline drawer, and edit in place."""
+    js = _dash("app.js")
+    studio = js.split("The Studio — where globally-persistent")[1]
+    assert "prompt(" not in studio, "a browser popup is still used to hire/edit"
+    assert "function openHirePanel" in studio and "function composePersona" in studio
+    assert "function patchAgent" in studio           # inline edit persists
+
+
+@pytest.mark.hostonly
+def test_a_persona_is_assembled_from_controlled_parts():
+    """Discipline, model tier, temperament traits, a reference and free text —
+    composed live so you see who you are making, rather than one blind text box."""
+    js = _dash("app.js")
+    assert "const TRAITS" in js and "const DISCIPLINES" in js and "const TIERS" in js
+    comp = js.split("function composePersona")[1][:400]
+    assert "traits" in comp and "reference" in comp
+
+
+@pytest.mark.hostonly
+def test_the_world_is_right_clickable():
+    """A little world of agents: the canvas takes a right-click menu, and so does
+    each person."""
+    js = _dash("app.js")
+    assert "function studioFloorMenu" in js and "function studioAgentMenu" in js
+    assert 'addEventListener("contextmenu"' in js
+
+
+@pytest.mark.hostonly
+def test_the_next_sprint_is_signposted_not_faked():
+    """Scenes and manager-run-it are the next sprint; the menu shows them as
+    coming rather than pretending they work."""
+    js = _dash("app.js")
+    assert "Set a scene" in js and "soon: true" in js
