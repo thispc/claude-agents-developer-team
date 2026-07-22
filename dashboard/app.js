@@ -2958,9 +2958,8 @@ function previewButton(url, label) {
     return `<a class="demo-btn" href="${escapeHtml(url)}${sep}t=${Date.now()}"
       target="_blank" rel="noopener">${label}</a>`;
   }
-  return `<span class="demo-btn disabled" title="${escapeHtml(url)}">⛒ Preview runs inside the server</span>
-    <span class="hint">Served on <code>${escapeHtml(url)}</code>, which only the server can reach —
-    it is not a public URL. Deploy it to the cluster to get one you can open.</span>`;
+  return `<span class="hint preview-note">This build is running — but only inside the server,
+    so there is no public link to open it with yet.</span>`;
 }
 
 async function renderArtifacts(force) {
@@ -3079,7 +3078,7 @@ async function renderDeploy() {
         <button id="redeployBtn">↻ Rebuild &amp; restart</button>
         <button id="stopDeployBtn" class="danger">■ Stop</button>
       </div>
-      <p class="hint">${escapeHtml(d.live.url)} · ${escapeHtml(d.live.kind)} ·
+      <p class="hint">${previewReachable(d.live.url) ? escapeHtml(d.live.url) + " · " : ""}${escapeHtml(d.live.kind)} ·
          up ${Math.floor(d.live.uptime / 60)}m${d.live.uptime % 60}s</p>
       ${d.log ? `<details><summary>Build &amp; runtime log</summary><pre class="deploy-log">${
         escapeHtml(d.log)}</pre></details>` : ""}`;
