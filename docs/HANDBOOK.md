@@ -175,7 +175,7 @@ is not.
 
 ### The API, in families
 
-An *API* is the list of requests a program will answer. There are 130; the
+An *API* is the list of requests a program will answer. There are 137; the
 dashboard uses them for you.
 
 | Family | Example | For |
@@ -207,15 +207,16 @@ so nothing depends on you having been watching.
 
 ### What the database holds
 
-Twenty-six tables in one file. The ones worth knowing: **projects** and **tasks**
+Twenty-seven tables in one file. The ones worth knowing: **projects** and **tasks**
 (the work), **agents** (teammates and their memory), **runs** (one row per AI
 task — the source of all measurement), **events** (the permanent activity
 record), **findings** (what the platform believes is wrong with itself),
 **sprint_artifacts** (the sealed record of each round), **feedback** (your notes,
 attached to specific work), **tuning** (the dials, changeable without rebuilding),
-and the four that make **The Studio** and its scenes — **home_agents** (durable
-characters), **scenes**, **scene_agents** (a seat and its secret), and
-**artifacts** (a card, a deck, a pot: code, never an AI).
+and the five that make **The Studio** and its scenes — **home_agents** (durable
+characters), **scenes**, **scene_agents** (a seat and its secret), **artifacts** (a
+card, a deck, a pot placed in a scene), and **artifact_defs** (the reusable object
+library).
 
 ### The Studio, and scenes
 
@@ -238,6 +239,15 @@ at a time, and every scene carries a token budget it pauses at rather than
 overrun. Each seat's cards are its own secret — a face-down card shows everyone
 else only a back — and the winner of a hand is decided by the code that collates
 it, never by a model's say-so.
+
+The Studio has three tabs: **agents**, **scenes**, and an **artifact library**
+where you build reusable objects. An artifact has a *public* half anyone in the
+scene can read and a *secret* half that is **sealed** — its value is encrypted and
+the key is held privately by whichever agent possesses the thing, so a face-down
+card's value is not merely flagged hidden but genuinely unreadable until an
+interaction hands over the key. A scene carries public **rules** everyone can see
+and a behaviour **equalizer** that tunes every agent placed in it — the same room,
+a different kind of person.
 
 ### Where things run
 

@@ -38,6 +38,10 @@ CAPABILITIES: dict[str, dict[str, str]] = {
         "what": "A setting where agents act; artifacts are deterministic code, not AIs",
         "doc_phrase": "poker table",
     },
+    "artifact_library": {
+        "what": "Reusable objects with a public half and an encrypted, key-gated secret half",
+        "doc_phrase": "artifact library",
+    },
     "round_table": {
         "what": "Models from different vendors argue an idea into a blueprint",
         "doc_phrase": "round table",

@@ -319,6 +319,25 @@ CREATE TABLE IF NOT EXISTS scene_events (
     ts REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_scene_events_scene ON scene_events(scene_id, id);
+-- ARTIFACT LIBRARY: the owner's reusable objects, created in the Studio's Artifacts
+-- tab and dropped into scenes. A def is a blueprint — a card, a chair, a deck — with
+-- a PUBLIC part everyone can see (its kind, its shown fields) and a SECRET schema
+-- (which fields are hidden and only revealed on interaction). The def carries no
+-- executable code in wave 1; the object's behaviour is wave 2. Owner-scoped exactly
+-- like home_agents, so an artifact library is private to its maker.
+CREATE TABLE IF NOT EXISTS artifact_defs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'prop',        -- card | deck | chair | table | prop …
+    dormant INTEGER NOT NULL DEFAULT 1,        -- 1 = inert (chair); 0 = acts on interaction
+    public TEXT NOT NULL DEFAULT '{}',         -- public variables: visible without interaction
+    secret_schema TEXT NOT NULL DEFAULT '[]',  -- names of fields that are hidden until revealed
+    description TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_artifact_defs_owner ON artifact_defs(owner_id);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL,
@@ -434,6 +453,13 @@ def init() -> None:
         # A per-project agent is now optionally a deployment of a Studio agent.
         # NULL for every pre-existing row → those behave exactly as before.
         "ALTER TABLE agents ADD COLUMN home_id INTEGER",
+        # Scenes gain public rules and a behaviour equalizer; artifacts gain a link
+        # to their library blueprint, a dormant flag, and an encrypted secret blob.
+        "ALTER TABLE scenes ADD COLUMN rules TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE scenes ADD COLUMN equalizer TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE artifacts ADD COLUMN def_id INTEGER",
+        "ALTER TABLE artifacts ADD COLUMN dormant INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE artifacts ADD COLUMN secret TEXT NOT NULL DEFAULT ''",
         # roundtables/seats/turns are created by SCHEMA above (CREATE TABLE IF NOT
         # EXISTS), so existing databases pick them up without a migration here.
     ):
@@ -1220,12 +1246,13 @@ def home_instances(home_id: int) -> list[dict]:
 # --- scenes: a setting with rules, its seats, its artifacts, its transcript ---
 
 def create_scene(owner_id: int, kind: str, goal: str = "", title: str = "",
-                 token_budget: int = 20000, seed: int = 0) -> int:
+                 token_budget: int = 20000, seed: int = 0, rules: str = "",
+                 equalizer: str = "{}") -> int:
     now = time.time()
     cur = _execute(
-        "INSERT INTO scenes (owner_id, kind, goal, title, token_budget, seed, "
-        "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
-        (owner_id, kind, goal, title, token_budget, seed, now, now))
+        "INSERT INTO scenes (owner_id, kind, goal, title, token_budget, seed, rules, "
+        "equalizer, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (owner_id, kind, goal, title, token_budget, seed, rules, equalizer, now, now))
     return int(cur.lastrowid)
 
 
@@ -1281,11 +1308,13 @@ def update_scene_agent(seat_id: int, **fields: Any) -> None:
 
 
 def create_artifact(scene_id: int, atype: str, state: Any, *, visibility: str = "public",
-                    holder: int | None = None, z: int = 0) -> int:
+                    holder: int | None = None, z: int = 0, def_id: int | None = None,
+                    dormant: bool = True, secret: str = "") -> int:
     cur = _execute(
-        "INSERT INTO artifacts (scene_id, type, state, visibility, holder, z, created_at) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (scene_id, atype, json.dumps(state), visibility, holder, z, time.time()))
+        "INSERT INTO artifacts (scene_id, type, state, visibility, holder, z, def_id, "
+        "dormant, secret, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (scene_id, atype, json.dumps(state), visibility, holder, z, def_id,
+         1 if dormant else 0, secret, time.time()))
     return int(cur.lastrowid)
 
 
@@ -1327,3 +1356,37 @@ def list_scene_events(scene_id: int, after_id: int = 0, limit: int = 500) -> lis
                      (scene_id, after_id, limit))
     return _rows("SELECT * FROM scene_events WHERE scene_id=? ORDER BY id LIMIT ?",
                  (scene_id, limit))
+
+
+# --- artifact library: reusable objects made in the Studio's Artifacts tab ---
+
+def create_artifact_def(owner_id: int, name: str, kind: str = "prop", *,
+                        dormant: bool = True, public: Any = None,
+                        secret_schema: Any = None, description: str = "") -> int:
+    now = time.time()
+    cur = _execute(
+        "INSERT INTO artifact_defs (owner_id, name, kind, dormant, public, "
+        "secret_schema, description, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (owner_id, name, kind, 1 if dormant else 0, json.dumps(public or {}),
+         json.dumps(secret_schema or []), description, now, now))
+    return int(cur.lastrowid)
+
+
+def get_artifact_def(def_id: int) -> dict | None:
+    rows = _rows("SELECT * FROM artifact_defs WHERE id=?", (def_id,))
+    return rows[0] if rows else None
+
+
+def list_artifact_defs(owner_id: int) -> list[dict]:
+    return _rows("SELECT * FROM artifact_defs WHERE owner_id=? ORDER BY created_at",
+                 (owner_id,))
+
+
+def update_artifact_def(def_id: int, **fields: Any) -> None:
+    fields["updated_at"] = time.time()
+    cols = ", ".join(f"{k}=?" for k in fields)
+    _execute(f"UPDATE artifact_defs SET {cols} WHERE id=?", (*fields.values(), def_id))
+
+
+def delete_artifact_def(def_id: int) -> None:
+    _execute("DELETE FROM artifact_defs WHERE id=?", (def_id,))

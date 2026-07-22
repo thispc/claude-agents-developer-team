@@ -7,8 +7,8 @@ from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSoc
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from . import (ambition, artifacts, auth, blockers, bus, cloud, config, credcheck,
-               db, deploy,
+from . import (ambition, artifact_lib, artifacts, auth, blockers, bus, cloud, config,
+               credcheck, db, deploy,
                envs, feedback, findings, github_client, home, launcher, manager,
                memory, metrics, notify, planner, preview, process, providers,
                roundtable, sandbox, scene, scheduler, selfops, team, triage, tuning,
@@ -996,6 +996,16 @@ class NewScene(BaseModel):
     goal: str = ""
     title: str = ""
     seed: int = 0
+    rules: str = ""              # the public rules everyone in the scene can read
+    equalizer: dict = {}         # trait biases that tune every agent placed in the scene
+
+
+class ScenePatch(BaseModel):
+    title: str | None = None
+    goal: str | None = None
+    rules: str | None = None
+    equalizer: dict | None = None
+    status: str | None = None
 
 
 class SeatBody(BaseModel):
@@ -1032,7 +1042,22 @@ def scene_create(body: NewScene, request: Request) -> dict:
     if not tuning.get("scene_enabled"):
         raise HTTPException(403, "scenes are disabled on this instance")
     s = scene.create(u["id"], body.kind, body.goal, body.title, seed=body.seed)
+    if body.rules or body.equalizer:
+        db.update_scene(s["id"], rules=body.rules, equalizer=json.dumps(body.equalizer))
+        s = db.get_scene(s["id"])
     return {"scene": s}
+
+
+@router.patch("/api/scene/{scene_id}")
+def scene_patch(scene_id: int, body: ScenePatch, request: Request) -> dict:
+    """Edit a scene's public rules, its equalizer, or its framing in place."""
+    _own_scene(request, scene_id)
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "equalizer" in fields:
+        fields["equalizer"] = json.dumps(fields["equalizer"])
+    if fields:
+        db.update_scene(scene_id, **fields)
+    return {"scene": db.get_scene(scene_id)}
 
 
 @router.get("/api/scene/{scene_id}")
@@ -1112,6 +1137,107 @@ def scene_flip(scene_id: int, artifact_id: int, request: Request) -> dict:
     if not art or art["scene_id"] != scene_id:
         raise HTTPException(404, "no such artifact in this scene")
     return {"artifact": scene.flip(artifact_id)}
+
+
+# --- the artifact library: reusable objects, and the public/secret model ---
+
+class NewArtifactDef(BaseModel):
+    name: str = ""
+    kind: str = "prop"
+    dormant: bool = True
+    public: dict = {}
+    secret_schema: list = []
+    description: str = ""
+
+
+class ArtifactDefPatch(BaseModel):
+    name: str | None = None
+    kind: str | None = None
+    dormant: bool | None = None
+    public: dict | None = None
+    secret_schema: list | None = None
+    description: str | None = None
+
+
+class PlaceArtifact(BaseModel):
+    def_id: int | None = None
+    kind: str = "prop"
+    public: dict = {}
+    secret: dict = {}
+    holder_seat: int | None = None
+    dormant: bool = True
+
+
+def _own_def(request: Request, def_id: int) -> dict:
+    u = current_user(request)
+    d = db.get_artifact_def(def_id)
+    if not d or d["owner_id"] != u["id"]:
+        raise HTTPException(404, "no such artifact in your library")
+    return d
+
+
+@router.get("/api/artifacts")
+def artifact_lib_list(request: Request) -> dict:
+    """The caller's artifact library — the reusable objects in the Studio's Artifacts
+    tab."""
+    u = current_user(request)
+    return {"artifacts": artifact_lib.list_defs(u["id"])}
+
+
+@router.post("/api/artifacts")
+def artifact_lib_create(body: NewArtifactDef, request: Request) -> dict:
+    u = current_user(request)
+    d = artifact_lib.create_def(u["id"], body.name, body.kind, dormant=body.dormant,
+                                public=body.public, secret_schema=body.secret_schema,
+                                description=body.description)
+    return {"artifact": d}
+
+
+@router.patch("/api/artifacts/{def_id}")
+def artifact_lib_patch(def_id: int, body: ArtifactDefPatch, request: Request) -> dict:
+    _own_def(request, def_id)
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "dormant" in fields:
+        fields["dormant"] = 1 if fields["dormant"] else 0
+    for j in ("public", "secret_schema"):
+        if j in fields:
+            fields[j] = json.dumps(fields[j])
+    if fields:
+        db.update_artifact_def(def_id, **fields)
+    return {"artifact": artifact_lib.get_def(def_id)}
+
+
+@router.delete("/api/artifacts/{def_id}")
+def artifact_lib_delete(def_id: int, request: Request) -> dict:
+    _own_def(request, def_id)
+    db.delete_artifact_def(def_id)
+    return {"ok": True, "deleted": def_id}
+
+
+@router.post("/api/scene/{scene_id}/artifact")
+def scene_place_artifact(scene_id: int, body: PlaceArtifact, request: Request) -> dict:
+    """Drop an artifact into a scene. If it carries a secret, the value is sealed and
+    the key handed to the holder seat — from here it is unreadable to anyone else."""
+    _own_scene(request, scene_id)
+    if body.def_id is not None and not artifact_lib.owns_def(current_user(request)["id"], body.def_id):
+        raise HTTPException(404, "no such artifact in your library")
+    art = artifact_lib.place(scene_id, body.def_id, kind=body.kind, public=body.public,
+                             secret=body.secret, holder_seat=body.holder_seat,
+                             dormant=body.dormant)
+    return {"artifact": artifact_lib.public_of(art)}
+
+
+@router.post("/api/scene/{scene_id}/reveal/{artifact_id}")
+def scene_reveal(scene_id: int, artifact_id: int, seat: int, request: Request) -> dict:
+    """Reveal a sealed secret to a seat that holds its key — the interaction that
+    decrypts. Without the key this returns nothing; the value is never exposed to a
+    seat that was not given it."""
+    _own_scene(request, scene_id)
+    art = db.get_artifact(artifact_id)
+    if not art or art["scene_id"] != scene_id:
+        raise HTTPException(404, "no such artifact in this scene")
+    values = artifact_lib.reveal(artifact_id, seat)
+    return {"revealed": values, "ok": values is not None}
 
 
 @router.get("/api/tuning")
