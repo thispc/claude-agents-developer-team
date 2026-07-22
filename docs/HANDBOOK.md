@@ -378,6 +378,31 @@ was about so nobody rewrites sealed history.
 
 ---
 
+## The Studio — where your team lives
+
+Teammates are not created fresh for each project and forgotten afterwards. **The
+Studio** is a space where they reside between jobs: durable people with a name, a
+character, a discipline, and a memory that carries across every project they work.
+You hire them, give them a character in one line ("a confident junior lawyer who's
+never lost"), and put the same people on real builds.
+
+Three things make them feel alive without costing you a fortune:
+
+- **They remember.** After each job, what a teammate did is filed as an episode —
+  for free, from the summary they already wrote. When enough piles up, it is folded
+  into a compact long-term memory by a single cheap call. That memory is handed to
+  them on their next job, on any project.
+- **They grow.** A teammate that keeps hitting work its model can't clear is moved
+  up to a stronger one; one coasting on easy work is moved down to a cheaper one.
+  This decision costs nothing — it is arithmetic over what they have actually done —
+  and every change is logged so you can see why.
+- **Their life is free.** All of this happens in the background, and the background
+  costs nothing at rest. A model is touched only when a teammate has genuinely done
+  enough to be worth remembering, capped, and under a hard daily budget you can see.
+  Ten idle teammates cost nothing; the room is calm until there is real work to fold.
+
+---
+
 ## Where the work ends up
 
 - **Code, in your repository.** Every task arrives as a pull request. Nothing

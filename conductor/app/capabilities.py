@@ -30,6 +30,10 @@ from typing import Any
 # key -> {what it is, the phrase the handbook must contain}
 CAPABILITIES: dict[str, dict[str, str]] = {
     # --- the shape of a project ---
+    "studio": {
+        "what": "Globally-persistent agents that reside between jobs, learn, and evolve",
+        "doc_phrase": "The Studio",
+    },
     "round_table": {
         "what": "Models from different vendors argue an idea into a blueprint",
         "doc_phrase": "round table",

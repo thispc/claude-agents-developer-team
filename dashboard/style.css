@@ -1538,3 +1538,94 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .agent-group-head b { font-size: 13.5px; }
 .agent-work { margin: 7px 0 0; padding-left: 18px; }
 .agent-work li { font-size: 12.5px; color: var(--dim); margin-bottom: 3px; }
+
+/* ============================================================================
+   The Studio — a warm room where agents reside.
+   Extends the existing tokens; adds a floor colour and reuses the meaning rule:
+   pine = working, brick = a human is involved (needs you), amber = strained.
+   ============================================================================ */
+:root { --room: #EDEBE4; --room-edge: #E4E1D8; }
+#studio { display: flex; flex-direction: column; height: calc(100vh - 0px); overflow: hidden; }
+.studio-bar {
+  display: flex; align-items: center; gap: 14px; padding: 12px 20px;
+  border-bottom: 1px solid var(--line); background: var(--card);
+}
+.studio-bar h2 { font-size: 16px; font-weight: 650; }
+.studio-back { font-size: 13px; }
+.studio-spacer { flex: 1; }
+.studio-budget { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.studio-hire { font-weight: 550; }
+
+.studio-floor {
+  position: relative; flex: 1; overflow: hidden;
+  background: radial-gradient(circle at 50% 40%, var(--room) 0%, var(--room-edge) 72%);
+}
+.studio-empty {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 14px; color: var(--dim);
+}
+
+/* A character on the floor. */
+.figure {
+  position: absolute; transform: translate(-50%, -50%);
+  width: 104px; text-align: center; cursor: grab; user-select: none;
+  touch-action: none;
+}
+.figure.dragging { cursor: grabbing; z-index: 20; }
+.fig-aura {
+  position: absolute; left: 50%; top: 34px; width: 76px; height: 76px;
+  transform: translate(-50%, -50%); border-radius: 50%; z-index: 0;
+  background: radial-gradient(circle, var(--accent-soft) 0%, transparent 70%);
+  opacity: 0; transition: opacity .3s;
+}
+.fig-emblem {
+  position: relative; z-index: 1; width: 60px; height: 60px; margin: 0 auto;
+  border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  box-shadow: var(--shadow); border: 2px solid var(--card);
+  animation: breathe 5.5s ease-in-out infinite;
+}
+/* Provider identity is a RIM + pip only — never a fill, so it can't be mistaken
+   for the brick "a human is involved" wash. */
+.fig-emblem.prov-anthropic { outline: 2px solid #c96442; outline-offset: 1px; }
+.fig-emblem.prov-openai    { outline: 2px solid #10a37f; outline-offset: 1px; }
+.fig-emblem.prov-google    { outline: 2px solid #4285f4; outline-offset: 1px; }
+.fig-initial { font-weight: 700; font-size: 22px; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.3); }
+.fig-name { font-size: 13px; font-weight: 600; margin-top: 6px; color: var(--text); }
+.fig-role {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .6px;
+  color: var(--accent); margin-top: 1px;
+}
+.fig-shelf { font-size: 10px; color: var(--mgr); letter-spacing: 2px; margin-top: 3px; }
+
+/* Mood — all derived from real signals, never stored feelings. */
+.figure.mood-focused .fig-aura { opacity: 1; background: radial-gradient(circle, var(--accent-soft) 0%, transparent 70%); }
+.figure.mood-focused .fig-emblem { animation: glow 2.6s ease-in-out infinite, breathe 5.5s ease-in-out infinite; }
+.figure.mood-strained .fig-emblem { filter: saturate(.6); }
+.figure.mood-strained .fig-aura { opacity: .8; background: radial-gradient(circle, var(--warn-soft) 0%, transparent 70%); }
+.figure.mood-needs_you .fig-aura { opacity: 1; background: radial-gradient(circle, var(--boss-soft) 0%, transparent 68%); }
+.figure.on-job .fig-name::after { content: " ·"; color: var(--accent); }
+
+@keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.03); } }
+
+/* The detail overlay — the only place text appears in quantity. */
+.studio-detail {
+  position: absolute; right: 18px; top: 74px; width: 340px; max-height: calc(100% - 100px);
+  overflow-y: auto; background: var(--card); border: 1px solid var(--line);
+  border-radius: 14px; box-shadow: var(--shadow-lg); padding: 16px; z-index: 30;
+}
+.sd-head { display: flex; gap: 12px; align-items: flex-start; }
+.sd-head h3 { font-size: 16px; font-weight: 650; }
+.sd-persona { font-family: var(--serif); font-style: italic; color: var(--dim); font-size: 13.5px; margin-top: 3px; }
+.sd-close { margin-left: auto; border: 0; background: none; font-size: 15px; color: var(--faint); cursor: pointer; }
+.sd-facts { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+.sd-facts span { font-size: 11px; background: var(--card-2); border: 1px solid var(--line-soft); border-radius: 20px; padding: 3px 9px; color: var(--dim); }
+.sd-label { font-family: var(--mono); font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--faint); margin: 14px 0 6px; }
+.mem-sec { font-size: 12.5px; line-height: 1.5; margin-bottom: 8px; color: var(--ink, var(--text)); }
+.mem-sec b { display: block; font-size: 11px; color: var(--accent); text-transform: capitalize; }
+.evo-row { font-size: 12px; margin-bottom: 5px; }
+.evo-row .dim { display: block; font-size: 11px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .fig-emblem { animation: none !important; }
+  .fig-aura { transition: none; }
+}

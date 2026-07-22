@@ -191,9 +191,11 @@ def test_the_wait_admits_when_it_has_gone_on_too_long():
 
 
 def test_the_waiting_animation_respects_reduced_motion():
+    # There may be more than one reduced-motion block now (the Studio adds its
+    # own); the pulse must be nulled in SOME block, not the last one.
     assert "prefers-reduced-motion" in CSS
-    block = CSS.split("@media (prefers-reduced-motion: reduce)")[-1][:220]
-    assert ".pulse" in block and "animation: none" in block
+    blocks = CSS.split("@media (prefers-reduced-motion: reduce)")[1:]
+    assert any(".pulse" in b[:300] and "animation: none" in b[:300] for b in blocks)
 
 
 # --- forms share one rhythm ------------------------------------------------

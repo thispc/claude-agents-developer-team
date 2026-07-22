@@ -440,3 +440,81 @@ def test_a_pre_studio_project_agent_is_untouched(fresh_db):
     assert agent.get("home_id") is None
     home.record_episode(agent, "task_done", "did a thing")   # must not raise
     assert db.unconsolidated_count(agent["id"]) == 0 or True  # no home to record against
+
+
+# --------------------------------------------------------------------------
+# 7. the UI, structurally (no browser; house pattern of reading the source)
+# --------------------------------------------------------------------------
+
+def _dash(name):
+    return (Path(__file__).resolve().parent.parent / "dashboard" / name).read_text()
+
+
+@pytest.mark.hostonly
+def test_the_studio_screen_exists_and_has_a_way_in():
+    html, js = _dash("index.html"), _dash("app.js")
+    assert 'id="studio"' in html
+    assert 'id="modeStudio"' in html
+    assert "function openStudio" in js
+    assert '$("#modeStudio").addEventListener' in js
+
+
+@pytest.mark.hostonly
+def test_the_studio_has_its_own_route_and_is_hidden_by_other_screens():
+    """A screen left visible under another is the classic single-page bug."""
+    js = _dash("app.js")
+    assert 'setHash("#/studio")' in js
+    for opener in ("function showHome", "function openProject"):
+        body = js.split(opener)[1][:600]
+        assert '"#studio"' in body or "studio" in body, f"{opener} does not hide the Studio"
+
+
+@pytest.mark.hostonly
+def test_no_agent_text_is_written_as_unescaped_innerhtml():
+    """Persona, name and memory are free text (user- and model-written) — the new
+    attack surface. Every one must go through escapeHtml before it reaches the DOM."""
+    js = _dash("app.js")
+    studio = js.split("The Studio — where globally-persistent")[1].split("async function boot")[0]
+    import re
+    for field in ("a.persona", "a.name", "a.degree", "e.reason", "e.from_model"):
+        # each interpolation of a free-text field must be wrapped in escapeHtml
+        for m in re.finditer(re.escape("${" + field), studio):
+            window = studio[max(0, m.start() - 20):m.start() + 5]
+            assert "escapeHtml(" in window, f"{field} reaches the DOM unescaped"
+
+
+@pytest.mark.hostonly
+def test_the_studio_drag_pulls_in_nothing_from_the_internet():
+    """The 'stunning drag-and-drop' must be self-hosted; the pod has no guaranteed
+    egress and a CDN drag library would be a blank box."""
+    js, css = _dash("app.js"), _dash("style.css")
+    studio_js = js.split("The Studio —")[1].split("async function boot")[0]
+    for tag in ('src="http', "import(", "cdn."):
+        assert tag not in studio_js
+    assert "PointerEvent" not in css   # sanity; drag is hand-rolled, not a lib
+
+
+@pytest.mark.hostonly
+def test_the_studio_respects_reduced_motion():
+    css = _dash("style.css")
+    block = css.split("The Studio —")[1]
+    assert "prefers-reduced-motion" in block
+    rm = block.split("prefers-reduced-motion")[1][:200]
+    assert "animation: none" in rm
+
+
+@pytest.mark.hostonly
+def test_a_drag_persists_rather_than_being_cosmetic():
+    """A reposition must survive a reload, or the room forgets your arrangement."""
+    js = _dash("app.js")
+    assert "saveStudioPos" in js and "localStorage" in js
+
+
+@pytest.mark.hostonly
+def test_provider_colour_is_a_rim_never_a_fill():
+    """Anthropic's hue sits next to brick; a provider FILL would read as 'a human
+    is involved' and break the meaning rule. Provider is only ever an outline."""
+    css = _dash("style.css")
+    for prov in ("anthropic", "openai", "google"):
+        rule = css.split(f".fig-emblem.prov-{prov}")[1].split("}")[0]
+        assert "outline" in rule and "background" not in rule

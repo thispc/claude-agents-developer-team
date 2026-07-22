@@ -59,12 +59,12 @@
         merges — over as many sprints as you ask for.</span>
       <span class="entry-go">Start building →</span>
     </button>
-    <button class="entry-card" id="modeShape">
-      <span class="entry-ico">🧠</span>
-      <span class="entry-name">Shape an idea</span>
-      <span class="entry-desc">A round table of models from different providers argues a
-        half-formed idea into a blueprint. Hand it straight to Build.</span>
-      <span class="entry-go">Open the table →</span>
+    <button class="entry-card" id="modeStudio">
+      <span class="entry-ico">🏡</span>
+      <span class="entry-name">The Studio</span>
+      <span class="entry-desc">Where your AI teammates reside between jobs. Hire them, give
+        them a character, watch them learn — and put the same people on real builds.</span>
+      <span class="entry-go">Enter the Studio →</span>
     </button>
     <button class="entry-card" id="modeImprove" hidden>
       <span class="entry-ico">⟲</span>
@@ -155,6 +155,23 @@
      register: a serif reading column instead of the UI sans used everywhere else.
      The colour system is the same one, including the rule that brick means a human
      is involved. -->
+<section id="studio" hidden>
+  <div class="studio-bar">
+    <button class="studio-back" id="studioBack">← Home</button>
+    <h2>The Studio</h2>
+    <span class="studio-budget" id="studioBudget" title="Today's background token spend"></span>
+    <div class="studio-spacer"></div>
+    <button class="studio-hire" id="studioHire">＋ New hire</button>
+  </div>
+  <div class="studio-floor" id="studioFloor">
+    <div class="studio-empty" id="studioEmpty" hidden>
+      <p>No one lives here yet.</p>
+      <button class="primary" id="studioHire2">Hire your first teammate</button>
+    </div>
+  </div>
+  <div class="studio-detail" id="studioDetail" hidden></div>
+</section>
+
 <section id="aboutPage" hidden>
   <!-- One shared arrowhead for every diagram below; a marker must be defined in
        the document before it can be referenced by marker-end. -->

@@ -708,6 +708,7 @@ function openAbout(skipHash) {
 }
 
 function showHome(skipHash) {
+  const st = $("#studio"); if (st) st.hidden = true;
   const pl = $("#plan"); if (pl) pl.hidden = true;
   const sp = $("#selfPage"); if (sp) sp.hidden = true;
   const ab = $("#aboutPage"); if (ab) ab.hidden = true;
@@ -730,6 +731,7 @@ function showHome(skipHash) {
 function openProject(id, view, skipHash) {
   const sp = $("#selfPage"); if (sp) sp.hidden = true;
   const ab = $("#aboutPage"); if (ab) ab.hidden = true;
+  const st = $("#studio"); if (st) st.hidden = true;
   $("#home").hidden = true;
   $("main").hidden = false;
   $("#projectBar").hidden = false;
@@ -782,6 +784,7 @@ function route() {
     }
     return;
   }
+  if (location.hash.startsWith("#/studio")) { openStudio(true); return; }
   if (location.hash.startsWith("#/about")) { openAbout(true); return; }
   if (location.hash.startsWith("#/improve")) { openSelfRepair(true); return; }
   const m = location.hash.match(/^#\/p\/(\d+)(?:\/(\w+))?/);
@@ -3444,7 +3447,7 @@ $("#projectSelect").addEventListener("change", (e) => selectProject(e.target.val
 $("#homeLink").addEventListener("click", () => showHome());
 $("#homeLink").style.cursor = "pointer";
 $("#modeBuild").addEventListener("click", openDialog);
-$("#modeShape").addEventListener("click", openPlan);
+$("#modeStudio").addEventListener("click", () => openStudio());
 $("#modeImprove").addEventListener("click", () => openSelfRepair());
 $("#selfBackBtn").addEventListener("click", () => showHome());
 $("#planBackBtn").addEventListener("click", () => {
@@ -3712,6 +3715,173 @@ document.addEventListener("input", (ev) => {
   if (ev.target.id === "ambitionRange") paintAmbition();
   if (ev.target.name === "autonomy") paintAutonomy();
 });
+
+
+// ============================================================================
+// The Studio — where globally-persistent agents reside between jobs.
+//
+// Built from the round-table machinery being retired: positioned DOM nodes on a
+// warm floor, state driven by a CSS class, no framework and no canvas. An agent
+// is a CHARACTER standing in a room — it breathes when idle, glows pine when on a
+// job, flushes brick when it needs you (brick means a human is involved here too),
+// and carries a generated sigil so the same teammate is recognisable at a glance
+// across projects. Positions are the viewer's arrangement, kept in localStorage.
+// ============================================================================
+
+let studioAgents = [];
+
+function studioPositions() {
+  try { return JSON.parse(localStorage.getItem("studio-pos") || "{}"); }
+  catch { return {}; }
+}
+function saveStudioPos(id, x, y) {
+  const p = studioPositions(); p[id] = { x, y };
+  localStorage.setItem("studio-pos", JSON.stringify(p));
+}
+
+// A deterministic sigil from the name: same name → same emblem forever, so a
+// teammate looks the same everywhere. Two conic wedges seeded from a hash, tinted
+// within the agent's provider hue — generative geometry, never stock avatar art.
+function sigil(name, provider) {
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  const a = h % 360, b = (h >> 3) % 360;
+  const tint = { anthropic: 18, openai: 158, google: 214 }[provider] ?? 220;
+  return `conic-gradient(from ${a}deg at 40% 40%, `
+       + `hsl(${tint} 45% 62%) 0deg, hsl(${(tint + 40) % 360} 40% 55%) ${120 + b % 120}deg, `
+       + `hsl(${tint} 35% 48%) 360deg)`;
+}
+
+async function openStudio(skipHash) {
+  $("#home").hidden = true; $("main").hidden = true;
+  for (const id of ["plan", "selfPage", "aboutPage"]) { const e = $("#" + id); if (e) e.hidden = true; }
+  $("#projectBar").hidden = true;
+  $("#studio").hidden = false;
+  if (!skipHash) setHash("#/studio");
+  currentProject = null;
+  await renderStudio();
+}
+
+async function renderStudio() {
+  const floor = $("#studioFloor");
+  if (!floor || $("#studio").hidden) return;
+  let d;
+  try { d = await api("/api/home"); }
+  catch (e) { floor.querySelector(".studio-empty").hidden = true; return; }
+  studioAgents = d.agents || [];
+
+  const budget = d.budget || {};
+  const bEl = $("#studioBudget");
+  if (bEl) bEl.textContent = budget.cap
+    ? `${budget.spent}/${budget.cap} tokens today` : "";
+
+  $("#studioEmpty").hidden = studioAgents.length > 0;
+
+  const pos = studioPositions();
+  // Keep the empty-state node; replace the figures.
+  floor.querySelectorAll(".figure").forEach((n) => n.remove());
+  studioAgents.forEach((a, i) => {
+    const p = pos[a.id] || { x: 14 + (i % 5) * 17, y: 22 + Math.floor(i / 5) * 30 };
+    const el = document.createElement("div");
+    el.className = `figure mood-${a.mood}${a.on_project ? " on-job" : ""}`;
+    el.style.left = p.x + "%"; el.style.top = p.y + "%";
+    el.dataset.id = a.id;
+    const done = a.lifetime_tasks || 0;
+    el.innerHTML = `
+      <div class="fig-aura"></div>
+      <div class="fig-emblem prov-${escapeHtml(a.provider)}" style="background:${sigil(a.name, a.provider)}">
+        <span class="fig-initial">${escapeHtml((a.name || "?")[0])}</span>
+      </div>
+      <div class="fig-name">${escapeHtml(a.name)}</div>
+      <div class="fig-role">${escapeHtml(a.degree || "generalist")}</div>
+      ${done ? `<div class="fig-shelf" title="${done} jobs, ${a.memory_chars} chars of memory">${
+        "•".repeat(Math.min(5, Math.ceil(done / 3)))}</div>` : ""}`;
+    makeDraggable(el, a.id);
+    el.addEventListener("click", (ev) => {
+      if (el.dataset.dragged === "1") { el.dataset.dragged = ""; return; }
+      openAgentDetail(a.id);
+    });
+    floor.appendChild(el);
+  });
+}
+
+// Drag with Pointer Events (not HTML5 draggable — clunky for free 2D and poor on
+// touch). Move with transform to avoid reflow; commit to left/top % on release.
+function makeDraggable(el, id) {
+  let sx, sy, ox, oy, moved;
+  el.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    el.setPointerCapture(e.pointerId);
+    el.classList.add("dragging"); moved = false;
+    sx = e.clientX; sy = e.clientY; ox = el.offsetLeft; oy = el.offsetTop;
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (!el.classList.contains("dragging")) return;
+    const dx = e.clientX - sx, dy = e.clientY - sy;
+    if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
+    el.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+  });
+  el.addEventListener("pointerup", (e) => {
+    if (!el.classList.contains("dragging")) return;
+    el.classList.remove("dragging");
+    const floor = $("#studioFloor").getBoundingClientRect();
+    const nx = Math.max(4, Math.min(96, ((el.offsetLeft + (e.clientX - sx)) / floor.width) * 100));
+    const ny = Math.max(8, Math.min(94, ((el.offsetTop + (e.clientY - sy)) / floor.height) * 100));
+    el.style.transform = ""; el.style.left = nx + "%"; el.style.top = ny + "%";
+    if (moved) { el.dataset.dragged = "1"; saveStudioPos(id, nx, ny); }
+  });
+}
+
+async function openAgentDetail(id) {
+  const box = $("#studioDetail");
+  box.hidden = false;
+  box.innerHTML = `<p class="dim">loading…</p>`;
+  let d;
+  try { d = await api(`/api/home/${id}`); }
+  catch (e) { box.innerHTML = `<p class="dim">could not load: ${escapeHtml(e.message)}</p>`; return; }
+  const a = d.agent, mem = d.memory || {}, ev = d.evolution || [];
+  const memText = Object.entries(mem).filter(([, v]) => (v || "").trim())
+    .map(([k, v]) => `<div class="mem-sec"><b>${escapeHtml(k)}</b>${escapeHtml(v)}</div>`).join("")
+    || `<p class="dim">No memory yet — it forms as they work.</p>`;
+  box.innerHTML = `
+    <div class="sd-head">
+      <div class="fig-emblem prov-${escapeHtml(a.provider)}" style="background:${sigil(a.name, a.provider)}">
+        <span class="fig-initial">${escapeHtml(a.name[0])}</span></div>
+      <div>
+        <h3>${escapeHtml(a.name)}</h3>
+        <p class="sd-persona">${escapeHtml(a.persona || "no character set")}</p>
+      </div>
+      <button class="sd-close" id="sdClose">✕</button>
+    </div>
+    <div class="sd-facts">
+      <span>${escapeHtml(a.degree || "generalist")}</span>
+      <span>on ${escapeHtml(a.model || "role default")}${a.model_locked ? " 🔒" : ""}</span>
+      <span>${a.lifetime_tasks} jobs · ${a.lifetime_accepted} accepted · ${a.lifetime_rework} reworked</span>
+    </div>
+    <div class="sd-mem"><div class="sd-label">Memory</div>${memText}</div>
+    ${ev.length ? `<div class="sd-evo"><div class="sd-label">Model history</div>${
+      ev.map((e) => `<div class="evo-row">${e.direction === "up" ? "↑" : "↓"}
+        ${escapeHtml(e.from_model)} → ${escapeHtml(e.to_model)}
+        <span class="dim">${escapeHtml(e.reason)}</span></div>`).join("")}</div>` : ""}`;
+  $("#sdClose").addEventListener("click", () => box.hidden = true);
+}
+
+async function studioNewHire() {
+  const name = prompt("Name (leave blank to auto-name):", "");
+  if (name === null) return;
+  const degree = prompt("Their discipline (e.g. backend, law, design):", "") || "";
+  const persona = prompt("One line of character — who are they?\n(e.g. a confident junior lawyer who's never lost):", "") || "";
+  try {
+    await api("/api/home", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.trim(), degree: degree.trim(), persona: persona.trim() }) });
+    await renderStudio();
+  } catch (e) { toast(`Could not hire: ${e.message}`); }
+}
+
+$("#studioBack") && $("#studioBack").addEventListener("click", () => showHome());
+$("#studioHire") && $("#studioHire").addEventListener("click", studioNewHire);
+$("#studioHire2") && $("#studioHire2").addEventListener("click", studioNewHire);
+
 
 async function boot() {
   if (!(await loadMe())) return;      // show login screen until signed in
