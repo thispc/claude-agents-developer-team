@@ -689,6 +689,7 @@ async function openSelfRepair(skipHash) {
   $("#home").hidden = true; $("main").hidden = true;
   const pl = $("#plan"); if (pl) pl.hidden = true;
   const ab = $("#aboutPage"); if (ab) ab.hidden = true;
+  const scn = $("#scenes"); if (scn) scn.hidden = true;
   $("#projectBar").hidden = true;
   $("#selfPage").hidden = false;
   if (!skipHash) setHash("#/improve");
@@ -700,6 +701,7 @@ function openAbout(skipHash) {
   $("#home").hidden = true; $("main").hidden = true;
   const pl = $("#plan"); if (pl) pl.hidden = true;
   const sp = $("#selfPage"); if (sp) sp.hidden = true;
+  const scn = $("#scenes"); if (scn) scn.hidden = true;
   $("#projectBar").hidden = true;
   $("#aboutPage").hidden = false;
   if (!skipHash) setHash("#/about");
@@ -709,6 +711,7 @@ function openAbout(skipHash) {
 
 function showHome(skipHash) {
   const st = $("#studio"); if (st) st.hidden = true;
+  const scn = $("#scenes"); if (scn) scn.hidden = true;
   const pl = $("#plan"); if (pl) pl.hidden = true;
   const sp = $("#selfPage"); if (sp) sp.hidden = true;
   const ab = $("#aboutPage"); if (ab) ab.hidden = true;
@@ -732,6 +735,7 @@ function openProject(id, view, skipHash) {
   const sp = $("#selfPage"); if (sp) sp.hidden = true;
   const ab = $("#aboutPage"); if (ab) ab.hidden = true;
   const st = $("#studio"); if (st) st.hidden = true;
+  const scn = $("#scenes"); if (scn) scn.hidden = true;
   $("#home").hidden = true;
   $("main").hidden = false;
   $("#projectBar").hidden = false;
@@ -785,6 +789,10 @@ function route() {
     return;
   }
   if (location.hash.startsWith("#/studio")) { openStudio(true); return; }
+  {
+    const sc = location.hash.match(/^#\/scenes(?:\/([\w-]+))?/);
+    if (sc) { openScenes(true, sc[1] || null); return; }
+  }
   if (location.hash.startsWith("#/about")) { openAbout(true); return; }
   if (location.hash.startsWith("#/improve")) { openSelfRepair(true); return; }
   const m = location.hash.match(/^#\/p\/(\d+)(?:\/(\w+))?/);
@@ -1096,6 +1104,7 @@ const PERSONA_PRESETS = [
 async function openPlan() {
   $("#home").hidden = true; $("main").hidden = true; $("#plan").hidden = false;
   { const ab = $("#aboutPage"); if (ab) ab.hidden = true; }
+  { const scn = $("#scenes"); if (scn) scn.hidden = true; }
   $("#projectBar").hidden = true;
   $("#planSetup").hidden = false; $("#planStage").hidden = true;
   $("#blueprintPanel").hidden = true;
@@ -3448,6 +3457,7 @@ $("#homeLink").addEventListener("click", () => showHome());
 $("#homeLink").style.cursor = "pointer";
 $("#modeBuild").addEventListener("click", openDialog);
 $("#modeStudio").addEventListener("click", () => openStudio());
+$("#modeScenes").addEventListener("click", () => openScenes());
 $("#modeImprove").addEventListener("click", () => openSelfRepair());
 $("#selfBackBtn").addEventListener("click", () => showHome());
 $("#planBackBtn").addEventListener("click", () => {
@@ -3754,7 +3764,7 @@ function sigil(name, provider) {
 
 async function openStudio(skipHash) {
   $("#home").hidden = true; $("main").hidden = true;
-  for (const id of ["plan", "selfPage", "aboutPage"]) { const e = $("#" + id); if (e) e.hidden = true; }
+  for (const id of ["plan", "selfPage", "aboutPage", "scenes"]) { const e = $("#" + id); if (e) e.hidden = true; }
   $("#projectBar").hidden = true;
   $("#studio").hidden = false;
   if (!skipHash) setHash("#/studio");
@@ -4073,6 +4083,543 @@ function studioAgentMenu(ev, a) {
         await api(`/api/home/${a.id}`, { method: "DELETE" }); renderStudio(); } },
   ]);
 }
+
+
+// ============================================================================
+//  The Casino Floor — Scenes. A sibling of the Studio: the same figures, the
+//  same emblems, the same right-click world and inline composers (never a browser
+//  prompt). A Scene is a setting; the cards/deck/pot are CODE that runs
+//  deterministically, and every model call is billed and shown.
+// ============================================================================
+let scenesList = [];
+let openSceneId = null;
+let sceneView = null;          // the public_view of the open scene
+let sceneEvents = [];          // events from the last load
+let sceneHomeAgents = [];      // Studio agents, for provider lookup + seating
+const peekedHands = {};        // seatId -> your_hand (an agent's secret, revealed on request)
+let playingBack = false;
+
+const SCENE_KINDS = [
+  { id: "poker", label: "Poker table", note: "five seats, a pot, a hand played out", soon: false },
+  { id: "blackjack", label: "Blackjack", note: "players against the house", soon: true },
+  { id: "auction", label: "Sealed auction", note: "bid blind for the lot", soon: true },
+  { id: "interview", label: "The interview", note: "a panel questions a candidate", soon: true },
+];
+
+const reduceMotion = () =>
+  window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const sceneSleep = (ms) => reduceMotion() ? Promise.resolve()
+  : new Promise((r) => setTimeout(r, ms));
+
+function suitInfo(suit) {
+  const map = { s: "♠", h: "♥", d: "♦", c: "♣" };
+  return { glyph: map[suit] || "?", red: suit === "h" || suit === "d" };
+}
+
+// A card is code. Face-down looks like a card back; face-up shows rank + suit,
+// red for hearts/diamonds. aid, when present, makes the card flippable (owner tool).
+function sceneCardHtml(state, aid) {
+  const at = aid ? ` data-aid="${escapeHtml(String(aid))}"` : "";
+  if (!state || state.facedown) {
+    return `<span class="pcard back"${at}><span class="pcard-weave"></span></span>`;
+  }
+  const s = suitInfo(state.suit);
+  const r = escapeHtml(String(state.rank || "?"));
+  return `<span class="pcard up${s.red ? " red" : ""}"${at}>
+    <span class="pc-c tl">${r}<b>${s.glyph}</b></span>
+    <span class="pc-pip">${s.glyph}</span>
+    <span class="pc-c br">${r}<b>${s.glyph}</b></span>
+  </span>`;
+}
+
+async function openScenes(skipHash, wantId) {
+  $("#home").hidden = true; $("main").hidden = true;
+  for (const id of ["plan", "selfPage", "aboutPage", "studio"]) { const e = $("#" + id); if (e) e.hidden = true; }
+  $("#projectBar").hidden = true;
+  $("#scenes").hidden = false;
+  currentProject = null;
+  openSceneId = wantId || null;
+  if (!skipHash) setHash(openSceneId ? `#/scenes/${openSceneId}` : "#/scenes");
+  await renderScenes();
+}
+
+// The list route also tells us whether Scenes are enabled at all.
+async function renderScenes() {
+  if ($("#scenes").hidden) return;
+  try {
+    const d = await api("/api/scene");
+    scenesList = d.scenes || [];
+    if (d.enabled === false) { renderScenesDisabled(); return; }
+  } catch (e) {
+    $("#sceneStage").innerHTML = `<p class="empty">Could not load scenes: ${escapeHtml(e.message || String(e))}</p>`;
+    return;
+  }
+  try { sceneHomeAgents = (await api("/api/home")).agents || []; } catch { sceneHomeAgents = []; }
+  if (openSceneId) await renderSceneTable();
+  else renderSceneLobby();
+}
+
+function renderScenesDisabled() {
+  $("#sceneToLobby").hidden = true; $("#sceneMeter").hidden = true;
+  $("#sceneTitle").textContent = "The Casino Floor";
+  $("#sceneStage").innerHTML =
+    `<p class="empty">Scenes are switched off on this deployment.</p>`;
+}
+
+// --- The lobby: the owner's scenes as cards, plus a way to set a new one. ---
+function renderSceneLobby() {
+  $("#sceneToLobby").hidden = true;
+  $("#sceneMeter").hidden = true;
+  $("#sceneNew").hidden = false;
+  $("#sceneTitle").textContent = "The Casino Floor";
+  const stage = $("#sceneStage");
+  if (!scenesList.length) {
+    stage.innerHTML = `<div class="scene-lobby"><div class="scene-empty">
+      <p>No scenes yet — set one and sit your people down.</p>
+      <button class="primary" id="sceneNew2">Set your first scene</button>
+    </div></div>`;
+    $("#sceneNew2").addEventListener("click", openSceneComposer);
+    return;
+  }
+  const cards = scenesList.map((s) => {
+    const seats = Array.isArray(s.seats) ? s.seats.length : (s.seat_count ?? null);
+    const status = escapeHtml(s.status || "new");
+    return `<button class="scene-card" data-open="${escapeHtml(String(s.id))}">
+      <span class="scene-kind">${escapeHtml(s.kind || "scene")}</span>
+      <span class="scene-name">${escapeHtml(s.title || "Untitled scene")}</span>
+      ${s.goal ? `<span class="scene-goal">${escapeHtml(s.goal)}</span>` : ""}
+      <span class="scene-foot">
+        <span class="scene-status st-${status}">${status}</span>
+        ${s.phase ? `<span class="scene-phase">${escapeHtml(s.phase)}</span>` : ""}
+        ${seats != null ? `<span class="scene-seats">${seats} seated</span>` : ""}
+      </span>
+    </button>`;
+  }).join("");
+  stage.innerHTML = `<div class="scene-lobby"><div class="scene-cards">${cards}</div></div>`;
+  stage.querySelectorAll("[data-open]").forEach((b) =>
+    b.addEventListener("click", () => openScene(b.dataset.open)));
+}
+
+// --- The composer: assembled inline, never a browser prompt. Mirrors openHirePanel. ---
+let sceneDraft = null;
+function openSceneComposer() {
+  sceneDraft = { kind: "poker", title: "", goal: "", seed: "" };
+  renderSceneComposer();
+}
+function renderSceneComposer() {
+  const box = $("#sceneDetail");
+  const d = sceneDraft;
+  box.hidden = false;
+  box.className = "studio-detail composing";
+  box.innerHTML = `
+    <div class="sd-head">
+      <div class="fig-emblem" style="background:${sigil(d.title || "Scene", "anthropic")}">
+        <span class="fig-initial">🎴</span></div>
+      <div style="flex:1">
+        <input class="sc-name" id="scnTitle" placeholder="A name for the scene"
+               value="${escapeHtml(d.title)}" autocomplete="off">
+        <p class="sc-preview">${escapeHtml(SCENE_KINDS.find((k) => k.id === d.kind)?.note || "")}</p>
+      </div>
+      <button class="sd-close" id="scnClose">✕</button>
+    </div>
+
+    <div class="sc-label">The setting</div>
+    <div class="sc-row">${SCENE_KINDS.map((k) => `<button class="sc-chip${
+      k.id === d.kind ? " on" : ""}${k.soon ? " soon" : ""}"${k.soon ? " disabled" : ""}
+      data-kind="${k.id}">${escapeHtml(k.label)}${k.soon ? " · soon" : ""}</button>`).join("")}</div>
+
+    <div class="sc-label">What should the manager make them do? <span class="dim">(optional)</span></div>
+    <textarea class="sc-input" id="scnGoal" rows="2"
+      placeholder="e.g. play a tight, disciplined hand and talk through the reads">${escapeHtml(d.goal)}</textarea>
+
+    <div class="sc-label">Seed <span class="dim">(optional — same seed deals the same cards)</span></div>
+    <input class="sc-input" id="scnSeed" placeholder="leave blank for a fresh shuffle"
+           value="${escapeHtml(d.seed)}" autocomplete="off">
+
+    <div class="sc-actions"><button class="primary" id="scnCreate">Set the scene</button></div>`;
+
+  $("#scnTitle").addEventListener("input", (e) => { d.title = e.target.value; });
+  $("#scnGoal").addEventListener("input", (e) => { d.goal = e.target.value; });
+  $("#scnSeed").addEventListener("input", (e) => { d.seed = e.target.value; });
+  box.querySelectorAll("[data-kind]").forEach((b) => b.addEventListener("click", () => {
+    if (b.classList.contains("soon")) return;
+    d.kind = b.dataset.kind; renderSceneComposer();
+  }));
+  $("#scnClose").addEventListener("click", () => { sceneDraft = null; box.hidden = true; });
+  $("#scnCreate").addEventListener("click", doCreateScene);
+}
+async function doCreateScene() {
+  const d = sceneDraft;
+  try {
+    const body = { kind: d.kind, title: d.title.trim() || "Untitled scene", goal: d.goal.trim() };
+    // seed is an integer server-side; hash any non-numeric text into a stable int.
+    const raw = d.seed.trim();
+    if (raw) {
+      let n = Number.parseInt(raw, 10);
+      if (Number.isNaN(n)) { n = 0; for (const c of raw) n = (n * 31 + c.charCodeAt(0)) >>> 0; }
+      body.seed = n;
+    }
+    const r = await api("/api/scene", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body) });
+    sceneDraft = null;
+    $("#sceneDetail").hidden = true;
+    const id = r.scene && (r.scene.id != null) ? r.scene.id : null;
+    if (id != null) openScene(id); else await renderScenes();
+  } catch (e) { toast(`Could not set the scene: ${e.message}`); }
+}
+
+async function openScene(id) {
+  openSceneId = id;
+  for (const k of Object.keys(peekedHands)) delete peekedHands[k];
+  setHash(`#/scenes/${id}`);
+  $("#sceneDetail").hidden = true;
+  await renderScenes();
+}
+
+async function loadSceneView(seatId) {
+  const q = seatId ? `?seat=${encodeURIComponent(seatId)}` : "";
+  const d = await api(`/api/scene/${openSceneId}${q}`);
+  if (!seatId) { sceneView = d.view; sceneEvents = d.events || []; }
+  return d;
+}
+
+function sceneSeatPos(i, n) {
+  // Players ring an oval, first seat at the near edge (bottom), going clockwise.
+  const theta = (Math.PI / 2) + (i / Math.max(1, n)) * Math.PI * 2;
+  return { x: 50 + Math.cos(theta) * 41, y: 52 + Math.sin(theta) * 41 };
+}
+
+function providerOfSeat(seat) {
+  const a = sceneHomeAgents.find((x) => String(x.id) === String(seat.home_id));
+  return a ? a.provider : "anthropic";
+}
+
+async function renderSceneTable() {
+  let d;
+  try { d = await loadSceneView(); }
+  catch (e) { $("#sceneStage").innerHTML = `<p class="empty">Could not open scene: ${escapeHtml(e.message || String(e))}</p>`; return; }
+  const v = sceneView || {};
+  $("#sceneNew").hidden = true;
+  $("#sceneToLobby").hidden = false;
+  $("#sceneTitle").textContent = v.title || "Scene";
+  paintSceneMeter(v);
+
+  const seats = (v.seats || []).slice();
+  const players = seats.filter((s) => s.role === "player")
+    .sort((a, b) => (a.seat ?? 0) - (b.seat ?? 0));
+  const manager = seats.find((s) => s.role === "manager");
+  const dealer = seats.find((s) => s.role === "dealer");
+  const arts = v.artifacts || [];
+  const isBoard = (a) => a.type === "card" && (!a.holder || a.holder === "board" || a.holder === "community");
+  const board = arts.filter(isBoard);
+
+  const stage = $("#sceneStage");
+  const paused = v.status === "paused";
+  stage.innerHTML = `
+    <div class="scene-table-wrap" id="sceneTableWrap">
+      <div class="poker-table">
+        <div class="table-rail"></div>
+        <div class="table-felt">
+          <div class="table-center">
+            <div class="scene-board" id="sceneBoard">${
+              board.length ? board.map((a) => sceneCardHtml(a.state, a.id)).join("")
+                           : `<span class="board-empty">no cards on the board yet</span>`}</div>
+            <div class="scene-pot">🪙 <b>${escapeHtml(String(v.pot ?? 0))}</b><span>pot</span></div>
+            ${v.phase ? `<div class="scene-phasepill" id="scenePhase">${escapeHtml(v.phase)}</div>` : ""}
+          </div>
+        </div>
+      </div>
+      <div class="seat-layer" id="seatLayer"></div>
+      ${manager ? `<div class="manager-figure" id="managerFigure"></div>` : ""}
+    </div>
+    <div class="scene-controls">
+      ${paused ? `<span class="scene-paused">⏸ Paused — the token budget was reached.</span>` : ""}
+      <button class="sc-ctl" id="sceneDeal">Deal</button>
+      <button class="sc-ctl" id="scenePlay">Play the hand</button>
+      <button class="sc-ctl primary" id="sceneRun">▶ Ask the manager to run it</button>
+      <div class="ctl-spacer"></div>
+      <button class="sc-ctl danger" id="sceneDelete">Clear the table</button>
+    </div>
+    <div class="scene-log" id="sceneLog" hidden></div>`;
+
+  // Seat figures around the oval.
+  const layer = $("#seatLayer");
+  players.forEach((s, i) => {
+    const p = sceneSeatPos(i, players.length);
+    layer.appendChild(sceneSeatFigure(s, p, arts));
+  });
+  // Manager stands off to the side until asked to walk the room.
+  if (manager) {
+    const mf = $("#managerFigure");
+    mf.dataset.seat = manager.id;
+    mf.style.left = "6%"; mf.style.top = "50%";
+    mf.innerHTML = `
+      <div class="fig-emblem prov-${escapeHtml(providerOfSeat(manager))}" style="background:${sigil(manager.name || "Manager", providerOfSeat(manager))}">
+        <span class="fig-initial">${escapeHtml((manager.name || "M")[0])}</span></div>
+      <div class="fig-name">${escapeHtml(manager.name || "Manager")}</div>
+      <div class="fig-role">manager</div>`;
+  }
+  if (dealer) {
+    const dv = document.createElement("div");
+    dv.className = "dealer-chip"; dv.textContent = "D";
+    dv.title = `Dealer: ${dealer.name || ""}`;
+    $("#sceneTableWrap").appendChild(dv);
+  }
+
+  // Right-click the felt to seat someone (createElement/textContent menu).
+  const wrap = $("#sceneTableWrap");
+  wrap.addEventListener("contextmenu", (ev) => {
+    if (ev.target.closest(".seat-figure") || ev.target.closest(".pcard")) return;
+    sceneFloorMenu(ev);
+  });
+  // Flip a card face-up/down — an owner tool, a card is code.
+  wrap.querySelectorAll(".pcard[data-aid]").forEach((c) =>
+    c.addEventListener("contextmenu", (ev) => sceneCardMenu(ev, c.dataset.aid)));
+
+  $("#sceneDeal").addEventListener("click", () => sceneAction("deal"));
+  $("#scenePlay").addEventListener("click", () => sceneAction("play"));
+  $("#sceneRun").addEventListener("click", () => sceneAction("run"));
+  $("#sceneDelete").addEventListener("click", deleteScene);
+
+  if (!players.length && !manager)
+    stage.querySelector(".scene-table-wrap").insertAdjacentHTML("beforeend",
+      `<div class="table-hint">Right-click the felt to seat an agent.</div>`);
+}
+
+function sceneSeatFigure(s, pos, arts) {
+  const el = document.createElement("div");
+  el.className = `seat-figure figure-status-${escapeHtml(s.status || "idle")}`;
+  el.style.left = pos.x + "%"; el.style.top = pos.y + "%";
+  el.dataset.seat = s.id;
+  const prov = providerOfSeat(s);
+  const hole = arts.filter((a) => a.type === "card" && String(a.holder) === String(s.id));
+  const peek = peekedHands[s.id];
+  const cardsHtml = hole.map((a, idx) => {
+    const st = (peek && peek[idx]) ? peek[idx] : a.state;
+    return sceneCardHtml(st, a.id);
+  }).join("") || "";
+  el.innerHTML = `
+    <div class="seat-cards">${cardsHtml}</div>
+    <div class="fig-emblem prov-${escapeHtml(prov)}" style="background:${sigil(s.name || "?", prov)}">
+      <span class="fig-initial">${escapeHtml((s.name || "?")[0])}</span></div>
+    <div class="fig-name">${escapeHtml(s.name || "seat")}</div>
+    <div class="seat-meta">
+      <span class="seat-stack">🪙 ${escapeHtml(String(s.stack ?? 0))}</span>
+      ${s.committed ? `<span class="seat-bet">bet ${escapeHtml(String(s.committed))}</span>` : ""}
+    </div>
+    <div class="seat-status st-${escapeHtml(s.status || "idle")}">${escapeHtml(s.status || "")}</div>`;
+  el.title = peek ? "Click to hide their hand" : "Click to peek — an agent's cards are its secret";
+  el.addEventListener("click", () => peekSeat(s));
+  el.addEventListener("contextmenu", (ev) => sceneSeatMenu(ev, s));
+  return el;
+}
+
+function paintSceneMeter(v) {
+  const m = $("#sceneMeter");
+  m.hidden = false;
+  const spent = v.tokens_spent ?? 0, budget = v.token_budget ?? 0;
+  const paused = v.status === "paused";
+  m.className = "scene-meter" + (paused ? " paused" : "");
+  m.textContent = `${v.utterances ?? 0} calls · ${spent}/${budget || "∞"} tokens`
+    + (paused ? " · paused" : "");
+}
+
+// Peek reveals ONE seat's hand via ?seat= — the only way to see it.
+async function peekSeat(seat) {
+  if (playingBack) return;
+  if (peekedHands[seat.id]) { delete peekedHands[seat.id]; await renderSceneTable(); return; }
+  try {
+    const d = await loadSceneView(seat.id);
+    peekedHands[seat.id] = d.your_hand || [];
+    await renderSceneTable();
+  } catch (e) { toast(`Could not peek: ${e.message}`); }
+}
+
+async function flipCard(aid) {
+  try { await api(`/api/scene/${openSceneId}/flip/${aid}`, { method: "POST" }); await renderSceneTable(); }
+  catch (e) { toast(`Could not flip: ${e.message}`); }
+}
+
+async function deleteScene() {
+  if (!openSceneId) return;
+  try {
+    await api(`/api/scene/${openSceneId}`, { method: "DELETE" });
+    openSceneId = null; setHash("#/scenes"); await renderScenes();
+  } catch (e) { toast(`Could not clear: ${e.message}`); }
+}
+
+// Deal (free), Play (bills), Run (manager briefs, then plays). All replay events.
+async function sceneAction(kind) {
+  if (playingBack) return;
+  const btn = { deal: "#sceneDeal", play: "#scenePlay", run: "#sceneRun" }[kind];
+  const b = $(btn); if (b) { b.disabled = true; b.classList.add("busy"); }
+  try {
+    const r = await api(`/api/scene/${openSceneId}/${kind}`, { method: "POST" });
+    await renderSceneTable();
+    if (r.events && r.events.length) await playbackEvents(r.events);
+    else await renderSceneTable();
+  } catch (e) { toast(`${kind} failed: ${e.message}`); }
+  finally { const bb = $(btn); if (bb) { bb.disabled = false; bb.classList.remove("busy"); } }
+}
+
+// Replay events so the scene feels alive: the manager walks to each player it
+// briefs; speech and actions bubble near the figure; the result reveals the win.
+async function playbackEvents(events) {
+  playingBack = true;
+  const log = $("#sceneLog");
+  if (log) { log.hidden = false; log.innerHTML = ""; }
+  const wrap = $("#sceneTableWrap");
+  for (const e of events) {
+    const seatEl = e.seat_id ? wrap && wrap.querySelector(`[data-seat="${CSS.escape(String(e.seat_id))}"]`) : null;
+    if (e.kind === "brief" && $("#managerFigure") && seatEl) {
+      const mf = $("#managerFigure");
+      mf.style.left = seatEl.style.left; mf.style.top = `calc(${seatEl.style.top} + 6%)`;
+      mf.classList.add("walking");
+    }
+    if (e.kind === "phase" && $("#scenePhase")) $("#scenePhase").textContent = e.text || "";
+    if (seatEl && (e.kind === "say" || e.kind === "act" || e.kind === "brief"))
+      sceneBubble(seatEl, e.text, e.kind);
+    if (e.kind === "result") sceneResult(e.text);
+    if (log) {
+      const row = document.createElement("div");
+      row.className = `slog-row slog-${escapeHtml(e.kind || "")}`;
+      const k = document.createElement("span"); k.className = "slog-kind"; k.textContent = e.kind || "";
+      const t = document.createElement("span"); t.className = "slog-text"; t.textContent = e.text || "";
+      row.appendChild(k); row.appendChild(t);
+      if (e.billed) { const bd = document.createElement("span"); bd.className = "slog-billed"; bd.textContent = "billed"; row.appendChild(bd); }
+      log.appendChild(row); log.scrollTop = log.scrollHeight;
+    }
+    await sceneSleep(650);
+  }
+  const mf = $("#managerFigure");
+  if (mf) { mf.classList.remove("walking"); mf.style.left = "6%"; mf.style.top = "50%"; }
+  playingBack = false;
+  // Refresh the view once the story is told, so stacks/pot/board settle to truth.
+  await renderSceneTable();
+}
+
+function sceneBubble(seatEl, text, kind) {
+  if (!text) return;
+  const b = document.createElement("div");
+  b.className = `scene-bubble bub-${escapeHtml(kind || "")}`;
+  b.textContent = text;              // free text — textContent, never innerHTML
+  seatEl.appendChild(b);
+  setTimeout(() => b.remove(), reduceMotion() ? 4000 : 2600);
+}
+
+function sceneResult(text) {
+  const wrap = $("#sceneTableWrap"); if (!wrap) return;
+  const banner = document.createElement("div");
+  banner.className = "scene-result";
+  banner.textContent = text || "Hand over.";
+  wrap.appendChild(banner);
+  if (!reduceMotion()) setTimeout(() => banner.classList.add("fade"), 4200);
+}
+
+// --- Seating: right-click the felt, pick a role, pick an agent. No popups. ---
+function sceneFloorMenu(ev) {
+  ev.preventDefault();
+  studioMenu(ev.clientX, ev.clientY, [
+    { label: "Seat an agent here", act: () => openSeatPicker("player") },
+    { label: "Seat a manager", act: () => openSeatPicker("manager") },
+    { label: "Seat a dealer", act: () => openSeatPicker("dealer") },
+    { sep: true },
+    { label: "Clear the table", act: deleteScene },
+  ]);
+}
+
+function sceneSeatMenu(ev, s) {
+  ev.preventDefault(); ev.stopPropagation();
+  studioMenu(ev.clientX, ev.clientY, [
+    { label: peekedHands[s.id] ? `Hide ${s.name}'s hand` : `Peek ${s.name}'s hand`, act: () => peekSeat(s) },
+    { label: `Talk to ${s.name}`, act: () => openSeatTalk(s) },
+  ]);
+}
+
+function sceneCardMenu(ev, aid) {
+  ev.preventDefault(); ev.stopPropagation();
+  studioMenu(ev.clientX, ev.clientY, [
+    { label: "Flip this card", act: () => flipCard(aid) },
+  ]);
+}
+
+// An inline picker of the owner's Studio agents to seat. Reuses the composer drawer.
+function openSeatPicker(role) {
+  const box = $("#sceneDetail");
+  box.hidden = false;
+  box.className = "studio-detail composing";
+  const roleLabel = { player: "a player", manager: "the manager", dealer: "the dealer" }[role] || role;
+  const list = sceneHomeAgents.length
+    ? sceneHomeAgents.map((a) => `<button class="seatpick-row" data-home="${escapeHtml(String(a.id))}"
+        data-name="${escapeHtml(a.name || "")}">
+        <span class="fig-emblem prov-${escapeHtml(a.provider)}" style="background:${sigil(a.name, a.provider)}">
+          <span class="fig-initial">${escapeHtml((a.name || "?")[0])}</span></span>
+        <span class="seatpick-name">${escapeHtml(a.name || "unnamed")}</span>
+        <span class="seatpick-role">${escapeHtml(a.degree || "generalist")}</span>
+      </button>`).join("")
+    : `<p class="dim">No one lives in the Studio yet. Hire someone there first.</p>`;
+  box.innerHTML = `
+    <div class="sd-head">
+      <div style="flex:1"><h3>Seat ${escapeHtml(roleLabel)}</h3>
+        <p class="sc-preview">Pick who takes the seat.</p></div>
+      <button class="sd-close" id="spClose">✕</button>
+    </div>
+    <div class="seatpick-list">${list}</div>`;
+  $("#spClose").addEventListener("click", () => box.hidden = true);
+  box.querySelectorAll("[data-home]").forEach((b) =>
+    b.addEventListener("click", () => seatAgent(b.dataset.home, role, b.dataset.name)));
+}
+
+async function seatAgent(homeId, role, name) {
+  try {
+    await api(`/api/scene/${openSceneId}/seat`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ home_id: homeId, role, name }) });
+    $("#sceneDetail").hidden = true;
+    await renderSceneTable();
+  } catch (e) { toast(`Could not seat them: ${e.message}`); }
+}
+
+// Talk to one seat — an inline exchange, replies billed and shown.
+function openSeatTalk(s) {
+  const box = $("#sceneDetail");
+  box.hidden = false;
+  box.className = "studio-detail composing";
+  box.innerHTML = `
+    <div class="sd-head">
+      <div class="fig-emblem prov-${escapeHtml(providerOfSeat(s))}" style="background:${sigil(s.name || "?", providerOfSeat(s))}">
+        <span class="fig-initial">${escapeHtml((s.name || "?")[0])}</span></div>
+      <div style="flex:1"><h3>${escapeHtml(s.name || "seat")}</h3>
+        <p class="sc-preview">${escapeHtml(s.role || "")}</p></div>
+      <button class="sd-close" id="stClose">✕</button>
+    </div>
+    <div class="seat-talk" id="seatTalk"></div>
+    <div class="sc-label">Say something</div>
+    <textarea class="sc-input" id="stMsg" rows="2" placeholder="Ask them how they're reading the table…"></textarea>
+    <div class="sc-actions"><button class="primary" id="stSend">Send</button></div>`;
+  $("#stClose").addEventListener("click", () => box.hidden = true);
+  $("#stSend").addEventListener("click", async () => {
+    const msg = $("#stMsg").value.trim();
+    if (!msg) return;
+    const feed = $("#seatTalk");
+    const mine = document.createElement("div"); mine.className = "st-you";
+    mine.textContent = msg; feed.appendChild(mine);
+    $("#stMsg").value = "";
+    try {
+      const r = await api(`/api/scene/${openSceneId}/talk`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seat_id: s.id, message: msg }) });
+      const rep = document.createElement("div"); rep.className = "st-them";
+      rep.textContent = r.reply || "…"; feed.appendChild(rep);
+      feed.scrollTop = feed.scrollHeight;
+      const v = await loadSceneView(); paintSceneMeter(v);
+    } catch (e) { toast(`Could not reach them: ${e.message}`); }
+  });
+}
+
+$("#scenesBack") && $("#scenesBack").addEventListener("click", () => showHome());
+$("#sceneToLobby") && $("#sceneToLobby").addEventListener("click", () => {
+  openSceneId = null; sceneView = null; setHash("#/scenes"); renderScenes();
+});
+$("#sceneNew") && $("#sceneNew").addEventListener("click", openSceneComposer);
 
 
 async function boot() {

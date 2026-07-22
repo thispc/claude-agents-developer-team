@@ -1676,3 +1676,218 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
   color: var(--faint); margin-left: 6px; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px;
 }
 .ctx-sep { height: 1px; background: var(--line-soft); margin: 4px 2px; }
+
+/* ============================================================================
+   The Casino Floor — Scenes. A sibling of the Studio: same bar, same figures,
+   same emblems, same right-click world. Adds felt, cards and chips as pure CSS.
+   Decorative felt/card/rail colours are their own tokens; every FORM control
+   reuses the shared padding tokens, and every animation is gated by the shared
+   reduced-motion rule.
+   ============================================================================ */
+:root {
+  --felt: #256b4f; --felt-2: #1c5540; --felt-edge: #123626;
+  --rail: #7a5230; --rail-2: #5c3d22;
+  --card-face: #fbfaf6; --card-red: #b0281f; --card-ink: #1B2021;
+}
+#scenes { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.scene-bar {
+  display: flex; align-items: center; gap: 14px; padding: 12px 20px;
+  border-bottom: 1px solid var(--line); background: var(--card);
+}
+.scene-bar h2 { font-size: 16px; font-weight: 650; }
+.scene-tolobby, .scene-bar .studio-back { font-size: 13px; }
+.scene-meter {
+  font-family: var(--mono); font-size: 11px; color: var(--dim);
+  background: var(--card-2); border: 1px solid var(--line-soft);
+  border-radius: 20px; padding: 3px 10px;
+}
+.scene-meter.paused { color: var(--warn); background: var(--warn-soft); border-color: var(--warn); }
+
+.scene-stage { position: relative; flex: 1; overflow: auto;
+  background: radial-gradient(circle at 50% 40%, var(--room) 0%, var(--room-edge) 72%); }
+.scene-empty {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 14px; color: var(--dim);
+}
+
+/* --- Lobby --- */
+.scene-lobby { padding: 26px; }
+.scene-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+.scene-card {
+  display: flex; flex-direction: column; gap: 8px; text-align: left;
+  padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--card); box-shadow: var(--shadow); cursor: pointer;
+  transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease;
+}
+.scene-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); border-color: var(--accent); }
+.scene-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.scene-kind {
+  align-self: flex-start; font-family: var(--mono); font-size: 9.5px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--accent); background: var(--accent-soft);
+  border-radius: 5px; padding: 2px 7px;
+}
+.scene-name { font-size: 15px; font-weight: 650; color: var(--text); }
+.scene-goal { font-family: var(--serif); font-style: italic; font-size: 13px; color: var(--dim);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.scene-foot { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.scene-foot > span { font-size: 11px; border-radius: 20px; padding: 2px 9px;
+  background: var(--card-2); border: 1px solid var(--line-soft); color: var(--dim); }
+.scene-status.st-paused { color: var(--warn); background: var(--warn-soft); border-color: var(--warn); }
+.scene-status.st-done, .scene-status.st-complete { color: var(--good); background: var(--good-soft); }
+
+/* --- The table --- */
+.scene-table-wrap { position: relative; width: 100%; height: calc(100% - 58px);
+  min-height: 460px; overflow: hidden; }
+.poker-table {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(70%, 760px); height: min(64%, 460px);
+}
+.table-rail {
+  position: absolute; inset: -14px; border-radius: 50%;
+  background: linear-gradient(145deg, var(--rail) 0%, var(--rail-2) 100%);
+  box-shadow: var(--shadow-lg);
+}
+.table-felt {
+  position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle at 50% 42%, var(--felt) 0%, var(--felt-2) 62%, var(--felt-edge) 100%);
+  box-shadow: inset 0 0 60px rgba(0,0,0,.45), inset 0 0 0 2px rgba(255,255,255,.05);
+  display: flex; align-items: center; justify-content: center;
+}
+.table-center { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.scene-board { display: flex; gap: 7px; min-height: 62px; align-items: center; }
+.board-empty { font-size: 12px; color: rgba(255,255,255,.55); font-style: italic; }
+.scene-pot { color: #fff; font-size: 13px; display: flex; align-items: center; gap: 5px; }
+.scene-pot b { font-size: 17px; }
+.scene-pot span { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; opacity: .7; }
+.scene-phasepill {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  color: #fff; background: rgba(0,0,0,.28); border-radius: 20px; padding: 3px 11px;
+}
+
+/* --- A card is code: a back, or a rank + suit --- */
+.pcard {
+  position: relative; width: 40px; height: 56px; border-radius: 6px; flex: none;
+  box-shadow: 0 2px 5px rgba(0,0,0,.35); display: inline-flex;
+}
+.pcard.up {
+  background: var(--card-face); color: var(--card-ink);
+  border: 1px solid rgba(0,0,0,.12); align-items: center; justify-content: center;
+}
+.pcard.up.red { color: var(--card-red); }
+.pc-c { position: absolute; font-size: 10px; font-weight: 700; line-height: 1; text-align: center; }
+.pc-c b { display: block; font-size: 9px; font-weight: 700; }
+.pc-c.tl { top: 3px; left: 4px; }
+.pc-c.br { bottom: 3px; right: 4px; transform: rotate(180deg); }
+.pc-pip { font-size: 20px; }
+.pcard.back {
+  background:
+    repeating-linear-gradient(45deg, var(--accent) 0 6px, var(--accent-soft) 6px 12px);
+  border: 2px solid var(--card-face);
+}
+.pcard.back .pcard-weave {
+  position: absolute; inset: 4px; border-radius: 3px; border: 1px solid rgba(255,255,255,.4);
+}
+.pcard[data-aid] { cursor: context-menu; }
+
+/* --- Seats around the oval — the Studio's figure language, not draggable --- */
+.seat-layer { position: absolute; inset: 0; pointer-events: none; }
+.seat-figure {
+  position: absolute; transform: translate(-50%, -50%); width: 108px; text-align: center;
+  cursor: pointer; user-select: none; pointer-events: auto;
+}
+.seat-cards { display: flex; gap: 3px; justify-content: center; min-height: 56px; margin-bottom: 3px; }
+.seat-cards .pcard { width: 34px; height: 48px; }
+.seat-figure .fig-emblem { width: 52px; height: 52px; }
+.seat-figure .fig-initial { font-size: 19px; }
+.seat-figure .fig-name { font-size: 12.5px; }
+.seat-meta { display: flex; gap: 6px; justify-content: center; margin-top: 2px; font-size: 10.5px; }
+.seat-stack { color: var(--dim); }
+.seat-bet { color: var(--accent); }
+.seat-status { font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); margin-top: 1px; min-height: 1em; }
+.seat-status.st-folded { color: var(--faint); text-decoration: line-through; }
+.seat-status.st-acting { color: var(--accent); font-weight: 650; }
+.seat-status.st-won { color: var(--good); font-weight: 700; }
+.figure-status-folded { opacity: .55; }
+.figure-status-acting .fig-emblem { box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow); }
+.figure-status-won .fig-emblem { box-shadow: 0 0 0 3px var(--good-soft), var(--shadow); }
+
+.manager-figure {
+  position: absolute; transform: translate(-50%, -50%); width: 96px; text-align: center;
+  transition: left .55s ease, top .55s ease; z-index: 5;
+}
+.manager-figure .fig-emblem { width: 50px; height: 50px; outline-offset: 1px; }
+.manager-figure .fig-role { color: var(--mgr); }
+.manager-figure.walking .fig-emblem { box-shadow: 0 0 0 4px var(--accent-soft), var(--shadow); }
+.dealer-chip {
+  position: absolute; left: 50%; top: 68%; transform: translate(-50%, -50%);
+  width: 22px; height: 22px; border-radius: 50%; background: var(--card-face);
+  color: var(--card-ink); font-size: 11px; font-weight: 800; display: flex;
+  align-items: center; justify-content: center; box-shadow: var(--shadow);
+}
+.table-hint { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+  font-size: 12px; color: var(--dim); font-style: italic; }
+
+/* --- Controls --- */
+.scene-controls {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 58px;
+  display: flex; align-items: center; gap: 10px; padding: 0 20px;
+  border-top: 1px solid var(--line); background: var(--card);
+}
+.ctl-spacer { flex: 1; }
+.sc-ctl { font-size: 13px; font-weight: 550; }
+.sc-ctl.busy { opacity: .6; }
+.sc-ctl.danger { color: var(--bad); border-color: var(--line); }
+.sc-ctl.danger:hover { border-color: var(--bad); background: var(--bad-soft); }
+.scene-paused { font-size: 12px; color: var(--warn); background: var(--warn-soft);
+  border: 1px solid var(--warn); border-radius: 20px; padding: 3px 11px; }
+
+/* --- Speech + the result reveal --- */
+.scene-bubble {
+  position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%);
+  margin-bottom: 6px; max-width: 200px; width: max-content;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 7px 10px; font-size: 12px; color: var(--text); box-shadow: var(--shadow-lg);
+  z-index: 8; animation: sceneBubbleIn .22s ease both;
+}
+.scene-bubble.bub-brief { border-color: var(--mgr); }
+.scene-bubble.bub-act { font-style: italic; color: var(--dim); }
+@keyframes sceneBubbleIn { from { opacity: 0; transform: translateX(-50%) translateY(4px); } to { opacity: 1; } }
+.scene-result {
+  position: absolute; left: 50%; top: 14%; transform: translateX(-50%);
+  background: var(--accent); color: #fff; font-weight: 650; font-size: 14px;
+  padding: 9px 18px; border-radius: 24px; box-shadow: var(--shadow-lg); z-index: 12;
+  transition: opacity .8s ease; text-align: center; max-width: 70%;
+}
+.scene-result.fade { opacity: 0; }
+
+/* --- Event log --- */
+.scene-log {
+  position: absolute; right: 18px; bottom: 70px; width: 300px; max-height: 40%;
+  overflow-y: auto; background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; box-shadow: var(--shadow-lg); padding: 8px 10px; z-index: 20;
+}
+.slog-row { display: flex; gap: 7px; align-items: baseline; font-size: 12px; padding: 3px 0; border-bottom: 1px solid var(--line-soft); }
+.slog-kind { font-family: var(--mono); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); flex: none; width: 42px; }
+.slog-text { color: var(--text); flex: 1; }
+.slog-billed { font-family: var(--mono); font-size: 8.5px; text-transform: uppercase; color: var(--warn); flex: none; }
+
+/* --- Seat picker + talk drawers (reuse the composer drawer chrome) --- */
+.seatpick-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.seatpick-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 7px 9px; border: 1px solid var(--line); border-radius: 10px; background: var(--card-2); cursor: pointer; }
+.seatpick-row:hover { border-color: var(--accent); background: var(--card); }
+.seatpick-row .fig-emblem { width: 34px; height: 34px; }
+.seatpick-row .fig-initial { font-size: 14px; }
+.seatpick-name { font-weight: 600; font-size: 13px; }
+.seatpick-role { margin-left: auto; font-size: 10.5px; text-transform: uppercase; letter-spacing: .5px; color: var(--accent); }
+.seat-talk { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; margin: 6px 0; }
+.st-you, .st-them { font-size: 12.5px; padding: 7px 10px; border-radius: 12px; max-width: 88%; }
+.st-you { align-self: flex-end; background: var(--accent-soft); color: var(--accent); }
+.st-them { align-self: flex-start; background: var(--card-2); border: 1px solid var(--line-soft); color: var(--text); }
+
+@media (prefers-reduced-motion: reduce) {
+  .scene-card { transition: none; }
+  .manager-figure { transition: none; }
+  .scene-bubble { animation: none; }
+  .scene-result { transition: none; }
+}
