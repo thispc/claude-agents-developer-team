@@ -463,7 +463,12 @@ def test_the_studio_screen_exists_and_has_a_way_in():
 def test_the_studio_has_its_own_route_and_is_hidden_by_other_screens():
     """A screen left visible under another is the classic single-page bug."""
     js = _dash("app.js")
-    assert 'setHash("#/studio")' in js
+    # The Studio has its own hash route. Since the tabbed refactor the route is set
+    # through studioTabHash() (which returns "#/studio") rather than a hardcoded
+    # literal, and the hashchange router resolves "#/studio" — assert the route
+    # exists both ways rather than pinning one spelling of it.
+    assert '"#/studio"' in js and "studioTabHash" in js
+    assert 'startsWith("#/studio")' in js
     for opener in ("function showHome", "function openProject"):
         body = js.split(opener)[1][:600]
         assert '"#studio"' in body or "studio" in body, f"{opener} does not hide the Studio"

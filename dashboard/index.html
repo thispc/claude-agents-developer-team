@@ -62,16 +62,9 @@
     <button class="entry-card" id="modeStudio">
       <span class="entry-ico">🏡</span>
       <span class="entry-name">The Studio</span>
-      <span class="entry-desc">Where your AI teammates reside between jobs. Hire them, give
-        them a character, watch them learn — and put the same people on real builds.</span>
+      <span class="entry-desc">Where your AI teammates reside between jobs. Hire them, give them a
+        character, seat them at a scene to play, and stock a shelf of props — all under one roof.</span>
       <span class="entry-go">Enter the Studio →</span>
-    </button>
-    <button class="entry-card" id="modeScenes">
-      <span class="entry-ico">🎰</span>
-      <span class="entry-name">The Casino Floor</span>
-      <span class="entry-desc">Sit your Studio people at a table and let them play. A manager
-        walks the room, briefs each one, then they run a hand on their own — cheaply, in the open.</span>
-      <span class="entry-go">Take a seat →</span>
     </button>
     <button class="entry-card" id="modeImprove" hidden>
       <span class="entry-ico">⟲</span>
@@ -162,37 +155,51 @@
      register: a serif reading column instead of the UI sans used everywhere else.
      The colour system is the same one, including the rule that brick means a human
      is involved. -->
+<!-- The Studio — one workspace, three tabs. Agents is the canvas of teammates;
+     Scenes is the old Casino Floor folded in (seated agents acting in a setting,
+     the cards/deck/pot are CODE that runs deterministically and every model call
+     is billed); Artifacts is the prop shelf of reusable objects placed into scenes. -->
 <section id="studio" hidden>
   <div class="studio-bar">
     <button class="studio-back" id="studioBack">← Home</button>
     <h2>The Studio</h2>
-    <span class="studio-budget" id="studioBudget" title="Today's background token spend"></span>
-    <div class="studio-spacer"></div>
-    <button class="studio-hire" id="studioHire">＋ New hire</button>
-  </div>
-  <div class="studio-floor" id="studioFloor">
-    <div class="studio-empty" id="studioEmpty" hidden>
-      <p>No one lives here yet.</p>
-      <button class="primary" id="studioHire2">Hire your first teammate</button>
-    </div>
-  </div>
-  <div class="studio-detail" id="studioDetail" hidden></div>
-</section>
-
-<!-- The Casino Floor — a sibling of the Studio. A Scene is a setting where Studio
-     agents are seated and act; the cards, deck and pot are CODE that runs
-     deterministically, and every model call is billed and shown. -->
-<section id="scenes" hidden>
-  <div class="scene-bar">
-    <button class="studio-back" id="scenesBack">← Home</button>
+    <nav class="studio-tabs" id="studioTabs" role="tablist">
+      <button class="studio-tab active" data-tab="agents" role="tab">Agents</button>
+      <button class="studio-tab" data-tab="scenes" role="tab">Scenes</button>
+      <button class="studio-tab" data-tab="artifacts" role="tab">Artifacts</button>
+    </nav>
     <button class="scene-tolobby" id="sceneToLobby" hidden>← All scenes</button>
-    <h2 id="sceneTitle">The Casino Floor</h2>
-    <span class="scene-meter" id="sceneMeter" hidden title="Model calls and tokens this scene has spent"></span>
+    <span class="scene-title-inline" id="sceneTitle" hidden></span>
     <div class="studio-spacer"></div>
-    <button class="studio-hire" id="sceneNew">＋ New scene</button>
+    <span class="studio-budget" id="studioBudget" title="Today's background token spend"></span>
+    <span class="scene-meter" id="sceneMeter" hidden title="Model calls and tokens this scene has spent"></span>
+    <button class="studio-hire" id="studioHire">＋ New hire</button>
+    <button class="studio-hire" id="sceneNew" hidden>＋ New scene</button>
+    <button class="studio-hire" id="artNew" hidden>＋ New artifact</button>
   </div>
-  <div class="scene-stage" id="sceneStage"></div>
-  <div class="studio-detail" id="sceneDetail" hidden></div>
+
+  <!-- Agents: the canvas of draggable teammates -->
+  <div class="studio-tabpanel" id="tabAgents">
+    <div class="studio-floor" id="studioFloor">
+      <div class="studio-empty" id="studioEmpty" hidden>
+        <p>No one lives here yet.</p>
+        <button class="primary" id="studioHire2">Hire your first teammate</button>
+      </div>
+    </div>
+    <div class="studio-detail" id="studioDetail" hidden></div>
+  </div>
+
+  <!-- Scenes: the Casino Floor, seated agents acting in a setting -->
+  <div class="studio-tabpanel" id="tabScenes" hidden>
+    <div class="scene-stage" id="sceneStage"></div>
+    <div class="studio-detail" id="sceneDetail" hidden></div>
+  </div>
+
+  <!-- Artifacts: the prop shelf — reusable objects sealed into scenes -->
+  <div class="studio-tabpanel" id="tabArtifacts" hidden>
+    <div class="artifact-shelf" id="artifactShelf"></div>
+    <div class="studio-detail" id="artifactDetail" hidden></div>
+  </div>
 </section>
 
 <section id="aboutPage" hidden>

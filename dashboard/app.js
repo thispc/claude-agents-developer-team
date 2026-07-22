@@ -788,7 +788,10 @@ function route() {
     }
     return;
   }
-  if (location.hash.startsWith("#/studio")) { openStudio(true); return; }
+  if (location.hash.startsWith("#/studio")) {
+    openStudio(true, location.hash.includes("/artifacts") ? "artifacts" : "agents");
+    return;
+  }
   {
     const sc = location.hash.match(/^#\/scenes(?:\/([\w-]+))?/);
     if (sc) { openScenes(true, sc[1] || null); return; }
@@ -3457,7 +3460,6 @@ $("#homeLink").addEventListener("click", () => showHome());
 $("#homeLink").style.cursor = "pointer";
 $("#modeBuild").addEventListener("click", openDialog);
 $("#modeStudio").addEventListener("click", () => openStudio());
-$("#modeScenes").addEventListener("click", () => openScenes());
 $("#modeImprove").addEventListener("click", () => openSelfRepair());
 $("#selfBackBtn").addEventListener("click", () => showHome());
 $("#planBackBtn").addEventListener("click", () => {
@@ -3762,15 +3764,57 @@ function sigil(name, provider) {
        + `hsl(${tint} 35% 48%) 360deg)`;
 }
 
-async function openStudio(skipHash) {
+// The Studio is one section with three tabs (Agents / Scenes / Artifacts). This
+// brings the shell on screen and hides every sibling; tab selection is separate.
+function showStudioShell() {
   $("#home").hidden = true; $("main").hidden = true;
-  for (const id of ["plan", "selfPage", "aboutPage", "scenes"]) { const e = $("#" + id); if (e) e.hidden = true; }
+  for (const id of ["plan", "selfPage", "aboutPage"]) { const e = $("#" + id); if (e) e.hidden = true; }
   $("#projectBar").hidden = true;
   $("#studio").hidden = false;
-  if (!skipHash) setHash("#/studio");
   currentProject = null;
-  await renderStudio();
 }
+
+let studioTab = "agents";
+
+async function openStudio(skipHash, tab) {
+  showStudioShell();
+  await selectStudioTab(tab || "agents", skipHash);
+}
+
+// The bar carries per-tab actions (hire / new scene / new artifact, budget, meter,
+// scene title). Show only the ones the active tab owns; each tab's own render pass
+// fine-tunes the scene controls (lobby vs open table) afterward.
+function setStudioBar(name) {
+  $("#studioHire").hidden = name !== "agents";
+  $("#studioBudget").hidden = name !== "agents";
+  $("#artNew").hidden = name !== "artifacts";
+  $("#sceneNew").hidden = name !== "scenes";
+  $("#sceneTitle").hidden = name !== "scenes";
+  if (name !== "scenes") { $("#sceneMeter").hidden = true; $("#sceneToLobby").hidden = true; }
+}
+
+function studioTabHash(name) {
+  if (name === "artifacts") return "#/studio/artifacts";
+  if (name === "scenes") return openSceneId ? `#/scenes/${openSceneId}` : "#/scenes";
+  return "#/studio";
+}
+
+async function selectStudioTab(name, skipHash) {
+  studioTab = name;
+  document.querySelectorAll(".studio-tab").forEach((b) =>
+    b.classList.toggle("active", b.dataset.tab === name));
+  $("#tabAgents").hidden = name !== "agents";
+  $("#tabScenes").hidden = name !== "scenes";
+  $("#tabArtifacts").hidden = name !== "artifacts";
+  setStudioBar(name);
+  if (!skipHash) setHash(studioTabHash(name));
+  if (name === "agents") await renderStudio();
+  else if (name === "scenes") await renderScenes();
+  else if (name === "artifacts") await renderArtifactLib();
+}
+
+document.querySelectorAll(".studio-tab").forEach((b) =>
+  b.addEventListener("click", () => selectStudioTab(b.dataset.tab)));
 
 async function renderStudio() {
   const floor = $("#studioFloor");
@@ -4132,20 +4176,18 @@ function sceneCardHtml(state, aid) {
   </span>`;
 }
 
+// Scenes is now a tab of the Studio; the #/scenes routes still land here and open
+// the Studio shell on that tab, so old links keep working.
 async function openScenes(skipHash, wantId) {
-  $("#home").hidden = true; $("main").hidden = true;
-  for (const id of ["plan", "selfPage", "aboutPage", "studio"]) { const e = $("#" + id); if (e) e.hidden = true; }
-  $("#projectBar").hidden = true;
-  $("#scenes").hidden = false;
-  currentProject = null;
+  showStudioShell();
   openSceneId = wantId || null;
-  if (!skipHash) setHash(openSceneId ? `#/scenes/${openSceneId}` : "#/scenes");
-  await renderScenes();
+  await selectStudioTab("scenes", true);
+  if (!skipHash) setHash(studioTabHash("scenes"));
 }
 
 // The list route also tells us whether Scenes are enabled at all.
 async function renderScenes() {
-  if ($("#scenes").hidden) return;
+  if ($("#tabScenes").hidden) return;
   try {
     const d = await api("/api/scene");
     scenesList = d.scenes || [];
@@ -4200,10 +4242,19 @@ function renderSceneLobby() {
     b.addEventListener("click", () => openScene(b.dataset.open)));
 }
 
+// The equalizer biases every agent seated in the scene: a few trait dials, each
+// nudged roughly -0.3..0.3. Labels come straight from the trait names.
+const EQ_TRAITS = [
+  { key: "willpower", label: "willpower" },
+  { key: "risk_appetite", label: "risk appetite" },
+  { key: "addiction_proneness", label: "addiction proneness" },
+  { key: "composure", label: "composure" },
+];
+
 // --- The composer: assembled inline, never a browser prompt. Mirrors openHirePanel. ---
 let sceneDraft = null;
 function openSceneComposer() {
-  sceneDraft = { kind: "poker", title: "", goal: "", seed: "" };
+  sceneDraft = { kind: "poker", title: "", goal: "", seed: "", rules: "", equalizer: {} };
   renderSceneComposer();
 }
 function renderSceneComposer() {
@@ -4232,6 +4283,21 @@ function renderSceneComposer() {
     <textarea class="sc-input" id="scnGoal" rows="2"
       placeholder="e.g. play a tight, disciplined hand and talk through the reads">${escapeHtml(d.goal)}</textarea>
 
+    <div class="sc-label">House rules <span class="dim">(everyone in the scene can read these)</span></div>
+    <textarea class="sc-input" id="scnRules" rows="2"
+      placeholder="e.g. no table talk about your hole cards; blinds double every three hands">${escapeHtml(d.rules)}</textarea>
+
+    <div class="sc-label">Equalizer <span class="dim">(biases every agent placed here)</span></div>
+    <div class="eq-bank">${EQ_TRAITS.map((t) => {
+      const val = Number(d.equalizer[t.key] || 0);
+      return `<div class="eq-row">
+        <span class="eq-name">${escapeHtml(t.label)}</span>
+        <input class="eq-slider" type="range" min="-0.3" max="0.3" step="0.05"
+               value="${val}" data-eq="${t.key}" aria-label="${escapeHtml(t.label)} bias">
+        <span class="eq-val" data-eqval="${t.key}">${val > 0 ? "+" : ""}${val.toFixed(2)}</span>
+      </div>`;
+    }).join("")}</div>
+
     <div class="sc-label">Seed <span class="dim">(optional — same seed deals the same cards)</span></div>
     <input class="sc-input" id="scnSeed" placeholder="leave blank for a fresh shuffle"
            value="${escapeHtml(d.seed)}" autocomplete="off">
@@ -4240,7 +4306,14 @@ function renderSceneComposer() {
 
   $("#scnTitle").addEventListener("input", (e) => { d.title = e.target.value; });
   $("#scnGoal").addEventListener("input", (e) => { d.goal = e.target.value; });
+  $("#scnRules").addEventListener("input", (e) => { d.rules = e.target.value; });
   $("#scnSeed").addEventListener("input", (e) => { d.seed = e.target.value; });
+  box.querySelectorAll(".eq-slider").forEach((r) => r.addEventListener("input", (e) => {
+    const v = Number(e.target.value);
+    d.equalizer[e.target.dataset.eq] = v;
+    const out = box.querySelector(`[data-eqval="${e.target.dataset.eq}"]`);
+    if (out) out.textContent = (v > 0 ? "+" : "") + v.toFixed(2);
+  }));
   box.querySelectorAll("[data-kind]").forEach((b) => b.addEventListener("click", () => {
     if (b.classList.contains("soon")) return;
     d.kind = b.dataset.kind; renderSceneComposer();
@@ -4251,7 +4324,12 @@ function renderSceneComposer() {
 async function doCreateScene() {
   const d = sceneDraft;
   try {
-    const body = { kind: d.kind, title: d.title.trim() || "Untitled scene", goal: d.goal.trim() };
+    const body = { kind: d.kind, title: d.title.trim() || "Untitled scene", goal: d.goal.trim(),
+                   rules: d.rules.trim() };
+    // Only carry dials the user actually moved; the server treats absent as neutral.
+    const eq = {};
+    for (const [k, v] of Object.entries(d.equalizer)) if (Number(v)) eq[k] = Number(v);
+    if (Object.keys(eq).length) body.equalizer = eq;
     // seed is an integer server-side; hash any non-numeric text into a stable int.
     const raw = d.seed.trim();
     if (raw) {
@@ -4312,10 +4390,15 @@ async function renderSceneTable() {
   const arts = v.artifacts || [];
   const isBoard = (a) => a.type === "card" && (!a.holder || a.holder === "board" || a.holder === "community");
   const board = arts.filter(isBoard);
+  // Props are library artifacts placed into the scene — anything that is not a
+  // playing card. A sealed prop hides its secret value behind a lock.
+  const props = arts.filter((a) => a.type !== "card");
 
   const stage = $("#sceneStage");
   const paused = v.status === "paused";
   stage.innerHTML = `
+    ${v.rules ? `<div class="scene-rules"><span class="scene-rules-tag">house rules</span>
+      <span class="scene-rules-text">${escapeHtml(v.rules)}</span></div>` : ""}
     <div class="scene-table-wrap" id="sceneTableWrap">
       <div class="poker-table">
         <div class="table-rail"></div>
@@ -4337,9 +4420,25 @@ async function renderSceneTable() {
       <button class="sc-ctl" id="sceneDeal">Deal</button>
       <button class="sc-ctl" id="scenePlay">Play the hand</button>
       <button class="sc-ctl primary" id="sceneRun">▶ Ask the manager to run it</button>
+      <button class="sc-ctl" id="sceneAddProp">＋ Add a prop</button>
       <div class="ctl-spacer"></div>
       <button class="sc-ctl danger" id="sceneDelete">Clear the table</button>
     </div>
+    ${props.length ? `<div class="scene-props" id="sceneProps">
+      <div class="sc-label">Props on the table</div>
+      ${props.map((a) => {
+        const pub = a.public && typeof a.public === "object" ? a.public : {};
+        const name = pub.name || a.name || a.kind || "prop";
+        const vars = Object.entries(pub).filter(([k]) => k !== "name")
+          .map(([k, val]) => `<span class="prop-var">${escapeHtml(k)}: ${escapeHtml(String(val))}</span>`).join("");
+        return `<div class="scene-prop">
+          <span class="prop-chip-kind">${escapeHtml(a.kind || a.type || "prop")}</span>
+          <span class="scene-prop-name">${escapeHtml(String(name))}</span>
+          ${a.sealed ? `<span class="prop-sealed" title="secret sealed until a key holder reveals it">🔒 sealed</span>` : ""}
+          ${vars ? `<span class="prop-vars">${vars}</span>` : ""}
+        </div>`;
+      }).join("")}
+    </div>` : ""}
     <div class="scene-log" id="sceneLog" hidden></div>`;
 
   // Seat figures around the oval.
@@ -4379,6 +4478,7 @@ async function renderSceneTable() {
   $("#sceneDeal").addEventListener("click", () => sceneAction("deal"));
   $("#scenePlay").addEventListener("click", () => sceneAction("play"));
   $("#sceneRun").addEventListener("click", () => sceneAction("run"));
+  $("#sceneAddProp").addEventListener("click", openScenePropPicker);
   $("#sceneDelete").addEventListener("click", deleteScene);
 
   if (!players.length && !manager)
@@ -4579,6 +4679,55 @@ async function seatAgent(homeId, role, name) {
   } catch (e) { toast(`Could not seat them: ${e.message}`); }
 }
 
+// Pull the owner's artifact library and let them place one into the scene as a
+// prop. Reuses the composer drawer. If the artifact declares secret fields, placing
+// it seals them (the scene POST returns sealed:true and hides the value).
+async function openScenePropPicker() {
+  const box = $("#sceneDetail");
+  box.hidden = false;
+  box.className = "studio-detail composing";
+  box.innerHTML = `
+    <div class="sd-head">
+      <div style="flex:1"><h3>Add a prop</h3>
+        <p class="sc-preview">Place one of your shelf props into the scene.</p></div>
+      <button class="sd-close" id="ppClose">✕</button>
+    </div>
+    <div class="seatpick-list" id="ppList"><p class="dim">loading your library…</p></div>`;
+  $("#ppClose").addEventListener("click", () => box.hidden = true);
+  let arts = [];
+  try { arts = (await api("/api/artifacts")).artifacts || []; }
+  catch (e) { $("#ppList").innerHTML = `<p class="dim">${escapeHtml(e.message || String(e))}</p>`; return; }
+  if (!arts.length) {
+    $("#ppList").innerHTML = `<p class="dim">Your shelf is empty. Make a prop in the Artifacts tab first.</p>`;
+    return;
+  }
+  $("#ppList").innerHTML = arts.map((a) => {
+    const sealed = Array.isArray(a.secret_schema) && a.secret_schema.length;
+    return `<button class="seatpick-row" data-def="${escapeHtml(String(a.id))}">
+      <span class="prop-chip-kind">${escapeHtml(a.kind || "prop")}</span>
+      <span class="seatpick-name">${escapeHtml(a.name || "unnamed")}</span>
+      <span class="seatpick-role">${a.dormant ? "dormant" : "active"}${sealed ? " · 🔒" : ""}</span>
+    </button>`;
+  }).join("");
+  $("#ppList").querySelectorAll("[data-def]").forEach((b) =>
+    b.addEventListener("click", () => placeArtifactInScene(arts.find((a) => String(a.id) === b.dataset.def))));
+}
+
+async function placeArtifactInScene(art) {
+  if (!art) return;
+  try {
+    const body = { def_id: art.id, kind: art.kind, dormant: !!art.dormant,
+                   public: (art.public && typeof art.public === "object") ? art.public : {} };
+    // Named secret fields are sealed on placement — hand them over as the secret object.
+    if (Array.isArray(art.secret_schema) && art.secret_schema.length)
+      body.secret = Object.fromEntries(art.secret_schema.map((f) => [f, ""]));
+    await api(`/api/scene/${openSceneId}/artifact`, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    $("#sceneDetail").hidden = true;
+    await renderSceneTable();
+  } catch (e) { toast(`Could not place it: ${e.message}`); }
+}
+
 // Talk to one seat — an inline exchange, replies billed and shown.
 function openSeatTalk(s) {
   const box = $("#sceneDetail");
@@ -4620,6 +4769,199 @@ $("#sceneToLobby") && $("#sceneToLobby").addEventListener("click", () => {
   openSceneId = null; sceneView = null; setHash("#/scenes"); renderScenes();
 });
 $("#sceneNew") && $("#sceneNew").addEventListener("click", openSceneComposer);
+
+
+// ============================================================================
+//  Artifacts — the prop shelf. Reusable objects (a card, a deck, a chair, a
+//  table, a prop) with public variables everyone can read and secret fields that
+//  seal when the prop is placed in a scene. Dormant props are inert; active ones
+//  act when interacted with. Inline composer only, same drawer chrome as the rest.
+// ============================================================================
+const ARTIFACT_KINDS = ["card", "deck", "chair", "table", "prop"];
+let artifactsList = [];
+let artDraft = null;
+
+async function renderArtifactLib() {
+  if ($("#tabArtifacts").hidden) return;
+  const shelf = $("#artifactShelf");
+  if (!shelf) return;
+  let d;
+  try { d = await api("/api/artifacts"); }
+  catch (e) { shelf.innerHTML = `<p class="empty">Could not load artifacts: ${escapeHtml(e.message || String(e))}</p>`; return; }
+  artifactsList = d.artifacts || [];
+  if (!artifactsList.length) {
+    shelf.innerHTML = `<div class="artifact-empty">
+      <p>The shelf is bare. Props are reusable objects — a card, a deck, a chair —
+        that carry public variables and sealed secrets, and get placed into scenes.</p>
+      <button class="primary" id="artNew2">Make your first prop</button>
+    </div>`;
+    $("#artNew2").addEventListener("click", () => openArtifactComposer());
+    return;
+  }
+  shelf.innerHTML = `<div class="prop-grid">${artifactsList.map((a) => {
+    const pub = (a.public && typeof a.public === "object") ? a.public : {};
+    const nVars = Object.keys(pub).length;
+    const nSecret = Array.isArray(a.secret_schema) ? a.secret_schema.length : 0;
+    return `<button class="prop-card kind-${escapeHtml(a.kind || "prop")} ${a.dormant ? "dormant" : "active"}"
+      data-id="${escapeHtml(String(a.id))}">
+      <span class="prop-kind">${escapeHtml(a.kind || "prop")}</span>
+      <span class="prop-name">${escapeHtml(a.name || "unnamed prop")}</span>
+      ${a.description ? `<span class="prop-desc">${escapeHtml(a.description)}</span>` : ""}
+      <span class="prop-foot">
+        <span class="prop-state">${a.dormant ? "dormant" : "active"}</span>
+        ${nVars ? `<span class="prop-badge">${nVars} public</span>` : ""}
+        ${nSecret ? `<span class="prop-badge sealed">🔒 ${nSecret} sealed</span>` : ""}
+      </span>
+    </button>`;
+  }).join("")}</div>`;
+  shelf.querySelectorAll("[data-id]").forEach((b) => {
+    const a = artifactsList.find((x) => String(x.id) === b.dataset.id);
+    b.addEventListener("click", () => openArtifactComposer(a));
+    b.addEventListener("contextmenu", (ev) => artifactCardMenu(ev, a));
+  });
+}
+
+function openArtifactComposer(existing) {
+  if (existing) {
+    const pub = (existing.public && typeof existing.public === "object") ? existing.public : {};
+    artDraft = {
+      id: existing.id,
+      name: existing.name || "",
+      kind: existing.kind || "prop",
+      dormant: existing.dormant !== false,
+      pubRows: Object.entries(pub).map(([k, v]) => ({ k, v: String(v) })),
+      secretText: Array.isArray(existing.secret_schema) ? existing.secret_schema.join(", ") : "",
+      description: existing.description || "",
+    };
+  } else {
+    artDraft = { id: null, name: "", kind: "card", dormant: true,
+                 pubRows: [{ k: "", v: "" }], secretText: "", description: "" };
+  }
+  renderArtifactComposer();
+}
+
+function renderArtifactComposer() {
+  const box = $("#artifactDetail");
+  const d = artDraft;
+  box.hidden = false;
+  box.className = "studio-detail composing";
+  const rows = d.pubRows.length ? d.pubRows : [{ k: "", v: "" }];
+  const stateNote = d.dormant ? "dormant — inert like a chair"
+                              : "active — acts when interacted with";
+  box.innerHTML = `
+    <div class="sd-head">
+      <div class="fig-emblem" style="background:${sigil(d.name || "prop", "anthropic")}">
+        <span class="fig-initial">${escapeHtml((d.name || "?")[0] || "?")}</span></div>
+      <div style="flex:1">
+        <input class="sc-name" id="artName" placeholder="Name this prop"
+               value="${escapeHtml(d.name)}" autocomplete="off">
+        <p class="sc-preview">${escapeHtml(stateNote)}</p>
+      </div>
+      <button class="sd-close" id="artClose">✕</button>
+    </div>
+
+    <div class="sc-label">Kind</div>
+    <div class="sc-row">${ARTIFACT_KINDS.map((k) => chip(k, d.kind === k, `data-artkind="${k}"`)).join("")}</div>
+
+    <div class="sc-label">State</div>
+    <div class="seg sc-seg" id="artStateSeg">
+      <label class="seg-opt"><input type="radio" name="artstate" ${d.dormant ? "checked" : ""} data-dormant="1"><span>Dormant</span></label>
+      <label class="seg-opt"><input type="radio" name="artstate" ${d.dormant ? "" : "checked"} data-dormant="0"><span>Active</span></label>
+    </div>
+    <p class="sc-hint">dormant = inert like a chair; active = acts when interacted with</p>
+
+    <div class="sc-label">Public variables <span class="dim">(visible to everyone)</span></div>
+    <div id="artPubRows">${rows.map((r) => `
+      <div class="kv-row">
+        <input class="sc-input kv-k" placeholder="key" value="${escapeHtml(r.k)}" autocomplete="off">
+        <input class="sc-input kv-v" placeholder="value" value="${escapeHtml(r.v)}" autocomplete="off">
+        <button class="kv-del" title="Remove">✕</button>
+      </div>`).join("")}</div>
+    <button class="sc-chip" id="artAddVar">＋ add variable</button>
+
+    <div class="sc-label">Secret fields <span class="dim">(sealed when placed in a scene)</span></div>
+    <input class="sc-input" id="artSecret" placeholder="comma-separated, e.g. hole_cards, pin"
+           value="${escapeHtml(d.secretText)}" autocomplete="off">
+
+    <div class="sc-label">Description <span class="dim">(optional)</span></div>
+    <textarea class="sc-input" id="artDesc" rows="2"
+      placeholder="what this prop is, and how it behaves…">${escapeHtml(d.description)}</textarea>
+
+    <div class="sc-actions">
+      <button class="primary" id="artSave">${d.id ? "Save changes" : "Add to the shelf"}</button>
+      ${d.id ? `<button class="danger" id="artDelete">Delete</button>` : ""}
+    </div>`;
+
+  // Read the live row inputs back into the draft before any re-render.
+  const syncRows = () => {
+    d.pubRows = Array.from(box.querySelectorAll(".kv-row")).map((row) => ({
+      k: row.querySelector(".kv-k").value, v: row.querySelector(".kv-v").value }));
+  };
+  $("#artName").addEventListener("input", (e) => {
+    d.name = e.target.value;
+    box.querySelector(".fig-initial").textContent = (d.name || "?")[0] || "?";
+  });
+  $("#artSecret").addEventListener("input", (e) => { d.secretText = e.target.value; });
+  $("#artDesc").addEventListener("input", (e) => { d.description = e.target.value; });
+  box.querySelectorAll("[data-artkind]").forEach((b) =>
+    b.addEventListener("click", () => { syncRows(); d.kind = b.dataset.artkind; renderArtifactComposer(); }));
+  box.querySelectorAll("[data-dormant]").forEach((r) =>
+    r.addEventListener("change", () => {
+      d.dormant = r.dataset.dormant === "1";
+      box.querySelector(".sc-preview").textContent = d.dormant
+        ? "dormant — inert like a chair" : "active — acts when interacted with";
+    }));
+  box.querySelectorAll(".kv-del").forEach((b, i) =>
+    b.addEventListener("click", () => {
+      syncRows(); d.pubRows.splice(i, 1);
+      if (!d.pubRows.length) d.pubRows = [{ k: "", v: "" }];
+      renderArtifactComposer();
+    }));
+  $("#artAddVar").addEventListener("click", () => { syncRows(); d.pubRows.push({ k: "", v: "" }); renderArtifactComposer(); });
+  $("#artClose").addEventListener("click", () => { artDraft = null; box.hidden = true; });
+  $("#artSave").addEventListener("click", () => { syncRows(); doSaveArtifact(); });
+  if (d.id) $("#artDelete").addEventListener("click", () => deleteArtifact(d.id));
+}
+
+async function doSaveArtifact() {
+  const d = artDraft;
+  const publicObj = {};
+  for (const r of d.pubRows) { const k = r.k.trim(); if (k) publicObj[k] = r.v; }
+  const secret_schema = d.secretText.split(",").map((s) => s.trim()).filter(Boolean);
+  const body = { name: d.name.trim() || "Untitled prop", kind: d.kind, dormant: !!d.dormant,
+                 public: publicObj, secret_schema, description: d.description.trim() };
+  try {
+    if (d.id) await api(`/api/artifacts/${d.id}`, { method: "PATCH",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    else await api("/api/artifacts", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    artDraft = null;
+    $("#artifactDetail").hidden = true;
+    await renderArtifactLib();
+  } catch (e) { toast(`Could not save the prop: ${e.message}`); }
+}
+
+async function deleteArtifact(id) {
+  try {
+    await api(`/api/artifacts/${id}`, { method: "DELETE" });
+    artDraft = null;
+    $("#artifactDetail").hidden = true;
+    await renderArtifactLib();
+  } catch (e) { toast(`Could not delete: ${e.message}`); }
+}
+
+// Right-click a prop to edit or delete it — createElement/textContent menu (labels
+// carry the prop's free-text name), matching studioMenu everywhere else.
+function artifactCardMenu(ev, a) {
+  ev.preventDefault(); ev.stopPropagation();
+  studioMenu(ev.clientX, ev.clientY, [
+    { label: `Edit ${a.name || "prop"}`, act: () => openArtifactComposer(a) },
+    { sep: true },
+    { label: `Delete ${a.name || "prop"}`, act: () => deleteArtifact(a.id) },
+  ]);
+}
+
+$("#artNew") && $("#artNew").addEventListener("click", () => openArtifactComposer());
 
 
 async function boot() {
