@@ -878,6 +878,7 @@ class NewHomeAgent(BaseModel):
     persona: str = ""
     provider: str = "anthropic"
     model: str = ""
+    traits: dict = {}            # personality dials set when creating the agent
 
 
 class HomeAgentPatch(BaseModel):
@@ -888,6 +889,7 @@ class HomeAgentPatch(BaseModel):
     model: str | None = None
     model_locked: bool | None = None
     status: str | None = None
+    traits: dict | None = None
 
 
 def _own_home(request: Request, home_id: int) -> dict:
@@ -912,7 +914,7 @@ def home_list(request: Request) -> dict:
 def home_create(body: NewHomeAgent, request: Request) -> dict:
     u = current_user(request)
     a = home.create(u["id"], body.name, body.degree, body.persona,
-                    body.provider, body.model)
+                    body.provider, body.model, traits=body.traits)
     return {"agent": a}
 
 
@@ -934,6 +936,8 @@ def home_patch(home_id: int, body: HomeAgentPatch, request: Request) -> dict:
     fields = {k: v for k, v in body.model_dump().items() if v is not None}
     if "model_locked" in fields:
         fields["model_locked"] = 1 if fields["model_locked"] else 0
+    if "traits" in fields:
+        fields["traits"] = json.dumps(fields["traits"])
     if fields:
         db.update_home_agent(home_id, **fields)
     return {"agent": db.get_home_agent(home_id)}

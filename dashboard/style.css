@@ -1654,6 +1654,9 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
   border: 1px solid var(--line); background: var(--card-2); color: var(--text); resize: vertical;
 }
 .sc-input:focus { outline: none; border-color: var(--accent); background: var(--card); }
+.sc-keyrow { display: flex; gap: 6px; align-items: center; }
+.sc-keyrow .sc-input { flex: 1; }
+.sc-keyrow .sc-chip { flex: none; white-space: nowrap; }
 .sc-actions { margin-top: 16px; }
 .sd-edit { cursor: pointer; }
 .sd-edit:hover { border-color: var(--accent); color: var(--accent); }

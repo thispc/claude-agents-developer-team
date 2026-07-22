@@ -182,6 +182,7 @@ CREATE TABLE IF NOT EXISTS home_agents (
     name TEXT NOT NULL,                        -- stable everywhere, drawn from team.NAMES
     degree TEXT NOT NULL DEFAULT '',           -- discipline: 'backend' | 'law' | 'design' …
     persona TEXT NOT NULL DEFAULT '',          -- character, e.g. "Mike Ross: confident young lawyer"
+    traits TEXT NOT NULL DEFAULT '{}',         -- personality dials (willpower, risk_appetite …) set on the agent
     provider TEXT NOT NULL DEFAULT 'anthropic',
     model TEXT NOT NULL DEFAULT '',            -- '' = degree default; evolution rewrites THIS
     model_locked INTEGER NOT NULL DEFAULT 0,   -- owner pin: evolution must not move a locked model
@@ -460,6 +461,9 @@ def init() -> None:
         "ALTER TABLE artifacts ADD COLUMN def_id INTEGER",
         "ALTER TABLE artifacts ADD COLUMN dormant INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE artifacts ADD COLUMN secret TEXT NOT NULL DEFAULT ''",
+        # Personality dials now live on the Studio agent (set when creating/editing
+        # it), not on the scene — the scene carries rules, the agent carries who it is.
+        "ALTER TABLE home_agents ADD COLUMN traits TEXT NOT NULL DEFAULT '{}'",
         # roundtables/seats/turns are created by SCHEMA above (CREATE TABLE IF NOT
         # EXISTS), so existing databases pick them up without a migration here.
     ):
@@ -1136,12 +1140,14 @@ def list_sprint_artifacts(project_id: int) -> list[dict]:
 # --- the Studio: global agents, their memory and evolution ---
 
 def create_home_agent(owner_id: int, name: str, degree: str = "", persona: str = "",
-                      provider: str = "anthropic", model: str = "") -> int:
+                      provider: str = "anthropic", model: str = "",
+                      traits: Any = None) -> int:
     now = time.time()
     cur = _execute(
-        "INSERT INTO home_agents (owner_id, name, degree, persona, provider, model, "
-        "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
-        (owner_id, name, degree, persona, provider, model, now, now))
+        "INSERT INTO home_agents (owner_id, name, degree, persona, traits, provider, "
+        "model, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (owner_id, name, degree, persona, json.dumps(traits or {}), provider, model,
+         now, now))
     return int(cur.lastrowid)
 
 

@@ -31,14 +31,15 @@ BUDGET_KEY = "home_spend_day"     # kv: {"day": <YYYYMMDD>, "tokens": <int>}
 
 
 def create(owner_id: int, name: str = "", degree: str = "", persona: str = "",
-           provider: str = "anthropic", model: str = "") -> dict:
+           provider: str = "anthropic", model: str = "", traits: dict | None = None) -> dict:
     """Hire a new resident. An empty name gets one from the shared pool, so a
-    Studio's people never share a name."""
+    Studio's people never share a name. `traits` are the personality dials set on the
+    agent when it is created or edited."""
     if not name.strip():
         taken = {a["name"] for a in db.list_home_agents(owner_id, include_archived=True)}
         name = _name_for(taken)
     hid = db.create_home_agent(owner_id, name.strip(), degree.strip(),
-                               persona.strip(), provider, model)
+                               persona.strip(), provider, model, traits=traits)
     bus.emit(0, None, "system", "home_hired", {"home": hid, "name": name})
     return db.get_home_agent(hid)
 
@@ -68,7 +69,8 @@ def describe(owner_id: int) -> list[dict]:
         mem = memory.current_blob(a["id"])
         out.append({
             "id": a["id"], "name": a["name"], "degree": a["degree"],
-            "persona": a["persona"], "provider": a["provider"], "model": a["model"],
+            "persona": a["persona"], "traits": _traits_of(a),
+            "provider": a["provider"], "model": a["model"],
             "model_locked": bool(a["model_locked"]), "status": a["status"],
             "lifetime_tasks": a["lifetime_tasks"],
             "lifetime_accepted": a["lifetime_accepted"],
@@ -79,6 +81,17 @@ def describe(owner_id: int) -> list[dict]:
             "mood": ("focused" if busy else "strained" if reworked else "content"),
         })
     return out
+
+
+def _traits_of(a: dict) -> dict:
+    """The agent's personality dials, parsed. Rows written before the field existed
+    have none, which reads as an empty dict — a neutral person."""
+    import json
+    try:
+        t = json.loads(a.get("traits") or "{}")
+        return t if isinstance(t, dict) else {}
+    except (ValueError, TypeError):
+        return {}
 
 
 def owns(owner_id: int, home_id: int) -> bool:

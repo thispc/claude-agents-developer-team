@@ -568,3 +568,24 @@ def test_the_next_sprint_is_signposted_not_faked():
     coming rather than pretending they work."""
     js = _dash("app.js")
     assert "Set a scene" in js and "soon: true" in js
+
+
+# --------------------------------------------------------------------------
+# personality dials live on the AGENT, not the scene (the owner's correction)
+# --------------------------------------------------------------------------
+
+def test_personality_dials_are_stored_on_the_agent(fresh_db):
+    """The dials belong to who a person IS, set when the agent is made — not to the
+    room. They round-trip on the home agent and come back parsed."""
+    owner = _owner()
+    a = home.create(owner, degree="law", traits={"willpower": 80, "risk_appetite": 30})
+    assert home.describe(owner)[0]["traits"] == {"willpower": 80, "risk_appetite": 30}
+
+
+def test_editing_an_agent_updates_its_dials(client):
+    from conftest import login
+    login(client, "root", "testpass")
+    a = client.post("/api/home", json={"degree": "law", "traits": {"willpower": 70}}).json()["agent"]
+    client.patch(f"/api/home/{a['id']}", json={"traits": {"willpower": 20, "composure": 90}})
+    got = next(x for x in client.get("/api/home").json()["agents"] if x["id"] == a["id"])
+    assert got["traits"] == {"willpower": 20, "composure": 90}

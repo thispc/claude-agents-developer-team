@@ -3921,12 +3921,26 @@ async function openAgentDetail(id) {
       <span class="sd-edit" id="sdModel" title="click to change">on ${escapeHtml(a.model || "role default")}${a.model_locked ? " 🔒" : ""}</span>
       <span>${a.lifetime_tasks} jobs · ${a.lifetime_accepted} accepted · ${a.lifetime_rework} reworked</span>
     </div>
+    <div class="sd-dials"><div class="sd-label">Personality dials <span class="dim">(50 is neutral)</span></div>
+      ${dialBankHtml(a.traits)}</div>
     <div class="sd-mem"><div class="sd-label">Memory</div>${memText}</div>
     ${ev.length ? `<div class="sd-evo"><div class="sd-label">Model history</div>${
       ev.map((e) => `<div class="evo-row">${e.direction === "up" ? "↑" : "↓"}
         ${escapeHtml(e.from_model)} → ${escapeHtml(e.to_model)}
         <span class="dim">${escapeHtml(e.reason)}</span></div>`).join("")}</div>` : ""}`;
   $("#sdClose").addEventListener("click", () => box.hidden = true);
+
+  // Personality dials save on release via PATCH — a light write that does not
+  // rebuild the whole card, so the slider you just dragged keeps focus.
+  const dialTraits = { ...(a.traits || {}) };
+  const dialBox = box.querySelector(".sd-dials");
+  if (dialBox) wireDialBank(dialBox, dialTraits, async (traits) => {
+    try {
+      await api(`/api/home/${id}`, { method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ traits }) });
+    } catch (e) { toast(`Could not save dials: ${e.message}`); }
+  });
 
   // Everything editable in place — click the thing, a control replaces it.
   $("#sdPersona").addEventListener("click", () => {
@@ -3967,6 +3981,45 @@ const TIERS = [
   { id: "claude-sonnet-5",  label: "Balanced", note: "the default" },
   { id: "claude-opus-4-8",  label: "Careful", note: "most capable" },
 ];
+
+// The biological personality dials live on the agent — set at hire and edited in
+// the detail view. Each is 0..100, neutral at 50. They ride the same slider bank
+// look the scenes composer used to carry.
+const PERSONALITY_DIALS = ["willpower", "risk_appetite", "addiction_proneness",
+                           "composure", "sociability", "empathy", "curiosity"];
+
+// A 0..100 slider bank over PERSONALITY_DIALS, pre-loaded from an agent's traits
+// object (missing dials default to 50). Names are static, so escapeHtml on the
+// human label is belt-and-braces.
+function dialBankHtml(traits) {
+  traits = traits || {};
+  return `<div class="eq-bank">${PERSONALITY_DIALS.map((key) => {
+    const raw = Number(traits[key]);
+    const val = Number.isFinite(raw) ? raw : 50;
+    const label = key.replace(/_/g, " ");
+    return `<div class="eq-row">
+      <span class="eq-name">${escapeHtml(label)}</span>
+      <input class="eq-slider" type="range" min="0" max="100" step="1"
+             value="${val}" data-dial="${key}" aria-label="${escapeHtml(label)}">
+      <span class="eq-val" data-dialval="${key}">${val}</span>
+    </div>`;
+  }).join("")}</div>`;
+}
+
+// Wire a dial bank's sliders to write into `traits` and update the readout live.
+// onCommit (optional) fires on release, for persisting an existing agent's change.
+function wireDialBank(container, traits, onCommit) {
+  container.querySelectorAll(".eq-slider[data-dial]").forEach((r) => {
+    r.addEventListener("input", (e) => {
+      const key = e.target.dataset.dial;
+      const v = Number(e.target.value);
+      traits[key] = v;
+      const out = container.querySelector(`[data-dialval="${key}"]`);
+      if (out) out.textContent = String(v);
+    });
+    if (onCommit) r.addEventListener("change", () => onCommit(traits));
+  });
+}
 
 // draft holds the composer state; null when the drawer is closed.
 let hireDraft = null;
@@ -4021,6 +4074,9 @@ function renderHirePanel() {
     <textarea class="sc-input" id="scElab" rows="2"
               placeholder="a confident junior lawyer who has never lost a case…">${escapeHtml(d.elaboration)}</textarea>
 
+    <div class="sc-label">Personality dials <span class="dim">(50 is neutral)</span></div>
+    ${dialBankHtml(d.dials)}
+
     <div class="sc-actions">
       <button class="primary" id="scHire">Bring them in</button>
     </div>`;
@@ -4040,13 +4096,15 @@ function renderHirePanel() {
     }));
   box.querySelectorAll("[data-model]").forEach((r) =>
     r.addEventListener("change", () => { d.model = r.dataset.model; rerender(); }));
+  // Dials write straight into the draft; no re-render needed on drag.
+  wireDialBank(box, d.dials);
   $("#scClose").addEventListener("click", () => { hireDraft = null; box.hidden = true; });
   $("#scHire").addEventListener("click", doHire);
 }
 
 function openHirePanel(at) {
   hireDraft = { name: "", degree: "", model: "claude-sonnet-5", traits: [],
-                reference: "", elaboration: "", at: at || null };
+                reference: "", elaboration: "", dials: {}, at: at || null };
   renderHirePanel();
 }
 
@@ -4055,7 +4113,8 @@ async function doHire() {
   try {
     const r = await api("/api/home", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: d.name.trim(), degree: d.degree,
-                             model: d.model, persona: composePersona(d) }) });
+                             model: d.model, persona: composePersona(d),
+                             traits: d.dials }) });
     // Drop the new figure where the world was right-clicked, if anywhere.
     if (d.at && r.agent) saveStudioPos(r.agent.id, d.at.x, d.at.y);
     hireDraft = null;
@@ -4130,10 +4189,11 @@ function studioAgentMenu(ev, a) {
 
 
 // ============================================================================
-//  The Casino Floor — Scenes. A sibling of the Studio: the same figures, the
-//  same emblems, the same right-click world and inline composers (never a browser
-//  prompt). A Scene is a setting; the cards/deck/pot are CODE that runs
-//  deterministically, and every model call is billed and shown.
+//  Scenes. A sibling of the Studio: the same figures, the same emblems, the same
+//  right-click world and inline composers (never a browser prompt). A Scene is a
+//  generic setting the owner names, gives rules, and seats their agents in; the
+//  cards/deck/pot are CODE that runs deterministically, and every model call is
+//  billed and shown.
 // ============================================================================
 let scenesList = [];
 let openSceneId = null;
@@ -4142,13 +4202,6 @@ let sceneEvents = [];          // events from the last load
 let sceneHomeAgents = [];      // Studio agents, for provider lookup + seating
 const peekedHands = {};        // seatId -> your_hand (an agent's secret, revealed on request)
 let playingBack = false;
-
-const SCENE_KINDS = [
-  { id: "poker", label: "Poker table", note: "five seats, a pot, a hand played out", soon: false },
-  { id: "blackjack", label: "Blackjack", note: "players against the house", soon: true },
-  { id: "auction", label: "Sealed auction", note: "bid blind for the lot", soon: true },
-  { id: "interview", label: "The interview", note: "a panel questions a candidate", soon: true },
-];
 
 const reduceMotion = () =>
   window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -4203,7 +4256,7 @@ async function renderScenes() {
 
 function renderScenesDisabled() {
   $("#sceneToLobby").hidden = true; $("#sceneMeter").hidden = true;
-  $("#sceneTitle").textContent = "The Casino Floor";
+  $("#sceneTitle").textContent = "Scenes";
   $("#sceneStage").innerHTML =
     `<p class="empty">Scenes are switched off on this deployment.</p>`;
 }
@@ -4213,7 +4266,7 @@ function renderSceneLobby() {
   $("#sceneToLobby").hidden = true;
   $("#sceneMeter").hidden = true;
   $("#sceneNew").hidden = false;
-  $("#sceneTitle").textContent = "The Casino Floor";
+  $("#sceneTitle").textContent = "Scenes";
   const stage = $("#sceneStage");
   if (!scenesList.length) {
     stage.innerHTML = `<div class="scene-lobby"><div class="scene-empty">
@@ -4242,19 +4295,17 @@ function renderSceneLobby() {
     b.addEventListener("click", () => openScene(b.dataset.open)));
 }
 
-// The equalizer biases every agent seated in the scene: a few trait dials, each
-// nudged roughly -0.3..0.3. Labels come straight from the trait names.
-const EQ_TRAITS = [
-  { key: "willpower", label: "willpower" },
-  { key: "risk_appetite", label: "risk appetite" },
-  { key: "addiction_proneness", label: "addiction proneness" },
-  { key: "composure", label: "composure" },
-];
-
-// --- The composer: assembled inline, never a browser prompt. Mirrors openHirePanel. ---
+// --- The composer: assembled inline, never a browser prompt. Mirrors openHirePanel.
+// A scene is generic — the owner names it, writes rules everyone in it can read,
+// picks which of their agents are seated, and can roll a random key. The game
+// "kind" is an implementation detail the backend still needs, so it is sent as a
+// fixed "poker" but never surfaced as a chooser. ---
 let sceneDraft = null;
-function openSceneComposer() {
-  sceneDraft = { kind: "poker", title: "", goal: "", seed: "", rules: "", equalizer: {} };
+let sceneComposerAgents = [];   // the owner's agents, offered as seatable chips
+async function openSceneComposer() {
+  sceneDraft = { title: "", rules: "", seed: "", agents: [] };
+  try { sceneComposerAgents = (await api("/api/home")).agents || []; }
+  catch { sceneComposerAgents = sceneHomeAgents || []; }
   renderSceneComposer();
 }
 function renderSceneComposer() {
@@ -4269,79 +4320,81 @@ function renderSceneComposer() {
       <div style="flex:1">
         <input class="sc-name" id="scnTitle" placeholder="A name for the scene"
                value="${escapeHtml(d.title)}" autocomplete="off">
-        <p class="sc-preview">${escapeHtml(SCENE_KINDS.find((k) => k.id === d.kind)?.note || "")}</p>
+        <p class="sc-preview">a scene of your own making</p>
       </div>
       <button class="sd-close" id="scnClose">✕</button>
     </div>
 
-    <div class="sc-label">The setting</div>
-    <div class="sc-row">${SCENE_KINDS.map((k) => `<button class="sc-chip${
-      k.id === d.kind ? " on" : ""}${k.soon ? " soon" : ""}"${k.soon ? " disabled" : ""}
-      data-kind="${k.id}">${escapeHtml(k.label)}${k.soon ? " · soon" : ""}</button>`).join("")}</div>
+    <div class="sc-label">Rules <span class="dim">(everyone in the scene can read these)</span></div>
+    <textarea class="sc-input" id="scnRules" rows="3"
+      placeholder="rules everyone in the scene can read">${escapeHtml(d.rules)}</textarea>
 
-    <div class="sc-label">What should the manager make them do? <span class="dim">(optional)</span></div>
-    <textarea class="sc-input" id="scnGoal" rows="2"
-      placeholder="e.g. play a tight, disciplined hand and talk through the reads">${escapeHtml(d.goal)}</textarea>
+    <div class="sc-label">Agents in this scene</div>
+    <div class="sc-row" id="scnAgents">${
+      sceneComposerAgents.length
+        ? sceneComposerAgents.map((a) => `<button class="sc-chip${
+            d.agents.some((x) => String(x) === String(a.id)) ? " on" : ""}"
+            data-agent="${escapeHtml(String(a.id))}">${escapeHtml(a.name || "unnamed")}${
+            a.degree ? ` · ${escapeHtml(a.degree)}` : ""}</button>`).join("")
+        : `<span class="dim">No agents yet — hire some in the Agents tab.</span>`
+    }</div>
 
-    <div class="sc-label">House rules <span class="dim">(everyone in the scene can read these)</span></div>
-    <textarea class="sc-input" id="scnRules" rows="2"
-      placeholder="e.g. no table talk about your hole cards; blinds double every three hands">${escapeHtml(d.rules)}</textarea>
-
-    <div class="sc-label">Equalizer <span class="dim">(biases every agent placed here)</span></div>
-    <div class="eq-bank">${EQ_TRAITS.map((t) => {
-      const val = Number(d.equalizer[t.key] || 0);
-      return `<div class="eq-row">
-        <span class="eq-name">${escapeHtml(t.label)}</span>
-        <input class="eq-slider" type="range" min="-0.3" max="0.3" step="0.05"
-               value="${val}" data-eq="${t.key}" aria-label="${escapeHtml(t.label)} bias">
-        <span class="eq-val" data-eqval="${t.key}">${val > 0 ? "+" : ""}${val.toFixed(2)}</span>
-      </div>`;
-    }).join("")}</div>
-
-    <div class="sc-label">Seed <span class="dim">(optional — same seed deals the same cards)</span></div>
-    <input class="sc-input" id="scnSeed" placeholder="leave blank for a fresh shuffle"
-           value="${escapeHtml(d.seed)}" autocomplete="off">
+    <div class="sc-label">Key <span class="dim">(optional — same key deals the same scene)</span></div>
+    <div class="sc-keyrow">
+      <input class="sc-input" id="scnSeed" placeholder="leave blank for a fresh shuffle"
+             value="${escapeHtml(d.seed)}" autocomplete="off">
+      <button class="sc-chip" id="scnRandomKey" type="button">🎲 Generate random key</button>
+    </div>
 
     <div class="sc-actions"><button class="primary" id="scnCreate">Set the scene</button></div>`;
 
   $("#scnTitle").addEventListener("input", (e) => { d.title = e.target.value; });
-  $("#scnGoal").addEventListener("input", (e) => { d.goal = e.target.value; });
   $("#scnRules").addEventListener("input", (e) => { d.rules = e.target.value; });
   $("#scnSeed").addEventListener("input", (e) => { d.seed = e.target.value; });
-  box.querySelectorAll(".eq-slider").forEach((r) => r.addEventListener("input", (e) => {
-    const v = Number(e.target.value);
-    d.equalizer[e.target.dataset.eq] = v;
-    const out = box.querySelector(`[data-eqval="${e.target.dataset.eq}"]`);
-    if (out) out.textContent = (v > 0 ? "+" : "") + v.toFixed(2);
+  box.querySelectorAll("[data-agent]").forEach((b) => b.addEventListener("click", () => {
+    const raw = b.dataset.agent;
+    const agent = sceneComposerAgents.find((a) => String(a.id) === raw);
+    const aid = agent ? agent.id : raw;
+    const idx = d.agents.findIndex((x) => String(x) === raw);
+    if (idx >= 0) d.agents.splice(idx, 1); else d.agents.push(aid);
+    b.classList.toggle("on");
   }));
-  box.querySelectorAll("[data-kind]").forEach((b) => b.addEventListener("click", () => {
-    if (b.classList.contains("soon")) return;
-    d.kind = b.dataset.kind; renderSceneComposer();
-  }));
+  $("#scnRandomKey").addEventListener("click", () => {
+    d.seed = String(Math.floor(Math.random() * 1e9));
+    $("#scnSeed").value = d.seed;
+  });
   $("#scnClose").addEventListener("click", () => { sceneDraft = null; box.hidden = true; });
   $("#scnCreate").addEventListener("click", doCreateScene);
 }
 async function doCreateScene() {
   const d = sceneDraft;
   try {
-    const body = { kind: d.kind, title: d.title.trim() || "Untitled scene", goal: d.goal.trim(),
-                   rules: d.rules.trim() };
-    // Only carry dials the user actually moved; the server treats absent as neutral.
-    const eq = {};
-    for (const [k, v] of Object.entries(d.equalizer)) if (Number(v)) eq[k] = Number(v);
-    if (Object.keys(eq).length) body.equalizer = eq;
     // seed is an integer server-side; hash any non-numeric text into a stable int.
-    const raw = d.seed.trim();
+    let seed = 0;
+    const raw = (d.seed || "").trim();
     if (raw) {
       let n = Number.parseInt(raw, 10);
       if (Number.isNaN(n)) { n = 0; for (const c of raw) n = (n * 31 + c.charCodeAt(0)) >>> 0; }
-      body.seed = n;
+      seed = n;
     }
+    // kind stays "poker" for the backend/table rendering — never shown in the UI.
+    const body = { kind: "poker", title: d.title.trim() || "Untitled scene",
+                   rules: d.rules.trim(), seed };
     const r = await api("/api/scene", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body) });
+    const id = r.scene && (r.scene.id != null) ? r.scene.id : null;
+    // Seat each chosen agent into the new scene.
+    if (id != null) {
+      for (const aid of d.agents) {
+        try {
+          await api(`/api/scene/${id}/seat`, { method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ home_id: aid }) });
+        } catch (e) { toast(`Could not seat an agent: ${e.message}`); }
+      }
+    }
     sceneDraft = null;
     $("#sceneDetail").hidden = true;
-    const id = r.scene && (r.scene.id != null) ? r.scene.id : null;
     if (id != null) openScene(id); else await renderScenes();
   } catch (e) { toast(`Could not set the scene: ${e.message}`); }
 }
