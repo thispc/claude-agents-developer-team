@@ -175,7 +175,7 @@ is not.
 
 ### The API, in families
 
-An *API* is the list of requests a program will answer. There are 120; the
+An *API* is the list of requests a program will answer. There are 130; the
 dashboard uses them for you.
 
 | Family | Example | For |
@@ -207,12 +207,37 @@ so nothing depends on you having been watching.
 
 ### What the database holds
 
-Twenty-two tables in one file. The ones worth knowing: **projects** and **tasks**
+Twenty-six tables in one file. The ones worth knowing: **projects** and **tasks**
 (the work), **agents** (teammates and their memory), **runs** (one row per AI
 task — the source of all measurement), **events** (the permanent activity
 record), **findings** (what the platform believes is wrong with itself),
 **sprint_artifacts** (the sealed record of each round), **feedback** (your notes,
-attached to specific work), **tuning** (the dials, changeable without rebuilding).
+attached to specific work), **tuning** (the dials, changeable without rebuilding),
+and the four that make **The Studio** and its scenes — **home_agents** (durable
+characters), **scenes**, **scene_agents** (a seat and its secret), and
+**artifacts** (a card, a deck, a pot: code, never an AI).
+
+### The Studio, and scenes
+
+The Studio is a home for globally-persistent agents — durable characters with a
+name, a persona, one current model, and a memory that compresses in the
+background. They are dragged around a canvas, deployed into projects, and they
+evolve their model from what they have actually done.
+
+A **scene** is a setting with rules and a goal that shapes what those agents do
+while in it — and it is the same machine a project already is: **a scene is a
+setting**, a task is an artifact, the manager already walks the scene deciding who
+does what. Seat five agents at a poker table and, asked to, they play a hand on
+their own: a manager walks the room briefing each, then each takes one turn.
+
+The rule that keeps it cheap is the rule the whole Studio runs on — **artifacts
+are code, not agents.** A card, a deck, a pot is a deterministic effect: dealing,
+flipping, and *collating* five cards into a hand rank all run as reviewed code and
+cost nothing. A model is touched only when a character must decide or speak, one
+at a time, and every scene carries a token budget it pauses at rather than
+overrun. Each seat's cards are its own secret — a face-down card shows everyone
+else only a back — and the winner of a hand is decided by the code that collates
+it, never by a model's say-so.
 
 ### Where things run
 

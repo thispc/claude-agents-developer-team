@@ -11,7 +11,8 @@ from . import (ambition, artifacts, auth, blockers, bus, cloud, config, credchec
                db, deploy,
                envs, feedback, findings, github_client, home, launcher, manager,
                memory, metrics, notify, planner, preview, process, providers,
-               roundtable, sandbox, scheduler, selfops, team, triage, tuning, upkeep)
+               roundtable, sandbox, scene, scheduler, selfops, team, triage, tuning,
+               upkeep)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -986,6 +987,131 @@ def home_budget(request: Request) -> dict:
     is visible, not just promised."""
     current_user(request)
     return home.budget_state()
+
+
+# --- scenes: a small world where artifacts (code) shape what agents do ---
+
+class NewScene(BaseModel):
+    kind: str = "poker"
+    goal: str = ""
+    title: str = ""
+    seed: int = 0
+
+
+class SeatBody(BaseModel):
+    home_id: int | None = None
+    role: str = "player"
+    name: str = ""
+
+
+class TalkBody(BaseModel):
+    seat_id: int
+    message: str
+
+
+def _own_scene(request: Request, scene_id: int) -> dict:
+    """The scene, if it belongs to the caller. A scene is private to its owner, the
+    same scoping the Studio and the round table enforce."""
+    u = current_user(request)
+    s = db.get_scene(scene_id)
+    if not s or s["owner_id"] != u["id"]:
+        raise HTTPException(404, "no such scene of yours")
+    return s
+
+
+@router.get("/api/scene")
+def scene_list(request: Request) -> dict:
+    u = current_user(request)
+    return {"scenes": db.list_scenes(u["id"]),
+            "enabled": bool(tuning.get("scene_enabled"))}
+
+
+@router.post("/api/scene")
+def scene_create(body: NewScene, request: Request) -> dict:
+    u = current_user(request)
+    if not tuning.get("scene_enabled"):
+        raise HTTPException(403, "scenes are disabled on this instance")
+    s = scene.create(u["id"], body.kind, body.goal, body.title, seed=body.seed)
+    return {"scene": s}
+
+
+@router.get("/api/scene/{scene_id}")
+def scene_get(scene_id: int, request: Request, seat: int | None = None) -> dict:
+    """The scene as the owner watches it. `?seat=<id>` peeks as one seated agent —
+    the ONLY way a hand is ever revealed, and only for a seat the caller owns. The
+    default view renders face-down cards as backs, so a secret stays a secret even
+    to the owner until they choose to look."""
+    _own_scene(request, scene_id)
+    if seat is not None:
+        s = db.get_scene_agent(seat)
+        if not s or s["scene_id"] != scene_id:
+            raise HTTPException(404, "no such seat in this scene")
+        view = scene.agent_view(scene_id, seat)
+    else:
+        view = scene.public_view(scene_id)
+    return {"view": view, "events": db.list_scene_events(scene_id)}
+
+
+@router.delete("/api/scene/{scene_id}")
+def scene_delete(scene_id: int, request: Request) -> dict:
+    _own_scene(request, scene_id)
+    db.delete_scene(scene_id)
+    return {"ok": True, "deleted": scene_id}
+
+
+@router.post("/api/scene/{scene_id}/seat")
+def scene_seat(scene_id: int, body: SeatBody, request: Request) -> dict:
+    _own_scene(request, scene_id)
+    if body.home_id and not home.owns(current_user(request)["id"], body.home_id):
+        raise HTTPException(404, "no such agent in your Studio")
+    seat = scene.seat_agent(scene_id, body.home_id, body.role, body.name)
+    return {"seat": seat}
+
+
+@router.post("/api/scene/{scene_id}/deal")
+def scene_deal(scene_id: int, request: Request) -> dict:
+    """Deal a hand — free code, no model. Separated from playing so the owner can
+    watch the deal before anyone spends a token acting on it."""
+    _own_scene(request, scene_id)
+    return {"scene": scene.deal(scene_id)}
+
+
+@router.post("/api/scene/{scene_id}/play")
+async def scene_play(scene_id: int, request: Request) -> dict:
+    """Let the seated agents play the hand out on their own — bounded, O(players)."""
+    u = current_user(request)
+    _own_scene(request, scene_id)
+    res = await scene.play_hand(scene_id, auth.get_settings(u))
+    return {"scene": res, "events": db.list_scene_events(scene_id)}
+
+
+@router.post("/api/scene/{scene_id}/run")
+async def scene_run(scene_id: int, request: Request) -> dict:
+    """Ask the manager to run it: brief the room, then play the hand out."""
+    u = current_user(request)
+    _own_scene(request, scene_id)
+    res = await scene.run(scene_id, auth.get_settings(u))
+    return {"scene": res, "events": db.list_scene_events(scene_id)}
+
+
+@router.post("/api/scene/{scene_id}/talk")
+async def scene_talk(scene_id: int, body: TalkBody, request: Request) -> dict:
+    u = current_user(request)
+    _own_scene(request, scene_id)
+    reply = await scene.talk(scene_id, body.seat_id, body.message, auth.get_settings(u))
+    return {"reply": reply, "events": db.list_scene_events(scene_id)}
+
+
+@router.post("/api/scene/{scene_id}/flip/{artifact_id}")
+def scene_flip(scene_id: int, artifact_id: int, request: Request) -> dict:
+    """Flip a card face-up or face-down — a free effect. Reducing visibility is the
+    owner's own analogy made real: a card is code, and a face-down card hides its
+    value from everyone but its holder."""
+    _own_scene(request, scene_id)
+    art = db.get_artifact(artifact_id)
+    if not art or art["scene_id"] != scene_id:
+        raise HTTPException(404, "no such artifact in this scene")
+    return {"artifact": scene.flip(artifact_id)}
 
 
 @router.get("/api/tuning")

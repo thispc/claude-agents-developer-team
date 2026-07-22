@@ -240,6 +240,85 @@ CREATE TABLE IF NOT EXISTS home_evolution (
     signal TEXT NOT NULL DEFAULT '{}'          -- JSON snapshot of first_pass/rework/escalation
 );
 CREATE INDEX IF NOT EXISTS idx_home_evolution_agent ON home_evolution(home_id, id);
+-- SCENES: a setting with rules and a goal that shapes what agents do while in it.
+--
+-- This is the general substrate the project/team/manager system is a special case
+-- of: a project is a scene, a task is an artifact, the manager already walks the
+-- scene deciding who does what. A scene is DATA plus deterministic rules — loading
+-- it, seating agents and advancing the turn order all cost zero. `state` is the
+-- PUBLIC deterministic scene state (the pot, the board, the deck cursor); a seat's
+-- secret lives on its own scene_agents row, never here. `utterances` is the proof
+-- that a match is O(turns) not O(agents²): it counts every model call billed, and a
+-- five-player hand must leave it at O(turns).
+CREATE TABLE IF NOT EXISTS scenes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL,                 -- whose scene; private, scoped like a Studio
+    kind TEXT NOT NULL DEFAULT 'poker',        -- poker | project | debate …
+    title TEXT NOT NULL DEFAULT '',
+    goal TEXT NOT NULL DEFAULT '',             -- the owner's brief to the manager
+    status TEXT NOT NULL DEFAULT 'setup',      -- setup | live | paused | done
+    phase TEXT NOT NULL DEFAULT '',            -- scene-specific stage: deal | bet | showdown
+    turn INTEGER NOT NULL DEFAULT 0,           -- index into the seated order of who acts next
+    round INTEGER NOT NULL DEFAULT 0,
+    token_budget INTEGER NOT NULL DEFAULT 20000,   -- hard per-scene ceiling; match pauses at it
+    tokens_spent INTEGER NOT NULL DEFAULT 0,
+    utterances INTEGER NOT NULL DEFAULT 0,     -- model calls billed; the O(turns) audit number
+    seed INTEGER NOT NULL DEFAULT 0,           -- deterministic deck shuffle; a hand is reproducible
+    state TEXT NOT NULL DEFAULT '{}',          -- PUBLIC deterministic state only (never a secret)
+    layout TEXT NOT NULL DEFAULT '{}',         -- node positions on the canvas
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scenes_owner ON scenes(owner_id);
+-- A seat in a scene. `private_state` is THE SECRET the owner asked us to make
+-- un-leakable — this seat's hand — and it is read into exactly one agent's prompt:
+-- its own. The isolation guarantee is a tested invariant, written before anything
+-- speaks, the same shape as the credential-isolation guard.
+CREATE TABLE IF NOT EXISTS scene_agents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scene_id INTEGER NOT NULL,
+    home_id INTEGER,                           -- the global agent seated here (NULL = a code role)
+    seat INTEGER NOT NULL DEFAULT 0,           -- position around the table
+    role TEXT NOT NULL DEFAULT 'player',       -- player | manager | dealer
+    name TEXT NOT NULL DEFAULT '',             -- display snapshot of the agent's name
+    private_state TEXT NOT NULL DEFAULT '{}',  -- THE SECRET: this seat's hand; never in another's view
+    status TEXT NOT NULL DEFAULT 'seated',     -- seated | acting | folded | out
+    stack INTEGER NOT NULL DEFAULT 100,        -- chips, deterministic
+    committed INTEGER NOT NULL DEFAULT 0,      -- chips put into the pot this hand
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scene_agents_scene ON scene_agents(scene_id);
+-- An ARTIFACT is CODE, not an AI: a piece of state an agent interacts with, whose
+-- effect is a reviewed deterministic function selected by `type` — never arbitrary
+-- code. A card, a deck, a pot. `visibility` is where "an agent can hide what it does
+-- not want revealed" becomes real: a face-down card shows only a back to everyone
+-- but its holder. There is deliberately NO code column; the effect is chosen from a
+-- shipped registry, the same way deploy.detect dispatches on a known kind.
+CREATE TABLE IF NOT EXISTS artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scene_id INTEGER NOT NULL,
+    type TEXT NOT NULL,                        -- card | deck | pot (selects a reviewed effect)
+    state TEXT NOT NULL DEFAULT '{}',          -- the artifact's data (rank/suit; chips; cursor)
+    visibility TEXT NOT NULL DEFAULT 'public', -- public | held | facedown | hidden
+    holder INTEGER,                            -- scene_agents.id when held/facedown
+    z INTEGER NOT NULL DEFAULT 0,              -- deal order / stacking
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_scene ON artifacts(scene_id);
+-- The scene transcript: deals, flips, utterances, the manager's visits. Free to
+-- append, drives both the animation and the audit. `billed` records whether an
+-- event cost a model call (1) or was free code (0) — so a test can prove the deal
+-- and the showdown were free and only the acting turns spent.
+CREATE TABLE IF NOT EXISTS scene_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scene_id INTEGER NOT NULL,
+    seat_id INTEGER,                           -- who acted (NULL = the dealer / code)
+    kind TEXT NOT NULL,                        -- deal | flip | say | act | brief | phase | result
+    text TEXT NOT NULL DEFAULT '',
+    billed INTEGER NOT NULL DEFAULT 0,
+    ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scene_events_scene ON scene_events(scene_id, id);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL,
@@ -1136,3 +1215,115 @@ def runs_for_home(home_id: int, limit: int = 200) -> list[dict]:
 def home_instances(home_id: int) -> list[dict]:
     """The per-project agent rows currently deploying this global agent."""
     return _rows("SELECT * FROM agents WHERE home_id=?", (home_id,))
+
+
+# --- scenes: a setting with rules, its seats, its artifacts, its transcript ---
+
+def create_scene(owner_id: int, kind: str, goal: str = "", title: str = "",
+                 token_budget: int = 20000, seed: int = 0) -> int:
+    now = time.time()
+    cur = _execute(
+        "INSERT INTO scenes (owner_id, kind, goal, title, token_budget, seed, "
+        "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+        (owner_id, kind, goal, title, token_budget, seed, now, now))
+    return int(cur.lastrowid)
+
+
+def get_scene(scene_id: int) -> dict | None:
+    rows = _rows("SELECT * FROM scenes WHERE id=?", (scene_id,))
+    return rows[0] if rows else None
+
+
+def list_scenes(owner_id: int) -> list[dict]:
+    return _rows("SELECT * FROM scenes WHERE owner_id=? ORDER BY id DESC", (owner_id,))
+
+
+def update_scene(scene_id: int, **fields: Any) -> None:
+    fields["updated_at"] = time.time()
+    cols = ", ".join(f"{k}=?" for k in fields)
+    _execute(f"UPDATE scenes SET {cols} WHERE id=?", (*fields.values(), scene_id))
+
+
+def delete_scene(scene_id: int) -> None:
+    """Remove a scene and everything in it. Cascades by hand, like delete_project —
+    SQLite foreign keys are off, so a missed child would leave orphan seats and
+    artifacts that still answer a stale scene id."""
+    _execute("DELETE FROM scene_events WHERE scene_id=?", (scene_id,))
+    _execute("DELETE FROM artifacts WHERE scene_id=?", (scene_id,))
+    _execute("DELETE FROM scene_agents WHERE scene_id=?", (scene_id,))
+    _execute("DELETE FROM scenes WHERE id=?", (scene_id,))
+
+
+def add_scene_agent(scene_id: int, *, home_id: int | None, seat: int, role: str = "player",
+                    name: str = "", stack: int = 100) -> int:
+    cur = _execute(
+        "INSERT INTO scene_agents (scene_id, home_id, seat, role, name, stack, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (scene_id, home_id, seat, role, name, stack, time.time()))
+    return int(cur.lastrowid)
+
+
+def get_scene_agent(seat_id: int) -> dict | None:
+    rows = _rows("SELECT * FROM scene_agents WHERE id=?", (seat_id,))
+    return rows[0] if rows else None
+
+
+def list_scene_agents(scene_id: int, role: str | None = None) -> list[dict]:
+    if role:
+        return _rows("SELECT * FROM scene_agents WHERE scene_id=? AND role=? ORDER BY seat, id",
+                     (scene_id, role))
+    return _rows("SELECT * FROM scene_agents WHERE scene_id=? ORDER BY seat, id", (scene_id,))
+
+
+def update_scene_agent(seat_id: int, **fields: Any) -> None:
+    cols = ", ".join(f"{k}=?" for k in fields)
+    _execute(f"UPDATE scene_agents SET {cols} WHERE id=?", (*fields.values(), seat_id))
+
+
+def create_artifact(scene_id: int, atype: str, state: Any, *, visibility: str = "public",
+                    holder: int | None = None, z: int = 0) -> int:
+    cur = _execute(
+        "INSERT INTO artifacts (scene_id, type, state, visibility, holder, z, created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (scene_id, atype, json.dumps(state), visibility, holder, z, time.time()))
+    return int(cur.lastrowid)
+
+
+def get_artifact(artifact_id: int) -> dict | None:
+    rows = _rows("SELECT * FROM artifacts WHERE id=?", (artifact_id,))
+    return rows[0] if rows else None
+
+
+def list_artifacts(scene_id: int, atype: str | None = None) -> list[dict]:
+    if atype:
+        return _rows("SELECT * FROM artifacts WHERE scene_id=? AND type=? ORDER BY z, id",
+                     (scene_id, atype))
+    return _rows("SELECT * FROM artifacts WHERE scene_id=? ORDER BY z, id", (scene_id,))
+
+
+def update_artifact(artifact_id: int, **fields: Any) -> None:
+    if "state" in fields and not isinstance(fields["state"], str):
+        fields["state"] = json.dumps(fields["state"])
+    cols = ", ".join(f"{k}=?" for k in fields)
+    _execute(f"UPDATE artifacts SET {cols} WHERE id=?", (*fields.values(), artifact_id))
+
+
+def clear_artifacts(scene_id: int) -> None:
+    _execute("DELETE FROM artifacts WHERE scene_id=?", (scene_id,))
+
+
+def add_scene_event(scene_id: int, kind: str, text: str = "", *, seat_id: int | None = None,
+                    billed: bool = False) -> int:
+    cur = _execute(
+        "INSERT INTO scene_events (scene_id, seat_id, kind, text, billed, ts) "
+        "VALUES (?,?,?,?,?,?)",
+        (scene_id, seat_id, kind, text[:1000], 1 if billed else 0, time.time()))
+    return int(cur.lastrowid)
+
+
+def list_scene_events(scene_id: int, after_id: int = 0, limit: int = 500) -> list[dict]:
+    if after_id:
+        return _rows("SELECT * FROM scene_events WHERE scene_id=? AND id>? ORDER BY id LIMIT ?",
+                     (scene_id, after_id, limit))
+    return _rows("SELECT * FROM scene_events WHERE scene_id=? ORDER BY id LIMIT ?",
+                 (scene_id, limit))

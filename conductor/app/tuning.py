@@ -191,6 +191,40 @@ KNOBS: dict[str, tuple[Any, type, str, str]] = {
         "so background life has a fixed, low, visible daily cap — and that cap is 0 "
         "when nothing is happening."),
 
+    # --- scenes: a setting where artifacts (code) shape what agents do ---
+    #
+    # A scene extends the Studio's first rule without exception: at rest it costs
+    # zero, the machinery (dealer, effects, turn order) is deterministic code, and
+    # only an agent's utterance bills. Every door to a spend is a bounded, adjustable
+    # knob so a match cannot become a runaway bill on a running instance.
+    "scene_enabled": (
+        True, bool, "SCENE_ENABLED",
+        "Allow scenes at all. Loading, seating, dealing and advancing a turn order "
+        "are free code, so the surface is on by default; what may SPEND is capped "
+        "below and by each scene's own token budget."),
+    "scene_token_budget_default": (
+        20000, int, "SCENE_TOKEN_BUDGET_DEFAULT",
+        "The token ceiling a new scene carries. When it is reached the match pauses "
+        "rather than running up a bill — the same visible backstop the daily Studio "
+        "budget is. Sized for a hand of poker: a brief and an action per player, "
+        "each bounded, with headroom."),
+    "scene_utterance_max_tokens": (
+        200, int, "SCENE_UTTERANCE_MAX_TOKENS",
+        "Output ceiling on one agent's turn or reply. A scene utterance is a choice "
+        "and a line of character, never an essay — a small cap keeps the per-turn "
+        "cost fixed and known, which is what makes a whole match O(turns) in tokens."),
+    "scene_brief_max_tokens": (
+        160, int, "SCENE_BRIEF_MAX_TOKENS",
+        "Output ceiling on one manager briefing as it walks to a player. Smaller "
+        "than a turn: a briefing is a nudge, and there is exactly one per player, so "
+        "the manager's whole walk is O(players) bounded calls."),
+    "scene_default_model": (
+        "claude-haiku-4-5", str, "SCENE_DEFAULT_MODEL",
+        "Model a seated agent uses when it carries none of its own. The cheap tier: "
+        "a character deciding fold-or-call and saying one line is exactly the light "
+        "work a small model does well, and a scene should never be the expensive "
+        "thing in the room."),
+
     # --- work sharing ---
     "reuse_verification": (
         True, bool, "REUSE_VERIFICATION",

@@ -34,6 +34,10 @@ CAPABILITIES: dict[str, dict[str, str]] = {
         "what": "Globally-persistent agents that reside between jobs, learn, and evolve",
         "doc_phrase": "The Studio",
     },
+    "scenes": {
+        "what": "A setting where agents act; artifacts are deterministic code, not AIs",
+        "doc_phrase": "poker table",
+    },
     "round_table": {
         "what": "Models from different vendors argue an idea into a blueprint",
         "doc_phrase": "round table",
