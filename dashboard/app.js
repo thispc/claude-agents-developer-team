@@ -2941,6 +2941,28 @@ async function renderByAgent() {
   }).join("");
 }
 
+// A preview served as an in-server subprocess answers on http://localhost:PORT —
+// reachable only from the machine the server runs on. On a hosted instance that URL
+// is a dead link in your browser, so we must never hand it over as if it worked:
+// clicking it just opened localhost and nothing happened. Say where it actually
+// lives instead, and point at the deploy that would give a public URL.
+function previewReachable(url) {
+  if (!url) return false;
+  const isLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(url);
+  const hereIsLocal = ["localhost", "127.0.0.1"].includes(location.hostname);
+  return !isLocal || hereIsLocal;
+}
+function previewButton(url, label) {
+  if (previewReachable(url)) {
+    const sep = url.includes("?") ? "&" : "?";
+    return `<a class="demo-btn" href="${escapeHtml(url)}${sep}t=${Date.now()}"
+      target="_blank" rel="noopener">${label}</a>`;
+  }
+  return `<span class="demo-btn disabled" title="${escapeHtml(url)}">⛒ Preview runs inside the server</span>
+    <span class="hint">Served on <code>${escapeHtml(url)}</code>, which only the server can reach —
+    it is not a public URL. Deploy it to the cluster to get one you can open.</span>`;
+}
+
 async function renderArtifacts(force) {
   const el = $("#artifacts");
   if (!currentProject || el.hidden) return;
@@ -2970,7 +2992,7 @@ async function renderArtifacts(force) {
   const dep = a.deployment || {};
   const live = dep.url || a.preview_url;
   const demo = live
-    ? `<a class="demo-btn" href="${live}?t=${Date.now()}" target="_blank">▶ Open it</a>
+    ? `${previewButton(live, "▶ Open it")}
        <button id="buildPreviewBtn">↻ Rebuild</button>
        <span class="hint">${escapeHtml(a.preview_synced || "built earlier")}</span>`
     : `<button id="buildPreviewBtn" class="primary">▶ Build &amp; run it</button>
@@ -3053,7 +3075,7 @@ async function renderDeploy() {
     box.innerHTML = `
       <div class="live-row">
         <span class="pill ok">live</span>
-        <a class="demo-btn" href="${d.live.url}" target="_blank">▶ Open the running app</a>
+        ${previewButton(d.live.url, "▶ Open the running app")}
         <button id="redeployBtn">↻ Rebuild &amp; restart</button>
         <button id="stopDeployBtn" class="danger">■ Stop</button>
       </div>
@@ -3094,7 +3116,9 @@ async function renderDeploy() {
     openStatic.disabled = true;
     try {
       const r = await api(`/api/projects/${currentProject}/preview`, { method: "POST" });
-      window.open(r.url, "_blank", "noopener");
+      if (previewReachable(r.url)) window.open(r.url, "_blank", "noopener");
+      else toast(`The preview is running inside the server (${r.url}) — it isn't reachable `
+        + `from your browser. Deploy it to the cluster for a public URL.`);
     } catch (e) {
       toast(`Could not open it: ${e.message}`);
     } finally {

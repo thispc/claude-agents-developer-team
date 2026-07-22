@@ -546,6 +546,9 @@ pre.dim, .dim { color: var(--dim); }
 .demo-row { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
 .demo-btn { background: var(--accent); color: #fff; padding: 11px 20px; border-radius: 9px; text-decoration: none; font-weight: 600; font-size: 14px; }
 .demo-btn:hover { background: #25594A; }
+.demo-btn.disabled { background: transparent; color: var(--muted); border: 1px dashed var(--line);
+  cursor: not-allowed; font-weight: 500; }
+.demo-btn.disabled:hover { background: transparent; }
 .conclusion { background: var(--good-soft); border: 1px solid #C3E0C2; border-radius: 10px; padding: 13px 15px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
 .work-list { display: flex; flex-direction: column; gap: 10px; }
 .work-item { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: var(--card-2); }
