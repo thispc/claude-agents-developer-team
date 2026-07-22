@@ -167,6 +167,79 @@ CREATE TABLE IF NOT EXISTS tuning (
     updated_at REAL NOT NULL,
     updated_by TEXT NOT NULL DEFAULT ''
 );
+-- The Studio: globally-persistent agents that outlive any single project.
+--
+-- A per-project `agents` row is a DEPLOYMENT of one of these (agents.home_id).
+-- The home row is the durable IDENTITY — name, character, the one current model,
+-- and long-term memory; the project row stays the INSTANCE a task is assigned to,
+-- because one agent used in two projects at once needs two busy/idle states and
+-- two run histories, which is two `agents` rows. Kept deliberately thin, like
+-- `agents`: identity plus counters, never a transcript. The growing part (memory)
+-- lives in separate tables so this row stays cheap to read on every list.
+CREATE TABLE IF NOT EXISTS home_agents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL,                 -- whose Studio; scoping like roundtables.owner_id
+    name TEXT NOT NULL,                        -- stable everywhere, drawn from team.NAMES
+    degree TEXT NOT NULL DEFAULT '',           -- discipline: 'backend' | 'law' | 'design' …
+    persona TEXT NOT NULL DEFAULT '',          -- character, e.g. "Mike Ross: confident young lawyer"
+    provider TEXT NOT NULL DEFAULT 'anthropic',
+    model TEXT NOT NULL DEFAULT '',            -- '' = degree default; evolution rewrites THIS
+    model_locked INTEGER NOT NULL DEFAULT 0,   -- owner pin: evolution must not move a locked model
+    status TEXT NOT NULL DEFAULT 'active',     -- active | resting | archived
+    -- Denormalised lifetime counters, kept for free on the episodic write, so the
+    -- Studio list never scans `runs` to show "142 tasks, 88% first-pass".
+    lifetime_tasks INTEGER NOT NULL DEFAULT 0,
+    lifetime_accepted INTEGER NOT NULL DEFAULT 0,
+    lifetime_rework INTEGER NOT NULL DEFAULT 0,
+    last_consolidated_at REAL NOT NULL DEFAULT 0,
+    last_evolved_at REAL NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_home_agents_owner ON home_agents(owner_id);
+-- EPISODIC memory: append-only, one row per meaningful thing that happened.
+-- Written FREE (deterministic gist, no inference) — the raw material compression
+-- folds down. `consolidated` flips true once absorbed into long-term memory, so
+-- the size trigger counts only what is NEW. This is what makes background memory
+-- proportional to WORK, never to elapsed time.
+CREATE TABLE IF NOT EXISTS home_episodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    home_id INTEGER NOT NULL,
+    project_id INTEGER,
+    task_id INTEGER,
+    kind TEXT NOT NULL,                        -- task_done | rework | escalation | talk | note
+    gist TEXT NOT NULL DEFAULT '',             -- from team._gist(report): already short, already free
+    weight INTEGER NOT NULL DEFAULT 1,         -- escalations/rework weigh more when compressing
+    consolidated INTEGER NOT NULL DEFAULT 0,
+    ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_home_episodes_agent ON home_episodes(home_id, consolidated);
+-- LONG-TERM memory: the compressed, durable, BOUNDED blob a worker actually sees.
+-- One row per (agent, section) so memory is structured, not one mush — but the sum
+-- of sections is hard-capped. Retrieval is O(1): the worker gets this inlined,
+-- there is nothing to search.
+CREATE TABLE IF NOT EXISTS home_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    home_id INTEGER NOT NULL,
+    section TEXT NOT NULL DEFAULT 'summary',   -- summary | skills | decisions | relationships
+    text TEXT NOT NULL DEFAULT '',
+    updated_at REAL NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_home_memory_agent ON home_memory(home_id, section);
+-- EVOLUTION log: every model change, append-only, written FREE. Exists so a change
+-- is auditable — "why is Mike on Opus now?" — the same reason `runs` exists: without
+-- it, a tweak that helped and one that did nothing look identical.
+CREATE TABLE IF NOT EXISTS home_evolution (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    home_id INTEGER NOT NULL,
+    at REAL NOT NULL,
+    direction TEXT NOT NULL,                   -- up | down
+    from_model TEXT NOT NULL,
+    to_model TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',           -- deterministic sentence from the metrics
+    signal TEXT NOT NULL DEFAULT '{}'          -- JSON snapshot of first_pass/rework/escalation
+);
+CREATE INDEX IF NOT EXISTS idx_home_evolution_agent ON home_evolution(home_id, id);
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL,
@@ -279,6 +352,9 @@ def init() -> None:
         "ALTER TABLE projects ADD COLUMN profile TEXT NOT NULL DEFAULT 'default'",
         "ALTER TABLE inbox ADD COLUMN topic TEXT NOT NULL DEFAULT 'decision'",
         "ALTER TABLE projects ADD COLUMN ambition TEXT NOT NULL DEFAULT 'standard'",
+        # A per-project agent is now optionally a deployment of a Studio agent.
+        # NULL for every pre-existing row → those behave exactly as before.
+        "ALTER TABLE agents ADD COLUMN home_id INTEGER",
         # roundtables/seats/turns are created by SCHEMA above (CREATE TABLE IF NOT
         # EXISTS), so existing databases pick them up without a migration here.
     ):
@@ -950,3 +1026,113 @@ def get_sprint_artifact(project_id: int, sprint: int) -> dict | None:
 def list_sprint_artifacts(project_id: int) -> list[dict]:
     return [_snapshot(r) for r in _rows(
         "SELECT * FROM sprint_artifacts WHERE project_id=? ORDER BY sprint", (project_id,))]
+
+
+# --- the Studio: global agents, their memory and evolution ---
+
+def create_home_agent(owner_id: int, name: str, degree: str = "", persona: str = "",
+                      provider: str = "anthropic", model: str = "") -> int:
+    now = time.time()
+    cur = _execute(
+        "INSERT INTO home_agents (owner_id, name, degree, persona, provider, model, "
+        "created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
+        (owner_id, name, degree, persona, provider, model, now, now))
+    return int(cur.lastrowid)
+
+
+def get_home_agent(home_id: int) -> dict | None:
+    rows = _rows("SELECT * FROM home_agents WHERE id=?", (home_id,))
+    return rows[0] if rows else None
+
+
+def list_home_agents(owner_id: int, include_archived: bool = False) -> list[dict]:
+    if include_archived:
+        return _rows("SELECT * FROM home_agents WHERE owner_id=? ORDER BY created_at",
+                     (owner_id,))
+    return _rows("SELECT * FROM home_agents WHERE owner_id=? AND status!='archived' "
+                 "ORDER BY created_at", (owner_id,))
+
+
+def update_home_agent(home_id: int, **fields: Any) -> None:
+    fields["updated_at"] = time.time()
+    cols = ", ".join(f"{k}=?" for k in fields)
+    _execute(f"UPDATE home_agents SET {cols} WHERE id=?", (*fields.values(), home_id))
+
+
+# --- episodic memory: append-only, written free ---
+
+def add_episode(home_id: int, kind: str, gist: str, *, project_id: int | None = None,
+                task_id: int | None = None, weight: int = 1) -> int:
+    cur = _execute(
+        "INSERT INTO home_episodes (home_id, project_id, task_id, kind, gist, weight, ts) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (home_id, project_id, task_id, kind, gist[:600], weight, time.time()))
+    return int(cur.lastrowid)
+
+
+def unconsolidated(home_id: int) -> list[dict]:
+    return _rows("SELECT * FROM home_episodes WHERE home_id=? AND consolidated=0 "
+                 "ORDER BY id", (home_id,))
+
+
+def unconsolidated_count(home_id: int) -> int:
+    rows = _rows("SELECT COUNT(*) AS n FROM home_episodes WHERE home_id=? AND consolidated=0",
+                 (home_id,))
+    return int(rows[0]["n"]) if rows else 0
+
+
+def mark_consolidated(episode_ids: list[int]) -> None:
+    if not episode_ids:
+        return
+    qs = ",".join("?" * len(episode_ids))
+    _execute(f"UPDATE home_episodes SET consolidated=1 WHERE id IN ({qs})",
+             tuple(episode_ids))
+
+
+# --- long-term memory: the compressed, bounded blob a worker sees ---
+
+def get_memory(home_id: int) -> dict[str, str]:
+    """All sections of an agent's long-term memory, section -> text."""
+    return {r["section"]: r["text"]
+            for r in _rows("SELECT section, text FROM home_memory WHERE home_id=?", (home_id,))}
+
+
+def upsert_memory(home_id: int, section: str, text: str) -> None:
+    _execute(
+        "INSERT INTO home_memory (home_id, section, text, updated_at) VALUES (?,?,?,?) "
+        "ON CONFLICT(home_id, section) DO UPDATE SET text=excluded.text, "
+        "updated_at=excluded.updated_at",
+        (home_id, section, text, time.time()))
+
+
+# --- evolution log ---
+
+def add_evolution(home_id: int, direction: str, from_model: str, to_model: str,
+                  reason: str, signal: Any) -> None:
+    _execute(
+        "INSERT INTO home_evolution (home_id, at, direction, from_model, to_model, "
+        "reason, signal) VALUES (?,?,?,?,?,?,?)",
+        (home_id, time.time(), direction, from_model, to_model, reason[:400],
+         json.dumps(signal)))
+
+
+def list_evolution(home_id: int, limit: int = 50) -> list[dict]:
+    return _rows("SELECT * FROM home_evolution WHERE home_id=? ORDER BY id DESC LIMIT ?",
+                 (home_id, limit))
+
+
+def runs_for_home(home_id: int, limit: int = 200) -> list[dict]:
+    """Every dispatch made by any project-instance of this global agent.
+
+    The join is what lets evolution and the Studio counters read a global agent's
+    performance from the `runs` rows the platform already writes — no new metrics
+    pipeline, no per-agent bookkeeping that could disagree with the run record.
+    """
+    return _rows(
+        "SELECT r.* FROM runs r JOIN agents a ON a.id = r.agent_id "
+        "WHERE a.home_id=? ORDER BY r.id DESC LIMIT ?", (home_id, limit))
+
+
+def home_instances(home_id: int) -> list[dict]:
+    """The per-project agent rows currently deploying this global agent."""
+    return _rows("SELECT * FROM agents WHERE home_id=?", (home_id,))

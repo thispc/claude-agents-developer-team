@@ -122,6 +122,75 @@ KNOBS: dict[str, tuple[Any, type, str, str]] = {
         "an hour per sprint waiting for someone who is asleep. Raise it when you "
         "intend to be present."),
 
+    # --- the Studio: globally-persistent agents ---
+    #
+    # Every threshold here is a knob and not a literal for one reason above all: the
+    # owner's first constraint is that background "life" must not become a background
+    # bill, and the way you keep that promise on a running instance — without a
+    # rebuild — is to make every door to a token spend adjustable and self-documented.
+    "home_life_enabled": (
+        True, bool, "HOME_LIFE_ENABLED",
+        "Run the free background tick that decides when — rarely — an agent should "
+        "spend. The tick itself reads rows and calls no model, so this is on by "
+        "default; what it is ALLOWED to spend on is capped separately below."),
+    "home_episode_threshold": (
+        12, int, "HOME_EPISODE_THRESHOLD",
+        "Unconsolidated episodes an agent accumulates before its memory is folded "
+        "down. Size, never time: an idle agent accumulates nothing and is never due, "
+        "which is what makes memory cost proportional to work rather than to the "
+        "clock. Lower means fresher memory and more frequent cheap calls; higher "
+        "means cheaper and coarser."),
+    "home_memory_char_cap": (
+        4000, int, "HOME_MEMORY_CHAR_CAP",
+        "Hard ceiling on an agent's long-term memory. This is what the worker is "
+        "handed every dispatch, so it is a token cost on EVERY run — a memory that "
+        "grows without bound would crowd out the task it is meant to inform."),
+    "home_compress_model": (
+        "claude-haiku-4-5", str, "HOME_COMPRESS_MODEL",
+        "Which model folds memory. The cheap tier, always: summarising short gists "
+        "into a shorter blob is exactly the work a small model does well, and this "
+        "is the only recurring background spend the Studio has."),
+    "home_compress_max_tokens": (
+        512, int, "HOME_COMPRESS_MAX_TOKENS",
+        "Output ceiling on the one consolidation call. An uncapped completion is an "
+        "uncapped bill, and the job here is to SHRINK, so a small budget is correct."),
+    "home_compress_max_per_tick": (
+        3, int, "HOME_COMPRESS_MAX_PER_TICK",
+        "Agents consolidated per wake. Bounds the spend spike when many come due at "
+        "once — the surplus simply waits for the next tick rather than billing all "
+        "at once."),
+    "home_compress_cooldown_minutes": (
+        60, int, "HOME_COMPRESS_COOLDOWN_MINUTES",
+        "Minimum gap between one agent's consolidations, so a burst of work cannot "
+        "trigger back-to-back model calls on the same agent."),
+    "home_evolve_enabled": (
+        True, bool, "HOME_EVOLVE_ENABLED",
+        "Let an agent move up or down the model ladder from its recorded runs. The "
+        "decision is pure arithmetic over rows already written — zero tokens — so it "
+        "is on by default, like the free daily self-check."),
+    "home_evolve_min_runs": (
+        10, int, "HOME_EVOLVE_MIN_RUNS",
+        "Recent terminal runs required before evolution will move a model. Below "
+        "this the signal is noise, and a model changed on three data points is a "
+        "coin flip dressed as a decision."),
+    "home_evolve_cooldown_hours": (
+        24, int, "HOME_EVOLVE_COOLDOWN_HOURS",
+        "Minimum dwell between an agent's model changes. The hysteresis that stops "
+        "an agent flapping up and down on an alternating signal, which would thrash "
+        "spend and make its run history incomparable."),
+    "home_standup_enabled": (
+        False, bool, "HOME_STANDUP_ENABLED",
+        "Let agents exchange what they know in ONE aggregated moderator call over "
+        "their existing memory — never N² conversations. Off by default because, "
+        "unlike the rest of the Studio, it bills."),
+    "home_token_budget_daily": (
+        50000, int, "HOME_TOKEN_BUDGET_DAILY",
+        "Hard ceiling on tokens all background Studio activity may spend in a day. "
+        "The backstop the owner asked for: when it is reached, consolidation and "
+        "standup fall back to their deterministic form and the free parts carry on, "
+        "so background life has a fixed, low, visible daily cap — and that cap is 0 "
+        "when nothing is happening."),
+
     # --- work sharing ---
     "reuse_verification": (
         True, bool, "REUSE_VERIFICATION",

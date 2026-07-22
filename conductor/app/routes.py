@@ -9,9 +9,9 @@ from pydantic import BaseModel
 
 from . import (ambition, artifacts, auth, blockers, bus, cloud, config, credcheck,
                db, deploy,
-               envs, feedback, findings, github_client, launcher, manager, metrics,
-               notify, planner, preview, process, providers, roundtable, sandbox,
-               scheduler, selfops, team, triage, tuning, upkeep)
+               envs, feedback, findings, github_client, home, launcher, manager,
+               memory, metrics, notify, planner, preview, process, providers,
+               roundtable, sandbox, scheduler, selfops, team, triage, tuning, upkeep)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -867,6 +867,125 @@ def how_to_work(request: Request) -> dict:
     trade each one makes is stated in one place."""
     current_user(request)
     return {"process": process.catalog(), "ambition": ambition.catalog()}
+
+
+# --- the Studio: globally-persistent agents ---
+
+class NewHomeAgent(BaseModel):
+    name: str = ""
+    degree: str = ""
+    persona: str = ""
+    provider: str = "anthropic"
+    model: str = ""
+
+
+class HomeAgentPatch(BaseModel):
+    name: str | None = None
+    degree: str | None = None
+    persona: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    model_locked: bool | None = None
+    status: str | None = None
+
+
+def _own_home(request: Request, home_id: int) -> dict:
+    """The agent, if it belongs to the caller. A Studio is private to its owner —
+    an agent must never be listed for, edited by, or deployed by anyone else, the
+    same scoping the round table already enforces."""
+    u = current_user(request)
+    a = db.get_home_agent(home_id)
+    if not a or a["owner_id"] != u["id"]:
+        raise HTTPException(404, "no such agent in your Studio")
+    return a
+
+
+@router.get("/api/home")
+def home_list(request: Request) -> dict:
+    """The caller's Studio: identity, lifetime counters, current model, mood."""
+    u = current_user(request)
+    return {"agents": home.describe(u["id"]), "budget": home.budget_state()}
+
+
+@router.post("/api/home")
+def home_create(body: NewHomeAgent, request: Request) -> dict:
+    u = current_user(request)
+    a = home.create(u["id"], body.name, body.degree, body.persona,
+                    body.provider, body.model)
+    return {"agent": a}
+
+
+@router.get("/api/home/{home_id}")
+def home_get(home_id: int, request: Request) -> dict:
+    _own_home(request, home_id)
+    return {
+        "agent": db.get_home_agent(home_id),
+        "memory": db.get_memory(home_id),
+        "episodes": db.unconsolidated(home_id)[-20:],
+        "evolution": db.list_evolution(home_id),
+        "instances": db.home_instances(home_id),
+    }
+
+
+@router.patch("/api/home/{home_id}")
+def home_patch(home_id: int, body: HomeAgentPatch, request: Request) -> dict:
+    _own_home(request, home_id)
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if "model_locked" in fields:
+        fields["model_locked"] = 1 if fields["model_locked"] else 0
+    if fields:
+        db.update_home_agent(home_id, **fields)
+    return {"agent": db.get_home_agent(home_id)}
+
+
+@router.delete("/api/home/{home_id}")
+def home_delete(home_id: int, request: Request) -> dict:
+    """Archive by default. A hard delete would orphan the `runs` and `agents` rows
+    that reference this identity; archiving keeps the history readable."""
+    _own_home(request, home_id)
+    db.update_home_agent(home_id, status="archived")
+    return {"ok": True, "archived": home_id}
+
+
+@router.post("/api/home/{home_id}/use")
+def home_use(home_id: int, project_id: int, request: Request) -> dict:
+    """Deploy this agent into one of the caller's projects."""
+    _own_home(request, home_id)
+    owned_project(project_id, request)
+    inst = home.use(home_id, project_id)
+    return {"instance": inst}
+
+
+@router.get("/api/home/{home_id}/memory")
+def home_memory(home_id: int, request: Request) -> dict:
+    _own_home(request, home_id)
+    return {"memory": db.get_memory(home_id), "blob": memory.current_blob(home_id),
+            "episodes": db.unconsolidated(home_id)}
+
+
+@router.post("/api/home/{home_id}/consolidate")
+async def home_consolidate(home_id: int, request: Request) -> dict:
+    """Fold this agent's memory now instead of waiting for the tick. Bills once —
+    the manual button, like forcing a self-check."""
+    u = current_user(request)
+    _own_home(request, home_id)
+    res = await memory.consolidate(home_id, auth.get_settings(u),
+                                   allow_spend=home._may_spend())
+    return res
+
+
+@router.get("/api/home/{home_id}/evolution")
+def home_evolution(home_id: int, request: Request) -> dict:
+    _own_home(request, home_id)
+    return {"evolution": db.list_evolution(home_id)}
+
+
+@router.get("/api/home/budget")
+def home_budget(request: Request) -> dict:
+    """Today's background spend against the daily ceiling — so at-rest cost of ~0
+    is visible, not just promised."""
+    current_user(request)
+    return home.budget_state()
 
 
 @router.get("/api/tuning")

@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, bus, config, db, findings, launcher, manager, scheduler, upkeep
+from . import auth, bus, config, db, findings, home, launcher, manager, scheduler, upkeep
 from .routes import router, _manager_tasks
 
 
@@ -63,6 +63,11 @@ async def lifespan(app: FastAPI):
     # only runs when a human notices something is broken is not self-repair — the
     # value of the loop is entirely in the part nobody is present for.
     loop.create_task(upkeep.loop())
+    # The Studio's background life. Free at rest — it wakes, reads rows, and almost
+    # always finds nothing due. It spends a token only when an agent has genuinely
+    # accumulated enough work to be worth remembering, under a hard daily budget,
+    # on each owner's OWN credentials (default_settings_for).
+    loop.create_task(home.loop(home.default_settings_for))
     yield
 
 

@@ -175,7 +175,7 @@ is not.
 
 ### The API, in families
 
-An *API* is the list of requests a program will answer. There are 110; the
+An *API* is the list of requests a program will answer. There are 120; the
 dashboard uses them for you.
 
 | Family | Example | For |
@@ -207,7 +207,7 @@ so nothing depends on you having been watching.
 
 ### What the database holds
 
-Eighteen tables in one file. The ones worth knowing: **projects** and **tasks**
+Twenty-two tables in one file. The ones worth knowing: **projects** and **tasks**
 (the work), **agents** (teammates and their memory), **runs** (one row per AI
 task — the source of all measurement), **events** (the permanent activity
 record), **findings** (what the platform believes is wrong with itself),

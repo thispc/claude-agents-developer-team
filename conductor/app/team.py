@@ -150,12 +150,21 @@ def release(task: dict, report: str = "", accepted: bool = False) -> None:
     fields: dict[str, Any] = {"status": "idle"}
     if accepted:
         fields["tasks_done"] = agent["tasks_done"] + 1
-        note = f"- {task['title']}: {_gist(report)}"
+        gist = _gist(report)
+        note = f"- {task['title']}: {gist}"
         # Newest last, oldest dropped. A teammate on their tenth task should carry
         # what they built recently, not what they built first.
         notes = (agent["notes"] + "\n" + note).strip()
         fields["notes"] = notes[-NOTES_LIMIT:]
     db.update_agent(agent["id"], **fields)
+    # If this teammate is a deployment of a Studio agent, file the same gist as a
+    # global episode — FREE, no extra model call, it is the summary just computed.
+    # A no-op for agents with no home_id, i.e. every project created before the
+    # Studio existed.
+    if accepted and agent.get("home_id"):
+        from . import home
+        home.record_episode(agent, "task_done", gist,
+                            project_id=task.get("project_id"), task_id=task.get("id"))
 
 
 def _gist(report: str) -> str:
@@ -219,6 +228,18 @@ def system_addendum(agent: dict | None) -> str:
             "\n\nBuild on these decisions rather than re-litigating them. If you now "
             "think one was wrong, say so explicitly instead of quietly changing it — "
             "your teammates built against it.")
+    # A Studio agent carries what it learned across ALL its projects, folded into a
+    # bounded long-term memory. Retrieval is free — the blob is small and inlined,
+    # there is nothing to search — and it is what makes "Mike Ross remembers project
+    # A while working project B" true without a per-task lookup.
+    if agent.get("home_id"):
+        from . import memory
+        blob = memory.current_blob(agent["home_id"])
+        if blob.strip():
+            parts.append(
+                "\n\n### What you carry from your past work\n\n" + blob +
+                "\n\nThis is your accumulated experience across projects. Draw on it "
+                "where relevant; it is a reminder, not a rulebook.")
     return "".join(parts)
 
 

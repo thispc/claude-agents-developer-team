@@ -114,7 +114,7 @@ def test_the_table_count_matches_the_schema():
     from app import db, auth, findings
     declared = sum(mod.SCHEMA.count("CREATE TABLE IF NOT EXISTS")
                    for mod in (db, auth, findings))
-    assert "Eighteen tables" in _handbook() and declared == 18, \
+    assert "Twenty-two tables" in _handbook() and declared == 22, \
         f"{declared} tables are declared; the handbook says eighteen"
 
 
