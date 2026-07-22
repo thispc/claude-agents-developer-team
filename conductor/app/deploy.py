@@ -528,7 +528,7 @@ async def deploy_local(project_id: int, workspace: str = "",
     pid_file(project_id, branch).write_text(json.dumps(
         {"pid": proc.pid, "port": port, "started": time.time(), "spec": spec}))
     _log(project_id, f"live: {note}", branch)
-    url = f"http://localhost:{port}"
+    url = local_preview_url(project_id, port, branch)
     bus.emit(project_id, None, "system", "app_deployed",
              {"mode": "local", "url": url, "kind": spec["kind"], "branch": branch})
     _remember(project_id, {"ok": True, "workspace": workspace, "branch": branch,
@@ -542,6 +542,24 @@ async def deploy_local(project_id: int, workspace: str = "",
 # --------------------------------------------------------------------------
 # Production: a real Deployment + Service on the cluster
 # --------------------------------------------------------------------------
+
+def local_preview_url(project_id: int, port: int, branch: str = "") -> str:
+    """How a browser reaches a local-mode preview. Bare localhost is unreachable from
+    anywhere but the conductor pod, so when PREVIEW_HOST is configured we hand back a
+    public host the conductor reverse-proxies to this app's port. The default-branch
+    preview is p<id>; a branch preview is p<id>-<safe-branch>."""
+    if not config.PREVIEW_HOST:
+        return f"http://localhost:{port}"
+    slug = f"-{safe_branch(branch)}" if branch else ""
+    return f"http://p{project_id}{slug}.{config.PREVIEW_HOST}"
+
+
+def running_port(project_id: int, branch: str = "") -> int | None:
+    """The local port a project's running preview answers on — for the reverse proxy.
+    Adopts a preview started by a previous conductor process from its pid file."""
+    r = RUNNING.get(_slot(project_id, branch)) or _adopt(project_id, branch)
+    return r["port"] if r else None
+
 
 def _kubectl(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
     return rollout.sh("kubectl", *args, stdin=stdin, timeout=300)
@@ -800,7 +818,7 @@ def previews(project_id: int) -> list[dict[str, Any]]:
     running is how a namespace fills up with branches nobody remembers merging.
     """
     out = [{"branch": r.get("branch", ""), "mode": "local",
-            "url": f"http://localhost:{r['port']}",
+            "url": local_preview_url(project_id, r["port"], r.get("branch", "")),
             "uptime": int(time.time() - r["started"])}
            for k, r in RUNNING.items()
            if isinstance(k, str) and k.startswith(f"{project_id}@")
@@ -885,7 +903,7 @@ def status(project_id: int, branch: str = "") -> dict[str, Any]:
     live = None
     if r:
         if r["proc"].poll() is None:
-            live = {"mode": "local", "url": f"http://localhost:{r['port']}",
+            live = {"mode": "local", "url": local_preview_url(project_id, r["port"], branch),
                     "port": r["port"], "uptime": int(time.time() - r["started"]),
                     "kind": r["spec"]["kind"], "branch": branch}
         else:

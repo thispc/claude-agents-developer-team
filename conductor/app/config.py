@@ -143,6 +143,14 @@ APPS_DOMAIN = _env("APPS_DOMAIN")
 # "exec format error" on the node. Blank = build natively (local kind only).
 DEPLOY_PLATFORM = _env("DEPLOY_PLATFORM", "linux/amd64")
 
+# Domain for reaching LOCAL-mode previews from a browser. A preview runs as a
+# subprocess inside the conductor pod on localhost:PORT — unreachable from anywhere
+# but the pod. When this is set (e.g. "152-42-151-175.nip.io"), the conductor
+# advertises the preview at http://p<project>.<PREVIEW_HOST> and reverse-proxies
+# that host to the app's local port, so a hosted instance gets an openable link
+# without a per-app load balancer. Blank = keep the bare localhost URL (dev).
+PREVIEW_HOST = _env("PREVIEW_HOST")
+
 CONDUCTOR_URL = _env("CONDUCTOR_URL", "http://localhost:8000")
 WORKER_TOKEN = _env("WORKER_TOKEN", "dev-token")
 # A separate shared secret for one narrow thing: production asking staging to run

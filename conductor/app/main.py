@@ -72,5 +72,20 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="devteam conductor", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def _preview_host(request, call_next):
+    """A request on a preview host (p<id>.<PREVIEW_HOST>) is a request FOR that
+    project's running app, not for the dashboard — reverse-proxy it. Every other
+    request passes straight through, so nothing about normal use changes. Inert
+    unless PREVIEW_HOST is configured."""
+    from . import preview_proxy
+    pid = preview_proxy.project_for_host(request.headers.get("host", ""))
+    if pid is not None:
+        return await preview_proxy.proxy(request, pid)
+    return await call_next(request)
+
+
 app.include_router(router)
 app.mount("/", StaticFiles(directory=str(config.DASHBOARD_DIR), html=True), name="dashboard")
