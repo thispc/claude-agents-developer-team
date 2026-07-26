@@ -210,22 +210,32 @@
   </div>
 </section>
 
-<!-- The Lifeworld — a small society of synthetic people who live in scenes and
-     interact with artifacts (a deck of cards). The operator watches them play at a
-     poker-felt table (pure CSS), deals/greets/needles them, and peeks at their
-     inner state (mood, drives, habits, bonds, and their secret hand). Cards and the
-     deck are CODE; every model call in Live mode is billed and shown in the ticker.
-     Reuses the Studio figure/sigil language, composers and context menus. -->
+<!-- The Lifeworld — a world holds three registries (Agents, Artifacts, Rooms). One
+     workspace with four tabs: Overview is the MAP (every person + object as a card,
+     grouped and coloured by the room it's in); Agents / Artifacts are galleries built
+     by a free-text brief; Rooms are places with a type. Opening a room gives the ROOM
+     VIEW, themed by room.theme — only a casino renders the poker felt, other themes a
+     tasteful CSS-only setting. Play a round / act; every Live model call is billed and
+     shown in the ticker. Reuses the Studio figure/sigil language, composers and menus. -->
 <section id="lifeworld" hidden>
   <div class="studio-bar lw-bar">
     <button class="studio-back" id="lwBack">← Home</button>
     <h2>🌍 The Lifeworld</h2>
     <button class="scene-tolobby" id="lwToLobby" hidden>← All worlds</button>
     <span class="scene-title-inline" id="lwTitle" hidden></span>
+    <nav class="studio-tabs lw-tabs" id="lwTabs" role="tablist" hidden>
+      <button class="lw-tab active" data-lwtab="overview" role="tab">Overview</button>
+      <button class="lw-tab" data-lwtab="agents" role="tab">Agents</button>
+      <button class="lw-tab" data-lwtab="artifacts" role="tab">Artifacts</button>
+      <button class="lw-tab" data-lwtab="rooms" role="tab">Rooms</button>
+    </nav>
     <div class="studio-spacer"></div>
     <button class="lw-live" id="lwLive" hidden aria-pressed="false">💤 Deterministic (free)</button>
     <span class="scene-meter" id="lwTau" hidden title="World time and the number of billed model thoughts"></span>
     <button class="studio-hire" id="lwNewWorld" hidden>＋ New world</button>
+    <button class="studio-hire" id="lwNewAgent" hidden>＋ New agent</button>
+    <button class="studio-hire" id="lwNewArtifact" hidden>＋ New artifact</button>
+    <button class="studio-hire" id="lwNewRoom" hidden>＋ New room</button>
   </div>
   <div class="lw-stage" id="lwStage"></div>
   <div class="studio-detail" id="lwDetail" hidden></div>

@@ -5050,33 +5050,33 @@ $("#artNew") && $("#artNew").addEventListener("click", () => openArtifactCompose
 
 
 // ============================================================================
-//  The Lifeworld — a small society of synthetic people who live in scenes and
-//  interact with artifacts (a deck of cards). It is operated like a game: seat
-//  people at a poker-felt table, deal / greet / needle, play a round, and peek at
-//  each person's inner state (mood, drives, habits, bonds, and their SECRET hand —
-//  a card's value is readable only by its holder, and by you the operator).
+// The Lifeworld — the owner's private society. A WORLD holds three registries:
+//  AGENTS (people), ARTIFACTS (objects) and ROOMS. People and objects are authored
+//  once from a short free-text BRIEF (the LLM fills in the internals), then PLACED
+//  into rooms. A room has a THEME (open/home/classroom/campus/office/casino); only a
+//  casino renders the poker felt — every other theme gets a tasteful, CSS-only
+//  setting. The overview is a MAP: every person and object shown as a card, grouped
+//  and colour-coded by the room it sits in, with an "unplaced" group for the rest.
 //
-//  It reuses the Studio's visual language wholesale: the .figure / sigil() emblem,
-//  the poker felt + .pcard cards, the inline composer drawer (no browser popups),
-//  the createElement/textContent context menus. All free text reaches innerHTML
-//  only through escapeHtml; every model call in Live mode is billed and surfaced.
+//  Reuses the Studio's figure/sigil() language, the inline composer drawers (never a
+//  browser popup), the createElement/textContent context menus (studioMenu), the
+//  poker felt + .pcard cards and the shared control-padding tokens. All free text
+//  reaches innerHTML only through escapeHtml; every model call in Live mode is billed
+//  and surfaced in the room's cost-aware ticker.
 // ============================================================================
 let lwWorlds = [];
-let lwWorld = null;            // full GET /api/lw/{id}
+let lwWorld = null;            // GET /api/lw/{id} — the overview payload
 let lwWorldId = null;
-let lwScene = null;            // the active SCENE (from world.scenes)
-let lwSceneId = null;
-let lwLive = false;            // Live = agents actually think (costs tokens)
-let lwSeenLog = new Set();     // log 'n's already shown, so only new lines animate
+let lwTab = "overview";        // overview | agents | artifacts | rooms
+let lwRoom = null;             // the open ROOM (GET .../room/{rid})
+let lwRoomId = null;
+let lwLive = false;            // Live = agents actually think (spends tokens)
+let lwSeenLog = new Set();     // room-log 'n's already shown, so only new lines animate
+let lwRoomTypes = [];          // [{type,theme,blurb}] from the API
 
-const LW_DIALS = ["willpower", "risk_appetite", "composure", "curiosity",
-                  "sociability", "empathy", "conscientiousness"];
-const LW_PRESETS = [
-  { id: "sandbox", label: "Sandbox", note: "free play, drama on" },
-  { id: "serious", label: "Serious", note: "measured — fewer theatrics" },
-  { id: "theatre", label: "Theatre", note: "expressive and dramatic" },
-];
-
+// Distinct, well-spaced accent hues so each room reads as its own colour on the
+// map. Indexed by the room's position in the world's room list.
+const LW_ROOM_HUES = [162, 26, 214, 276, 128, 336, 46, 194];
 const lwLiveQ = () => (lwLive ? "?live=1" : "");
 
 // --- screen switch: bring the section on, hide every sibling (mirrors the Studio).
@@ -5093,15 +5093,42 @@ function showLifeworld() {
 async function openLifeworld(skipHash, worldId) {
   showLifeworld();
   lwWorldId = worldId || null;
-  lwSceneId = null; lwScene = null; lwWorld = null; lwSeenLog = new Set();
+  lwTab = "overview"; lwRoomId = null; lwRoom = null; lwWorld = null; lwSeenLog = new Set();
   if (!skipHash) setHash(worldId ? `#/lifeworld/${worldId}` : "#/lifeworld");
   await renderLifeworld();
 }
 
 async function renderLifeworld() {
   if ($("#lifeworld").hidden) return;
-  if (lwWorldId) await renderWorldTable();
+  if (lwWorldId) await renderWorkspace();
   else await renderWorldLobby();
+}
+
+// The mode the bar and stage are in: the lobby, one of the workspace tabs, or an
+// open room (which lives under the Rooms tab but reveals the Live toggle + clock).
+function lwMode() {
+  if (!lwWorldId) return "lobby";
+  if (lwTab === "rooms" && lwRoomId) return "room";
+  return lwTab;
+}
+
+// The bar carries the tabs, the world title, the per-context "＋ New" buttons and —
+// only inside a room — the Live toggle and world clock. Show only what the context
+// owns; highlight the active tab (Rooms stays lit while a room is open).
+function setLwBar(mode) {
+  const inWorld = mode !== "lobby";
+  const inRoom = mode === "room";
+  $("#lwTabs").hidden = !inWorld;
+  $("#lwTitle").hidden = !inWorld;
+  $("#lwToLobby").hidden = !inWorld;
+  $("#lwNewWorld").hidden = inWorld;
+  $("#lwNewAgent").hidden = mode !== "agents";
+  $("#lwNewArtifact").hidden = mode !== "artifacts";
+  $("#lwNewRoom").hidden = mode !== "rooms";
+  $("#lwLive").hidden = !inRoom;
+  $("#lwTau").hidden = !inRoom;
+  document.querySelectorAll(".lw-tab").forEach((b) =>
+    b.classList.toggle("active", b.dataset.lwtab === lwTab));
 }
 
 // ---- small helpers -------------------------------------------------------
@@ -5126,12 +5153,31 @@ function dominantWant(wants) {
   return best ? { name: best[0], pressure: best[1] } : null;
 }
 
-// A figure may be a world person (id IS the human id) or a scene seat (resolve by
-// name back to the person). Returns the id to use for /human and /act calls.
+function lwWhen(t) {
+  try { const dt = new Date(t); if (!isNaN(dt.getTime())) return dt.toLocaleDateString(); } catch (e) { /* fall through */ }
+  return String(t);
+}
+
+// Seats ring an oval, first seat at the near edge, going clockwise.
+function lwSeatPos(i, n) {
+  const theta = (Math.PI / 2) + (i / Math.max(1, n)) * Math.PI * 2;
+  return { x: 50 + Math.cos(theta) * 41, y: 52 + Math.sin(theta) * 41 };
+}
+
+// The dealable object in a room: a deck if one is placed, else the first prop.
+function findDeck(room) {
+  const props = (room && room.props) || [];
+  return props.find((p) => (p.kind || "").includes("deck"))
+    || props.find((p) => (p.kind || "").includes("card"))
+    || null;
+}
+
+// A seat may carry the human id as human_id or id; failing that, resolve by name
+// back to the world's agent registry. Returns the id to use for /human and /act.
 function lwHumanId(f) {
   if (f && f.human_id != null) return f.human_id;
-  const people = (lwWorld && lwWorld.people) || [];
-  const byName = people.find((p) => p.name === (f && f.name));
+  const agents = (lwWorld && lwWorld.agents) || [];
+  const byName = agents.find((p) => p.name === (f && f.name));
   if (byName) return byName.id;
   return f && f.id;
 }
@@ -5139,35 +5185,16 @@ function lwHumanId(f) {
 // Resolve a log 'who' / bond key (id or name) to a display name.
 function lwNameOf(v) {
   if (v == null) return "";
-  const people = (lwWorld && lwWorld.people) || [];
-  const p = people.find((x) => String(x.id) === String(v));
+  const agents = (lwWorld && lwWorld.agents) || [];
+  const p = agents.find((x) => String(x.id) === String(v));
   return p ? (p.name || String(v)) : String(v);
 }
 
-function lwWhen(t) {
-  try { const dt = new Date(t); if (!isNaN(dt.getTime())) return dt.toLocaleDateString(); } catch (e) { /* fall through */ }
-  return String(t);
-}
-
-// Players ring an oval, first seat at the near edge, going clockwise (as scenes do).
-function lwSeatPos(i, n) {
-  const theta = (Math.PI / 2) + (i / Math.max(1, n)) * Math.PI * 2;
-  return { x: 50 + Math.cos(theta) * 41, y: 52 + Math.sin(theta) * 41 };
-}
-
-function findDeck(scene, artifacts) {
-  const props = (scene && scene.props) || [];
-  const inScene = props.find((p) => (p.kind || "").includes("deck"));
-  if (inScene) return inScene;
-  return (artifacts || []).find((a) => (a.kind || "").includes("deck")) || null;
-}
-
-// How many cards each holder is sitting on, derived from the scene log's draws.
-// The values stay secret (only a peek decrypts them) — we only show the count as
-// face-down backs near the holder.
-function lwHandCounts(scene) {
+// How many cards each holder is sitting on, derived from the room log's draws. The
+// values stay secret (only a peek decrypts them) — we show the count as backs.
+function lwHandCounts(room) {
   const counts = {};
-  const log = (scene && scene.log) || [];
+  const log = (room && room.log) || [];
   for (const l of log) {
     const verb = l.verb || l.kind;
     if (verb === "draw" || (typeof l.text === "string" && /\b(draws?|drew)\b/i.test(l.text))) {
@@ -5178,16 +5205,30 @@ function lwHandCounts(scene) {
   return counts;
 }
 
-function lwBilledCount(scene) {
-  const log = (scene && scene.log) || [];
+function lwBilledCount(room) {
+  const log = (room && room.log) || [];
   return log.filter((l) => l.billed || l.tier === 2).length;
+}
+
+// Each room's accent, exposed as CSS custom properties the cards/groups inherit.
+function lwRoomHue(i) {
+  const n = LW_ROOM_HUES.length;
+  return LW_ROOM_HUES[(((i % n) + n) % n)];
+}
+function lwRoomStyle(i) {
+  const h = lwRoomHue(i);
+  return `--rc:hsl(${h} 58% 42%); --rc-soft:hsl(${h} 48% 95%); --rc-line:hsl(${h} 38% 84%)`;
+}
+function lwRoomIndex() {
+  const idx = {};
+  ((lwWorld && lwWorld.rooms) || []).forEach((r, i) => { idx[String(r.id)] = i; });
+  return idx;
 }
 
 // ---- the world lobby -----------------------------------------------------
 async function renderWorldLobby() {
-  $("#lwToLobby").hidden = true; $("#lwTitle").hidden = true;
-  $("#lwTau").hidden = true; $("#lwLive").hidden = true;
-  $("#lwNewWorld").hidden = false; $("#lwDetail").hidden = true;
+  setLwBar("lobby");
+  $("#lwDetail").hidden = true;
   const stage = $("#lwStage");
   let d;
   try { d = await api("/api/lw"); }
@@ -5195,7 +5236,7 @@ async function renderWorldLobby() {
   lwWorlds = d.worlds || [];
   if (!lwWorlds.length) {
     stage.innerHTML = `<div class="scene-lobby"><div class="scene-empty">
-      <p>No worlds yet — spin one up and populate it with synthetic people.</p>
+      <p>No worlds yet. A world is a small society — you fill it with people and objects, then place them into rooms.</p>
       <button class="primary" id="lwNew2">Create your first world</button>
     </div></div>`;
     $("#lwNew2").addEventListener("click", openWorldComposer);
@@ -5216,11 +5257,12 @@ async function renderWorldLobby() {
   });
 }
 
-let lwDraft = null;
-function openWorldComposer() { lwDraft = { name: "", preset: "sandbox" }; renderWorldComposer(); }
+// Create a world with just a NAME — no preset. Inline composer, never a popup.
+let lwWorldDraft = null;
+function openWorldComposer() { lwWorldDraft = { name: "" }; renderWorldComposer(); }
 function renderWorldComposer() {
   const box = $("#lwDetail");
-  const d = lwDraft;
+  const d = lwWorldDraft;
   box.hidden = false;
   box.className = "studio-detail composing";
   box.innerHTML = `
@@ -5228,28 +5270,24 @@ function renderWorldComposer() {
       <div class="fig-emblem" style="background:${sigil(d.name || "World", "anthropic")}">
         <span class="fig-initial">🌍</span></div>
       <div style="flex:1">
-        <input class="sc-name" id="lwName" placeholder="Name this world"
+        <input class="sc-name" id="lwWName" placeholder="Name this world"
                value="${escapeHtml(d.name)}" autocomplete="off">
         <p class="sc-preview">a small society of your making</p>
       </div>
-      <button class="sd-close" id="lwClose">✕</button>
+      <button class="sd-close" id="lwWClose">✕</button>
     </div>
-    <div class="sc-label">Preset</div>
-    <div class="sc-row">${LW_PRESETS.map((p) => chip(p.label, d.preset === p.id, `data-preset="${p.id}"`)).join("")}</div>
-    <p class="sc-hint" id="lwPresetNote">${escapeHtml((LW_PRESETS.find((p) => p.id === d.preset) || {}).note || "")}</p>
-    <div class="sc-actions"><button class="primary" id="lwCreate">Create the world</button></div>`;
-  $("#lwName").addEventListener("input", (e) => { d.name = e.target.value; });
-  box.querySelectorAll("[data-preset]").forEach((b) =>
-    b.addEventListener("click", () => { d.preset = b.dataset.preset; renderWorldComposer(); }));
-  $("#lwClose").addEventListener("click", () => { lwDraft = null; box.hidden = true; });
-  $("#lwCreate").addEventListener("click", doCreateWorld);
+    <p class="sc-hint">You'll add people, objects and rooms once it exists.</p>
+    <div class="sc-actions"><button class="primary" id="lwWCreate">Create the world</button></div>`;
+  $("#lwWName").addEventListener("input", (e) => { d.name = e.target.value; });
+  $("#lwWClose").addEventListener("click", () => { lwWorldDraft = null; box.hidden = true; });
+  $("#lwWCreate").addEventListener("click", doCreateWorld);
 }
 async function doCreateWorld() {
-  const d = lwDraft;
+  const d = lwWorldDraft;
   try {
     const r = await api("/api/lw", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: d.name.trim() || "New world", preset: d.preset }) });
-    lwDraft = null; $("#lwDetail").hidden = true;
+      body: JSON.stringify({ name: d.name.trim() || "New world" }) });
+    lwWorldDraft = null; $("#lwDetail").hidden = true;
     const id = r.world && r.world.id != null ? r.world.id : null;
     if (id != null) openWorld(id); else await renderLifeworld();
   } catch (e) { toast(`Could not create the world: ${e.message}`); }
@@ -5268,105 +5306,547 @@ function lwWorldMenu(ev, w) {
 }
 
 async function openWorld(id) {
-  lwWorldId = id; lwScene = null; lwSceneId = null; lwSeenLog = new Set();
+  lwWorldId = id; lwTab = "overview"; lwRoomId = null; lwRoom = null; lwWorld = null; lwSeenLog = new Set();
   $("#lwDetail").hidden = true;
   setHash(`#/lifeworld/${id}`);
-  await renderWorldTable();
+  await renderWorkspace();
 }
 
-// ---- the table (the game) ------------------------------------------------
-async function renderWorldTable() {
+// ---- the workspace (Overview · Agents · Artifacts · Rooms) ---------------
+async function loadWorld() {
+  const d = await api(`/api/lw/${lwWorldId}`);
+  lwWorld = d;
+  if (Array.isArray(d.room_types) && d.room_types.length) lwRoomTypes = d.room_types;
+}
+
+async function renderWorkspace() {
+  try { await loadWorld(); }
+  catch (e) { $("#lwStage").innerHTML = `<p class="empty">Could not open world: ${escapeHtml(e.message || String(e))}</p>`; return; }
+  $("#lwTitle").textContent = (lwWorld.world && lwWorld.world.name) || "World";
+  await renderLwTab();
+}
+
+function selectLwTab(name) {
+  lwTab = name;
+  // A tab click always lands on that tab's top view — for Rooms, the list, not
+  // whatever room was last open (openRoom is the only path that sets lwRoomId).
+  lwRoomId = null; lwRoom = null;
+  $("#lwDetail").hidden = true;
+  renderLwTab();
+}
+
+async function renderLwTab() {
+  setLwBar(lwMode());
+  paintLwLive(); paintLwTau();
+  if (lwTab === "overview") renderOverview();
+  else if (lwTab === "agents") renderAgentsTab();
+  else if (lwTab === "artifacts") renderArtifactsTab();
+  else if (lwTab === "rooms") { if (lwRoomId) await renderRoomView(); else renderRoomsTab(); }
+}
+
+// ---- shared card builders ------------------------------------------------
+function lwMoodBars(mood) {
+  mood = mood || {};
+  const bar = (label, v, cls) =>
+    `<span class="lw-mbar ${cls}" title="${label} ${lwPct(v)}"><i style="width:${lwPct(v)}%"></i></span>`;
+  return `<span class="lw-mood">${bar("confidence", mood.confidence, "conf")}${bar("stress", mood.stress, "stress")}</span>`;
+}
+
+function lwAgentCard(a, opts) {
+  opts = opts || {};
+  const skills = Array.isArray(a.skills)
+    ? a.skills.slice().sort((x, y) => Number(y[1]) - Number(x[1])) : [];
+  const top = skills[0];
+  return `<button class="lw-card lw-agent-card" data-agent="${escapeHtml(String(a.id))}" style="${opts.style || ""}">
+    <span class="lw-card-emblem" style="background:${sigil(a.name || "?", "anthropic")}">${escapeHtml((a.name || "?")[0] || "?")}</span>
+    <span class="lw-card-body">
+      <span class="lw-card-name">${escapeHtml(a.name || "someone")}</span>
+      <span class="lw-card-sub">${escapeHtml(trim(a.narrative || "no story yet", 96))}</span>
+      <span class="lw-card-foot">
+        ${top ? `<span class="lw-skill">${escapeHtml(String(top[0]))} <i>${escapeHtml(String(top[1]))}</i></span>` : ""}
+        ${lwMoodBars(a.mood)}
+        ${opts.roomTag || ""}
+      </span>
+    </span>
+  </button>`;
+}
+
+// An object tile — a deck looks like a small card stack, a card like a single back,
+// anything else a lettered chip.
+function lwArtifactCard(a, opts) {
+  opts = opts || {};
+  const kind = a.kind || "prop";
+  const isDeck = kind.includes("deck");
+  const isCard = kind.includes("card") && !isDeck;
+  const visual = isDeck
+    ? `<span class="lw-obj lw-obj-deck"><span class="pcard back"><span class="pcard-weave"></span></span><span class="pcard back"><span class="pcard-weave"></span></span><span class="pcard back"><span class="pcard-weave"></span></span></span>`
+    : isCard
+      ? `<span class="lw-obj"><span class="pcard back"><span class="pcard-weave"></span></span></span>`
+      : `<span class="lw-obj lw-obj-tile">${escapeHtml((a.name || "?")[0] || "?")}</span>`;
+  return `<button class="lw-card lw-artifact-card" data-artifact="${escapeHtml(String(a.id))}" style="${opts.style || ""}">
+    ${visual}
+    <span class="lw-card-body">
+      <span class="lw-card-name">${escapeHtml(a.name || "object")}</span>
+      <span class="lw-card-foot">
+        <span class="lw-kind">${escapeHtml(kind)}</span>
+        ${a.sealed ? `<span class="lw-sealed">🔒 sealed</span>` : ""}
+        ${a.public ? `<span class="lw-pub">public</span>` : ""}
+        ${opts.roomTag || ""}
+      </span>
+    </span>
+  </button>`;
+}
+
+// ---- Overview: the map, grouped and coloured by room ---------------------
+function lwGroupHtml(name, sub, style, agents, artifacts, roomAttr) {
+  const cards = [
+    ...agents.map((a) => lwAgentCard(a, {})),
+    ...artifacts.map((a) => lwArtifactCard(a, {})),
+  ].join("");
+  const openBtn = roomAttr ? `<button class="lw-group-open" ${roomAttr}>open room →</button>` : "";
+  return `<section class="lw-group" style="${style}">
+    <header class="lw-group-head">
+      <span class="lw-swatch"></span>
+      <span class="lw-group-name">${escapeHtml(name)}</span>
+      ${sub ? `<span class="lw-group-sub">${escapeHtml(sub)}</span>` : ""}
+      <span class="lw-group-count">${agents.length + artifacts.length}</span>
+      ${openBtn}
+    </header>
+    <div class="lw-group-cards">${cards || `<p class="lw-hint">empty — place people and objects here</p>`}</div>
+  </section>`;
+}
+
+function renderOverview() {
+  const stage = $("#lwStage");
+  const rooms = (lwWorld && lwWorld.rooms) || [];
+  const agents = (lwWorld && lwWorld.agents) || [];
+  const artifacts = (lwWorld && lwWorld.artifacts) || [];
+
+  const legend = rooms.length
+    ? `<div class="lw-legend">${rooms.map((r, i) => {
+        const nA = agents.filter((a) => String(a.room) === String(r.id)).length;
+        const nO = artifacts.filter((a) => String(a.room) === String(r.id)).length;
+        return `<button class="lw-legend-chip" data-room="${escapeHtml(String(r.id))}" style="${lwRoomStyle(i)}">
+          <span class="lw-swatch"></span>
+          <span class="lw-legend-name">${escapeHtml(r.name || r.type || "room")}</span>
+          <span class="lw-legend-type">${escapeHtml(r.type || r.theme || "")}</span>
+          <span class="lw-legend-count">${nA}👤 ${nO}▢</span>
+        </button>`;
+      }).join("")}</div>`
+    : `<p class="lw-hint">No rooms yet — add one in the Rooms tab, then place people and objects into it.</p>`;
+
+  const groups = [];
+  rooms.forEach((r, i) => {
+    const ga = agents.filter((a) => String(a.room) === String(r.id));
+    const go = artifacts.filter((a) => String(a.room) === String(r.id));
+    groups.push(lwGroupHtml(r.name || r.type || "room", r.type || r.theme || "", lwRoomStyle(i),
+      ga, go, `data-room="${escapeHtml(String(r.id))}"`));
+  });
+  const upA = agents.filter((a) => a.room == null);
+  const upO = artifacts.filter((a) => a.room == null);
+  if (upA.length || upO.length)
+    groups.push(lwGroupHtml("Unplaced", "not in any room yet",
+      "--rc:var(--faint); --rc-soft:var(--card-2); --rc-line:var(--line-soft)", upA, upO, ""));
+
+  stage.innerHTML = `<div class="lw-overview">
+    <div class="lw-overview-head">
+      <h3>The map</h3>
+      <span class="lw-hint">${agents.length} people · ${artifacts.length} objects · ${rooms.length} rooms — coloured by room</span>
+    </div>
+    ${legend}
+    <div class="lw-groups">${groups.join("") || `<p class="lw-hint">Nothing here yet. Create people and objects, add rooms, then place them.</p>`}</div>
+  </div>`;
+
+  stage.querySelectorAll(".lw-legend-chip").forEach((b) =>
+    b.addEventListener("click", () => openRoom(b.dataset.room)));
+  stage.querySelectorAll(".lw-group-open").forEach((b) =>
+    b.addEventListener("click", () => openRoom(b.dataset.room)));
+  stage.querySelectorAll("[data-agent]").forEach((b) =>
+    b.addEventListener("click", () => openPersonDrawer(b.dataset.agent)));
+  stage.querySelectorAll("[data-artifact]").forEach((b) =>
+    b.addEventListener("click", () => lwOpenArtifactPeek(b.dataset.artifact)));
+}
+
+// ---- Agents tab: a gallery + the brief-based composer --------------------
+function renderAgentsTab() {
+  const stage = $("#lwStage");
+  const agents = (lwWorld && lwWorld.agents) || [];
+  const rooms = (lwWorld && lwWorld.rooms) || [];
+  const idx = lwRoomIndex();
+  if (!agents.length) {
+    stage.innerHTML = `<div class="lw-gallery-empty">
+      <p>No people yet. Everyone here is authored from a short brief — write who they are and the rest is filled in.</p>
+      <button class="primary" id="lwAgentNew2">Create your first person</button>
+    </div>`;
+    $("#lwAgentNew2").addEventListener("click", openLwAgentComposer);
+    return;
+  }
+  const cards = agents.map((a) => {
+    const room = a.room != null ? rooms.find((r) => String(r.id) === String(a.room)) : null;
+    const style = a.room != null ? lwRoomStyle(idx[String(a.room)] ?? 0) : "";
+    const roomTag = room
+      ? `<span class="lw-card-room">in ${escapeHtml(room.name || "a room")}</span>`
+      : `<span class="lw-card-room unplaced">unplaced</span>`;
+    return lwAgentCard(a, { style, roomTag });
+  }).join("");
+  stage.innerHTML = `<div class="lw-gallery">${cards}</div>`;
+  stage.querySelectorAll("[data-agent]").forEach((b) =>
+    b.addEventListener("click", () => openPersonDrawer(b.dataset.agent)));
+}
+
+let lwAgentDraft = null;
+function openLwAgentComposer() { lwAgentDraft = { name: "", brief: "", parentsOn: false, parents: [] }; renderLwAgentComposer(); }
+function renderLwAgentComposer() {
+  const box = $("#lwDetail");
+  const d = lwAgentDraft;
+  const others = (lwWorld && lwWorld.agents) || [];
+  box.hidden = false;
+  box.className = "studio-detail composing";
+  box.innerHTML = `
+    <div class="sd-head">
+      <div class="fig-emblem" style="background:${sigil(d.name || "New", "anthropic")}">
+        <span class="fig-initial">${escapeHtml((d.name || "?")[0] || "?")}</span></div>
+      <div style="flex:1">
+        <input class="sc-name" id="lwANameInput" placeholder="Name (or leave blank)"
+               value="${escapeHtml(d.name)}" autocomplete="off">
+        <p class="sc-preview">a new person, authored from your brief</p>
+      </div>
+      <button class="sd-close" id="lwAClose">✕</button>
+    </div>
+    <div class="sc-label">Who is this person?</div>
+    <textarea class="sc-input" id="lwABrief" rows="4"
+      placeholder="A cautious accountant who loves poker on weekends… a sentence or two is plenty; the LLM authors the rest.">${escapeHtml(d.brief)}</textarea>
+    <div class="sc-label">Choose parents <span class="dim">(optional — breed from two existing people)</span></div>
+    <label class="lw-toggle"><input type="checkbox" id="lwParentsOn" ${d.parentsOn ? "checked" : ""}>
+      <span>Breed from existing people</span></label>
+    ${d.parentsOn ? (others.length
+      ? `<div class="sc-row">${others.map((a) =>
+          `<button class="sc-chip${d.parents.includes(String(a.id)) ? " on" : ""}" data-parent="${escapeHtml(String(a.id))}">${escapeHtml(a.name || "someone")}</button>`).join("")}</div>
+         <p class="sc-hint">${d.parents.length}/2 chosen</p>`
+      : `<p class="sc-hint">No existing people to breed from yet.</p>`) : ""}
+    <div class="sc-actions"><button class="primary" id="lwACreate">Bring them to life</button></div>`;
+  $("#lwANameInput").addEventListener("input", (e) => {
+    d.name = e.target.value;
+    box.querySelector(".fig-initial").textContent = (d.name || "?")[0] || "?";
+  });
+  $("#lwABrief").addEventListener("input", (e) => { d.brief = e.target.value; });
+  $("#lwParentsOn").addEventListener("change", (e) => { d.parentsOn = e.target.checked; if (!d.parentsOn) d.parents = []; renderLwAgentComposer(); });
+  box.querySelectorAll("[data-parent]").forEach((b) =>
+    b.addEventListener("click", () => {
+      const id = b.dataset.parent;
+      if (d.parents.includes(id)) d.parents = d.parents.filter((x) => x !== id);
+      else if (d.parents.length < 2) d.parents = [...d.parents, id];
+      renderLwAgentComposer();
+    }));
+  $("#lwAClose").addEventListener("click", () => { lwAgentDraft = null; box.hidden = true; });
+  $("#lwACreate").addEventListener("click", doCreateAgent);
+}
+async function doCreateAgent() {
+  const d = lwAgentDraft;
+  const agents = (lwWorld && lwWorld.agents) || [];
+  const body = { name: d.name.trim(), brief: d.brief.trim() };
+  if (d.parentsOn && d.parents.length) {
+    body.parents = d.parents.slice(0, 2).map((pid) => {
+      const a = agents.find((x) => String(x.id) === pid);
+      return a ? a.id : pid;
+    });
+  }
+  try {
+    await api(`/api/lw/${lwWorldId}/human`, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    lwAgentDraft = null; $("#lwDetail").hidden = true;
+    await renderWorkspace();
+  } catch (e) { toast(`Could not create them: ${e.message}`); }
+}
+
+// ---- Artifacts tab: a gallery + the brief-based composer -----------------
+function renderArtifactsTab() {
+  const stage = $("#lwStage");
+  const artifacts = (lwWorld && lwWorld.artifacts) || [];
+  const rooms = (lwWorld && lwWorld.rooms) || [];
+  const idx = lwRoomIndex();
+  if (!artifacts.length) {
+    stage.innerHTML = `<div class="lw-gallery-empty">
+      <p>No objects yet. Describe a thing in a line — "a deck of cards", "a whiteboard" — and it is authored into the world.</p>
+      <button class="primary" id="lwArtNew2">Create your first object</button>
+    </div>`;
+    $("#lwArtNew2").addEventListener("click", openLwArtifactComposer);
+    return;
+  }
+  const cards = artifacts.map((a) => {
+    const room = a.room != null ? rooms.find((r) => String(r.id) === String(a.room)) : null;
+    const style = a.room != null ? lwRoomStyle(idx[String(a.room)] ?? 0) : "";
+    const roomTag = room
+      ? `<span class="lw-card-room">in ${escapeHtml(room.name || "a room")}</span>`
+      : `<span class="lw-card-room unplaced">unplaced</span>`;
+    return lwArtifactCard(a, { style, roomTag });
+  }).join("");
+  stage.innerHTML = `<div class="lw-gallery">${cards}</div>`;
+  stage.querySelectorAll("[data-artifact]").forEach((b) =>
+    b.addEventListener("click", () => lwOpenArtifactPeek(b.dataset.artifact)));
+}
+
+let lwArtifactDraft = null;
+function openLwArtifactComposer() { lwArtifactDraft = { name: "", brief: "" }; renderLwArtifactComposer(); }
+function renderLwArtifactComposer() {
+  const box = $("#lwDetail");
+  const d = lwArtifactDraft;
+  box.hidden = false;
+  box.className = "studio-detail composing";
+  box.innerHTML = `
+    <div class="sd-head">
+      <div class="fig-emblem" style="background:${sigil(d.name || "Object", "anthropic")}">
+        <span class="fig-initial">▢</span></div>
+      <div style="flex:1">
+        <input class="sc-name" id="lwArtNameInput" placeholder="Name this object"
+               value="${escapeHtml(d.name)}" autocomplete="off">
+        <p class="sc-preview">a thing in the world</p>
+      </div>
+      <button class="sd-close" id="lwArtClose">✕</button>
+    </div>
+    <div class="sc-label">What is this thing?</div>
+    <textarea class="sc-input" id="lwArtBrief" rows="3"
+      placeholder="e.g. a deck of cards; a whiteboard; a coffee machine">${escapeHtml(d.brief)}</textarea>
+    <div class="sc-actions"><button class="primary" id="lwArtCreate">Make it</button></div>`;
+  $("#lwArtNameInput").addEventListener("input", (e) => { d.name = e.target.value; });
+  $("#lwArtBrief").addEventListener("input", (e) => { d.brief = e.target.value; });
+  $("#lwArtClose").addEventListener("click", () => { lwArtifactDraft = null; box.hidden = true; });
+  $("#lwArtCreate").addEventListener("click", doCreateArtifact);
+}
+async function doCreateArtifact() {
+  const d = lwArtifactDraft;
+  try {
+    await api(`/api/lw/${lwWorldId}/artifact`, { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: d.name.trim(), brief: d.brief.trim() }) });
+    lwArtifactDraft = null; $("#lwDetail").hidden = true;
+    await renderWorkspace();
+  } catch (e) { toast(`Could not make it: ${e.message}`); }
+}
+
+// A light peek at an object — name, kind, where it sits, whether it is sealed.
+function lwOpenArtifactPeek(aid) {
+  const artifacts = (lwWorld && lwWorld.artifacts) || [];
+  const a = artifacts.find((x) => String(x.id) === String(aid));
+  if (!a) return;
+  const rooms = (lwWorld && lwWorld.rooms) || [];
+  const room = a.room != null ? rooms.find((r) => String(r.id) === String(a.room)) : null;
+  const box = $("#lwDetail");
+  box.hidden = false; box.className = "studio-detail";
+  box.innerHTML = `
+    <div class="sd-head">
+      <div class="lw-obj lw-obj-tile lw-head-obj">${escapeHtml((a.name || "?")[0] || "?")}</div>
+      <div style="flex:1"><h3>${escapeHtml(a.name || "object")}</h3>
+        <p class="sd-persona">${escapeHtml(a.kind || "object")}${room ? ` · in ${escapeHtml(room.name || "a room")}` : " · unplaced"}</p></div>
+      <button class="sd-close" id="lwObjClose">✕</button>
+    </div>
+    <div class="sd-facts">
+      <span>${a.sealed ? "🔒 sealed" : "open"}</span>
+      <span>${a.public ? "public" : "private"}</span>
+      <span>${escapeHtml(a.kind || "object")}</span>
+    </div>`;
+  $("#lwObjClose").addEventListener("click", () => { box.hidden = true; });
+}
+
+// ---- Rooms tab: room cards + the type-picking composer -------------------
+function renderRoomsTab() {
+  const stage = $("#lwStage");
+  const rooms = (lwWorld && lwWorld.rooms) || [];
+  if (!rooms.length) {
+    stage.innerHTML = `<div class="lw-gallery-empty">
+      <p>No rooms yet. A room is a place with a type — a home, a classroom, an office, a casino — where your people gather.</p>
+      <button class="primary" id="lwRoomNew2">Add your first room</button>
+    </div>`;
+    $("#lwRoomNew2").addEventListener("click", openLwRoomComposer);
+    return;
+  }
+  const agents = (lwWorld && lwWorld.agents) || [];
+  const artifacts = (lwWorld && lwWorld.artifacts) || [];
+  const cards = rooms.map((r, i) => {
+    const nA = agents.filter((a) => String(a.room) === String(r.id)).length;
+    const nO = artifacts.filter((a) => String(a.room) === String(r.id)).length;
+    const blurb = (lwRoomTypes.find((t) => t.type === r.type) || {}).blurb || r.blurb || "";
+    return `<button class="lw-room-card" data-room="${escapeHtml(String(r.id))}" style="${lwRoomStyle(i)}">
+      <span class="lw-room-card-name">${escapeHtml(r.name || "room")}</span>
+      <span class="lw-room-card-type">${escapeHtml(r.type || "")}${r.theme ? ` · ${escapeHtml(r.theme)}` : ""}</span>
+      ${blurb ? `<span class="lw-room-card-blurb">${escapeHtml(blurb)}</span>` : ""}
+      <span class="lw-room-card-foot">${nA} seated · ${nO} objects</span>
+    </button>`;
+  }).join("");
+  stage.innerHTML = `<div class="lw-room-grid">${cards}</div>`;
+  stage.querySelectorAll("[data-room]").forEach((b) => {
+    b.addEventListener("click", () => openRoom(b.dataset.room));
+    b.addEventListener("contextmenu", (ev) => lwRoomCardMenu(ev, rooms.find((r) => String(r.id) === b.dataset.room)));
+  });
+}
+
+function lwRoomCardMenu(ev, r) {
+  ev.preventDefault(); ev.stopPropagation();
+  if (!r) return;
+  studioMenu(ev.clientX, ev.clientY, [
+    { label: `Open ${r.name || "room"}`, act: () => openRoom(r.id) },
+  ]);
+}
+
+let lwRoomDraft = null;
+async function openLwRoomComposer() {
+  lwRoomDraft = { name: "", type: "" };
+  if (!lwRoomTypes.length) {
+    try { const d = await api(`/api/lw/${lwWorldId}/room-types`); lwRoomTypes = d.types || []; }
+    catch (e) { /* fall back to whatever the overview provided */ }
+  }
+  if (!lwRoomDraft.type && lwRoomTypes[0]) lwRoomDraft.type = lwRoomTypes[0].type;
+  renderLwRoomComposer();
+}
+function renderLwRoomComposer() {
+  const box = $("#lwDetail");
+  const d = lwRoomDraft;
+  const cur = lwRoomTypes.find((t) => t.type === d.type);
+  box.hidden = false;
+  box.className = "studio-detail composing";
+  box.innerHTML = `
+    <div class="sd-head">
+      <div class="fig-emblem" style="background:${sigil(d.name || d.type || "Room", "anthropic")}">
+        <span class="fig-initial">🚪</span></div>
+      <div style="flex:1">
+        <input class="sc-name" id="lwRNameInput" placeholder="Name this room"
+               value="${escapeHtml(d.name)}" autocomplete="off">
+        <p class="sc-preview">${escapeHtml(cur ? (cur.blurb || cur.type) : "a place for your people")}</p>
+      </div>
+      <button class="sd-close" id="lwRClose">✕</button>
+    </div>
+    <div class="sc-label">Type</div>
+    <div class="sc-row">${lwRoomTypes.length
+      ? lwRoomTypes.map((t) =>
+          `<button class="sc-chip${d.type === t.type ? " on" : ""}" data-rtype="${escapeHtml(t.type)}" title="${escapeHtml(t.blurb || "")}">${escapeHtml(t.type)}</button>`).join("")
+      : `<span class="sc-hint">No room types available.</span>`}</div>
+    ${cur && cur.blurb ? `<p class="sc-hint">${escapeHtml(cur.blurb)}</p>` : ""}
+    <div class="sc-actions"><button class="primary" id="lwRCreate">Add the room</button></div>`;
+  $("#lwRNameInput").addEventListener("input", (e) => { d.name = e.target.value; });
+  box.querySelectorAll("[data-rtype]").forEach((b) =>
+    b.addEventListener("click", () => { d.type = b.dataset.rtype; renderLwRoomComposer(); }));
+  $("#lwRClose").addEventListener("click", () => { lwRoomDraft = null; box.hidden = true; });
+  $("#lwRCreate").addEventListener("click", doCreateRoom);
+}
+async function doCreateRoom() {
+  const d = lwRoomDraft;
+  try {
+    const r = await api(`/api/lw/${lwWorldId}/room`, { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: d.name.trim() || (d.type || "Room"), type: d.type }) });
+    lwRoomDraft = null; $("#lwDetail").hidden = true;
+    const rid = r.room && r.room.id != null ? r.room.id : null;
+    await loadWorld();
+    if (rid != null) { lwTab = "rooms"; lwRoomId = rid; lwSeenLog = new Set(); await renderRoomView(); }
+    else renderRoomsTab();
+  } catch (e) { toast(`Could not add the room: ${e.message}`); }
+}
+
+// ---- the room view (themed by room.theme) --------------------------------
+async function openRoom(rid) {
+  lwTab = "rooms"; lwRoomId = rid; lwRoom = null; lwSeenLog = new Set();
+  $("#lwDetail").hidden = true;
+  await renderRoomView();
+}
+
+// The centre of a casino is the poker felt; every other theme gets a simple,
+// CSS-only setting so a home never looks like a card table.
+function lwSettingHtml(theme, room, deck) {
+  let center;
+  if (theme === "home")
+    center = `<div class="lw-hearth"><span class="lw-flame"></span><span class="lw-flame f2"></span><span class="lw-flame f3"></span></div>`;
+  else if (theme === "classroom")
+    center = `<div class="lw-chalkboard"><span class="lw-chalk">${escapeHtml(room.blurb || "today: be curious")}</span></div>`;
+  else if (theme === "campus")
+    center = `<div class="lw-tree"><span class="lw-canopy"></span><span class="lw-trunk"></span></div>`;
+  else if (theme === "office")
+    center = `<div class="lw-office"><div class="lw-desk"></div><div class="lw-monitors"><span></span><span></span></div></div>`;
+  else
+    center = `<div class="lw-platform"></div>`;
+  const objs = deck ? `<div class="lw-setting-objs">${lwDeckHtml(deck)}</div>` : "";
+  const tau = (lwWorld && lwWorld.world && lwWorld.world.tau) ?? 0;
+  return `<div class="lw-setting-wrap"><div class="lw-setting">${center}${objs}</div>
+    <div class="lw-tick lw-tick-dark">τ <b>${escapeHtml(String(tau))}</b></div></div>`;
+}
+
+function lwDeckHtml(deck) {
+  const pub = deck && deck.public;
+  const count = deck && (deck.count ?? (pub && typeof pub === "object" && pub.count));
+  return `<div class="lw-deck" title="a placed object, dealt from here">
+    <span class="pcard back"><span class="pcard-weave"></span></span>
+    <span class="pcard back"><span class="pcard-weave"></span></span>
+    <span class="pcard back"><span class="pcard-weave"></span></span>
+    <span class="lw-deck-label">${escapeHtml(deck.name || "deck")}${count != null && count !== false ? ` · ${escapeHtml(String(count))}` : ""}</span>
+  </div>`;
+}
+
+async function renderRoomView() {
   const stage = $("#lwStage");
   let d;
-  try { d = await api(`/api/lw/${lwWorldId}`); }
-  catch (e) { stage.innerHTML = `<p class="empty">Could not open world: ${escapeHtml(e.message || String(e))}</p>`; return; }
-  lwWorld = d;
-  const w = d.world || {};
-  const people = d.people || [];
-  const artifacts = d.artifacts || [];
-  const scenes = d.scenes || [];
+  try { d = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}`); }
+  catch (e) { stage.innerHTML = `<p class="empty">Could not open room: ${escapeHtml(e.message || String(e))}</p>`; return; }
+  lwRoom = d.room || d;
+  const room = lwRoom;
+  const theme = room.theme || "open";
+  setLwBar("room");
+  paintLwLive(); paintLwTau();
 
-  if (lwSceneId) lwScene = scenes.find((s) => String(s.id) === String(lwSceneId)) || null;
-  if (!lwScene && scenes.length) lwScene = scenes[0];
-  lwSceneId = lwScene ? lwScene.id : null;
-
-  $("#lwNewWorld").hidden = true;
-  $("#lwToLobby").hidden = false;
-  $("#lwTitle").hidden = false; $("#lwTitle").textContent = w.name || "World";
-  $("#lwLive").hidden = false; paintLwLive();
-  paintLwTau(w, lwScene);
-
-  const seats = lwScene ? (lwScene.seats || []) : [];
-  const usingScene = seats.length > 0;
-  const figures = usingScene ? seats : people;
-  const deck = findDeck(lwScene, artifacts);
-  const handCounts = lwHandCounts(lwScene);
-  const log = lwScene ? (lwScene.log || []) : [];
+  const seats = room.seats || [];
+  const deck = findDeck(room);
+  const handCounts = lwHandCounts(room);
+  const log = room.log || [];
   const prevSeen = lwSeenLog;
+  const tau = (lwWorld && lwWorld.world && lwWorld.world.tau) ?? 0;
 
-  stage.innerHTML = `
-    <div class="lw-topline">
-      <span class="lw-domain">${escapeHtml(lwScene ? (lwScene.name || lwScene.domain || "scene") : "no scene yet — set one below")}</span>
-      <span class="lw-count">${figures.length} ${figures.length === 1 ? "person" : "people"}</span>
+  const center = theme === "casino"
+    ? `<div class="poker-table">
+         <div class="table-rail"></div>
+         <div class="table-felt">
+           <div class="table-center">
+             ${deck ? lwDeckHtml(deck) : `<span class="board-empty">no deck placed — place one from the shelf</span>`}
+             <div class="lw-tick">τ <b>${escapeHtml(String(tau))}</b></div>
+           </div>
+         </div>
+       </div>`
+    : lwSettingHtml(theme, room, deck);
+
+  stage.innerHTML = `<div class="lw-room lw-theme-${escapeHtml(theme)}">
+    <div class="lw-room-topline">
+      <button class="scene-tolobby" id="lwRoomBack">← Rooms</button>
+      <span class="lw-domain">${escapeHtml(room.name || "room")}</span>
+      <span class="lw-count">${escapeHtml(room.type || theme)} · ${seats.length} ${seats.length === 1 ? "person" : "people"}</span>
     </div>
-    <div class="scene-table-wrap" id="lwTableWrap">
-      <div class="poker-table">
-        <div class="table-rail"></div>
-        <div class="table-felt">
-          <div class="table-center">
-            ${deck ? lwDeckHtml(deck) : `<span class="board-empty">no deck on the table</span>`}
-            <div class="lw-tick">τ <b>${escapeHtml(String(w.tau ?? 0))}</b></div>
-          </div>
-        </div>
-      </div>
+    <div class="lw-room-stage" id="lwRoomStage">
+      ${center}
       <div class="seat-layer" id="lwSeatLayer"></div>
-      ${!figures.length
-        ? `<div class="table-hint">Add a person, then set the scene.</div>`
-        : (!usingScene ? `<div class="table-hint">Set the scene to seat them and place a deck.</div>` : "")}
+      ${!seats.length ? `<div class="table-hint">Empty. Seat an agent, then play a round.</div>` : ""}
     </div>
     <div class="scene-controls">
-      <button class="sc-ctl" id="lwAddPerson">＋ Add person</button>
-      <button class="sc-ctl" id="lwAddDeck">Add a deck</button>
-      <button class="sc-ctl" id="lwSetScene">Set the scene</button>
+      <button class="sc-ctl" id="lwSeatAgent">＋ Seat an agent</button>
+      <button class="sc-ctl" id="lwPlaceArtifact">＋ Place an object</button>
       <button class="sc-ctl primary" id="lwRound">▶ Play a round</button>
       <div class="ctl-spacer"></div>
-      <button class="sc-ctl danger" id="lwDelete">Delete world</button>
+      <span class="lw-cost-note">${lwLive
+        ? "🧠 Live — a round asks real models to think and spends tokens"
+        : "💤 Deterministic — free, reproducible reflexes"}</span>
     </div>
     <div class="scene-log lw-log" id="lwLog">${lwLogHtml(log, prevSeen)}</div>`;
 
   const layer = $("#lwSeatLayer");
-  figures.forEach((f, i) => layer.appendChild(lwFigure(f, lwSeatPos(i, figures.length), handCounts)));
+  seats.forEach((s, i) => layer.appendChild(lwFigure(s, lwSeatPos(i, seats.length), handCounts)));
 
-  const wrap = $("#lwTableWrap");
+  const wrap = $("#lwRoomStage");
   wrap.addEventListener("contextmenu", (ev) => {
     if (ev.target.closest(".seat-figure")) return;   // figures own their menu
-    lwFloorMenu(ev);
+    lwRoomFloorMenu(ev);
   });
-
-  $("#lwAddPerson").addEventListener("click", openPersonComposer);
-  $("#lwAddDeck").addEventListener("click", lwAddDeck);
-  $("#lwSetScene").addEventListener("click", lwSetScene);
+  $("#lwRoomBack").addEventListener("click", () => { lwRoomId = null; lwRoom = null; selectLwTab("rooms"); });
+  $("#lwSeatAgent").addEventListener("click", lwOpenSeatPicker);
+  $("#lwPlaceArtifact").addEventListener("click", lwOpenPlacePicker);
   $("#lwRound").addEventListener("click", lwPlayRound);
-  $("#lwDelete").addEventListener("click", lwDeleteWorld);
 
   // Everything on screen is now "seen"; only genuinely new lines animate next time.
   lwSeenLog = new Set(log.map((l) => String(l.n)));
-}
-
-function lwDeckHtml(deck) {
-  const count = deck && (deck.count ?? (deck.public && deck.public.count));
-  return `<div class="lw-deck" title="the deck — a shared artifact, dealt from the centre">
-    <span class="pcard back"><span class="pcard-weave"></span></span>
-    <span class="pcard back"><span class="pcard-weave"></span></span>
-    <span class="pcard back"><span class="pcard-weave"></span></span>
-    <span class="lw-deck-label">${escapeHtml(deck.name || "deck")}${count != null ? ` · ${escapeHtml(String(count))}` : ""}</span>
-  </div>`;
-}
-
-function lwMoodBars(mood) {
-  const bar = (label, v, cls) =>
-    `<span class="lw-mbar ${cls}" title="${label} ${lwPct(v)}"><i style="width:${lwPct(v)}%"></i></span>`;
-  return `<div class="lw-mood">${bar("confidence", mood.confidence, "conf")}${bar("stress", mood.stress, "stress")}</div>`;
 }
 
 function lwFigure(f, pos, handCounts) {
@@ -5387,7 +5867,7 @@ function lwFigure(f, pos, handCounts) {
   el.innerHTML = `
     ${backs}
     <div class="fig-emblem" style="background:${sigil(f.name || "?", "anthropic")}">
-      <span class="fig-initial">${escapeHtml((f.name || "?")[0])}</span></div>
+      <span class="fig-initial">${escapeHtml((f.name || "?")[0] || "?")}</span></div>
     <div class="fig-name">${escapeHtml(f.name || "someone")}</div>
     ${lwMoodBars(mood)}
     ${want ? `<div class="lw-want" title="dominant drive">▸ ${escapeHtml(want.name)}${
@@ -5398,8 +5878,8 @@ function lwFigure(f, pos, handCounts) {
   return el;
 }
 
-// Cost is visible and fun: a billed / tier-2 line carries a 💭 thought marker; a
-// free deterministic reflex is labelled as such. Only unseen lines animate in.
+// Cost is visible: a billed / tier-2 line carries a 💭 thought marker; a free
+// deterministic reflex is labelled as such. Only unseen lines animate in.
 function lwLogHtml(log, prevSeen) {
   if (!log || !log.length)
     return `<div class="lw-log-empty">The ticker is quiet. Play a round to stir them.</div>`;
@@ -5430,159 +5910,40 @@ function paintLwLive() {
     : "Deterministic: free, reproducible reflexes, no tokens. Flip to Live to spend tokens on real thinking.";
 }
 
-function paintLwTau(w, scene) {
+function paintLwTau() {
   const m = $("#lwTau");
   if (!m) return;
-  m.hidden = false;
+  const tau = (lwWorld && lwWorld.world && lwWorld.world.tau) ?? 0;
+  const calls = lwBilledCount(lwRoom);
   m.className = "scene-meter";
-  const calls = lwBilledCount(scene);
-  m.textContent = `τ ${w.tau ?? 0} · ${calls} billed thought${calls === 1 ? "" : "s"}`;
+  m.textContent = `τ ${tau} · ${calls} billed thought${calls === 1 ? "" : "s"}`;
 }
 
-// ---- controls ------------------------------------------------------------
+// ---- room controls -------------------------------------------------------
 async function lwPlayRound() {
-  if (!lwSceneId) { toast("Set the scene first — seat your people and place a deck."); return; }
   const b = $("#lwRound"); if (b) { b.disabled = true; b.classList.add("busy"); }
   try {
-    await api(`/api/lw/${lwWorldId}/scene/${lwSceneId}/round${lwLiveQ()}`, { method: "POST" });
-    await renderWorldTable();
+    const r = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/round${lwLiveQ()}`, { method: "POST" });
+    if (r && r.world_tau != null && lwWorld && lwWorld.world) lwWorld.world.tau = r.world_tau;
+    await renderRoomView();
   } catch (e) { toast(`Round failed: ${e.message}`); }
   finally { const bb = $("#lwRound"); if (bb) { bb.disabled = false; bb.classList.remove("busy"); } }
 }
 
 async function lwActOne(hid, verb, target, extra) {
-  if (!lwSceneId) { toast("Set the scene first."); return; }
   try {
     const body = Object.assign({ human_id: hid, verb, target }, extra || {});
-    await api(`/api/lw/${lwWorldId}/scene/${lwSceneId}/act${lwLiveQ()}`, {
+    await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/act${lwLiveQ()}`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    await renderWorldTable();
+    await renderRoomView();
   } catch (e) { toast(`Could not act: ${e.message}`); }
 }
 
-// Set the scene: create it, seat everyone, and place a deck — all in one go.
-async function lwSetScene() {
-  if (!lwWorld) return;
-  const people = lwWorld.people || [];
-  if (!people.length) { toast("Add a person first."); return; }
-  const b = $("#lwSetScene"); if (b) { b.disabled = true; b.classList.add("busy"); }
-  try {
-    const r = await api(`/api/lw/${lwWorldId}/scene`, { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "The card table", domain: "cards.poker", flags: {} }) });
-    const sid = r.scene && r.scene.id != null ? r.scene.id : null;
-    if (sid != null) {
-      for (const p of people) {
-        try { await api(`/api/lw/${lwWorldId}/scene/${sid}/seat?human_id=${encodeURIComponent(p.id)}`, { method: "POST" }); }
-        catch (e) { /* keep seating the rest */ }
-      }
-      let deck = findDeck(null, lwWorld.artifacts);
-      if (!deck) {
-        try { const dr = await api(`/api/lw/${lwWorldId}/deck?seed=7`, { method: "POST" }); deck = dr.artifact; }
-        catch (e) { /* no deck is still a valid table */ }
-      }
-      if (deck && deck.id != null) {
-        try { await api(`/api/lw/${lwWorldId}/scene/${sid}/place?artifact_id=${encodeURIComponent(deck.id)}`, { method: "POST" }); }
-        catch (e) { /* placement optional */ }
-      }
-      lwSceneId = sid; lwScene = null;
-    }
-    await renderWorldTable();
-  } catch (e) { toast(`Could not set the scene: ${e.message}`); }
-  finally { const bb = $("#lwSetScene"); if (bb) { bb.disabled = false; bb.classList.remove("busy"); } }
-}
-
-async function lwAddDeck() {
-  try {
-    const seed = 1 + Math.floor(Math.random() * 9999);
-    const r = await api(`/api/lw/${lwWorldId}/deck?seed=${seed}`, { method: "POST" });
-    if (lwSceneId && r.artifact && r.artifact.id != null) {
-      try { await api(`/api/lw/${lwWorldId}/scene/${lwSceneId}/place?artifact_id=${encodeURIComponent(r.artifact.id)}`, { method: "POST" }); }
-      catch (e) { /* placement optional */ }
-    }
-    toast("A fresh deck is on the table.");
-    await renderWorldTable();
-  } catch (e) { toast(`Could not add a deck: ${e.message}`); }
-}
-
-async function lwDeleteWorld() {
-  if (!lwWorldId) return;
-  try {
-    await api(`/api/lw/${lwWorldId}`, { method: "DELETE" });
-    lwWorldId = null; lwScene = null; lwSceneId = null;
-    setHash("#/lifeworld");
-    await renderLifeworld();
-  } catch (e) { toast(`Could not delete: ${e.message}`); }
-}
-
-// --- Add a person: the trait dials as sliders (reuses the shared dial bank). ---
-let lwPersonDraft = null;
-function openPersonComposer() { lwPersonDraft = { name: "", dials: {} }; renderPersonComposer(); }
-function lwDialBankHtml(dials) {
-  dials = dials || {};
-  return `<div class="eq-bank">${LW_DIALS.map((key) => {
-    const raw = Number(dials[key]);
-    const val = Number.isFinite(raw) ? raw : 50;
-    const label = key.replace(/_/g, " ");
-    return `<div class="eq-row">
-      <span class="eq-name">${escapeHtml(label)}</span>
-      <input class="eq-slider" type="range" min="0" max="100" step="1"
-             value="${val}" data-dial="${key}" aria-label="${escapeHtml(label)}">
-      <span class="eq-val" data-dialval="${key}">${val}</span>
-    </div>`;
-  }).join("")}</div>`;
-}
-function renderPersonComposer() {
-  const box = $("#lwDetail");
-  const d = lwPersonDraft;
-  box.hidden = false;
-  box.className = "studio-detail composing";
-  box.innerHTML = `
-    <div class="sd-head">
-      <div class="fig-emblem" style="background:${sigil(d.name || "New", "anthropic")}">
-        <span class="fig-initial">${escapeHtml((d.name || "?")[0])}</span></div>
-      <div style="flex:1">
-        <input class="sc-name" id="lwPName" placeholder="Name (or leave blank)"
-               value="${escapeHtml(d.name)}" autocomplete="off">
-        <p class="sc-preview">a new synthetic person</p>
-      </div>
-      <button class="sd-close" id="lwPClose">✕</button>
-    </div>
-    <div class="sc-label">Temperament dials <span class="dim">(0..100, 50 is neutral)</span></div>
-    ${lwDialBankHtml(d.dials)}
-    <div class="sc-actions"><button class="primary" id="lwPCreate">Bring them to life</button></div>`;
-  $("#lwPName").addEventListener("input", (e) => {
-    d.name = e.target.value;
-    box.querySelector(".fig-initial").textContent = (d.name || "?")[0] || "?";
-  });
-  wireDialBank(box, d.dials);                 // shared: writes into d.dials, live readout
-  $("#lwPClose").addEventListener("click", () => { lwPersonDraft = null; box.hidden = true; });
-  $("#lwPCreate").addEventListener("click", doAddPerson);
-}
-async function doAddPerson() {
-  const d = lwPersonDraft;
-  try {
-    const r = await api(`/api/lw/${lwWorldId}/human`, { method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: d.name.trim(), dials: d.dials, senses: {} }) });
-    const hid = r.human && r.human.id != null ? r.human.id : null;
-    // If a scene is already running, seat the newcomer so they appear at the table.
-    if (lwSceneId && hid != null) {
-      try { await api(`/api/lw/${lwWorldId}/scene/${lwSceneId}/seat?human_id=${encodeURIComponent(hid)}`, { method: "POST" }); }
-      catch (e) { /* they'll seat on the next Set the scene */ }
-    }
-    lwPersonDraft = null; $("#lwDetail").hidden = true;
-    await renderWorldTable();
-  } catch (e) { toast(`Could not add them: ${e.message}`); }
-}
-
-// --- Finer verbs via right-click a figure (createElement/textContent menu). ---
-function lwFloorMenu(ev) {
+function lwRoomFloorMenu(ev) {
   ev.preventDefault();
   studioMenu(ev.clientX, ev.clientY, [
-    { label: "＋ Add a person", act: openPersonComposer },
-    { label: "Add a deck", act: lwAddDeck },
-    { label: "Set the scene", act: lwSetScene },
+    { label: "＋ Seat an agent", act: lwOpenSeatPicker },
+    { label: "＋ Place an object", act: lwOpenPlacePicker },
     { sep: true },
     { label: "▶ Play a round", act: lwPlayRound },
   ]);
@@ -5590,12 +5951,15 @@ function lwFloorMenu(ev) {
 
 function lwFigureMenu(ev, f, hid) {
   ev.preventDefault(); ev.stopPropagation();
-  const ring = lwScene ? (lwScene.seats || []) : ((lwWorld && lwWorld.people) || []);
-  const i = ring.findIndex((s) => String(lwHumanId(s)) === String(hid));
-  const nb = ring.length > 1 && i >= 0 ? ring[(i + 1) % ring.length] : null;
-  const deck = findDeck(lwScene, lwWorld && lwWorld.artifacts);
+  const seats = (lwRoom && lwRoom.seats) || [];
+  const i = seats.findIndex((s) => String(lwHumanId(s)) === String(hid));
+  const nb = seats.length > 1 && i >= 0 ? seats[(i + 1) % seats.length] : null;
+  const deck = findDeck(lwRoom);
   const items = [{ label: `Peek ${f.name || "them"}`, act: () => openPersonDrawer(hid, f.name) }];
-  if (deck) items.push({ label: `Deal a card to ${f.name || "them"}`, act: () => lwActOne(hid, "draw", deck.id) });
+  if (deck) {
+    items.push({ label: `Deal a card to ${f.name || "them"}`, act: () => lwActOne(hid, "draw", deck.id) });
+    items.push({ label: `Flip ${f.name || "their"} card`, act: () => lwActOne(hid, "flip", deck.id) });
+  }
   if (nb) {
     const nbId = lwHumanId(nb);
     items.push({ sep: true });
@@ -5606,7 +5970,63 @@ function lwFigureMenu(ev, f, hid) {
   studioMenu(ev.clientX, ev.clientY, items);
 }
 
-// --- Peek a person: the operator's drawer over their whole inner state. ---
+// Seat an agent: pick from the world's people not already in this room.
+function lwOpenSeatPicker() {
+  const box = $("#lwDetail");
+  const agents = (lwWorld && lwWorld.agents) || [];
+  const seated = new Set(((lwRoom && lwRoom.seats) || []).map((s) => String(lwHumanId(s))));
+  const avail = agents.filter((a) => !seated.has(String(a.id)));
+  box.hidden = false; box.className = "studio-detail";
+  box.innerHTML = `
+    <div class="sd-head"><div style="flex:1"><h3>Seat an agent</h3>
+      <p class="sd-persona">place one of the world's people into this room</p></div>
+      <button class="sd-close" id="lwSeatClose">✕</button></div>
+    ${avail.length ? `<div class="seatpick-list">${avail.map((a) =>
+      `<button class="seatpick-row" data-seat="${escapeHtml(String(a.id))}">
+        <span class="fig-emblem" style="background:${sigil(a.name || "?", "anthropic")}"><span class="fig-initial">${escapeHtml((a.name || "?")[0] || "?")}</span></span>
+        <span class="seatpick-name">${escapeHtml(a.name || "someone")}</span>
+        <span class="seatpick-role">${escapeHtml((dominantWant(a.wants) || {}).name || "")}</span>
+      </button>`).join("")}</div>`
+      : `<p class="sc-hint">Everyone is already here. Create more people in the Agents tab.</p>`}`;
+  $("#lwSeatClose").addEventListener("click", () => { box.hidden = true; });
+  box.querySelectorAll("[data-seat]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      try {
+        await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/seat?human_id=${encodeURIComponent(b.dataset.seat)}`, { method: "POST" });
+        box.hidden = true; await loadWorld(); await renderRoomView();
+      } catch (e) { toast(`Could not seat them: ${e.message}`); }
+    }));
+}
+
+// Place an object: pick from the world's objects not already in this room.
+function lwOpenPlacePicker() {
+  const box = $("#lwDetail");
+  const artifacts = (lwWorld && lwWorld.artifacts) || [];
+  const placed = new Set(((lwRoom && lwRoom.props) || []).map((p) => String(p.id)));
+  const avail = artifacts.filter((a) => !placed.has(String(a.id)));
+  box.hidden = false; box.className = "studio-detail";
+  box.innerHTML = `
+    <div class="sd-head"><div style="flex:1"><h3>Place an object</h3>
+      <p class="sd-persona">place one of the world's objects into this room</p></div>
+      <button class="sd-close" id="lwPlaceClose">✕</button></div>
+    ${avail.length ? `<div class="seatpick-list">${avail.map((a) =>
+      `<button class="seatpick-row" data-place="${escapeHtml(String(a.id))}">
+        <span class="lw-obj lw-obj-tile">${escapeHtml((a.name || "?")[0] || "?")}</span>
+        <span class="seatpick-name">${escapeHtml(a.name || "object")}</span>
+        <span class="seatpick-role">${escapeHtml(a.kind || "")}</span>
+      </button>`).join("")}</div>`
+      : `<p class="sc-hint">Every object is already placed. Create more in the Artifacts tab.</p>`}`;
+  $("#lwPlaceClose").addEventListener("click", () => { box.hidden = true; });
+  box.querySelectorAll("[data-place]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      try {
+        await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/place?artifact_id=${encodeURIComponent(b.dataset.place)}`, { method: "POST" });
+        box.hidden = true; await loadWorld(); await renderRoomView();
+      } catch (e) { toast(`Could not place it: ${e.message}`); }
+    }));
+}
+
+// ---- peek a person: the operator's drawer over their whole inner state ----
 function lwMeter(label, v) {
   const p = lwPct(v);
   return `<div class="lw-meter-row">
@@ -5652,7 +6072,7 @@ async function openPersonDrawer(hid, name) {
   box.innerHTML = `
     <div class="sd-head">
       <div class="fig-emblem" style="background:${sigil(h.name || name || "?", "anthropic")}">
-        <span class="fig-initial">${escapeHtml((h.name || name || "?")[0])}</span></div>
+        <span class="fig-initial">${escapeHtml((h.name || name || "?")[0] || "?")}</span></div>
       <div style="flex:1"><h3>${escapeHtml(h.name || name || "someone")}</h3>
         <p class="sd-persona">${escapeHtml(d.narrative || h.narrative || "no story yet")}</p></div>
       <button class="sd-close" id="lwDClose">✕</button>
@@ -5709,10 +6129,22 @@ async function openPersonDrawer(hid, name) {
 $("#modeLifeworld") && $("#modeLifeworld").addEventListener("click", () => openLifeworld());
 $("#lwBack") && $("#lwBack").addEventListener("click", () => showHome());
 $("#lwToLobby") && $("#lwToLobby").addEventListener("click", () => {
-  lwWorldId = null; lwScene = null; lwSceneId = null; setHash("#/lifeworld"); renderLifeworld();
+  lwWorldId = null; lwWorld = null; lwRoomId = null; lwRoom = null; lwTab = "overview";
+  setHash("#/lifeworld"); renderLifeworld();
 });
 $("#lwNewWorld") && $("#lwNewWorld").addEventListener("click", openWorldComposer);
-$("#lwLive") && $("#lwLive").addEventListener("click", () => { lwLive = !lwLive; paintLwLive(); });
+$("#lwNewAgent") && $("#lwNewAgent").addEventListener("click", openLwAgentComposer);
+$("#lwNewArtifact") && $("#lwNewArtifact").addEventListener("click", openLwArtifactComposer);
+$("#lwNewRoom") && $("#lwNewRoom").addEventListener("click", openLwRoomComposer);
+$("#lwLive") && $("#lwLive").addEventListener("click", () => {
+  lwLive = !lwLive; paintLwLive();
+  const n = document.querySelector(".lw-cost-note");
+  if (n) n.textContent = lwLive
+    ? "🧠 Live — a round asks real models to think and spends tokens"
+    : "💤 Deterministic — free, reproducible reflexes";
+});
+document.querySelectorAll(".lw-tab").forEach((b) =>
+  b.addEventListener("click", () => selectLwTab(b.dataset.lwtab)));
 
 
 async function boot() {
