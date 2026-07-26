@@ -311,3 +311,27 @@ def test_the_activity_panel_lists_what_happened(server, page):
     page.click("#sdStep"); page.wait_for_timeout(700)
     page.click("#sdActBtn"); page.wait_for_selector(".sd-activity .sd-act-row", timeout=5000)
     assert page.eval_on_selector_all(".sd-act-row", "els => els.length") > 0
+
+
+def test_the_canvas_fills_the_host_no_dead_zone(server, page):
+    """A 0x0-at-mount race used to size the stage to a 900x460 fallback, leaving tokens
+    to the right/bottom in a dead zone the pointer never reached (inconsistent selection).
+    The stage must now match the host, and an edge token must select."""
+    c = server["client"]; wid, rid = _mk(c, "Fill")
+    a = c.post(f"/api/lw/{wid}/artifact", json={"name": "far", "brief": "a box"}).json()["artifact"]
+    c.post(f"/api/lw/{wid}/room/{rid}/place", params={"artifact_id": a["id"]})
+    c.post(f"/api/lw/{wid}/pos", json={"id": a["id"], "x": 1250, "y": 760})
+    hid = c.post(f"/api/lw/{wid}/human", json={"name": "Edge"}).json()["human"]["id"]
+    c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": hid})
+    c.post(f"/api/lw/{wid}/pos", json={"id": hid, "x": 40, "y": 40})
+    _open_scene(page, wid, rid); page.wait_for_timeout(300)
+    sz = page.evaluate("() => { const s=lwKonva.stage, h=lwKonva.host; return {sw:s.width(), sh:s.height(), hw:h.clientWidth, hh:h.clientHeight}; }")
+    assert sz["sw"] == sz["hw"] and sz["sh"] == sz["hh"], f"stage does not fill host (dead zone): {sz}"
+    for kind, eid in (("prop", a["id"]), ("agent", hid)):
+        s = page.evaluate("""([kind,id])=>{const m=kind==='agent'?lwKonva.agents:lwKonva.props; const e=m.get(String(id));
+            const q=e.node.getAbsolutePosition(), b=lwKonva.stage.container().getBoundingClientRect(); return {x:b.left+q.x, y:b.top+q.y};}""", [kind, eid])
+        tag = page.evaluate("([x,y])=>{const el=document.elementFromPoint(x,y); return el?el.tagName:null;}", [s["x"], s["y"]])
+        assert tag == "CANVAS", f"{kind} centre under <{tag}>, not the canvas"
+        page.mouse.click(s["x"], s["y"]); page.wait_for_timeout(120)
+        assert page.evaluate("() => lwKonva.sel.size") == 1, f"{kind} did not select"
+        page.evaluate("() => lwSelClear()")

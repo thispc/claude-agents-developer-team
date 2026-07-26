@@ -6293,7 +6293,13 @@ function lwDestroyCanvas() {
 function lwMountCanvas(room, agents, props) {
   const host = $("#lwKonvaHost");
   if (!host || typeof Konva === "undefined") return;
-  const W = host.clientWidth || 900, H = host.clientHeight || 460;
+  // The host can read 0×0 for a frame right after innerHTML (layout not settled yet). A
+  // small fallback there would leave the canvas smaller than the visible floor, so clicks
+  // and drags in the uncovered region silently miss — the inconsistent "won't select"
+  // bug. Fall back to the VIEWPORT so the canvas always covers everything; lwSettleSize
+  // trims it to the real host size on the next frame.
+  const W = host.clientWidth || window.innerWidth || 1400;
+  const H = host.clientHeight || window.innerHeight || 800;
   const stage = new Konva.Stage({ container: host, width: W, height: H });
   const gridLayer = new Konva.Layer({ listening: false });
   const worldLayer = new Konva.Layer();
@@ -6370,10 +6376,12 @@ function lwMountCanvas(room, agents, props) {
     if (seat) lwSetSteadyGlow(node, true);
   });
 
-  // Restore the viewport we cached for this room, or frame everything once.
+  // Restore the cached viewport, or frame everything once. `framed` stays false if the
+  // host wasn't measured yet, so lwSettleSize/the ResizeObserver re-frames precisely once
+  // a real size arrives (the provisional fit here keeps tokens visible meanwhile).
   const view = lwViewCache[lwKonva.roomId];
-  if (view) { stage.position({ x: view.x, y: view.y }); stage.scale({ x: view.scale, y: view.scale }); }
-  else lwFitView();
+  if (view) { stage.position({ x: view.x, y: view.y }); stage.scale({ x: view.scale, y: view.scale }); lwKonva.framed = true; }
+  else { lwFitView(); lwKonva.framed = host.clientWidth > 0 && host.clientHeight > 0; }
 
   stage.draggable(lwTool === "select");
   lwSetCursor(lwToolCursor(lwTool));
@@ -6465,15 +6473,39 @@ function lwMountCanvas(room, agents, props) {
 
   lwKonva.ro = new ResizeObserver(() => {
     if (!lwKonva || lwKonva.stage !== stage) return;
-    stage.width(host.clientWidth || W); stage.height(host.clientHeight || H);
+    const w = host.clientWidth, h = host.clientHeight;
+    if (w > 0 && h > 0) {                         // never shrink to a fallback when host reads 0
+      if (stage.width() !== w || stage.height() !== h) { stage.width(w); stage.height(h); }
+      if (!lwKonva.framed) { lwFitView(); lwKonva.framed = true; }
+    }
   });
   lwKonva.ro.observe(host);
+  lwSettleSize(stage, host);          // catch the 0×0-at-mount race by polling a few frames
 
   lwKonva.keyHandler = lwKeyHandler;
   document.addEventListener("keydown", lwKeyHandler);
 
   gridLayer.hide();
   worldLayer.draw();
+}
+
+// Poll a few frames until the host has a real size, then match the stage to it and do the
+// first true fit — so the canvas always covers the whole floor and no token can land in a
+// dead zone the pointer never reaches.
+function lwSettleSize(stage, host) {
+  let tries = 0;
+  const step = () => {
+    if (!lwKonva || lwKonva.stage !== stage) return;
+    const w = host.clientWidth, h = host.clientHeight;
+    if (w > 0 && h > 0) {
+      if (stage.width() !== w || stage.height() !== h) { stage.width(w); stage.height(h); }
+      if (!lwKonva.framed) { lwFitView(); lwKonva.framed = true; }
+      lwKonva.worldLayer.batchDraw();
+      return;                             // settled
+    }
+    if (tries++ < 60) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }
 
 function lwPointerWorld() {
