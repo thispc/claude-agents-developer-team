@@ -24,6 +24,7 @@ from typing import Any, Callable
 from .types import Packet, Signal
 
 PROMOTE_AFTER = 3        # identical deliberations before a habit is compiled
+TALLY_CAP = 64           # bound the pre-compile counters; a chaotic world can't grow them without limit
 CONFIDENCE_START = 0.6
 CONFIDENCE_RETIRE = 0.25
 CONFIDENCE_STEP = 0.08
@@ -99,6 +100,12 @@ class RuleEngine:
         if rec["count"] >= PROMOTE_AFTER and not self._has_rule(signal, ctx, shape):
             self.rules.append(Rule(match=self._match_of(signal, ctx),
                                    emit=rec["emit"], born_tau=tau))
+            self._tally.pop(sig, None)         # compiled — stop tracking this signature
+        # Bound the tally: it holds at most one entry per distinct signal shape, but a
+        # chaotic world could invent many, so cap it and drop the least-seen.
+        if len(self._tally) > TALLY_CAP:
+            for k in sorted(self._tally, key=lambda k: self._tally[k]["count"])[:len(self._tally) - TALLY_CAP]:
+                del self._tally[k]
 
     # --- helpers ------------------------------------------------------------
 

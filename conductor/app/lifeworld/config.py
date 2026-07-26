@@ -18,13 +18,18 @@ from typing import Any
 
 # Every flag, grouped, with its default. Groups are documentation; the flat name is the
 # key everything checks. Keep this the single source of truth for what can be toggled.
+#
+# Flags marked (reserved) are declared now — so a world can be authored with them and the
+# preset table stays complete — but their behaviour lands in a later wave (gossip and
+# deception ride on theory_of_mind; mortality/inheritance are the lifecycle wave). They are
+# intentional forward-declarations, not dead code; `switch_drama_off` already flips them.
 GROUPS: dict[str, dict[str, bool]] = {
     "learning": {"rule_compiler": True, "skill_growth": True},
     "affect":   {"emotions": True, "drives": True},
-    "drama":    {"theory_of_mind": True, "gossip": True, "deception": True,
-                 "mood_volatility": True, "self_deception": True},
+    "drama":    {"theory_of_mind": True, "mood_volatility": True,
+                 "gossip": True, "deception": True, "self_deception": True},   # last 3 reserved
     "security": {"secrets_circles": True, "ledger": True},
-    "life":     {"mortality": True, "inheritance": True},
+    "life":     {"mortality": True, "inheritance": True},                      # reserved (lifecycle wave)
     "memory":   {"memory": True},
 }
 

@@ -76,12 +76,21 @@ class Memory:
 
     # --- remember / recall / sleep -----------------------------------------
 
+    def note(self, gist: str) -> None:
+        """Push one gist into the bounded sensory buffer — the single place the buffer is
+        maintained, so it can never grow without bound however many signals are ignored."""
+        if gist:
+            self.buffer.append(gist)
+            del self.buffer[:-BUFFER_K]
+
     def remember(self, packet: Packet, signal: Signal, weights: dict[str, float],
                  tau: int, goal_relevance: float = 0.0, social_strength: float = 0.0) -> bool:
         gist = packet.memory or packet.understood or signal.text()
-        self.buffer.append(gist)
-        del self.buffer[:-BUFFER_K]
+        # Score BEFORE noting, so novelty compares the current gist against what came
+        # before it — not against a buffer that already contains itself (which would make
+        # everything look familiar).
         s = self.salience(packet, signal, weights, goal_relevance, social_strength)
+        self.note(gist)
         if s < SALIENCE_THRESHOLD or not gist.strip():
             return False                                  # correctly forgotten, free
         self.episodic.append(Episode(
@@ -129,7 +138,10 @@ class Memory:
         """Consolidate: fold unconsolidated episodes into per-domain semantic facts, then
         mark them done. Deterministic and free — the floor a model consolidator can later
         improve on. Returns how many episodes were folded."""
-        fresh = [e for e in self.episodic if not e.consolidated]
+        # Only PUBLIC episodes are folded into the (public) semantic block. A secret
+        # memory (scope circle/direct) is never distilled into a store that a public
+        # recall would emit — it stays episodic, where recall's scope filter guards it.
+        fresh = [e for e in self.episodic if not e.consolidated and e.scope == "public"]
         if len(fresh) < 6:                                # only worth it once work piled up
             return 0
         by_domain: dict[str, list[str]] = {}

@@ -43,8 +43,8 @@ class Ledger:
 
     def commit(self, tau: int, summary: str) -> Pin:
         parent = self.head
-        pin = Pin(tau=tau, summary=summary[:200], parent=parent,
-                  digest=sha(str(tau), summary, parent)[:16])
+        s = summary[:200]                      # hash the SAME value we store, or verify() fails
+        pin = Pin(tau=tau, summary=s, parent=parent, digest=sha(str(tau), s, parent)[:16])
         self.pins.append(pin)
         return pin
 

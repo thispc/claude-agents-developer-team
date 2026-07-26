@@ -47,6 +47,7 @@ class Human(Being):
         self.social = Social()
         self.narrative = narrative or f"{name}, newly arrived."
         self.last_action: dict[str, Any] = {}
+        self.flag_overrides: dict[str, bool] = {}    # the AGENT flag layer (world < scene < agent)
 
     @classmethod
     def newborn(cls, id: int, name: str, *, dials: dict | None = None,
@@ -66,7 +67,7 @@ class Human(Being):
         goal, pressure = self.drives.dominant_goal()
         drive_rel = 1.0 if (s.domain and goal in s.domain) else 0.3
         if self.senses.attention(s, drive_rel) < ATTENTION_FLOOR:
-            self.memory.buffer.append(s.text())          # noticed, ignored, free
+            self.memory.note(s.text())                   # noticed, ignored, free — buffer stays bounded
             self._background()
             return Packet(understood="(ignored)")
 
@@ -90,8 +91,11 @@ class Human(Being):
         return {"from_trusted": trust > 0.6, "tone": s.payload.get("tone", "")}
 
     def _apply(self, s: Signal, p: Packet, flags, goal_pressure: float) -> None:
+        # Full mood swings only when both emotions AND volatility are on. Serious mode
+        # (volatility off) or emotions off both DAMPEN — the earlier `or not emotions`
+        # was inverted and made an unemotional world the most volatile one.
         self.psyche.apply(p.mood, p.vitals, p.traits,
-                          mood_volatility=flags.on("mood_volatility") or not flags.on("emotions"))
+                          mood_volatility=flags.on("mood_volatility") and flags.on("emotions"))
         if flags.on("drives"):
             self.drives.apply(p.drives)
         if flags.on("skill_growth") and s.domain:
@@ -152,6 +156,7 @@ class Human(Being):
     def to_dict(self) -> dict[str, Any]:
         d = super().to_dict()
         d.update(narrative=self.narrative, last_action=self.last_action,
+                 flag_overrides=self.flag_overrides,
                  psyche=self.psyche.to_dict(), senses=self.senses.to_dict(),
                  memory=self.memory.to_dict(), skills=self.skills.to_dict(),
                  drives=self.drives.to_dict(), rules=self.rules.to_dict(),
@@ -171,4 +176,5 @@ class Human(Being):
         h.social = Social.from_dict(d.get("social"))
         h.ledger = Ledger.from_dict(d.get("ledger"))
         h.last_action = d.get("last_action", {})
+        h.flag_overrides = d.get("flag_overrides", {})
         return h

@@ -86,11 +86,10 @@ class Card(Artifact):
         return _RANK_VAL.get(v.get("rank", ""), 0)
 
     def flip(self) -> None:
-        """Face-up publishes the value; face-down re-seals it to its holder only. A flip
-        is the owner's own analogy — a card's secret made visible or hidden, for free."""
-        if self.public.get("face_up"):
-            return                                     # already public; nothing to hide
-        self.public["face_up"] = True                  # UI reads this; value stays keyed
+        """Turn the card over — a free effect the owner's analogy calls for. Toggles both
+        ways; `face_up` is the visual state the UI reads, while the value stays keyed to
+        its holder regardless (a face-up card is a later refinement)."""
+        self.public["face_up"] = not self.public.get("face_up", False)
 
     def interact(self, verb: str, agent, world) -> Signal:
         if verb == "flip":
@@ -104,31 +103,51 @@ class Card(Artifact):
 
 @register
 class Deck(Artifact):
+    """The shoe. Its order is a SECRET the world holds — never in public state and never
+    returned by any view — so no agent can read the deal order or recover a card sealed to
+    someone else. Public state is only the count and the cursor. (Earlier this kept the
+    plaintext order in `public`, which defeated every per-card seal; that is fixed here.)"""
     kind = "deck"
+
+    def __init__(self, id, name="deck", pos=(0.0, 0.0), tau=0, public=None,
+                 secret="", holder=None, order=None):
+        super().__init__(id, name, pos, tau, public, secret, holder)
+        self.order: list = order or []        # the shuffled deal order — private, never viewed
 
     @classmethod
     def fresh(cls, id: int, seed: int = 0, name: str = "deck") -> "Deck":
         import random
         cards = [{"rank": r, "suit": s} for s in SUITS for r in RANKS]
         random.Random(seed).shuffle(cards)
-        return cls(id, name, public={"cards": cards, "cursor": 0, "count": len(cards)})
+        return cls(id, name, public={"cursor": 0, "count": len(cards)}, order=cards)
 
     def draw_to(self, agent, world) -> "Card | None":
         """Deal the top card to `agent`, sealed to a fresh key handed only to them. The
-        deterministic dealer: state changes, a secret is created, no model is touched."""
+        order is read from the deck's PRIVATE `order`, never from public state."""
         cur = self.public.get("cursor", 0)
-        cards = self.public.get("cards", [])
-        if cur >= len(cards):
+        if cur >= len(self.order):
             return None
-        value = cards[cur]
+        value = self.order[cur]
         self.public["cursor"] = cur + 1
+        self.public["count"] = len(self.order) - self.public["cursor"]   # remaining only
         key = new_key()
         cid = world.next_id()
-        card = Card(cid, name=f"a card", public={"back": "blue", "face_up": False},
+        card = Card(cid, name="a card", public={"back": "blue", "face_up": False},
                     secret=seal(value, key), holder=agent.id)
         agent.social.join_circle(f"art:{cid}", key)     # the key lands in the agent's private scope
         world.add(card)
         return card
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["order"] = self.order          # persisted for reload; NOT exposed by view()
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "Deck":
+        return cls(id=d["id"], name=d.get("name", "deck"), pos=tuple(d.get("pos", (0, 0))),
+                   tau=int(d.get("tau", 0)), public=d.get("public", {}),
+                   secret=d.get("secret", ""), holder=d.get("holder"), order=d.get("order", []))
 
     def interact(self, verb: str, agent, world) -> Signal:
         if verb == "draw":

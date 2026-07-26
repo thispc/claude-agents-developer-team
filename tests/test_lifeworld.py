@@ -133,6 +133,46 @@ def test_a_dealt_card_is_readable_only_by_its_holder():
     assert card.holder == a.id
 
 
+def test_the_deck_never_exposes_its_order_or_dealt_values():
+    """Regression for a real leak the review caught: the deck used to keep every card's
+    plaintext in world-readable public state, defeating the per-card seal entirely."""
+    import json
+    w, sc, people, deck = deal_table()
+    a = people[0]
+    card = deck.draw_to(a, w)
+    assert set(deck.public) <= {"cursor", "count"}       # only safe counters are public
+    sv = json.dumps(sc.view())                            # what the API returns
+    assert "order" not in sv and "\"cards\"" not in sv    # order/values are nowhere in the view
+    val = card.reveal(a)                                  # the holder's value
+    assert val["rank"] + val["suit"] not in sv            # not recoverable from the scene view
+
+
+def test_a_secret_memory_never_surfaces_in_a_public_recall():
+    """Regression: sleep() used to fold secret-scoped episodes into the public semantic
+    block, so a circle secret leaked into any public recall."""
+    from app.lifeworld.memory import Memory
+    m = Memory()
+    W = {"emotion": 1, "novelty": 1, "social": 1, "goal": 1, "surprise": 1}
+    for i in range(8):
+        sig = Signal(kind="reveal", scope="circle", domain="cards", from_id=1,
+                     intensity=0.9, stakes=0.9, payload={"text": f"SECRET-ACE-{i}"})
+        p = Packet(understood=f"SECRET-ACE-{i}", memory=f"SECRET-ACE-{i}",
+                   mood={"stress": 0.5}, tier=2)
+        m.remember(p, sig, W, i, social_strength=1.0)
+    m.sleep({"cards"})
+    assert "SECRET-ACE" not in m.recall(domain="cards", audience_scope="public")
+
+
+def test_a_long_ledger_summary_still_verifies():
+    """Regression: commit() hashed the full summary but stored a truncated one, so a long
+    entry made verify() fail on an untampered chain."""
+    from app.lifeworld.ledger import Ledger
+    lg = Ledger()
+    lg.commit(1, "x" * 500)
+    lg.commit(2, "y" * 500)
+    assert lg.verify()
+
+
 # --------------------------------------------------------------------------
 # 4. the scan loop — cost, divergence, sanity, learning
 # --------------------------------------------------------------------------
