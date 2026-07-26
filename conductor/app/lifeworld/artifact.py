@@ -32,7 +32,8 @@ class Artifact(Entity):
 
     def __init__(self, id: int, name: str = "", pos: tuple = (0.0, 0.0), tau: int = 0,
                  public: dict | None = None, secret: str = "", holder: int | None = None,
-                 figure: str = "", slots: int = 0, seated: list | None = None):
+                 figure: str = "", slots: int = 0, seated: list | None = None,
+                 shape: str = "circle", path: list | None = None):
         super().__init__(id, name, pos, tau)
         self.public: dict[str, Any] = public or {}
         self.secret: str = secret            # sealed ciphertext, or ""
@@ -40,6 +41,12 @@ class Artifact(Entity):
         self.figure: str = figure            # the chosen visual token id (how it looks)
         self.slots: int = slots              # a COLLATING artifact seats this many agents (0 = not)
         self.seated: list = seated if seated is not None else [None] * slots  # agent id per slot
+        # The outline a collating artifact wears: "circle" | "rect" | "path". A "path" is a
+        # hand-drawn polygon whose points live in `path` (local coords, centred on 0,0); the
+        # UI distributes the seat sockets along whatever shape this is. Purely visual/layout —
+        # seating stays index-based, so none of the cluster or secrecy logic depends on it.
+        self.shape: str = shape or "circle"
+        self.path: list = list(path or [])
 
     # --- collation: agents gather around a collating artifact into a cluster ---
 
@@ -93,7 +100,8 @@ class Artifact(Entity):
     def to_dict(self) -> dict[str, Any]:
         d = super().to_dict()
         d.update(public=self.public, secret=self.secret, holder=self.holder,
-                 figure=self.figure, slots=self.slots, seated=self.seated)
+                 figure=self.figure, slots=self.slots, seated=self.seated,
+                 shape=self.shape, path=self.path)
         return d
 
     @classmethod
@@ -102,7 +110,7 @@ class Artifact(Entity):
                    tau=int(d.get("tau", 0)), public=d.get("public", {}),
                    secret=d.get("secret", ""), holder=d.get("holder"),
                    figure=d.get("figure", ""), slots=int(d.get("slots", 0)),
-                   seated=d.get("seated"))
+                   seated=d.get("seated"), shape=d.get("shape", "circle"), path=d.get("path"))
 
 
 @register

@@ -40,6 +40,8 @@ class NewArtifact(BaseModel):
     brief: str = ""                         # "a worn deck of cards" / "a round table for 4"
     figure: str = ""
     slots: int = 0                          # >0 = a collating artifact (a table for N)
+    shape: str = "circle"                   # circle | rect | path — the collating outline
+    path: list[list[float]] = Field(default_factory=list)   # hand-drawn polygon (local coords)
 
 
 class Pos(BaseModel):
@@ -51,6 +53,11 @@ class Pos(BaseModel):
 class SeatSlot(BaseModel):
     slot: int
     human_id: int
+
+
+class Edge(BaseModel):
+    a: int                                  # from-token id (agent or artifact)
+    b: int                                  # to-token id
 
 
 class NewRoom(BaseModel):
@@ -198,11 +205,13 @@ async def add_artifact(world_id: int, body: NewArtifact, request: Request, seed:
         a.figure = body.figure or "deck"
     else:
         a = Prop(w.next_id(), name=body.name or "a thing", public=spec.get("public", {}) or {},
-                 figure=body.figure, slots=max(0, int(body.slots)))
+                 figure=body.figure, slots=max(0, int(body.slots)),
+                 shape=(body.shape or "circle"), path=[list(p) for p in (body.path or [])])
     w.add(a)
     store.save(w)
     return {"artifact": {"id": a.id, "name": a.name, "kind": a.kind, "figure": a.figure,
                          "slots": a.slots, "seated": a.seated,
+                         "shape": getattr(a, "shape", "circle"), "path": getattr(a, "path", []),
                          "sealed": bool(a.secret), "public": a.public}}
 
 
@@ -287,6 +296,31 @@ def place(world_id: int, room_id: int, artifact_id: int, request: Request) -> di
     return {"room": s.view()}
 
 
+@router.post("/{world_id}/room/{room_id}/link")
+def link_flow(world_id: int, room_id: int, body: Edge, request: Request) -> dict:
+    """Draw a flow arrow between two tokens present in the room."""
+    _own(request, world_id)
+    w = store.load(world_id)
+    s = w.scene(room_id)
+    if not s:
+        raise HTTPException(404, "no such room")
+    ok = s.link(body.a, body.b)
+    store.save(w)
+    return {"ok": ok, "edges": s._live_edges()}
+
+
+@router.post("/{world_id}/room/{room_id}/unlink")
+def unlink_flow(world_id: int, room_id: int, body: Edge, request: Request) -> dict:
+    _own(request, world_id)
+    w = store.load(world_id)
+    s = w.scene(room_id)
+    if not s:
+        raise HTTPException(404, "no such room")
+    s.unlink(body.a, body.b)
+    store.save(w)
+    return {"ok": True, "edges": s._live_edges()}
+
+
 @router.get("/{world_id}/room/{room_id}")
 def room_view(world_id: int, room_id: int, request: Request) -> dict:
     _own(request, world_id)
@@ -332,12 +366,21 @@ async def play_round(world_id: int, room_id: int, request: Request, live: int = 
             if len(ring) > 1:
                 await s.greet(h, ring[(i + 1) % len(ring)])
 
-    # Prefer clusters: each collating artifact's seated agents act as a ring. If no cluster
-    # has formed yet, fall back to everyone in the room so a round still does something.
+    # Order of preference: a drawn flow (arrows) defines the turn order if one exists;
+    # else each collating artifact's seated agents act as a ring; else everyone in the
+    # room, so a round always does something.
+    flow = s.flow_ring()
     rings = [[w.get(hid) for hid in a.cluster()]
              for a in s.props_here()
              if getattr(a, "collating", lambda: False)() and a.cluster()]
-    if rings:
+    if flow:
+        # the flow sets the ORDER, but every seated agent still gets their beat — an
+        # un-arrowed person in the room is not silently dropped from the round.
+        ordered = [h for h in flow if h]
+        seen = {h.id for h in ordered}
+        ordered += [h for h in s.players() if h.id not in seen]
+        await play(ordered)
+    elif rings:
         for ring in rings:
             await play([h for h in ring if h])
     else:

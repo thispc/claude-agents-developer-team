@@ -5093,6 +5093,9 @@ const LW_TABLE_R = 58;       // collating-table disc radius (world units)
 const LW_SOCKET_R = 80;      // radius of the ring the seat sockets sit on
 const LW_SNAP_DIST = 46;     // drop within this of a free socket → magnetic seat
 const LW_NUDGE = 6;          // world units an arrow-key press moves the selection
+const LW_RECT_W = 150;       // rectangular-table footprint
+const LW_RECT_H = 92;
+const LW_SEAT_OUT = 20;      // how far outside a shape's edge its seat sockets sit
 // Tools each carry a one-key shortcut (shown in the dock, wired on the canvas).
 // Icons are drawn as inline vector — the whole canvas is off the emoji look.
 const LW_TOOLS = [
@@ -5100,6 +5103,7 @@ const LW_TOOLS = [
   { id: "agent",    key: "A", label: "Agent" },
   { id: "artifact", key: "O", label: "Object" },
   { id: "manager",  key: "M", label: "Manager" },
+  { id: "arrow",    key: "L", label: "Arrow" },
 ];
 // The style variants a new person can wear; the final face blends the variant with
 // the agent's own identity, so two people who pick the same variant still differ.
@@ -5796,7 +5800,7 @@ function lwRenderRoom(room) {
     <div class="lw-canvas-wrap" id="lwCanvasWrap">
       <div class="lw-konva-host" id="lwKonvaHost"></div>
       <div class="lw-overlay" id="lwOverlay"></div>
-      <div class="lw-canvas-hint">drag to pan · scroll to zoom · click a token to focus · double-click to open · <b>V A O M</b> tools · <b>F</b> fit</div>
+      <div class="lw-canvas-hint">drag to pan · scroll to zoom · shift-drag to marquee · <b>V A O M L</b> tools · <b>⌘A</b> all · <b>F</b> fit</div>
       <div class="lw-dock" id="lwDock">${lwDockHtml()}</div>
     </div>
     <div class="scene-controls">
@@ -5912,6 +5916,7 @@ function lwToolIco(id) {
     agent: `<circle cx="12" cy="8.2" r="3.6" ${a}/><path d="M5.5 20c0-3.6 2.9-6.2 6.5-6.2s6.5 2.6 6.5 6.2" ${a}/>`,
     artifact: `<rect x="5" y="5" width="14" height="14" rx="3.2" ${a}/><path d="M9.5 12h5" ${a}/>`,
     manager: `<circle cx="10.5" cy="8.4" r="3.2" ${a}/><path d="M4.5 20c0-3.4 2.7-5.8 6-5.8" ${a}/><path d="M17 5l1 2 2.2.3-1.6 1.5.4 2.2L17 10l-2 1 .4-2.2-1.6-1.5L16 7z" ${a}/>`,
+    arrow: `<path d="M4 15.5c3-6 6-9 15-9.5" ${a}/><path d="M14 5l5 1-1.5 5" ${a}/>`,
   };
   return `<svg viewBox="0 0 24 24" width="20" height="20">${g[id] || g.select}</svg>`;
 }
@@ -5927,73 +5932,169 @@ function lwWireDock() {
   dock.querySelectorAll("[data-tool]").forEach((b) =>
     b.addEventListener("click", () => lwSetTool(b.dataset.tool)));
 }
-function lwToolCursor(t) { return t === "select" ? "grab" : "cell"; }
+function lwToolCursor(t) { return t === "select" ? "grab" : t === "arrow" ? "crosshair" : "cell"; }
 function lwSetCursor(c) { if (lwKonva && lwKonva.host) lwKonva.host.style.cursor = c; }
 function lwSetTool(t) {
   lwTool = t;
   const dock = $("#lwDock");
   if (dock) dock.querySelectorAll("[data-tool]").forEach((b) => b.classList.toggle("on", b.dataset.tool === t));
-  if (lwKonva && lwKonva.stage) {
-    lwKonva.stage.draggable(t === "select");   // only Select pans the floor; tokens always drag
-    lwSetCursor(lwToolCursor(t));
+  if (lwKonva) {
+    if (t !== "arrow" && lwKonva.arrowSrc) lwArrowCancel();   // leaving the arrow tool drops a pending link
+    if (lwKonva.stage) {
+      lwKonva.stage.draggable(t === "select");   // only Select pans the floor; tokens always drag
+      lwSetCursor(lwToolCursor(t));
+    }
   }
 }
 
-// ---- selection: click focuses a token (a marching-ants halo), keys act on it -
-function lwSelRadius(sel) {
-  if (sel.kind === "prop") {
-    const slots = Number(sel.entry.data.slots) || 0;
-    if (slots > 0) return LW_TABLE_R + 12;
-    const kind = String(sel.entry.data.kind || "").toLowerCase();
-    return (kind.includes("deck") || kind.includes("card")) ? 40 : 40;
+// ---- selection: a SET of tokens, each wearing a tight shape-hugging outline --
+// Shift-click adds, marquee and ⌘/Ctrl-A grab many, so a whole arrangement moves as
+// one. The cue is a crisp accent outline that hugs each token's own shape plus four
+// small handles (a Figma-like "grabbable" mark) — never a big detached ring.
+function lwBodyOf(entry) { return entry.node.findOne(".body"); }
+function lwSelKey(kind, entry) { return kind + ":" + entry.data.id; }
+function lwSelList() { return lwKonva ? [...lwKonva.sel.values()] : []; }
+function lwSelHas(entry) { return !!lwKonva && lwSelList().some((s) => s.entry === entry); }
+function lwAdorn(entry) {
+  const node = entry.node, d = entry.data, A = "#2E6E5B";
+  const isAgent = lwKonva.agents.has(String(d.id));
+  const slots = Number(d.slots) || 0, shape = String(d.shape || "circle");
+  const g = new Konva.Group({ name: "seladorn", listening: false });
+  if (isAgent) {
+    g.add(new Konva.Circle({ radius: 35, stroke: A, strokeWidth: 2.5 }));
+  } else if (slots > 0 && shape === "rect") {
+    g.add(new Konva.Rect({ x: -(LW_RECT_W / 2 + 5), y: -(LW_RECT_H / 2 + 5), width: LW_RECT_W + 10, height: LW_RECT_H + 10, cornerRadius: 20, stroke: A, strokeWidth: 2.5 }));
+  } else if (slots > 0 && shape === "path" && Array.isArray(d.path) && d.path.length >= 3) {
+    g.add(new Konva.Line({ points: lwGrowPath(d.path, 5).flatMap((p) => [p.x, p.y]), closed: true, stroke: A, strokeWidth: 2.5 }));
+  } else if (slots > 0) {
+    g.add(new Konva.Circle({ radius: LW_TABLE_R + 5, stroke: A, strokeWidth: 2.5 }));
+  } else {
+    const body = lwBodyOf(entry);
+    const rc = body ? body.getClientRect({ relativeTo: node, skipShadow: true }) : { x: -29, y: -29, width: 58, height: 58 };
+    g.add(new Konva.Rect({ x: rc.x - 5, y: rc.y - 5, width: rc.width + 10, height: rc.height + 10, cornerRadius: 10, stroke: A, strokeWidth: 2.5 }));
   }
-  return 40;
+  node.add(g);                                    // attach first so the measure is valid
+  const bb = g.getClientRect({ relativeTo: node });
+  [[bb.x, bb.y], [bb.x + bb.width, bb.y], [bb.x + bb.width, bb.y + bb.height], [bb.x, bb.y + bb.height]].forEach(([hx, hy]) =>
+    g.add(new Konva.Rect({ x: hx - 3, y: hy - 3, width: 6, height: 6, cornerRadius: 1.5, fill: "#fff", stroke: A, strokeWidth: 1.5 })));
+  g.moveToTop();
 }
-function lwDeselect() {
-  if (!lwKonva || !lwKonva.selected) return;
-  const sel = lwKonva.selected;
-  if (sel.anim) sel.anim.stop();
-  const halo = sel.entry.node.findOne(".selhalo"); if (halo) halo.destroy();
-  lwKonva.selected = null;
-  lwKonva.worldLayer.batchDraw();
-}
-function lwSelect(kind, entry) {
+function lwSelClear() {
   if (!lwKonva) return;
-  if (lwKonva.selected && lwKonva.selected.entry === entry) return;   // already focused
-  lwDeselect();
-  const sel = { kind, entry };
-  lwKonva.selected = sel;
-  const halo = new Konva.Circle({ radius: lwSelRadius(sel), name: "selhalo", listening: false,
-    stroke: "hsl(150 66% 42%)", strokeWidth: 2.5, dash: [6, 6], opacity: 0.95,
-    shadowColor: "hsl(150 70% 45%)", shadowBlur: 16, shadowOpacity: 0.55 });
-  entry.node.add(halo); halo.moveToBottom();
-  if (!reduceMotion()) {
-    sel.anim = new Konva.Animation((f) => { halo.rotation((f.time / 55) % 360); }, lwKonva.worldLayer);
-    sel.anim.start();
+  lwKonva.sel.forEach((s) => { const a = s.entry.node.findOne(".seladorn"); if (a) a.destroy(); });
+  lwKonva.sel.clear();
+  lwKonva.worldLayer.batchDraw();
+}
+function lwSelAdd(kind, entry) {
+  if (!lwKonva || lwSelHas(entry)) return;
+  lwKonva.sel.set(lwSelKey(kind, entry), { kind, entry });
+  lwAdorn(entry);
+  lwKonva.worldLayer.batchDraw();
+}
+function lwSelRemove(entry) {
+  if (!lwKonva) return;
+  for (const [k, s] of lwKonva.sel) if (s.entry === entry) {
+    const a = s.entry.node.findOne(".seladorn"); if (a) a.destroy();
+    lwKonva.sel.delete(k);
   }
   lwKonva.worldLayer.batchDraw();
+}
+function lwSelSet(kind, entry) { lwSelClear(); lwSelAdd(kind, entry); }
+function lwSelToggle(kind, entry) { if (lwSelHas(entry)) lwSelRemove(entry); else lwSelAdd(kind, entry); }
+function lwSelAll() {
+  if (!lwKonva) return;
+  lwSelClear();
+  lwKonva.props.forEach((e) => lwSelAdd("prop", e));
+  lwKonva.agents.forEach((e) => lwSelAdd("agent", e));
+}
+function lwSelect(kind, entry) { lwSelSet(kind, entry); }   // legacy single-focus callers
+function lwDeselect() { lwSelClear(); }
+
+// ---- flow arrows: connect tokens into a directed flow ----------------------
+function lwEntryById(id) { return (lwKonva.agents.get(String(id)) || lwKonva.props.get(String(id))) || null; }
+function lwArrowKey(e) { return e.from + "->" + e.to; }
+function lwTokenRadius(entry) { return lwKonva.props.has(String(entry.data.id)) ? lwPropRadius(entry.data) + 6 : 34; }
+function lwArrowPoints(A, B) {
+  const a = A.node.position(), b = B.node.position();
+  const dx = b.x - a.x, dy = b.y - a.y, m = Math.hypot(dx, dy) || 1, ux = dx / m, uy = dy / m;
+  return [a.x + ux * lwTokenRadius(A), a.y + uy * lwTokenRadius(A),
+          b.x - ux * (lwTokenRadius(B) + 4), b.y - uy * (lwTokenRadius(B) + 4)];
+}
+function lwMakeArrow(edge) {
+  const A = lwEntryById(edge.from), B = lwEntryById(edge.to);
+  if (!A || !B) return null;
+  const arr = new Konva.Arrow({ points: lwArrowPoints(A, B), stroke: "#2E6E5B", fill: "#2E6E5B",
+    strokeWidth: 2.5, pointerLength: 10, pointerWidth: 9, opacity: 0.72, name: "flowArrow", hitStrokeWidth: 16 });
+  arr.setAttr("edge", edge);
+  arr.on("mouseenter", () => lwSetCursor("pointer"));
+  arr.on("mouseleave", () => lwSetCursor(lwToolCursor(lwTool)));
+  arr.on("contextmenu", (e) => { e.evt.preventDefault(); e.cancelBubble = true; lwArrowMenu(e.evt, edge); });
+  arr.on("click tap", (e) => { e.cancelBubble = true; if (lwTool === "select") lwArrowMenu(e.evt, edge); });
+  return arr;
+}
+function lwRenderArrows(edges) {
+  lwKonva.arrows = new Map();
+  (edges || []).forEach((e) => {
+    const arr = lwMakeArrow(e);
+    if (arr) { lwKonva.worldLayer.add(arr); arr.moveToBottom(); lwKonva.arrows.set(lwArrowKey(e), arr); }
+  });
+}
+function lwUpdateArrows() {
+  if (!lwKonva || !lwKonva.arrows) return;
+  lwKonva.arrows.forEach((arr) => {
+    const e = arr.getAttr("edge"), A = lwEntryById(e.from), B = lwEntryById(e.to);
+    if (A && B) arr.points(lwArrowPoints(A, B));
+  });
+}
+function lwArrowFlash(entry, on) {
+  if (on) { lwSetGlow(entry.node, true, "hsl(150 78% 45%)", 20, 0.9); lwKonva.glowing.add(entry.node); }
+  else { lwKonva.glowing.delete(entry.node); if (entry.seat) lwSetSteadyGlow(entry.node, true); else lwSetGlow(entry.node, false); }
+}
+function lwArrowCancel() {
+  if (lwKonva && lwKonva.arrowSrc) { lwArrowFlash(lwKonva.arrowSrc, false); lwKonva.arrowSrc = null; lwKonva.worldLayer.batchDraw(); }
+}
+function lwArrowClick(entry) {
+  if (!lwKonva.arrowSrc) { lwKonva.arrowSrc = entry; lwArrowFlash(entry, true); lwKonva.worldLayer.batchDraw(); return; }
+  const src = lwKonva.arrowSrc;
+  lwArrowFlash(src, false); lwKonva.arrowSrc = null; lwKonva.worldLayer.batchDraw();
+  if (src !== entry) lwLinkFlow(src.data.id, entry.data.id);
+}
+async function lwLinkFlow(a, b) {
+  try { await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/link`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ a, b }) }); await lwReloadRoom(); }
+  catch (e) { toast(`Could not draw the arrow: ${e.message}`); }
+}
+async function lwUnlinkFlow(a, b) {
+  try { await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/unlink`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ a, b }) }); await lwReloadRoom(); }
+  catch (e) { toast(`Could not remove the arrow: ${e.message}`); }
+}
+function lwArrowMenu(evt, edge) {
+  studioMenu(evt.clientX, evt.clientY, [{ label: "Remove this arrow", act: () => lwUnlinkFlow(edge.from, edge.to) }]);
 }
 
 // ---- keyboard: the canvas listens while a room is open ---------------------
 let lwNudgeTimer = null;
 function lwOpenSelected() {
-  const sel = lwKonva && lwKonva.selected; if (!sel) return;
-  if (sel.kind === "agent") openPersonDrawer(sel.entry.data.id, sel.entry.data.name);
-  else lwOpenArtifactPeek(sel.entry.data.id);
+  const list = lwSelList(); if (!list.length) return;
+  const s = list[0];
+  if (s.kind === "agent") openPersonDrawer(s.entry.data.id, s.entry.data.name);
+  else lwOpenArtifactPeek(s.entry.data.id);
 }
-function lwNudgeSelected(dx, dy) {
-  const sel = lwKonva && lwKonva.selected; if (!sel) return;
-  if (sel.kind === "agent" && sel.entry.seat) { toast("They're seated — unseat first (Delete) to move them."); return; }
-  const node = sel.entry.node, p = node.position();
-  const nx = p.x + dx, ny = p.y + dy;
-  node.position({ x: nx, y: ny });
-  if (sel.kind === "prop") lwFollowProp(sel.entry);    // seated agents + glow ride along
-  lwKonva.worldLayer.batchDraw();
+function lwNudgeSelection(dx, dy) {
+  const list = lwSelList().filter((s) => !(s.kind === "agent" && s.entry.seat));   // seated agents are pinned
+  if (!list.length) return;
+  list.forEach((s) => {
+    const p = s.entry.node.position();
+    s.entry.node.position({ x: p.x + dx, y: p.y + dy });
+    if (s.kind === "prop") lwFollowProp(s.entry);
+  });
+  lwUpdateArrows(); lwKonva.worldLayer.batchDraw();
   clearTimeout(lwNudgeTimer);
-  const id = sel.entry.data.id;
   lwNudgeTimer = setTimeout(() => {
-    api(`/api/lw/${lwWorldId}/pos`, { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, x: nx, y: ny }) }).catch(() => {});
+    list.forEach((s) => {
+      const p = s.entry.node.position();
+      api(`/api/lw/${lwWorldId}/pos`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: s.entry.data.id, x: p.x, y: p.y }) }).catch(() => {});
+    });
   }, 350);
 }
 function lwKeyHandler(e) {
@@ -6001,26 +6102,30 @@ function lwKeyHandler(e) {
   const tag = (document.activeElement && document.activeElement.tagName) || "";
   const typing = tag === "INPUT" || tag === "TEXTAREA" || (document.activeElement && document.activeElement.isContentEditable);
   if (e.key === "Escape") {
-    if (lwCreateFlow) { lwCancelCreate(); e.preventDefault(); }
-    else if (lwKonva.selected) { lwDeselect(); e.preventDefault(); }
+    if (lwCreateFlow && lwCreateFlow.drawing) { lwCancelPathDraw(); e.preventDefault(); }
+    else if (lwCreateFlow) { lwCancelCreate(); e.preventDefault(); }
+    else if (lwKonva.arrowSrc) { lwArrowCancel(); e.preventDefault(); }
+    else if (lwSelList().length) { lwSelClear(); e.preventDefault(); }
     return;
   }
   if (typing || lwCreateFlow) return;    // don't hijack keys while a dialog/field has focus
   const k = e.key.toLowerCase();
-  const toolKey = { v: "select", a: "agent", o: "artifact", m: "manager", "1": "select", "2": "agent", "3": "artifact", "4": "manager" }[k];
-  if (toolKey) { lwSetTool(toolKey); e.preventDefault(); return; }
+  if ((e.metaKey || e.ctrlKey) && k === "a") { lwSelAll(); e.preventDefault(); return; }
+  const toolKey = { v: "select", a: "agent", o: "artifact", m: "manager", l: "arrow",
+                    "1": "select", "2": "agent", "3": "artifact", "4": "manager", "5": "arrow" }[k];
+  if (toolKey && !e.metaKey && !e.ctrlKey) { lwSetTool(toolKey); e.preventDefault(); return; }
   if (k === "f") { lwFitView(); lwSaveView(); e.preventDefault(); return; }
-  if (!lwKonva.selected) return;
-  const sel = lwKonva.selected;
+  const list = lwSelList(); if (!list.length) return;
   if (e.key === "Enter" || e.key === " ") { lwOpenSelected(); e.preventDefault(); return; }
   if (e.key === "Delete" || e.key === "Backspace") {
-    if (sel.kind === "agent" && sel.entry.seat) lwUnseatAgent(sel.entry.data, sel.entry.seat.propId);
-    else toast(sel.kind === "agent" ? "Only a seated agent can be popped out with Delete." : "Remove objects from the Artifacts tab.");
+    const seated = list.filter((s) => s.kind === "agent" && s.entry.seat);
+    if (seated.length) seated.forEach((s) => lwUnseatAgent(s.entry.data, s.entry.seat.propId));
+    else toast("Select a seated agent to pop out, or remove objects in the Artifacts tab.");
     e.preventDefault(); return;
   }
   const step = e.shiftKey ? LW_NUDGE * 5 : LW_NUDGE;
   const move = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
-  if (move) { lwNudgeSelected(move[0], move[1]); e.preventDefault(); }
+  if (move) { lwNudgeSelection(move[0], move[1]); e.preventDefault(); }
 }
 
 // ---- Stage + layers: pan, zoom-to-cursor, drag-only grid -----------------
@@ -6028,7 +6133,11 @@ function lwDestroyCanvas() {
   if (lwCreateFlow) lwCleanupCreate();
   if (lwKonva) {
     if (lwKonva.keyHandler) document.removeEventListener("keydown", lwKonva.keyHandler);
-    if (lwKonva.selected && lwKonva.selected.anim) lwKonva.selected.anim.stop();
+    if (lwKonva.endMarquee) {   // detach any window listeners a mid-gesture marquee left
+      window.removeEventListener("mouseup", lwKonva.endMarquee, true);
+      window.removeEventListener("touchend", lwKonva.endMarquee, true);
+      window.removeEventListener("pointercancel", lwKonva.endMarquee, true);
+    }
     try { lwKonva.ro && lwKonva.ro.disconnect(); lwKonva.stage.destroy(); } catch (e) { /* already gone */ }
     lwKonva = null;
   }
@@ -6045,7 +6154,8 @@ function lwMountCanvas(room, agents, props) {
 
   lwKonva = { stage, gridLayer, worldLayer, host, roomId: String(lwRoomId),
               agents: new Map(), props: new Map(), glowing: new Set(), snap: null,
-              menuWorld: null, selected: null, keyHandler: null };
+              menuWorld: null, sel: new Map(), arrows: null, arrowSrc: null, drag: null,
+              marquee: null, keyHandler: null };
 
   // Which agents are seated, and in which socket, so they render on the rim.
   const seatedMap = {};
@@ -6059,6 +6169,13 @@ function lwMountCanvas(room, agents, props) {
     node.on("mouseenter", () => { if (!lwKonva) return; lwSetCursor(node.isDragging() ? "grabbing" : "grab"); });
     node.on("mouseleave", () => lwSetCursor(lwToolCursor(lwTool)));
   };
+  // A click either draws a flow (arrow tool), toggles into the selection (shift-click),
+  // or focuses just this token (plain select).
+  const pick = (kind, entry, e) => {
+    if (lwTool === "arrow") { lwArrowClick(entry); return; }
+    if (lwTool !== "select") return;
+    if (e.evt && e.evt.shiftKey) lwSelToggle(kind, entry); else lwSelSet(kind, entry);
+  };
 
   // Objects first (tables sit under their seated agents). Every object is draggable
   // and persists; a table carries its ring of seated agents as it moves.
@@ -6071,28 +6188,27 @@ function lwMountCanvas(room, agents, props) {
     lwWirePropDrag(node, p, entry);
     hover(node);
     node.on("contextmenu", (e) => { e.evt.preventDefault(); e.cancelBubble = true; lwPropMenu(e.evt, p); });
-    node.on("click tap", (e) => { e.cancelBubble = true; if (lwTool === "select") lwSelect("prop", entry); });
+    node.on("click tap", (e) => { e.cancelBubble = true; pick("prop", entry, e); });
     node.on("dblclick dbltap", (e) => { e.cancelBubble = true; lwOpenArtifactPeek(p.id); });
   });
 
-  // A cluster (a table with someone seated) glows as one entity — soft ring behind.
+  // A full ring reads as one entity — a soft, tight glow behind the table, and only
+  // when every seat is taken. Partly-seated tables stay quiet (no big detached ring).
   props.forEach((p) => {
     const slots = Number(p.slots) || 0;
     const seatedN = Array.isArray(p.seated) ? p.seated.filter((x) => x != null).length : 0;
-    if (slots > 0 && seatedN > 0) {
-      const entry = lwKonva.props.get(String(p.id));
-      if (entry) lwAddClusterGlow(entry, seatedN >= slots);
-    }
+    const entry = lwKonva.props.get(String(p.id));
+    if (entry && slots > 0 && seatedN >= slots) lwAddClusterGlow(entry);
   });
 
-  // People on top: free agents at their pos, seated ones snapped to the socket.
+  // People on top: free agents at their pos, seated ones snapped to their slot.
   agents.forEach((a, i) => {
     const seat = seatedMap[String(a.id)];
     let pos;
     if (seat) {
       const pe = lwKonva.props.get(seat.propId);
       const base = pe ? pe.node.position() : { x: 0, y: 0 };
-      const off = lwSocketOffset(seat.slot, Number(pe && pe.data.slots) || 1);
+      const off = pe ? lwSlotPos(pe.data, seat.slot) : { x: 0, y: 0 };
       pos = { x: base.x + off.x, y: base.y + off.y };
     } else {
       pos = lwNodePos(a, i, "agent");
@@ -6104,10 +6220,13 @@ function lwMountCanvas(room, agents, props) {
     lwWireAgentDrag(node, a);
     hover(node);
     node.on("contextmenu", (e) => { e.evt.preventDefault(); e.cancelBubble = true; lwAgentMenu(e.evt, a); });
-    node.on("click tap", (e) => { e.cancelBubble = true; if (lwTool === "select") lwSelect("agent", entry); });
+    node.on("click tap", (e) => { e.cancelBubble = true; pick("agent", entry, e); });
     node.on("dblclick dbltap", (e) => { e.cancelBubble = true; openPersonDrawer(a.id, a.name); });
     if (seat) lwSetSteadyGlow(node, true);
   });
+
+  // Flow arrows ride beneath the tokens, following their endpoints as they move.
+  lwRenderArrows(room.edges);
 
   // Restore the viewport we cached for this room, or frame everything once.
   const view = lwViewCache[lwKonva.roomId];
@@ -6134,12 +6253,67 @@ function lwMountCanvas(room, agents, props) {
     lwShowGrid(); lwSaveView();
   });
 
-  // Click on empty floor: Select clears the focus; a placement tool drops a token.
+  // Shift-drag on empty floor rubber-bands a marquee that selects what it encloses.
+  // The gesture ENDS on a window listener, not the stage — so releasing over the dock, a
+  // popover, or off-canvas can never leave the floor un-draggable or a ghost rect behind.
+  const endMarquee = () => {
+    const m = lwKonva && lwKonva.marquee; if (!m) return;
+    lwKonva.marquee = null;
+    window.removeEventListener("mouseup", endMarquee, true);
+    window.removeEventListener("touchend", endMarquee, true);
+    window.removeEventListener("pointercancel", endMarquee, true);
+    const bx = m.rect.x(), by = m.rect.y(), bw = m.rect.width(), bh = m.rect.height();
+    m.rect.destroy();
+    stage.draggable(lwTool === "select");
+    if (bw > 4 || bh > 4) {
+      lwSelClear();
+      const inside = (n) => { const p = n.position(); return p.x >= bx && p.x <= bx + bw && p.y >= by && p.y <= by + bh; };
+      lwKonva.props.forEach((en) => { if (inside(en.node)) lwSelAdd("prop", en); });
+      lwKonva.agents.forEach((en) => { if (inside(en.node)) lwSelAdd("agent", en); });
+      // Swallow the trailing click Konva may fire; a timeout clears the flag in case the
+      // gesture emits no click at all.
+      lwKonva.suppressClick = true;
+      setTimeout(() => { if (lwKonva) lwKonva.suppressClick = false; }, 0);
+    }
+    worldLayer.batchDraw();
+  };
+  lwKonva.endMarquee = endMarquee;         // so teardown can detach any pending listeners
+  stage.on("mousedown touchstart", (e) => {
+    if (lwTool !== "select" || e.target !== stage || !(e.evt && e.evt.shiftKey)) return;
+    const w = lwPointerWorld(); if (!w) return;
+    stage.draggable(false);
+    const rect = new Konva.Rect({ x: w.x, y: w.y, width: 0, height: 0, fill: "rgba(46,110,91,.08)",
+      stroke: "#2E6E5B", strokeWidth: 1, dash: [4, 4], listening: false, name: "marquee" });
+    worldLayer.add(rect); rect.moveToTop();
+    lwKonva.marquee = { x0: w.x, y0: w.y, rect };
+    window.addEventListener("mouseup", endMarquee, true);
+    window.addEventListener("touchend", endMarquee, true);
+    window.addEventListener("pointercancel", endMarquee, true);
+  });
+  stage.on("mousemove touchmove", () => {
+    if (!lwKonva.marquee) return;
+    const w = lwPointerWorld(); if (!w) return;
+    const m = lwKonva.marquee;
+    m.rect.position({ x: Math.min(w.x, m.x0), y: Math.min(w.y, m.y0) });
+    m.rect.size({ width: Math.abs(w.x - m.x0), height: Math.abs(w.y - m.y0) });
+    worldLayer.batchDraw();
+  });
+
+  // Click on empty floor: while drawing a path, drop a point; an open dialog dismisses
+  // (and Select returns); the arrow tool clears a pending link; Select clears the focus;
+  // a placement tool drops a token.
   stage.on("click tap", (e) => {
     if (e.target !== stage) return;
-    if (lwTool === "select") { lwDeselect(); return; }
+    if (lwKonva.suppressClick) { lwKonva.suppressClick = false; return; }
+    if (lwCreateFlow && lwCreateFlow.drawing) { lwPathAddPoint(); return; }
+    if (lwCreateFlow) { lwCancelCreate(); return; }
+    if (lwTool === "arrow") { lwArrowCancel(); return; }
+    if (lwTool === "select") { lwSelClear(); return; }
     const w = lwPointerWorld();
     if (w) lwStartCreate(lwTool, w);
+  });
+  stage.on("dblclick dbltap", () => {
+    if (lwCreateFlow && lwCreateFlow.drawing) lwFinishPathDraw();
   });
   stage.on("contextmenu", (e) => {
     e.evt.preventDefault();
@@ -6334,23 +6508,38 @@ function lwTileNode(p, x, y) {
 function lwTableNode(p, x, y) {
   const g = new Konva.Group({ x, y, draggable: true, name: "token" });
   g.setAttr("lwType", "prop"); g.setAttr("lwId", String(p.id));
-  const slots = Number(p.slots) || 1, R = LW_TABLE_R, hue = lwHue(p.name);
-  g.add(new Konva.Circle({ radius: R, name: "body",
-    fillRadialGradientStartPoint: { x: 0, y: 0 }, fillRadialGradientStartRadius: 4,
-    fillRadialGradientEndPoint: { x: 0, y: 0 }, fillRadialGradientEndRadius: R,
+  const slots = Number(p.slots) || 1, hue = lwHue(p.name), shape = String(p.shape || "circle");
+  const grad = (rad, cx = 0, cy = 0) => ({
+    fillRadialGradientStartPoint: { x: cx, y: cy }, fillRadialGradientStartRadius: 4,
+    fillRadialGradientEndPoint: { x: cx, y: cy }, fillRadialGradientEndRadius: rad,
     fillRadialGradientColorStops: [0, `hsl(${hue} 34% 62%)`, 1, `hsl(${hue} 40% 46%)`],
-    stroke: `hsl(${hue} 40% 40%)`, strokeWidth: 3, shadowColor: "#000", shadowBlur: 10, shadowOpacity: 0.16 }));
-  g.add(new Konva.Circle({ radius: R - 12, stroke: "rgba(255,255,255,.4)", strokeWidth: 1.5, listening: false }));
-  const seated = Array.isArray(p.seated) ? p.seated : [];
+    stroke: `hsl(${hue} 40% 40%)`, strokeWidth: 3, shadowColor: "#000", shadowBlur: 10, shadowOpacity: 0.16 });
+  let labelY;
+  if (shape === "rect") {
+    // a Rect's fill space starts at its own top-left, so the gradient origin must be
+    // the rect's local centre — else the felt lights only the top-left corner.
+    g.add(new Konva.Rect({ x: -LW_RECT_W / 2, y: -LW_RECT_H / 2, width: LW_RECT_W, height: LW_RECT_H, cornerRadius: 18, name: "body", ...grad(Math.hypot(LW_RECT_W, LW_RECT_H) / 2, LW_RECT_W / 2, LW_RECT_H / 2) }));
+    g.add(new Konva.Rect({ x: -LW_RECT_W / 2 + 10, y: -LW_RECT_H / 2 + 10, width: LW_RECT_W - 20, height: LW_RECT_H - 20, cornerRadius: 12, stroke: "rgba(255,255,255,.4)", strokeWidth: 1.5, listening: false }));
+    labelY = LW_RECT_H / 2 + 16;
+  } else if (shape === "path" && Array.isArray(p.path) && p.path.length >= 3) {
+    g.add(new Konva.Line({ points: p.path.flatMap((q) => [+q[0], +q[1]]), closed: true, name: "body", ...grad(lwPropRadius(p)) }));
+    labelY = lwPathBottom(p.path) + 18;
+  } else {
+    const R = LW_TABLE_R;
+    g.add(new Konva.Circle({ radius: R, name: "body", ...grad(R) }));
+    g.add(new Konva.Circle({ radius: R - 12, stroke: "rgba(255,255,255,.4)", strokeWidth: 1.5, listening: false }));
+    labelY = R + 16;
+  }
+  const seated = Array.isArray(p.seated) ? p.seated : [], pos = lwSlotPositions(p);
   for (let i = 0; i < slots; i++) {
-    const off = lwSocketOffset(i, slots), filled = seated[i] != null;
+    const off = pos[i] || { x: 0, y: 0 }, filled = seated[i] != null;
     g.add(new Konva.Circle({ x: off.x, y: off.y, radius: 15,
       fill: filled ? "rgba(255,255,255,.16)" : "rgba(255,255,255,.05)",
       stroke: filled ? "rgba(255,255,255,.75)" : "rgba(255,255,255,.5)", strokeWidth: 2,
       dash: filled ? undefined : [4, 4], listening: false }));
   }
   const nSeated = seated.filter((s) => s != null).length;
-  g.add(lwLabelNode(`${p.name || "table"} · ${nSeated}/${slots} seated`, R + 16));
+  g.add(lwLabelNode(`${p.name || "table"} · ${nSeated}/${slots} seated`, labelY));
   return g;
 }
 
@@ -6358,9 +6547,64 @@ function lwSocketOffset(i, n) {
   const theta = -Math.PI / 2 + (i / Math.max(1, n)) * Math.PI * 2;
   return { x: Math.cos(theta) * LW_SOCKET_R, y: Math.sin(theta) * LW_SOCKET_R };
 }
+// Seat-socket positions for a collating artifact, in its local frame — distributed
+// along whatever outline it wears: a ring, a rectangle's edge, or a hand-drawn path.
+function lwSlotPositions(p) {
+  const n = Math.max(1, Number(p.slots) || 1), shape = String(p.shape || "circle");
+  if (shape === "rect") {
+    const out = [];
+    for (let i = 0; i < n; i++) out.push(lwRectPerimeter(i / n, LW_RECT_W / 2 + LW_SEAT_OUT, LW_RECT_H / 2 + LW_SEAT_OUT));
+    return out;
+  }
+  if (shape === "path" && Array.isArray(p.path) && p.path.length >= 3) return lwPathSlots(p.path, n);
+  const out = [];
+  for (let i = 0; i < n; i++) out.push(lwSocketOffset(i, n));
+  return out;
+}
+function lwSlotPos(p, i) { const a = lwSlotPositions(p); return a[i] || a[0] || { x: 0, y: 0 }; }
+function lwRectPerimeter(t, hw, hh) {
+  const w = 2 * hw, h = 2 * hh, per = 2 * (w + h);
+  let d = (t * per + w / 2) % per;             // start at top-centre, walk clockwise
+  if (d < w) return { x: -hw + d, y: -hh };
+  d -= w; if (d < h) return { x: hw, y: -hh + d };
+  d -= h; if (d < w) return { x: hw - d, y: hh };
+  d -= w; return { x: -hw, y: hh - d };
+}
+function lwPathCentroid(path) {
+  const n = path.length || 1;
+  return { x: path.reduce((s, q) => s + (+q[0]), 0) / n, y: path.reduce((s, q) => s + (+q[1]), 0) / n };
+}
+function lwPathSlots(path, n) {
+  const pts = path.map((q) => ({ x: +q[0], y: +q[1] }));
+  const segs = []; let total = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length], len = Math.hypot(b.x - a.x, b.y - a.y);
+    segs.push({ a, b, len, acc: total }); total += len;
+  }
+  if (total < 1) return pts.slice(0, n);
+  const c = lwPathCentroid(path), out = [];
+  for (let i = 0; i < n; i++) {
+    const d = (i / n) * total;
+    const seg = segs.find((s) => d >= s.acc && d < s.acc + s.len) || segs[segs.length - 1];
+    const f = seg.len ? (d - seg.acc) / seg.len : 0;
+    const x = seg.a.x + (seg.b.x - seg.a.x) * f, y = seg.a.y + (seg.b.y - seg.a.y) * f;
+    const dx = x - c.x, dy = y - c.y, m = Math.hypot(dx, dy) || 1;
+    out.push({ x: x + (dx / m) * LW_SEAT_OUT, y: y + (dy / m) * LW_SEAT_OUT });
+  }
+  return out;
+}
+function lwGrowPath(path, out) {
+  const c = lwPathCentroid(path);
+  return path.map((q) => { const dx = +q[0] - c.x, dy = +q[1] - c.y, m = Math.hypot(dx, dy) || 1; return { x: +q[0] + (dx / m) * out, y: +q[1] + (dy / m) * out }; });
+}
+function lwPathBottom(path) { return Array.isArray(path) && path.length ? Math.max(...path.map((q) => +q[1])) : LW_TABLE_R; }
 function lwPropRadius(p) {
   const slots = Number(p.slots) || 0;
-  return slots > 0 ? LW_TABLE_R : 30;
+  if (slots <= 0) return 30;
+  const shape = String(p.shape || "circle");
+  if (shape === "rect") return Math.max(LW_RECT_W, LW_RECT_H) / 2;
+  if (shape === "path" && Array.isArray(p.path) && p.path.length) return Math.max(LW_TABLE_R, ...p.path.map((q) => Math.hypot(+q[0], +q[1])));
+  return LW_TABLE_R;
 }
 
 // ---- glow: vicinity (transient, while dragging) + cluster/steady (at rest) --
@@ -6379,20 +6623,51 @@ function lwClearGlows() {
   lwKonva.glowing.forEach((n) => lwSetGlow(n, false));
   lwKonva.glowing.clear();
 }
-function lwAddClusterGlow(entry, full) {
+function lwAddClusterGlow(entry) {
+  // A soft, low-key halo that hugs the seated ring — signals "one entity" without a
+  // big bordered circle. Only drawn for a full table.
   const pos = entry.node.position();
-  const ring = new Konva.Circle({ x: pos.x, y: pos.y, radius: LW_SOCKET_R + 26,
-    stroke: full ? "hsl(150 55% 45%)" : "hsl(150 45% 55%)", strokeWidth: full ? 6 : 4, opacity: full ? 0.5 : 0.32,
-    shadowColor: "hsl(150 60% 50%)", shadowBlur: full ? 26 : 16, shadowOpacity: 0.6, listening: false, name: "clusterGlow" });
+  const rad = lwPropRadius(entry.data) + LW_SEAT_OUT + 22;
+  const ring = new Konva.Circle({ x: pos.x, y: pos.y, radius: rad,
+    fillRadialGradientStartPoint: { x: 0, y: 0 }, fillRadialGradientStartRadius: rad * 0.6,
+    fillRadialGradientEndPoint: { x: 0, y: 0 }, fillRadialGradientEndRadius: rad,
+    fillRadialGradientColorStops: [0, "rgba(46,110,91,0)", 1, "rgba(46,110,91,0.14)"],
+    listening: false, name: "clusterGlow" });
   lwKonva.worldLayer.add(ring);
   ring.moveToBottom();
   entry.glow = ring;
 }
 
-// ---- dragging: persist a move, or magnetically seat into a free socket -----
+// ---- dragging: move one token, a whole selection, or magnetically seat --------
+function lwDragBegin(kind, entry, node) {
+  lwSetCursor("grabbing");
+  if (!lwSelHas(entry)) lwSelSet(kind, entry);        // dragging an unselected token focuses just it
+  const members = lwSelList().map((s) => ({ kind: s.kind, entry: s.entry, node: s.entry.node, x0: s.entry.node.x(), y0: s.entry.node.y() }));
+  lwKonva.drag = { lead: entry, leadNode: node, leadX0: node.x(), leadY0: node.y(), members, group: members.length > 1 };
+  lwShowGrid();
+}
+function lwDragGroupMove() {
+  const dg = lwKonva.drag; if (!dg) return;
+  const dx = dg.leadNode.x() - dg.leadX0, dy = dg.leadNode.y() - dg.leadY0;
+  dg.members.forEach((m) => { if (m.node !== dg.leadNode) m.node.position({ x: m.x0 + dx, y: m.y0 + dy }); });
+  dg.members.forEach((m) => { if (m.kind === "prop") lwFollowProp(m.entry); });
+  lwUpdateArrows(); lwShowGrid(); lwKonva.worldLayer.batchDraw();
+}
+async function lwDragGroupPersist() {
+  const dg = lwKonva.drag; if (!dg) return;
+  await Promise.all(dg.members.map((m) => {
+    const pos = m.node.position();
+    return api(`/api/lw/${lwWorldId}/pos`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: m.entry.data.id, x: pos.x, y: pos.y }) }).catch(() => {});
+  }));
+  lwSaveView();
+}
+
 function lwWireAgentDrag(node, a) {
-  node.on("dragstart", () => { lwSetCursor("grabbing"); const e = lwKonva.agents.get(String(a.id)); if (e) lwSelect("agent", e); lwShowGrid(); });
+  const getEntry = () => lwKonva.agents.get(String(a.id));
+  node.on("dragstart", () => lwDragBegin("agent", getEntry(), node));
   node.on("dragmove", () => {
+    if (lwKonva.drag && lwKonva.drag.group) { lwDragGroupMove(); return; }
     lwShowGrid();
     lwClearGlows();
     const gp = node.position();
@@ -6400,10 +6675,10 @@ function lwWireAgentDrag(node, a) {
     lwKonva.props.forEach((entry) => {
       const p = entry.data, base = entry.node.position(), slots = Number(p.slots) || 0;
       if (slots > 0) {
-        const seated = Array.isArray(p.seated) ? p.seated : [];
+        const seated = Array.isArray(p.seated) ? p.seated : [], sp = lwSlotPositions(p);
         for (let i = 0; i < slots; i++) {
           if (seated[i] != null && String(seated[i]) !== String(a.id)) continue;
-          const off = lwSocketOffset(i, slots), sx = base.x + off.x, sy = base.y + off.y;
+          const off = sp[i] || { x: 0, y: 0 }, sx = base.x + off.x, sy = base.y + off.y;
           const d = Math.hypot(gp.x - sx, gp.y - sy);
           if (d < LW_SNAP_DIST && d < bestD) { bestD = d; best = { entry, slot: i, x: sx, y: sy }; }
         }
@@ -6413,28 +6688,39 @@ function lwWireAgentDrag(node, a) {
     if (best) { lwVicinityGlow(best.entry.node, "hsl(150 78% 45%)"); near = true; }
     if (near) lwVicinityGlow(node);
     lwKonva.snap = best ? { propId: String(best.entry.data.id), slot: best.slot, x: best.x, y: best.y } : null;
+    lwUpdateArrows();
     lwKonva.worldLayer.batchDraw();
   });
-  node.on("dragend", () => { lwSetCursor(lwToolCursor(lwTool)); lwOnAgentDrop(node, a); });
+  node.on("dragend", async () => {
+    lwSetCursor(lwToolCursor(lwTool));
+    if (lwKonva.drag && lwKonva.drag.group) { lwKonva.drag = null; await lwDragGroupPersist(); lwHideGrid(); return; }
+    lwKonva.drag = null;
+    await lwOnAgentDrop(node, a);
+  });
 }
 
 // A table carries its ring of seated agents and its cluster glow as it moves, so a
 // cluster drags as one single entity.
 function lwFollowProp(entry) {
-  const p = entry.data, base = entry.node.position(), slots = Number(p.slots) || 0;
+  const p = entry.data, base = entry.node.position(), slots = Number(p.slots) || 0, sp = lwSlotPositions(p);
   if (entry.glow) entry.glow.position(base);
   if (slots > 0 && Array.isArray(p.seated))
     p.seated.forEach((aid, i) => {
       if (aid == null) return;
       const ae = lwKonva.agents.get(String(aid));
-      if (ae) { const off = lwSocketOffset(i, slots); ae.node.position({ x: base.x + off.x, y: base.y + off.y }); }
+      if (ae) { const off = sp[i] || { x: 0, y: 0 }; ae.node.position({ x: base.x + off.x, y: base.y + off.y }); }
     });
 }
 function lwWirePropDrag(node, p, entry) {
-  node.on("dragstart", () => { lwSetCursor("grabbing"); lwSelect("prop", entry); lwShowGrid(); });
-  node.on("dragmove", () => { lwShowGrid(); lwFollowProp(entry); lwKonva.worldLayer.batchDraw(); });
+  node.on("dragstart", () => lwDragBegin("prop", entry, node));
+  node.on("dragmove", () => {
+    if (lwKonva.drag && lwKonva.drag.group) { lwDragGroupMove(); return; }
+    lwShowGrid(); lwFollowProp(entry); lwUpdateArrows(); lwKonva.worldLayer.batchDraw();
+  });
   node.on("dragend", async () => {
     lwHideGrid(); lwSetCursor(lwToolCursor(lwTool));
+    if (lwKonva.drag && lwKonva.drag.group) { lwKonva.drag = null; await lwDragGroupPersist(); return; }
+    lwKonva.drag = null;
     lwFollowProp(entry);
     const gp = node.position();
     try {
@@ -6474,7 +6760,7 @@ async function lwOnAgentDrop(node, a) {
     await api(`/api/lw/${lwWorldId}/pos`, { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: a.id, x: gp.x, y: gp.y }) });
     if (wasSeated) await lwReloadRoom();   // cluster changed → repaint
-    else lwSaveView();                     // token is already where it was dropped
+    else { lwUpdateArrows(); lwSaveView(); }   // token is already where it was dropped
   } catch (e) { toast(`Could not move them: ${e.message}`); await lwReloadRoom(); }
 }
 
@@ -6497,7 +6783,9 @@ function lwStartCreate(tool, world) {
   const figure = isManager ? "avm:" + LW_AV_VARIANTS[0]
     : kind === "artifact" ? "ic:" + LW_OBJ_ICONS[0]
     : "av:" + LW_AV_VARIANTS[0];
-  lwCreateFlow = { tool, kind, isManager, world, shimmer, anim, figure, seats: 0, name: "", brief: "", busy: false, dragged: false };
+  lwCreateFlow = { tool, kind, isManager, world, shimmer, anim, figure, seats: 0, name: "", brief: "",
+                   shape: "circle", path: [], pathPts: [], drawing: false, pop: null, preview: null,
+                   busy: false, dragged: false };
   lwOpenCreatePopover();
 }
 function lwPendingNode(x, y, kind) {
@@ -6583,7 +6871,7 @@ function lwOpenCreatePopover() {
     <div class="lw-pop-head" id="lwPopHead">
       <span class="lw-pop-grip" aria-hidden="true"></span>
       <span class="lw-pop-title">${escapeHtml(flow.isManager ? "New manager" : isArt ? "New object" : "New agent")}</span>
-      <button class="lw-pop-x" id="lwCX" title="Close (Esc)">✕</button>
+      <button class="lw-pop-x" id="lwCX" title="Close (Esc)" aria-label="Close"><svg viewBox="0 0 24 24" width="13" height="13"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg></button>
     </div>
     <input class="sc-name" id="lwCName" placeholder="Name (optional)" autocomplete="off">
     <div class="sc-label">${escapeHtml(isArt ? "What is it?" : "Who are they?")}</div>
@@ -6592,13 +6880,22 @@ function lwOpenCreatePopover() {
     <div class="lw-figpalette" id="lwCFig">${lwFigPaletteHtml(flow)}</div>
     ${isArt ? `<div class="sc-label">Seats <span class="dim">(&gt;0 makes a collating table)</span></div>
       <div class="sc-row" id="lwCSeats">${[0, 2, 4, 6].map((n) =>
-        `<button class="sc-chip${n === flow.seats ? " on" : ""}" data-seats="${n}">${n === 0 ? "none" : n}</button>`).join("")}</div>` : ""}
+        `<button class="sc-chip${n === flow.seats ? " on" : ""}" data-seats="${n}">${n === 0 ? "none" : n}</button>`).join("")}</div>
+      <div id="lwCShapeWrap" ${flow.seats > 0 ? "" : "hidden"}>
+        <div class="sc-label">Shape <span class="dim">(where the seats sit)</span></div>
+        <div class="sc-row" id="lwCShape">
+          <button class="sc-chip${flow.shape === "circle" ? " on" : ""}" data-shape="circle">◯ Circle</button>
+          <button class="sc-chip${flow.shape === "rect" ? " on" : ""}" data-shape="rect">▭ Rect</button>
+          <button class="sc-chip${flow.shape === "path" ? " on" : ""}" data-shape="draw">${flow.shape === "path" ? "✎ Custom ✓" : "✎ Draw"}</button>
+        </div>
+      </div>` : ""}
     <div class="sc-actions">
       <button class="sc-ctl primary" id="lwCGo">${escapeHtml(flow.isManager ? "Add manager" : "Create")}</button>
       <button class="sc-ctl" id="lwCCancel">Cancel</button>
     </div>
     <div class="lw-pop-hint">↵ create · esc cancel · drag the header to move</div>`;
   overlay.appendChild(pop);
+  flow.pop = pop;
   lwPositionOverlayAt(pop, flow.world, 18);
   lwMakeDraggable(pop, pop.querySelector("#lwPopHead"), flow);
 
@@ -6621,6 +6918,13 @@ function lwOpenCreatePopover() {
   pop.querySelectorAll("[data-seats]").forEach((b) => b.addEventListener("click", () => {
     flow.seats = Number(b.dataset.seats);
     pop.querySelectorAll("[data-seats]").forEach((x) => x.classList.toggle("on", x === b));
+    const wrap = pop.querySelector("#lwCShapeWrap"); if (wrap) wrap.hidden = !(flow.seats > 0);
+  }));
+  pop.querySelectorAll("[data-shape]").forEach((b) => b.addEventListener("click", () => {
+    const s = b.dataset.shape;
+    if (s === "draw") { lwBeginPathDraw(); return; }   // enter the paint-a-shape mode
+    flow.shape = s; flow.path = []; flow.pathPts = [];
+    lwSyncShapeChips();
   }));
   pop.querySelector("#lwCX").addEventListener("click", lwCancelCreate);
   pop.querySelector("#lwCCancel").addEventListener("click", lwCancelCreate);
@@ -6629,6 +6933,83 @@ function lwOpenCreatePopover() {
     if (e.key === "Enter" && e.target.id !== "lwCBrief") { e.preventDefault(); lwDoCreate(pop); }
   });
 }
+function lwSyncShapeChips() {
+  const flow = lwCreateFlow; if (!flow || !flow.pop) return;
+  const map = { circle: "circle", rect: "rect", path: "draw" };
+  flow.pop.querySelectorAll("[data-shape]").forEach((x) => x.classList.toggle("on", map[flow.shape] === x.dataset.shape));
+  const draw = flow.pop.querySelector('[data-shape="draw"]');
+  if (draw) draw.textContent = flow.shape === "path" ? "✎ Custom ✓" : "✎ Draw";
+}
+
+// ---- paint-a-shape: click points on the canvas to outline a collating table ---
+function lwBeginPathDraw() {
+  const flow = lwCreateFlow; if (!flow || !lwKonva) return;
+  flow.drawing = true; flow.pathPts = [];
+  if (flow.pop) flow.pop.style.display = "none";        // hide the dialog while painting
+  lwShowDrawBanner();
+  flow.preview = new Konva.Group({ x: flow.world.x, y: flow.world.y, listening: false, name: "pathPreview" });
+  flow.previewLine = new Konva.Line({ points: [], closed: false, stroke: "#2E6E5B", strokeWidth: 2, dash: [5, 4], fill: "rgba(46,110,91,.10)" });
+  flow.preview.add(flow.previewLine);
+  lwKonva.worldLayer.add(flow.preview);
+  lwSetCursor("crosshair");
+}
+function lwPathAddPoint() {
+  const flow = lwCreateFlow; if (!flow || !flow.drawing) return;
+  const w = lwPointerWorld(); if (!w) return;
+  flow.pathPts.push([w.x - flow.world.x, w.y - flow.world.y]);   // store relative to the token centre
+  lwDrawPreview();
+}
+function lwDrawPreview() {
+  const flow = lwCreateFlow; if (!flow || !flow.preview) return;
+  flow.previewLine.points(flow.pathPts.flatMap((p) => p));
+  flow.previewLine.closed(flow.pathPts.length >= 3);
+  flow.preview.find(".ppt").forEach((n) => n.destroy());
+  flow.pathPts.forEach((p) => flow.preview.add(new Konva.Circle({ x: p[0], y: p[1], radius: 3.5, fill: "#2E6E5B", name: "ppt", listening: false })));
+  lwKonva.worldLayer.batchDraw();
+}
+function lwFinishPathDraw() {
+  const flow = lwCreateFlow; if (!flow || !flow.drawing) return;
+  flow.drawing = false;
+  // the finishing double-click lands two coincident clicks — collapse near-duplicates
+  const s = (lwKonva && lwKonva.stage.scaleX()) || 1, eps = 6 / s, pts = [];
+  for (const p of flow.pathPts) {
+    const last = pts[pts.length - 1];
+    if (!last || Math.hypot(p[0] - last[0], p[1] - last[1]) > eps) pts.push(p);
+  }
+  if (pts.length >= 3) { flow.path = pts; flow.shape = "path"; }
+  else { flow.path = []; flow.shape = "circle"; toast("A shape needs at least 3 points — kept it a circle."); }
+  if (flow.preview) { flow.preview.destroy(); flow.preview = null; }
+  lwHideDrawBanner();
+  if (flow.pop) flow.pop.style.display = "";
+  lwSyncShapeChips();
+  lwSetCursor(lwToolCursor(lwTool));
+  lwKonva.worldLayer.batchDraw();
+}
+function lwCancelPathDraw() {
+  const flow = lwCreateFlow; if (!flow) return;
+  flow.drawing = false;
+  flow.shape = (flow.path && flow.path.length >= 3) ? "path" : "circle";
+  if (flow.preview) { flow.preview.destroy(); flow.preview = null; }
+  lwHideDrawBanner();
+  if (flow.pop) flow.pop.style.display = "";
+  lwSyncShapeChips();
+  lwSetCursor(lwToolCursor(lwTool));
+  if (lwKonva) lwKonva.worldLayer.batchDraw();
+}
+function lwShowDrawBanner() {
+  const overlay = $("#lwOverlay"); if (!overlay) return;
+  lwHideDrawBanner();
+  const b = document.createElement("div");
+  b.className = "lw-draw-banner"; b.id = "lwDrawBanner";
+  b.innerHTML = `<span class="lw-draw-tip">✎ Click to drop points · double-click to finish</span>
+    <button class="sc-ctl primary" id="lwDrawDone">Finish</button>
+    <button class="sc-ctl" id="lwDrawCancel">Cancel</button>`;
+  overlay.appendChild(b);
+  b.querySelector("#lwDrawDone").addEventListener("click", lwFinishPathDraw);
+  b.querySelector("#lwDrawCancel").addEventListener("click", lwCancelPathDraw);
+}
+function lwHideDrawBanner() { const b = $("#lwDrawBanner"); if (b) b.remove(); }
+
 function lwCreatedId(resp, keys) {
   if (!resp) return null;
   for (const k of keys) if (resp[k] && resp[k].id != null) return resp[k].id;
@@ -6650,8 +7031,10 @@ async function lwDoCreate(pop) {
       if (newId != null)
         await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/seat?human_id=${encodeURIComponent(newId)}`, { method: "POST" });
     } else {
+      const shape = (flow.path && flow.path.length >= 3) ? "path" : (flow.shape === "rect" ? "rect" : "circle");
       const r = await api(`/api/lw/${lwWorldId}/artifact`, { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: (flow.name || "").trim(), brief: (flow.brief || "").trim(), figure: flow.figure, slots: flow.seats || 0 }) });
+        body: JSON.stringify({ name: (flow.name || "").trim(), brief: (flow.brief || "").trim(), figure: flow.figure,
+          slots: flow.seats || 0, shape, path: shape === "path" ? flow.path : [] }) });
       newId = lwCreatedId(r, ["artifact", "prop", "object"]);
       if (newId != null)
         await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/place?artifact_id=${encodeURIComponent(newId)}`, { method: "POST" });
@@ -6660,6 +7043,7 @@ async function lwDoCreate(pop) {
       await api(`/api/lw/${lwWorldId}/pos`, { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: newId, x: flow.world.x, y: flow.world.y }) });
     lwCleanupCreate();
+    lwSetTool("select");      // one-shot: apply the tool now, so a failed reload can't leave it stuck
     await lwReloadRoom();
   } catch (e) {
     toast(`Could not create it: ${e.message}`);
@@ -6672,20 +7056,24 @@ function lwCleanupCreate() {
   const flow = lwCreateFlow; if (!flow) return;
   if (flow.anim) flow.anim.stop();
   if (flow.shimmer) flow.shimmer.destroy();
+  if (flow.preview) flow.preview.destroy();
+  lwHideDrawBanner();
   const overlay = $("#lwOverlay"); if (overlay) overlay.querySelectorAll(".lw-create-pop").forEach((n) => n.remove());
   lwCreateFlow = null;
   if (lwKonva) lwKonva.worldLayer.batchDraw();
 }
-function lwCancelCreate() { lwCleanupCreate(); }
+function lwCancelCreate() { lwCleanupCreate(); lwSetTool("select"); }   // dismiss → pointer returns to drag
 
 // ---- right-click menus (labels via studioMenu's createElement+textContent) --
 function lwFloorMenu(evt, world) {
   studioMenu(evt.clientX, evt.clientY, [
     { label: "＋ New agent here", act: () => lwStartCreate("agent", world) },
     { label: "＋ New object here", act: () => lwStartCreate("artifact", world) },
+    { label: "＋ New manager here", act: () => lwStartCreate("manager", world) },
     { sep: true },
     { label: "Seat an existing agent", act: lwOpenSeatPicker },
     { label: "Place an existing object", act: lwOpenPlacePicker },
+    { label: "Select everything", act: lwSelAll },
     { sep: true },
     { label: "▶ Step the scene", act: lwPlayRound },
   ]);
@@ -6721,6 +7109,7 @@ async function lwPlayBubbles(lines) {
   const overlay = $("#lwOverlay"); if (!overlay) return;
   const reduce = reduceMotion();
   for (const l of lines) {
+    if (!lwKonva) return;                 // the room may close or reload mid-playback
     if (l.who == null || !l.text) continue;
     const entry = lwKonva.agents.get(String(l.who));
     if (!entry) continue;
@@ -6794,8 +7183,8 @@ async function lwPlayRound() {
     if (r && r.world_tau != null && lwWorld && lwWorld.world) lwWorld.world.tau = r.world_tau;
     const room = r.room || (await api(`/api/lw/${lwWorldId}/room/${lwRoomId}`)).room;
     lwRenderRoom(room);
-    // Cloud bubbles over each acting agent, for the lines this round added.
-    lwPlayBubbles((room.log || []).filter((l) => !prevSeen.has(String(l.n))));
+    // Cloud bubbles over each acting agent, for the lines this round added (fire-and-forget).
+    lwPlayBubbles((room.log || []).filter((l) => !prevSeen.has(String(l.n)))).catch(() => {});
   } catch (e) { toast(`Round failed: ${e.message}`); }
   finally { const bb = $("#lwRound"); if (bb) { bb.disabled = false; bb.classList.remove("busy"); } }
 }
