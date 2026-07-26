@@ -2005,3 +2005,100 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 @media (prefers-reduced-motion: reduce) {
   .prop-card { transition: none; }
 }
+
+/* ============================================================================
+   The Lifeworld — a small society at a card table. Reuses the Studio figure
+   language, the poker felt, .pcard cards and the context menus; adds per-figure
+   mood meters, a dominant-drive tag, a centre deck stack, a live/deterministic
+   cost toggle, and a cost-aware event ticker. Decorative colours reuse the felt
+   and card tokens; every form control reuses the composer classes + shared
+   padding tokens; every animation obeys the reduced-motion rule below.
+   ============================================================================ */
+#lifeworld { position: relative; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.lw-bar h2 { font-size: 16px; font-weight: 650; }
+.lw-live {
+  font-size: 12px; font-weight: 600; border-radius: 20px;
+  color: var(--dim); background: var(--card-2); border: 1px solid var(--line);
+}
+.lw-live.on { color: var(--warn); background: var(--warn-soft); border-color: var(--warn); }
+
+.lw-stage {
+  position: relative; flex: 1; min-height: 0; overflow: hidden;
+  display: flex; flex-direction: column;
+  background: radial-gradient(circle at 50% 40%, var(--room) 0%, var(--room-edge) 72%);
+}
+.lw-lobby-head { margin-bottom: 12px; }
+.lw-lobby-head h3 { font-size: 15px; font-weight: 650; }
+
+/* A caption floating over the felt — kept out of flow so the table fills the stage. */
+.lw-topline { position: absolute; top: 10px; left: 20px; z-index: 6;
+  display: flex; align-items: center; gap: 10px; }
+.lw-domain { font-family: var(--serif); font-style: italic; color: var(--dim); font-size: 13px; }
+.lw-count { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+
+/* Centre of the felt: the world clock and the shared deck. */
+.lw-tick { font-family: var(--mono); color: #fff; font-size: 12px; opacity: .85; }
+.lw-tick b { font-size: 15px; }
+.lw-deck { display: flex; align-items: center; }
+.lw-deck .pcard { width: 34px; height: 48px; margin-left: -22px; }
+.lw-deck .pcard:first-child { margin-left: 0; }
+.lw-deck-label { margin-left: 10px; font-family: var(--mono); font-size: 10px; color: rgba(255,255,255,.82); }
+
+/* A seated person — the Studio figure, plus mood bars and their dominant drive. */
+.lw-mood { display: flex; gap: 4px; justify-content: center; margin-top: 4px; }
+.lw-mbar { width: 30px; height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.lw-mbar > i { display: block; height: 100%; }
+.lw-mbar.conf > i { background: var(--good); }
+.lw-mbar.stress > i { background: var(--warn); }
+.lw-want { font-size: 10px; color: var(--accent); margin-top: 3px; }
+.lw-want i { font-style: normal; font-family: var(--mono); color: var(--faint); }
+.lw-figure .seat-cards { min-height: 40px; }
+.lw-figure .seat-cards .pcard { width: 24px; height: 34px; }
+.lw-more { align-self: center; font-family: var(--mono); font-size: 10px; color: var(--dim); margin-left: 3px; }
+
+/* The event ticker — cost is legible: a billed / tier-2 line is a 💭 thought, a
+   free deterministic move is a reflex. */
+.lw-log { width: 320px; }
+.lw-log-empty { font-size: 12px; color: var(--dim); font-style: italic; }
+.lw-slog { align-items: center; }
+.lw-who { color: var(--accent); font-weight: 650; }
+.lw-thought-tag {
+  font-family: var(--mono); font-size: 8.5px; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--warn); background: var(--warn-soft); border: 1px solid var(--warn);
+  border-radius: 10px; padding: 1px 6px; flex: none;
+}
+.lw-reflex-tag { font-family: var(--mono); font-size: 8.5px; text-transform: uppercase; color: var(--faint); flex: none; }
+.lw-thought { background: linear-gradient(90deg, transparent, var(--warn-soft)); }
+.lw-new { animation: lwLogIn .34s ease both; }
+@keyframes lwLogIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* The peek drawer — the operator's window on one person's inner state. */
+.lw-meters { display: flex; flex-direction: column; gap: 6px; }
+.lw-meter-row { display: flex; align-items: center; gap: 8px; }
+.lw-meter-name { flex: 0 0 34%; font-size: 12px; color: var(--text); text-transform: capitalize; }
+.lw-meter-track { flex: 1; height: 6px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.lw-meter-fill { display: block; height: 100%; background: var(--accent); }
+.lw-meter-fill.m-confidence { background: var(--good); }
+.lw-meter-fill.m-stress { background: var(--warn); }
+.lw-meter-fill.m-hope { background: var(--accent); }
+.lw-meter-fill.m-focus { background: var(--mgr); }
+.lw-meter-val { flex: none; width: 26px; text-align: right; font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.lw-want-big { font-size: 13px; color: var(--accent); }
+.lw-want-big .dim { font-style: normal; }
+.sc-chip i { font-style: normal; font-family: var(--mono); opacity: .8; }
+.lw-verified { font-family: var(--mono); font-size: 9px; color: var(--good); text-transform: uppercase; letter-spacing: .06em; }
+.lw-broken { font-family: var(--mono); font-size: 9px; color: var(--faint); text-transform: uppercase; letter-spacing: .06em; }
+.lw-resume-head { font-family: var(--serif); font-size: 13px; color: var(--text); margin-bottom: 6px; }
+.lw-pins { display: flex; flex-wrap: wrap; gap: 5px; }
+.lw-pin { font-size: 11px; background: var(--card-2); border: 1px solid var(--line-soft);
+  border-radius: 8px; padding: 3px 8px; color: var(--dim); }
+.lw-habits, .lw-bonds { display: flex; flex-direction: column; gap: 5px; }
+.lw-habit, .lw-bond { display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
+  font-size: 12px; padding: 5px 8px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--card-2); }
+.lw-habit-when, .lw-bond-name { color: var(--text); }
+.lw-habit-meta, .lw-bond-meta { font-family: var(--mono); font-size: 10.5px; color: var(--dim); flex: none; }
+.lw-hand { display: flex; gap: 5px; flex-wrap: wrap; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lw-new { animation: none; }
+}

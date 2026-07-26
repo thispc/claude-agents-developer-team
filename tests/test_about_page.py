@@ -27,7 +27,9 @@ def test_about_has_its_own_address_so_it_can_be_linked():
     """Someone sending this to a colleague should be able to send the page, not
     'open the app and press the question mark'."""
     assert 'setHash("#/about")' in JS
-    assert '#/about' in JS.split("function route()")[1][:600]
+    # the router resolves #/about somewhere in route() — position-independent, since new
+    # screens (studio, scenes, lifeworld) legitimately add their own route branches ahead of it
+    assert '#/about' in JS.split("function route()")[1].split("\nfunction ")[0]
 
 
 def test_every_screen_hides_the_about_page():

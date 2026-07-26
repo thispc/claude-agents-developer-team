@@ -690,6 +690,7 @@ async function openSelfRepair(skipHash) {
   const pl = $("#plan"); if (pl) pl.hidden = true;
   const ab = $("#aboutPage"); if (ab) ab.hidden = true;
   const scn = $("#scenes"); if (scn) scn.hidden = true;
+  const lw = $("#lifeworld"); if (lw) lw.hidden = true;
   $("#projectBar").hidden = true;
   $("#selfPage").hidden = false;
   if (!skipHash) setHash("#/improve");
@@ -702,6 +703,7 @@ function openAbout(skipHash) {
   const pl = $("#plan"); if (pl) pl.hidden = true;
   const sp = $("#selfPage"); if (sp) sp.hidden = true;
   const scn = $("#scenes"); if (scn) scn.hidden = true;
+  const lw = $("#lifeworld"); if (lw) lw.hidden = true;
   $("#projectBar").hidden = true;
   $("#aboutPage").hidden = false;
   if (!skipHash) setHash("#/about");
@@ -712,6 +714,7 @@ function openAbout(skipHash) {
 function showHome(skipHash) {
   const st = $("#studio"); if (st) st.hidden = true;
   const scn = $("#scenes"); if (scn) scn.hidden = true;
+  const lw = $("#lifeworld"); if (lw) lw.hidden = true;
   const pl = $("#plan"); if (pl) pl.hidden = true;
   const sp = $("#selfPage"); if (sp) sp.hidden = true;
   const ab = $("#aboutPage"); if (ab) ab.hidden = true;
@@ -736,6 +739,7 @@ function openProject(id, view, skipHash) {
   const ab = $("#aboutPage"); if (ab) ab.hidden = true;
   const st = $("#studio"); if (st) st.hidden = true;
   const scn = $("#scenes"); if (scn) scn.hidden = true;
+  const lw = $("#lifeworld"); if (lw) lw.hidden = true;
   $("#home").hidden = true;
   $("main").hidden = false;
   $("#projectBar").hidden = false;
@@ -795,6 +799,10 @@ function route() {
   {
     const sc = location.hash.match(/^#\/scenes(?:\/([\w-]+))?/);
     if (sc) { openScenes(true, sc[1] || null); return; }
+  }
+  {
+    const lw = location.hash.match(/^#\/lifeworld(?:\/([\w-]+))?/);
+    if (lw) { openLifeworld(true, lw[1] || null); return; }
   }
   if (location.hash.startsWith("#/about")) { openAbout(true); return; }
   if (location.hash.startsWith("#/improve")) { openSelfRepair(true); return; }
@@ -1108,6 +1116,7 @@ async function openPlan() {
   $("#home").hidden = true; $("main").hidden = true; $("#plan").hidden = false;
   { const ab = $("#aboutPage"); if (ab) ab.hidden = true; }
   { const scn = $("#scenes"); if (scn) scn.hidden = true; }
+  { const lw = $("#lifeworld"); if (lw) lw.hidden = true; }
   $("#projectBar").hidden = true;
   $("#planSetup").hidden = false; $("#planStage").hidden = true;
   $("#blueprintPanel").hidden = true;
@@ -3791,7 +3800,7 @@ function sigil(name, provider) {
 // brings the shell on screen and hides every sibling; tab selection is separate.
 function showStudioShell() {
   $("#home").hidden = true; $("main").hidden = true;
-  for (const id of ["plan", "selfPage", "aboutPage"]) { const e = $("#" + id); if (e) e.hidden = true; }
+  for (const id of ["plan", "selfPage", "aboutPage", "lifeworld"]) { const e = $("#" + id); if (e) e.hidden = true; }
   $("#projectBar").hidden = true;
   $("#studio").hidden = false;
   currentProject = null;
@@ -5038,6 +5047,672 @@ function artifactCardMenu(ev, a) {
 }
 
 $("#artNew") && $("#artNew").addEventListener("click", () => openArtifactComposer());
+
+
+// ============================================================================
+//  The Lifeworld — a small society of synthetic people who live in scenes and
+//  interact with artifacts (a deck of cards). It is operated like a game: seat
+//  people at a poker-felt table, deal / greet / needle, play a round, and peek at
+//  each person's inner state (mood, drives, habits, bonds, and their SECRET hand —
+//  a card's value is readable only by its holder, and by you the operator).
+//
+//  It reuses the Studio's visual language wholesale: the .figure / sigil() emblem,
+//  the poker felt + .pcard cards, the inline composer drawer (no browser popups),
+//  the createElement/textContent context menus. All free text reaches innerHTML
+//  only through escapeHtml; every model call in Live mode is billed and surfaced.
+// ============================================================================
+let lwWorlds = [];
+let lwWorld = null;            // full GET /api/lw/{id}
+let lwWorldId = null;
+let lwScene = null;            // the active SCENE (from world.scenes)
+let lwSceneId = null;
+let lwLive = false;            // Live = agents actually think (costs tokens)
+let lwSeenLog = new Set();     // log 'n's already shown, so only new lines animate
+
+const LW_DIALS = ["willpower", "risk_appetite", "composure", "curiosity",
+                  "sociability", "empathy", "conscientiousness"];
+const LW_PRESETS = [
+  { id: "sandbox", label: "Sandbox", note: "free play, drama on" },
+  { id: "serious", label: "Serious", note: "measured — fewer theatrics" },
+  { id: "theatre", label: "Theatre", note: "expressive and dramatic" },
+];
+
+const lwLiveQ = () => (lwLive ? "?live=1" : "");
+
+// --- screen switch: bring the section on, hide every sibling (mirrors the Studio).
+function showLifeworld() {
+  $("#home").hidden = true; $("main").hidden = true;
+  for (const id of ["plan", "selfPage", "aboutPage", "studio", "scenes"]) {
+    const e = $("#" + id); if (e) e.hidden = true;
+  }
+  $("#projectBar").hidden = true;
+  $("#lifeworld").hidden = false;
+  currentProject = null;
+}
+
+async function openLifeworld(skipHash, worldId) {
+  showLifeworld();
+  lwWorldId = worldId || null;
+  lwSceneId = null; lwScene = null; lwWorld = null; lwSeenLog = new Set();
+  if (!skipHash) setHash(worldId ? `#/lifeworld/${worldId}` : "#/lifeworld");
+  await renderLifeworld();
+}
+
+async function renderLifeworld() {
+  if ($("#lifeworld").hidden) return;
+  if (lwWorldId) await renderWorldTable();
+  else await renderWorldLobby();
+}
+
+// ---- small helpers -------------------------------------------------------
+// Mood / pressure values may arrive as 0..1 or 0..100; normalise to a 0..100 int.
+function lwPct(v) {
+  let n = Number(v);
+  if (!Number.isFinite(n)) return 0;
+  if (n > 0 && n <= 1) n *= 100;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+// wants is either a single [name, pressure] pair or a list of them; pick the one
+// under the most pressure as the dominant drive.
+function dominantWant(wants) {
+  if (!Array.isArray(wants) || !wants.length) return null;
+  if (typeof wants[0] === "string") return { name: wants[0], pressure: wants[1] };
+  let best = null;
+  for (const w of wants) {
+    if (!Array.isArray(w)) continue;
+    if (!best || Number(w[1]) > Number(best[1])) best = w;
+  }
+  return best ? { name: best[0], pressure: best[1] } : null;
+}
+
+// A figure may be a world person (id IS the human id) or a scene seat (resolve by
+// name back to the person). Returns the id to use for /human and /act calls.
+function lwHumanId(f) {
+  if (f && f.human_id != null) return f.human_id;
+  const people = (lwWorld && lwWorld.people) || [];
+  const byName = people.find((p) => p.name === (f && f.name));
+  if (byName) return byName.id;
+  return f && f.id;
+}
+
+// Resolve a log 'who' / bond key (id or name) to a display name.
+function lwNameOf(v) {
+  if (v == null) return "";
+  const people = (lwWorld && lwWorld.people) || [];
+  const p = people.find((x) => String(x.id) === String(v));
+  return p ? (p.name || String(v)) : String(v);
+}
+
+function lwWhen(t) {
+  try { const dt = new Date(t); if (!isNaN(dt.getTime())) return dt.toLocaleDateString(); } catch (e) { /* fall through */ }
+  return String(t);
+}
+
+// Players ring an oval, first seat at the near edge, going clockwise (as scenes do).
+function lwSeatPos(i, n) {
+  const theta = (Math.PI / 2) + (i / Math.max(1, n)) * Math.PI * 2;
+  return { x: 50 + Math.cos(theta) * 41, y: 52 + Math.sin(theta) * 41 };
+}
+
+function findDeck(scene, artifacts) {
+  const props = (scene && scene.props) || [];
+  const inScene = props.find((p) => (p.kind || "").includes("deck"));
+  if (inScene) return inScene;
+  return (artifacts || []).find((a) => (a.kind || "").includes("deck")) || null;
+}
+
+// How many cards each holder is sitting on, derived from the scene log's draws.
+// The values stay secret (only a peek decrypts them) — we only show the count as
+// face-down backs near the holder.
+function lwHandCounts(scene) {
+  const counts = {};
+  const log = (scene && scene.log) || [];
+  for (const l of log) {
+    const verb = l.verb || l.kind;
+    if (verb === "draw" || (typeof l.text === "string" && /\b(draws?|drew)\b/i.test(l.text))) {
+      const k = String(l.who);
+      counts[k] = (counts[k] || 0) + 1;
+    }
+  }
+  return counts;
+}
+
+function lwBilledCount(scene) {
+  const log = (scene && scene.log) || [];
+  return log.filter((l) => l.billed || l.tier === 2).length;
+}
+
+// ---- the world lobby -----------------------------------------------------
+async function renderWorldLobby() {
+  $("#lwToLobby").hidden = true; $("#lwTitle").hidden = true;
+  $("#lwTau").hidden = true; $("#lwLive").hidden = true;
+  $("#lwNewWorld").hidden = false; $("#lwDetail").hidden = true;
+  const stage = $("#lwStage");
+  let d;
+  try { d = await api("/api/lw"); }
+  catch (e) { stage.innerHTML = `<p class="empty">Could not load the Lifeworld: ${escapeHtml(e.message || String(e))}</p>`; return; }
+  lwWorlds = d.worlds || [];
+  if (!lwWorlds.length) {
+    stage.innerHTML = `<div class="scene-lobby"><div class="scene-empty">
+      <p>No worlds yet — spin one up and populate it with synthetic people.</p>
+      <button class="primary" id="lwNew2">Create your first world</button>
+    </div></div>`;
+    $("#lwNew2").addEventListener("click", openWorldComposer);
+    return;
+  }
+  const cards = lwWorlds.map((w) => `<button class="scene-card" data-open="${escapeHtml(String(w.id))}">
+      <span class="scene-kind">world</span>
+      <span class="scene-name">${escapeHtml(w.name || "Untitled world")}</span>
+      <span class="scene-foot">${w.updated_at ? `<span>updated ${escapeHtml(lwWhen(w.updated_at))}</span>` : ""}</span>
+    </button>`).join("");
+  stage.innerHTML = `<div class="scene-lobby">
+    <div class="lw-lobby-head"><h3>Your worlds</h3></div>
+    <div class="scene-cards">${cards}</div></div>`;
+  stage.querySelectorAll("[data-open]").forEach((b) => {
+    b.addEventListener("click", () => openWorld(b.dataset.open));
+    b.addEventListener("contextmenu", (ev) =>
+      lwWorldMenu(ev, lwWorlds.find((x) => String(x.id) === b.dataset.open)));
+  });
+}
+
+let lwDraft = null;
+function openWorldComposer() { lwDraft = { name: "", preset: "sandbox" }; renderWorldComposer(); }
+function renderWorldComposer() {
+  const box = $("#lwDetail");
+  const d = lwDraft;
+  box.hidden = false;
+  box.className = "studio-detail composing";
+  box.innerHTML = `
+    <div class="sd-head">
+      <div class="fig-emblem" style="background:${sigil(d.name || "World", "anthropic")}">
+        <span class="fig-initial">🌍</span></div>
+      <div style="flex:1">
+        <input class="sc-name" id="lwName" placeholder="Name this world"
+               value="${escapeHtml(d.name)}" autocomplete="off">
+        <p class="sc-preview">a small society of your making</p>
+      </div>
+      <button class="sd-close" id="lwClose">✕</button>
+    </div>
+    <div class="sc-label">Preset</div>
+    <div class="sc-row">${LW_PRESETS.map((p) => chip(p.label, d.preset === p.id, `data-preset="${p.id}"`)).join("")}</div>
+    <p class="sc-hint" id="lwPresetNote">${escapeHtml((LW_PRESETS.find((p) => p.id === d.preset) || {}).note || "")}</p>
+    <div class="sc-actions"><button class="primary" id="lwCreate">Create the world</button></div>`;
+  $("#lwName").addEventListener("input", (e) => { d.name = e.target.value; });
+  box.querySelectorAll("[data-preset]").forEach((b) =>
+    b.addEventListener("click", () => { d.preset = b.dataset.preset; renderWorldComposer(); }));
+  $("#lwClose").addEventListener("click", () => { lwDraft = null; box.hidden = true; });
+  $("#lwCreate").addEventListener("click", doCreateWorld);
+}
+async function doCreateWorld() {
+  const d = lwDraft;
+  try {
+    const r = await api("/api/lw", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: d.name.trim() || "New world", preset: d.preset }) });
+    lwDraft = null; $("#lwDetail").hidden = true;
+    const id = r.world && r.world.id != null ? r.world.id : null;
+    if (id != null) openWorld(id); else await renderLifeworld();
+  } catch (e) { toast(`Could not create the world: ${e.message}`); }
+}
+
+function lwWorldMenu(ev, w) {
+  ev.preventDefault(); ev.stopPropagation();
+  if (!w) return;
+  studioMenu(ev.clientX, ev.clientY, [
+    { label: `Open ${w.name || "world"}`, act: () => openWorld(w.id) },
+    { sep: true },
+    { label: `Delete ${w.name || "world"}`, act: async () => {
+        try { await api(`/api/lw/${w.id}`, { method: "DELETE" }); await renderWorldLobby(); }
+        catch (e) { toast(`Could not delete: ${e.message}`); } } },
+  ]);
+}
+
+async function openWorld(id) {
+  lwWorldId = id; lwScene = null; lwSceneId = null; lwSeenLog = new Set();
+  $("#lwDetail").hidden = true;
+  setHash(`#/lifeworld/${id}`);
+  await renderWorldTable();
+}
+
+// ---- the table (the game) ------------------------------------------------
+async function renderWorldTable() {
+  const stage = $("#lwStage");
+  let d;
+  try { d = await api(`/api/lw/${lwWorldId}`); }
+  catch (e) { stage.innerHTML = `<p class="empty">Could not open world: ${escapeHtml(e.message || String(e))}</p>`; return; }
+  lwWorld = d;
+  const w = d.world || {};
+  const people = d.people || [];
+  const artifacts = d.artifacts || [];
+  const scenes = d.scenes || [];
+
+  if (lwSceneId) lwScene = scenes.find((s) => String(s.id) === String(lwSceneId)) || null;
+  if (!lwScene && scenes.length) lwScene = scenes[0];
+  lwSceneId = lwScene ? lwScene.id : null;
+
+  $("#lwNewWorld").hidden = true;
+  $("#lwToLobby").hidden = false;
+  $("#lwTitle").hidden = false; $("#lwTitle").textContent = w.name || "World";
+  $("#lwLive").hidden = false; paintLwLive();
+  paintLwTau(w, lwScene);
+
+  const seats = lwScene ? (lwScene.seats || []) : [];
+  const usingScene = seats.length > 0;
+  const figures = usingScene ? seats : people;
+  const deck = findDeck(lwScene, artifacts);
+  const handCounts = lwHandCounts(lwScene);
+  const log = lwScene ? (lwScene.log || []) : [];
+  const prevSeen = lwSeenLog;
+
+  stage.innerHTML = `
+    <div class="lw-topline">
+      <span class="lw-domain">${escapeHtml(lwScene ? (lwScene.name || lwScene.domain || "scene") : "no scene yet — set one below")}</span>
+      <span class="lw-count">${figures.length} ${figures.length === 1 ? "person" : "people"}</span>
+    </div>
+    <div class="scene-table-wrap" id="lwTableWrap">
+      <div class="poker-table">
+        <div class="table-rail"></div>
+        <div class="table-felt">
+          <div class="table-center">
+            ${deck ? lwDeckHtml(deck) : `<span class="board-empty">no deck on the table</span>`}
+            <div class="lw-tick">τ <b>${escapeHtml(String(w.tau ?? 0))}</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="seat-layer" id="lwSeatLayer"></div>
+      ${!figures.length
+        ? `<div class="table-hint">Add a person, then set the scene.</div>`
+        : (!usingScene ? `<div class="table-hint">Set the scene to seat them and place a deck.</div>` : "")}
+    </div>
+    <div class="scene-controls">
+      <button class="sc-ctl" id="lwAddPerson">＋ Add person</button>
+      <button class="sc-ctl" id="lwAddDeck">Add a deck</button>
+      <button class="sc-ctl" id="lwSetScene">Set the scene</button>
+      <button class="sc-ctl primary" id="lwRound">▶ Play a round</button>
+      <div class="ctl-spacer"></div>
+      <button class="sc-ctl danger" id="lwDelete">Delete world</button>
+    </div>
+    <div class="scene-log lw-log" id="lwLog">${lwLogHtml(log, prevSeen)}</div>`;
+
+  const layer = $("#lwSeatLayer");
+  figures.forEach((f, i) => layer.appendChild(lwFigure(f, lwSeatPos(i, figures.length), handCounts)));
+
+  const wrap = $("#lwTableWrap");
+  wrap.addEventListener("contextmenu", (ev) => {
+    if (ev.target.closest(".seat-figure")) return;   // figures own their menu
+    lwFloorMenu(ev);
+  });
+
+  $("#lwAddPerson").addEventListener("click", openPersonComposer);
+  $("#lwAddDeck").addEventListener("click", lwAddDeck);
+  $("#lwSetScene").addEventListener("click", lwSetScene);
+  $("#lwRound").addEventListener("click", lwPlayRound);
+  $("#lwDelete").addEventListener("click", lwDeleteWorld);
+
+  // Everything on screen is now "seen"; only genuinely new lines animate next time.
+  lwSeenLog = new Set(log.map((l) => String(l.n)));
+}
+
+function lwDeckHtml(deck) {
+  const count = deck && (deck.count ?? (deck.public && deck.public.count));
+  return `<div class="lw-deck" title="the deck — a shared artifact, dealt from the centre">
+    <span class="pcard back"><span class="pcard-weave"></span></span>
+    <span class="pcard back"><span class="pcard-weave"></span></span>
+    <span class="pcard back"><span class="pcard-weave"></span></span>
+    <span class="lw-deck-label">${escapeHtml(deck.name || "deck")}${count != null ? ` · ${escapeHtml(String(count))}` : ""}</span>
+  </div>`;
+}
+
+function lwMoodBars(mood) {
+  const bar = (label, v, cls) =>
+    `<span class="lw-mbar ${cls}" title="${label} ${lwPct(v)}"><i style="width:${lwPct(v)}%"></i></span>`;
+  return `<div class="lw-mood">${bar("confidence", mood.confidence, "conf")}${bar("stress", mood.stress, "stress")}</div>`;
+}
+
+function lwFigure(f, pos, handCounts) {
+  const el = document.createElement("div");
+  const hid = lwHumanId(f);
+  el.className = "seat-figure lw-figure";
+  el.style.left = pos.x + "%"; el.style.top = pos.y + "%";
+  el.dataset.hid = String(hid);
+  const mood = f.mood || {};
+  const n = handCounts[String(hid)] ?? handCounts[f.name] ?? 0;
+  const shown = Math.min(n, 5);
+  const backs = n
+    ? `<div class="seat-cards">${Array.from({ length: shown })
+        .map(() => `<span class="pcard back"><span class="pcard-weave"></span></span>`).join("")}${
+        n > 5 ? `<span class="lw-more">+${n - 5}</span>` : ""}</div>`
+    : "";
+  const want = dominantWant(f.wants);
+  el.innerHTML = `
+    ${backs}
+    <div class="fig-emblem" style="background:${sigil(f.name || "?", "anthropic")}">
+      <span class="fig-initial">${escapeHtml((f.name || "?")[0])}</span></div>
+    <div class="fig-name">${escapeHtml(f.name || "someone")}</div>
+    ${lwMoodBars(mood)}
+    ${want ? `<div class="lw-want" title="dominant drive">▸ ${escapeHtml(want.name)}${
+      want.pressure != null ? ` <i>${lwPct(want.pressure)}</i>` : ""}</div>` : ""}`;
+  el.title = "Click to peek — mood, drives, habits, bonds and their secret hand";
+  el.addEventListener("click", () => openPersonDrawer(hid, f.name));
+  el.addEventListener("contextmenu", (ev) => lwFigureMenu(ev, f, hid));
+  return el;
+}
+
+// Cost is visible and fun: a billed / tier-2 line carries a 💭 thought marker; a
+// free deterministic reflex is labelled as such. Only unseen lines animate in.
+function lwLogHtml(log, prevSeen) {
+  if (!log || !log.length)
+    return `<div class="lw-log-empty">The ticker is quiet. Play a round to stir them.</div>`;
+  let newIdx = 0;
+  return log.map((l) => {
+    const isNew = !prevSeen.has(String(l.n));
+    const thought = l.tier === 2 || !!l.billed;
+    const delay = isNew ? Math.min(newIdx++, 8) * 55 : 0;
+    return `<div class="slog-row lw-slog${isNew ? " lw-new" : ""}${thought ? " lw-thought" : ""}"${
+      isNew ? ` style="animation-delay:${delay}ms"` : ""}>
+      <span class="slog-kind">${escapeHtml(String(l.kind || ""))}</span>
+      <span class="slog-text">${l.who != null ? `<b class="lw-who">${escapeHtml(lwNameOf(l.who))}</b> ` : ""}${escapeHtml(String(l.text || ""))}</span>
+      ${thought
+        ? `<span class="lw-thought-tag" title="a model actually thought — this call was billed">💭 thought</span>`
+        : `<span class="lw-reflex-tag" title="a free deterministic reflex — no tokens spent">reflex</span>`}
+    </div>`;
+  }).join("");
+}
+
+function paintLwLive() {
+  const b = $("#lwLive");
+  if (!b) return;
+  b.classList.toggle("on", lwLive);
+  b.setAttribute("aria-pressed", lwLive ? "true" : "false");
+  b.textContent = lwLive ? "🧠 Live — agents think (costs tokens)" : "💤 Deterministic (free)";
+  b.title = lwLive
+    ? "Live: each act and round asks real models to think. This spends tokens — every billed thought shows in the ticker."
+    : "Deterministic: free, reproducible reflexes, no tokens. Flip to Live to spend tokens on real thinking.";
+}
+
+function paintLwTau(w, scene) {
+  const m = $("#lwTau");
+  if (!m) return;
+  m.hidden = false;
+  m.className = "scene-meter";
+  const calls = lwBilledCount(scene);
+  m.textContent = `τ ${w.tau ?? 0} · ${calls} billed thought${calls === 1 ? "" : "s"}`;
+}
+
+// ---- controls ------------------------------------------------------------
+async function lwPlayRound() {
+  if (!lwSceneId) { toast("Set the scene first — seat your people and place a deck."); return; }
+  const b = $("#lwRound"); if (b) { b.disabled = true; b.classList.add("busy"); }
+  try {
+    await api(`/api/lw/${lwWorldId}/scene/${lwSceneId}/round${lwLiveQ()}`, { method: "POST" });
+    await renderWorldTable();
+  } catch (e) { toast(`Round failed: ${e.message}`); }
+  finally { const bb = $("#lwRound"); if (bb) { bb.disabled = false; bb.classList.remove("busy"); } }
+}
+
+async function lwActOne(hid, verb, target, extra) {
+  if (!lwSceneId) { toast("Set the scene first."); return; }
+  try {
+    const body = Object.assign({ human_id: hid, verb, target }, extra || {});
+    await api(`/api/lw/${lwWorldId}/scene/${lwSceneId}/act${lwLiveQ()}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    await renderWorldTable();
+  } catch (e) { toast(`Could not act: ${e.message}`); }
+}
+
+// Set the scene: create it, seat everyone, and place a deck — all in one go.
+async function lwSetScene() {
+  if (!lwWorld) return;
+  const people = lwWorld.people || [];
+  if (!people.length) { toast("Add a person first."); return; }
+  const b = $("#lwSetScene"); if (b) { b.disabled = true; b.classList.add("busy"); }
+  try {
+    const r = await api(`/api/lw/${lwWorldId}/scene`, { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "The card table", domain: "cards.poker", flags: {} }) });
+    const sid = r.scene && r.scene.id != null ? r.scene.id : null;
+    if (sid != null) {
+      for (const p of people) {
+        try { await api(`/api/lw/${lwWorldId}/scene/${sid}/seat?human_id=${encodeURIComponent(p.id)}`, { method: "POST" }); }
+        catch (e) { /* keep seating the rest */ }
+      }
+      let deck = findDeck(null, lwWorld.artifacts);
+      if (!deck) {
+        try { const dr = await api(`/api/lw/${lwWorldId}/deck?seed=7`, { method: "POST" }); deck = dr.artifact; }
+        catch (e) { /* no deck is still a valid table */ }
+      }
+      if (deck && deck.id != null) {
+        try { await api(`/api/lw/${lwWorldId}/scene/${sid}/place?artifact_id=${encodeURIComponent(deck.id)}`, { method: "POST" }); }
+        catch (e) { /* placement optional */ }
+      }
+      lwSceneId = sid; lwScene = null;
+    }
+    await renderWorldTable();
+  } catch (e) { toast(`Could not set the scene: ${e.message}`); }
+  finally { const bb = $("#lwSetScene"); if (bb) { bb.disabled = false; bb.classList.remove("busy"); } }
+}
+
+async function lwAddDeck() {
+  try {
+    const seed = 1 + Math.floor(Math.random() * 9999);
+    const r = await api(`/api/lw/${lwWorldId}/deck?seed=${seed}`, { method: "POST" });
+    if (lwSceneId && r.artifact && r.artifact.id != null) {
+      try { await api(`/api/lw/${lwWorldId}/scene/${lwSceneId}/place?artifact_id=${encodeURIComponent(r.artifact.id)}`, { method: "POST" }); }
+      catch (e) { /* placement optional */ }
+    }
+    toast("A fresh deck is on the table.");
+    await renderWorldTable();
+  } catch (e) { toast(`Could not add a deck: ${e.message}`); }
+}
+
+async function lwDeleteWorld() {
+  if (!lwWorldId) return;
+  try {
+    await api(`/api/lw/${lwWorldId}`, { method: "DELETE" });
+    lwWorldId = null; lwScene = null; lwSceneId = null;
+    setHash("#/lifeworld");
+    await renderLifeworld();
+  } catch (e) { toast(`Could not delete: ${e.message}`); }
+}
+
+// --- Add a person: the trait dials as sliders (reuses the shared dial bank). ---
+let lwPersonDraft = null;
+function openPersonComposer() { lwPersonDraft = { name: "", dials: {} }; renderPersonComposer(); }
+function lwDialBankHtml(dials) {
+  dials = dials || {};
+  return `<div class="eq-bank">${LW_DIALS.map((key) => {
+    const raw = Number(dials[key]);
+    const val = Number.isFinite(raw) ? raw : 50;
+    const label = key.replace(/_/g, " ");
+    return `<div class="eq-row">
+      <span class="eq-name">${escapeHtml(label)}</span>
+      <input class="eq-slider" type="range" min="0" max="100" step="1"
+             value="${val}" data-dial="${key}" aria-label="${escapeHtml(label)}">
+      <span class="eq-val" data-dialval="${key}">${val}</span>
+    </div>`;
+  }).join("")}</div>`;
+}
+function renderPersonComposer() {
+  const box = $("#lwDetail");
+  const d = lwPersonDraft;
+  box.hidden = false;
+  box.className = "studio-detail composing";
+  box.innerHTML = `
+    <div class="sd-head">
+      <div class="fig-emblem" style="background:${sigil(d.name || "New", "anthropic")}">
+        <span class="fig-initial">${escapeHtml((d.name || "?")[0])}</span></div>
+      <div style="flex:1">
+        <input class="sc-name" id="lwPName" placeholder="Name (or leave blank)"
+               value="${escapeHtml(d.name)}" autocomplete="off">
+        <p class="sc-preview">a new synthetic person</p>
+      </div>
+      <button class="sd-close" id="lwPClose">✕</button>
+    </div>
+    <div class="sc-label">Temperament dials <span class="dim">(0..100, 50 is neutral)</span></div>
+    ${lwDialBankHtml(d.dials)}
+    <div class="sc-actions"><button class="primary" id="lwPCreate">Bring them to life</button></div>`;
+  $("#lwPName").addEventListener("input", (e) => {
+    d.name = e.target.value;
+    box.querySelector(".fig-initial").textContent = (d.name || "?")[0] || "?";
+  });
+  wireDialBank(box, d.dials);                 // shared: writes into d.dials, live readout
+  $("#lwPClose").addEventListener("click", () => { lwPersonDraft = null; box.hidden = true; });
+  $("#lwPCreate").addEventListener("click", doAddPerson);
+}
+async function doAddPerson() {
+  const d = lwPersonDraft;
+  try {
+    const r = await api(`/api/lw/${lwWorldId}/human`, { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: d.name.trim(), dials: d.dials, senses: {} }) });
+    const hid = r.human && r.human.id != null ? r.human.id : null;
+    // If a scene is already running, seat the newcomer so they appear at the table.
+    if (lwSceneId && hid != null) {
+      try { await api(`/api/lw/${lwWorldId}/scene/${lwSceneId}/seat?human_id=${encodeURIComponent(hid)}`, { method: "POST" }); }
+      catch (e) { /* they'll seat on the next Set the scene */ }
+    }
+    lwPersonDraft = null; $("#lwDetail").hidden = true;
+    await renderWorldTable();
+  } catch (e) { toast(`Could not add them: ${e.message}`); }
+}
+
+// --- Finer verbs via right-click a figure (createElement/textContent menu). ---
+function lwFloorMenu(ev) {
+  ev.preventDefault();
+  studioMenu(ev.clientX, ev.clientY, [
+    { label: "＋ Add a person", act: openPersonComposer },
+    { label: "Add a deck", act: lwAddDeck },
+    { label: "Set the scene", act: lwSetScene },
+    { sep: true },
+    { label: "▶ Play a round", act: lwPlayRound },
+  ]);
+}
+
+function lwFigureMenu(ev, f, hid) {
+  ev.preventDefault(); ev.stopPropagation();
+  const ring = lwScene ? (lwScene.seats || []) : ((lwWorld && lwWorld.people) || []);
+  const i = ring.findIndex((s) => String(lwHumanId(s)) === String(hid));
+  const nb = ring.length > 1 && i >= 0 ? ring[(i + 1) % ring.length] : null;
+  const deck = findDeck(lwScene, lwWorld && lwWorld.artifacts);
+  const items = [{ label: `Peek ${f.name || "them"}`, act: () => openPersonDrawer(hid, f.name) }];
+  if (deck) items.push({ label: `Deal a card to ${f.name || "them"}`, act: () => lwActOne(hid, "draw", deck.id) });
+  if (nb) {
+    const nbId = lwHumanId(nb);
+    items.push({ sep: true });
+    items.push({ label: `${f.name || "They"} greet ${nb.name || "neighbour"}`, act: () => lwActOne(hid, "greet", nbId) });
+    items.push({ label: `${f.name || "They"} praise ${nb.name || "neighbour"}`, act: () => lwActOne(hid, "say", nbId, { kind: "praise", text: "" }) });
+    items.push({ label: `${f.name || "They"} needle ${nb.name || "neighbour"}`, act: () => lwActOne(hid, "say", nbId, { kind: "scold", text: "" }) });
+  }
+  studioMenu(ev.clientX, ev.clientY, items);
+}
+
+// --- Peek a person: the operator's drawer over their whole inner state. ---
+function lwMeter(label, v) {
+  const p = lwPct(v);
+  return `<div class="lw-meter-row">
+    <span class="lw-meter-name">${escapeHtml(label)}</span>
+    <span class="lw-meter-track"><i class="lw-meter-fill m-${escapeHtml(label)}" style="width:${p}%"></i></span>
+    <span class="lw-meter-val">${p}</span></div>`;
+}
+function lwHandCardHtml(value) {
+  if (!value) return `<span class="pcard back"><span class="pcard-weave"></span></span>`;
+  const s = suitInfo(value.suit);
+  const r = escapeHtml(String(value.rank ?? "?"));
+  return `<span class="pcard up${s.red ? " red" : ""}">
+    <span class="pc-c tl">${r}<b>${s.glyph}</b></span>
+    <span class="pc-pip">${s.glyph}</span>
+    <span class="pc-c br">${r}<b>${s.glyph}</b></span>
+  </span>`;
+}
+async function openPersonDrawer(hid, name) {
+  const box = $("#lwDetail");
+  box.hidden = false;
+  box.className = "studio-detail";
+  box.innerHTML = `<p class="dim">reading ${escapeHtml(name || "them")}…</p>`;
+  let d;
+  try { d = await api(`/api/lw/${lwWorldId}/human/${hid}`); }
+  catch (e) {
+    box.innerHTML = `<p class="dim">Could not read them: ${escapeHtml(e.message || String(e))}</p>
+      <div class="sc-actions"><button id="lwDClose">Close</button></div>`;
+    $("#lwDClose") && $("#lwDClose").addEventListener("click", () => { box.hidden = true; });
+    return;
+  }
+  const h = d.human || {};
+  const mood = h.mood || {};
+  const want = dominantWant(h.wants);
+  const skills = Array.isArray(h.skills)
+    ? h.skills.slice().sort((a, b) => Number(b[1]) - Number(a[1])).slice(0, 5) : [];
+  const resume = h.resume || {};
+  const pins = Array.isArray(resume.pins) ? resume.pins : [];
+  const habits = Array.isArray(d.habits) ? d.habits : [];
+  const bonds = (d.bonds && typeof d.bonds === "object") ? d.bonds : {};
+  const hand = Array.isArray(d.hand) ? d.hand : [];
+  const pinText = (p) => typeof p === "object"
+    ? (p.text || p.what || p.name || JSON.stringify(p)) : String(p);
+  box.innerHTML = `
+    <div class="sd-head">
+      <div class="fig-emblem" style="background:${sigil(h.name || name || "?", "anthropic")}">
+        <span class="fig-initial">${escapeHtml((h.name || name || "?")[0])}</span></div>
+      <div style="flex:1"><h3>${escapeHtml(h.name || name || "someone")}</h3>
+        <p class="sd-persona">${escapeHtml(d.narrative || h.narrative || "no story yet")}</p></div>
+      <button class="sd-close" id="lwDClose">✕</button>
+    </div>
+    <div class="sd-facts">
+      <span>τ ${escapeHtml(String(h.tau ?? 0))}</span>
+      <span>${escapeHtml(String(h.memories ?? 0))} memories</span>
+      <span>${escapeHtml(String(h.habits ?? habits.length))} habits</span>
+    </div>
+
+    <div class="sd-label">Mood</div>
+    <div class="lw-meters">
+      ${lwMeter("confidence", mood.confidence)}
+      ${lwMeter("stress", mood.stress)}
+      ${lwMeter("hope", mood.hope)}
+      ${lwMeter("focus", mood.focus)}
+    </div>
+
+    ${want ? `<div class="sd-label">Wants</div>
+      <div class="lw-want-big">▸ ${escapeHtml(want.name)}${
+        want.pressure != null ? ` <span class="dim">pressure ${lwPct(want.pressure)}</span>` : ""}</div>` : ""}
+
+    ${skills.length ? `<div class="sd-label">Top skills</div>
+      <div class="sc-row">${skills.map((s) =>
+        `<span class="sc-chip on">${escapeHtml(String(s[0]))} <i>${escapeHtml(String(s[1]))}</i></span>`).join("")}</div>` : ""}
+
+    <div class="sd-label">Résumé ledger ${resume.intact
+      ? `<span class="lw-verified">verified ✓</span>` : `<span class="lw-broken">unverified</span>`}</div>
+    ${resume.head ? `<p class="lw-resume-head">${escapeHtml(String(resume.head))}</p>` : ""}
+    ${pins.length
+      ? `<div class="lw-pins">${pins.map((p) => `<span class="lw-pin">📌 ${escapeHtml(pinText(p))}</span>`).join("")}</div>`
+      : `<p class="dim">no pinned achievements yet</p>`}
+
+    ${habits.length ? `<div class="sd-label">Compiled habits</div>
+      <div class="lw-habits">${habits.map((hb) => `<div class="lw-habit">
+        <span class="lw-habit-when">when ${escapeHtml(String(hb.when))}</span>
+        <span class="lw-habit-meta">conf ${lwPct(hb.confidence)} · fired ${escapeHtml(String(hb.fires ?? 0))}×</span>
+      </div>`).join("")}</div>` : ""}
+
+    ${Object.keys(bonds).length ? `<div class="sd-label">Bonds</div>
+      <div class="lw-bonds">${Object.entries(bonds).map(([oid, b]) => `<div class="lw-bond">
+        <span class="lw-bond-name">${escapeHtml(lwNameOf(oid))}</span>
+        <span class="lw-bond-meta">trust ${lwPct(b && b.trust)} · warmth ${lwPct(b && b.warmth)}</span>
+      </div>`).join("")}</div>` : ""}
+
+    <div class="sd-label">Their hand <span class="dim">(the operator's privilege — a card's value is a secret only its holder can read)</span></div>
+    <div class="lw-hand">${hand.length
+      ? hand.map((c) => lwHandCardHtml(c.value)).join("")
+      : `<span class="dim">empty-handed</span>`}</div>`;
+  $("#lwDClose").addEventListener("click", () => { box.hidden = true; });
+}
+
+// --- Lifeworld wiring (elements exist: app.js loads at the end of <body>). ---
+$("#modeLifeworld") && $("#modeLifeworld").addEventListener("click", () => openLifeworld());
+$("#lwBack") && $("#lwBack").addEventListener("click", () => showHome());
+$("#lwToLobby") && $("#lwToLobby").addEventListener("click", () => {
+  lwWorldId = null; lwScene = null; lwSceneId = null; setHash("#/lifeworld"); renderLifeworld();
+});
+$("#lwNewWorld") && $("#lwNewWorld").addEventListener("click", openWorldComposer);
+$("#lwLive") && $("#lwLive").addEventListener("click", () => { lwLive = !lwLive; paintLwLive(); });
 
 
 async function boot() {

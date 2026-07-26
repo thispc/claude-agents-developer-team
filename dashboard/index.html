@@ -66,6 +66,14 @@
         character, seat them at a scene to play, and stock a shelf of props — all under one roof.</span>
       <span class="entry-go">Enter the Studio →</span>
     </button>
+    <button class="entry-card" id="modeLifeworld">
+      <span class="entry-ico">🌍</span>
+      <span class="entry-name">The Lifeworld</span>
+      <span class="entry-desc">A little society of synthetic people who live in scenes and play
+        with a deck of cards. Deal, greet, needle — and watch their mood, drives, memories and
+        habits change. Operate a world, like a game.</span>
+      <span class="entry-go">Enter the Lifeworld →</span>
+    </button>
     <button class="entry-card" id="modeImprove" hidden>
       <span class="entry-ico">⟲</span>
       <span class="entry-name">Improve devteam</span>
@@ -200,6 +208,27 @@
     <div class="artifact-shelf" id="artifactShelf"></div>
     <div class="studio-detail" id="artifactDetail" hidden></div>
   </div>
+</section>
+
+<!-- The Lifeworld — a small society of synthetic people who live in scenes and
+     interact with artifacts (a deck of cards). The operator watches them play at a
+     poker-felt table (pure CSS), deals/greets/needles them, and peeks at their
+     inner state (mood, drives, habits, bonds, and their secret hand). Cards and the
+     deck are CODE; every model call in Live mode is billed and shown in the ticker.
+     Reuses the Studio figure/sigil language, composers and context menus. -->
+<section id="lifeworld" hidden>
+  <div class="studio-bar lw-bar">
+    <button class="studio-back" id="lwBack">← Home</button>
+    <h2>🌍 The Lifeworld</h2>
+    <button class="scene-tolobby" id="lwToLobby" hidden>← All worlds</button>
+    <span class="scene-title-inline" id="lwTitle" hidden></span>
+    <div class="studio-spacer"></div>
+    <button class="lw-live" id="lwLive" hidden aria-pressed="false">💤 Deterministic (free)</button>
+    <span class="scene-meter" id="lwTau" hidden title="World time and the number of billed model thoughts"></span>
+    <button class="studio-hire" id="lwNewWorld" hidden>＋ New world</button>
+  </div>
+  <div class="lw-stage" id="lwStage"></div>
+  <div class="studio-detail" id="lwDetail" hidden></div>
 </section>
 
 <section id="aboutPage" hidden>
