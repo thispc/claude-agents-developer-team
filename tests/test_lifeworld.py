@@ -314,23 +314,46 @@ def test_only_the_model_appraiser_can_spend():
 # 8. routes (the client fixture runs lifespan / db.init)
 # --------------------------------------------------------------------------
 
+def test_adding_a_person_by_brief_works_and_the_llm_authors_the_dials(client):
+    """The bug the owner hit: add-human rejected an empty `senses`. Now creation is by
+    brief and tolerant, and (offline) a deterministic author reads the brief."""
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    r = client.post(f"/api/lw/{wid}/human", json={"name": "Rae", "brief": "a reckless bold gambler"})
+    assert r.status_code == 200
+    prof = r.json()["human"]
+    assert prof["traits"]["risk_appetite"] > 0.6      # the brief shaped the dials, no equalizer asked
+
+
+def test_an_artifact_by_brief_becomes_the_right_kind(client):
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    a = client.post(f"/api/lw/{wid}/artifact", json={"name": "cards", "brief": "a worn deck of cards"}).json()["artifact"]
+    assert a["kind"] == "deck"
+
+
 def test_the_deck_of_cards_scenario_through_the_api(client):
     from conftest import login
     login(client, "root", "testpass")
     wid = client.post("/api/lw", json={"name": "Casino"}).json()["world"]["id"]
     for n in ("Mira", "Ivo", "Rae", "Sol"):
-        client.post(f"/api/lw/{wid}/human", json={"name": n})
-    deck = client.post(f"/api/lw/{wid}/deck", params={"seed": 7}).json()["artifact"]
-    sid = client.post(f"/api/lw/{wid}/scene", json={"name": "Table", "domain": "cards"}).json()["scene"]["id"]
-    for p in client.get(f"/api/lw/{wid}").json()["people"]:
-        client.post(f"/api/lw/{wid}/scene/{sid}/seat", params={"human_id": p["id"]})
-    client.post(f"/api/lw/{wid}/scene/{sid}/place", params={"artifact_id": deck["id"]})
-    r = client.post(f"/api/lw/{wid}/scene/{sid}/round").json()
+        client.post(f"/api/lw/{wid}/human", json={"name": n, "brief": ""})
+    deck = client.post(f"/api/lw/{wid}/artifact", json={"name": "deck", "brief": "a deck of cards"}).json()["artifact"]
+    rid = client.post(f"/api/lw/{wid}/room", json={"name": "Table", "type": "casino"}).json()["room"]["id"]
+    ov = client.get(f"/api/lw/{wid}").json()
+    assert ov["rooms"][0]["theme"] == "casino"        # the room has a look, not a hardcoded table
+    for p in ov["agents"]:
+        client.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": p["id"]})
+    client.post(f"/api/lw/{wid}/room/{rid}/place", params={"artifact_id": deck["id"]})
+    r = client.post(f"/api/lw/{wid}/room/{rid}/round").json()
     assert r["world_tau"] > 0
-    assert sum(1 for e in r["scene"]["log"] if e["billed"]) == 0        # free
-    # peek reveals the owner's own hand, decrypted
-    pid = client.get(f"/api/lw/{wid}").json()["people"][0]["id"]
-    hand = client.get(f"/api/lw/{wid}/human/{pid}").json()["hand"]
+    assert sum(1 for e in r["room"]["log"] if e["billed"]) == 0        # free
+    # overview groups agents by their room, and peek reveals the owner's own hand
+    ov2 = client.get(f"/api/lw/{wid}").json()
+    assert all(a["room"] == rid for a in ov2["agents"])
+    hand = client.get(f"/api/lw/{wid}/human/{ov2['agents'][0]['id']}").json()["hand"]
     assert hand and all(h["value"] for h in hand)
 
 

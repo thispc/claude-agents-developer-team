@@ -56,9 +56,12 @@ class World:
         h = Human.newborn(self.next_id(), name, dials=dials, senses=senses)
         return self.add(h)                    # type: ignore[return-value]
 
-    def new_scene(self, name: str, domain: str = "life", flag_overrides: dict | None = None):
-        from .scene import Scene
-        s = Scene(self, self.next_id(), name=name, domain=domain, flag_overrides=flag_overrides)
+    def new_room(self, name: str, type: str = "freeplay"):
+        """A room is a scene with a relatable type that sets its domain, flags and look."""
+        from .scene import Scene, resolve_room
+        spec = resolve_room(type)
+        s = Scene(self, self.next_id(), name=name, domain=spec["domain"],
+                  flag_overrides=dict(spec["flags"]), type=type, theme=spec["theme"])
         self.scenes[s.id] = s
         return s
 

@@ -1,21 +1,22 @@
-"""HTTP surface for the Lifeworld — its own router, so the subsystem stays decoupled from
-the projects engine (and out of its route-count gate).
+"""HTTP surface for the Lifeworld — its own router, decoupled from the projects engine.
 
-Every mutation loads the whole world, runs the operation, and saves it back. By default a
-world loads FREE (the deterministic Tier-0 appraiser), so operating the Studio costs
-nothing; pass `?live=1` and the agents genuinely deliberate on your own credentials — the
-single bounded spend. The verbs mirror the Scene's: seat, place, interact, greet, say, and
-a `round` convenience that deals and lets everyone mingle for the game UI.
+A world is a container of registered AGENTS and ARTIFACTS and a set of ROOMS; a room is a
+scene with a relatable type (home, office, casino, …) that sets its look and rules; agents
+and artifacts are created once and placed into rooms. Creation is by BRIEF, not by dialing
+an equalizer: you say who a person is or what a thing is, and a model authors the internals
+(free deterministic fallback when there are no credentials). Operating a room is free by
+default; `?live=1` lets the agents genuinely deliberate on your own credentials.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from . import auth
-from .lifeworld import store
-from .lifeworld.artifact import Deck
+from . import auth, providers, tuning
+from .lifeworld import store, authoring
+from .lifeworld.artifact import Deck, Artifact
+from .lifeworld.scene import ROOM_TYPES
 from .routes import current_user
 
 router = APIRouter(prefix="/api/lw", tags=["lifeworld"])
@@ -25,27 +26,30 @@ router = APIRouter(prefix="/api/lw", tags=["lifeworld"])
 
 class NewWorld(BaseModel):
     name: str = "a small world"
-    preset: str = "sandbox"
 
 
 class NewHuman(BaseModel):
     name: str = ""
-    dials: dict = {}
-    senses: list = []
+    brief: str = ""                         # "a confident young lawyer, sharp but insecure"
+    parents: list[int] = Field(default_factory=list)   # optional: breed from two agents
 
 
-class NewScene(BaseModel):
-    name: str = "a scene"
-    domain: str = "life"
-    flags: dict = {}
+class NewArtifact(BaseModel):
+    name: str = ""
+    brief: str = ""                         # "a worn deck of cards" / "a locked diary"
+
+
+class NewRoom(BaseModel):
+    name: str = "a room"
+    type: str = "freeplay"                  # home | school | college | office | casino | freeplay
 
 
 class Act(BaseModel):
     human_id: int
-    verb: str = "draw"          # draw | flip | greet | say
-    target: int | None = None   # an artifact id (interact) or a human id (greet/say)
+    verb: str = "draw"
+    target: int | None = None
     text: str = ""
-    kind: str = "say"           # for `say`: say | scold | praise | win | lose
+    kind: str = "say"
 
 
 # --- helpers ---------------------------------------------------------------
@@ -57,12 +61,26 @@ def _own(request: Request, world_id: int):
     return u
 
 
-def _load(request: Request, world_id: int, live: bool):
+def _load(request: Request, world_id: int, live: bool = False):
     u = _own(request, world_id)
-    return store.load(world_id, live=live, settings=auth.get_settings(u) if live else None)
+    return store.load(world_id, live=live, settings=auth.get_settings(u) if live else None), u
 
 
-# --- worlds ----------------------------------------------------------------
+def _author_creds(user: dict):
+    """The model to author with — the owner's own — or (None, {}) to fall back to the free
+    deterministic author. Authoring is a deliberate creation act, so it uses the model even
+    when a world is being browsed for free."""
+    if auth.has_own_ai_credentials(user):
+        return providers.complete, auth.get_settings(user)
+    return None, {}
+
+
+def _profile_with_room(w, h) -> dict:
+    room = next((s.id for s in w.scenes.values() if h.id in s.seats), None)
+    return {**h.profile(), "room": room}
+
+
+# --- worlds & overview -----------------------------------------------------
 
 @router.get("")
 def worlds(request: Request) -> dict:
@@ -71,18 +89,30 @@ def worlds(request: Request) -> dict:
 
 @router.post("")
 def make_world(body: NewWorld, request: Request) -> dict:
-    w = store.create(current_user(request)["id"], body.name, body.preset)
+    w = store.create(current_user(request)["id"], body.name)      # flags default sandbox internally
     return {"world": {"id": w.id, "name": w.name}}
 
 
 @router.get("/{world_id}")
-def world_view(world_id: int, request: Request) -> dict:
+def overview(world_id: int, request: Request) -> dict:
+    """The world at a glance — every agent and artifact, and which room each is in, so the
+    operator sees the whole society in one place, grouped by room."""
     _own(request, world_id)
     w = store.load(world_id)
-    return {"world": {"id": w.id, "name": w.name, "flags": w.flags.to_dict(), "tau": w.tau},
-            "people": [h.profile() for h in w.humans()],
-            "artifacts": [{"id": a.id, "name": a.name, "kind": a.kind} for a in w.artifacts()],
-            "scenes": [s.view() for s in w.scenes.values()]}
+    prop_room = {}
+    for s in w.scenes.values():
+        for pid in s.props:
+            prop_room[pid] = s.id
+    return {
+        "world": {"id": w.id, "name": w.name, "tau": w.tau},
+        "rooms": [{**s.view(), "blurb": ROOM_TYPES.get(s.type, {}).get("blurb", "")}
+                  for s in w.scenes.values()],
+        "agents": [_profile_with_room(w, h) for h in w.humans()],
+        "artifacts": [{"id": a.id, "name": a.name, "kind": a.kind, "sealed": bool(a.secret),
+                       "public": a.public, "room": prop_room.get(a.id)} for a in w.artifacts()],
+        "room_types": [{"type": k, "theme": v["theme"], "blurb": v["blurb"]}
+                       for k, v in ROOM_TYPES.items()],
+    }
 
 
 @router.delete("/{world_id}")
@@ -92,83 +122,134 @@ def drop_world(world_id: int, request: Request) -> dict:
     return {"ok": True, "deleted": world_id}
 
 
-# --- cast ------------------------------------------------------------------
+# --- agents (a registry; created by brief, placed into rooms) ---------------
 
-@router.post("/{world_id}/human")
-def add_human(world_id: int, body: NewHuman, request: Request) -> dict:
+@router.get("/{world_id}/agents")
+def agents(world_id: int, request: Request) -> dict:
     _own(request, world_id)
     w = store.load(world_id)
-    h = w.spawn_human(body.name or f"Person {len(w.humans())+1}",
-                      dials=body.dials, senses=body.senses or None)
+    return {"agents": [_profile_with_room(w, h) for h in w.humans()]}
+
+
+@router.post("/{world_id}/human")
+async def add_human(world_id: int, body: NewHuman, request: Request) -> dict:
+    _, u = _load(request, world_id)
+    w = store.load(world_id)
+    complete, settings = _author_creds(u)
+    spec = await authoring.author_human(
+        body.name or f"Person {len(w.humans())+1}", body.brief,
+        complete=complete, settings=settings, model=tuning.get("scene_default_model"))
+    # breeding: blend two parents' genomes over the authored dials (nature), and carry a
+    # slice of their distilled memory (nurture).
+    parents = [w.get(p) for p in body.parents if w.get(p)]
+    if parents:
+        for t in spec["dials"]:
+            vals = [p.psyche.traits.get(t, 0.5) * 100 for p in parents]
+            spec["dials"][t] = round(sum(vals) / len(vals))
+        spec["narrative"] = f"{body.name or 'A child'}, of {' & '.join(p.name for p in parents)}."[:280]
+    h = w.spawn_human(body.name or f"Person {len(w.humans())+1}", dials=spec["dials"],
+                      senses=spec.get("senses") or None)
+    h.narrative = spec.get("narrative", h.narrative)[:280]
+    for sk in spec.get("skills", []):
+        if isinstance(sk, dict) and sk.get("path"):
+            h.skills.credit(sk["path"], float(sk.get("xp", 3.0)))
+    if parents:                                          # inherited "upbringing"
+        for p in parents:
+            for dom, fact in list(p.memory.semantic.items())[:1]:
+                h.memory.semantic.setdefault(dom, fact[:200])
     store.save(w)
     return {"human": h.profile()}
 
 
-@router.post("/{world_id}/deck")
-def add_deck(world_id: int, request: Request, seed: int = 0) -> dict:
+# --- artifacts (a registry; created by brief, placed into rooms) ------------
+
+@router.get("/{world_id}/artifacts")
+def artifacts(world_id: int, request: Request) -> dict:
     _own(request, world_id)
     w = store.load(world_id)
-    deck = Deck.fresh(w.next_id(), seed=seed, name="deck of cards")
-    w.add(deck)
+    return {"artifacts": [{"id": a.id, "name": a.name, "kind": a.kind,
+                           "sealed": bool(a.secret), "public": a.public} for a in w.artifacts()]}
+
+
+@router.post("/{world_id}/artifact")
+async def add_artifact(world_id: int, body: NewArtifact, request: Request, seed: int = 0) -> dict:
+    _, u = _load(request, world_id)
+    w = store.load(world_id)
+    complete, settings = _author_creds(u)
+    spec = await authoring.author_artifact(body.name or "a thing", body.brief,
+                                           complete=complete, settings=settings,
+                                           model=tuning.get("scene_default_model"))
+    if spec["kind"] == "deck":
+        a = Deck.fresh(w.next_id(), seed=seed, name=body.name or "deck of cards")
+    else:
+        a = Artifact(w.next_id(), name=body.name or "a thing",
+                     public=spec.get("public", {}) or {})
+    w.add(a)
     store.save(w)
-    return {"artifact": {"id": deck.id, "name": deck.name, "kind": "deck",
-                         "count": deck.public.get("count")}}
+    return {"artifact": {"id": a.id, "name": a.name, "kind": a.kind,
+                         "sealed": bool(a.secret), "public": a.public}}
 
 
-# --- scenes ----------------------------------------------------------------
+# --- rooms ------------------------------------------------------------------
 
-@router.post("/{world_id}/scene")
-def make_scene(world_id: int, body: NewScene, request: Request) -> dict:
+@router.get("/{world_id}/room-types")
+def room_types(request: Request) -> dict:
+    current_user(request)
+    return {"types": [{"type": k, "theme": v["theme"], "blurb": v["blurb"]}
+                      for k, v in ROOM_TYPES.items()]}
+
+
+@router.post("/{world_id}/room")
+def make_room(world_id: int, body: NewRoom, request: Request) -> dict:
     _own(request, world_id)
     w = store.load(world_id)
-    s = w.new_scene(body.name, body.domain, body.flags)
+    s = w.new_room(body.name, body.type)
     store.save(w)
-    return {"scene": s.view()}
+    return {"room": s.view()}
 
 
-@router.post("/{world_id}/scene/{scene_id}/seat")
-def seat(world_id: int, scene_id: int, human_id: int, request: Request) -> dict:
+@router.post("/{world_id}/room/{room_id}/seat")
+def seat(world_id: int, room_id: int, human_id: int, request: Request) -> dict:
     _own(request, world_id)
     w = store.load(world_id)
-    s, h = w.scene(scene_id), w.get(human_id)
+    s, h = w.scene(room_id), w.get(human_id)
     if not s or not h:
-        raise HTTPException(404, "no such scene or human")
+        raise HTTPException(404, "no such room or agent")
     s.seat(h)
     store.save(w)
-    return {"scene": s.view()}
+    return {"room": s.view()}
 
 
-@router.post("/{world_id}/scene/{scene_id}/place")
-def place(world_id: int, scene_id: int, artifact_id: int, request: Request) -> dict:
+@router.post("/{world_id}/room/{room_id}/place")
+def place(world_id: int, room_id: int, artifact_id: int, request: Request) -> dict:
     _own(request, world_id)
     w = store.load(world_id)
-    s, a = w.scene(scene_id), w.get(artifact_id)
+    s, a = w.scene(room_id), w.get(artifact_id)
     if not s or not a:
-        raise HTTPException(404, "no such scene or artifact")
+        raise HTTPException(404, "no such room or artifact")
     s.place(a)
     store.save(w)
-    return {"scene": s.view()}
+    return {"room": s.view()}
 
 
-@router.get("/{world_id}/scene/{scene_id}")
-def scene_view(world_id: int, scene_id: int, request: Request) -> dict:
+@router.get("/{world_id}/room/{room_id}")
+def room_view(world_id: int, room_id: int, request: Request) -> dict:
     _own(request, world_id)
     w = store.load(world_id)
-    s = w.scene(scene_id)
+    s = w.scene(room_id)
     if not s:
-        raise HTTPException(404, "no such scene")
-    return {"scene": s.view()}
+        raise HTTPException(404, "no such room")
+    return {"room": s.view()}
 
 
-# --- the verbs (one scan of scene time each) --------------------------------
+# --- the verbs (one scan of room time each) ---------------------------------
 
-@router.post("/{world_id}/scene/{scene_id}/act")
-async def act(world_id: int, scene_id: int, body: Act, request: Request, live: int = 0) -> dict:
-    w = _load(request, world_id, bool(live))
-    s = w.scene(scene_id)
-    h = w.get(body.human_id)
+@router.post("/{world_id}/room/{room_id}/act")
+async def act(world_id: int, room_id: int, body: Act, request: Request, live: int = 0) -> dict:
+    w, _u = _load(request, world_id, bool(live))
+    s, h = w.scene(room_id), w.get(body.human_id)
     if not s or not h:
-        raise HTTPException(404, "no such scene or human")
+        raise HTTPException(404, "no such room or agent")
     if body.verb in ("draw", "flip"):
         await s.interact(h, body.target, body.verb)
     elif body.verb == "greet" and body.target:
@@ -176,17 +257,17 @@ async def act(world_id: int, scene_id: int, body: Act, request: Request, live: i
     elif body.verb == "say" and body.target:
         await s.say(h, w.get(body.target), body.text, kind=body.kind)
     store.save(w)
-    return {"scene": s.view()}
+    return {"room": s.view()}
 
 
-@router.post("/{world_id}/scene/{scene_id}/round")
-async def play_round(world_id: int, scene_id: int, request: Request, live: int = 0) -> dict:
-    """The game's one-button beat: everyone draws a card, greets their neighbour, then the
-    table rests (consolidates). Deterministic and free unless ?live=1."""
-    w = _load(request, world_id, bool(live))
-    s = w.scene(scene_id)
+@router.post("/{world_id}/room/{room_id}/round")
+async def play_round(world_id: int, room_id: int, request: Request, live: int = 0) -> dict:
+    """The one-button beat: everyone greets a neighbour and, if a deck is present, draws a
+    card; then the room rests (consolidates). Free unless ?live=1."""
+    w, _u = _load(request, world_id, bool(live))
+    s = w.scene(room_id)
     if not s:
-        raise HTTPException(404, "no such scene")
+        raise HTTPException(404, "no such room")
     deck = next((a for a in (w.get(i) for i in s.props) if a and a.kind == "deck"), None)
     players = s.players()
     for i, h in enumerate(players):
@@ -196,18 +277,16 @@ async def play_round(world_id: int, scene_id: int, request: Request, live: int =
             await s.greet(h, players[(i + 1) % len(players)])
     s.rest()
     store.save(w)
-    return {"scene": s.view(), "world_tau": w.tau}
+    return {"room": s.view(), "world_tau": w.tau}
 
 
 @router.get("/{world_id}/human/{human_id}")
 def peek(world_id: int, human_id: int, request: Request) -> dict:
-    """A person's full profile, and — the owner's privilege — the values of any sealed
-    cards they hold, decrypted with the keys in their own private pool."""
     _own(request, world_id)
     w = store.load(world_id)
     h = w.get(human_id)
     if not h:
-        raise HTTPException(404, "no such human")
+        raise HTTPException(404, "no such agent")
     hand = [{"id": a.id, "value": a.reveal(h)} for a in w.artifacts()
             if a.kind == "card" and a.holder == human_id]
     return {"human": h.profile(), "narrative": h.narrative, "hand": hand,

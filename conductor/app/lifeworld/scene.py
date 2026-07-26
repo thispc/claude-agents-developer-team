@@ -20,12 +20,38 @@ from .human import Human
 from .types import Signal, Packet
 
 
+# A room is a scene with a relatable TYPE, which sets its domain (what experience it
+# credits), its flag profile, and its visual theme. This replaces the abstract
+# sandbox/serious/theatre presets with places a person recognises. Only a card room shows
+# a card table; an office looks like an office.
+ROOM_TYPES: dict[str, dict] = {
+    "freeplay": {"domain": "life", "flags": {}, "theme": "open",
+                 "blurb": "unrestricted — anything goes"},
+    "home":     {"domain": "home.family", "flags": {}, "theme": "home",
+                 "blurb": "warm, personal, off the clock"},
+    "school":   {"domain": "study.school", "flags": {"deception": False}, "theme": "classroom",
+                 "blurb": "learning, structure, young minds"},
+    "college":  {"domain": "study.college", "flags": {}, "theme": "campus",
+                 "blurb": "ideas, ambition, social churn"},
+    "office":   {"domain": "work.tech", "flags": {"switch_drama_off": True}, "theme": "office",
+                 "blurb": "a tech team — focus, no soap opera"},
+    "casino":   {"domain": "cards.poker", "flags": {}, "theme": "casino",
+                 "blurb": "cards, risk, tells and bluffs"},
+}
+
+
+def resolve_room(type: str) -> dict:
+    return ROOM_TYPES.get(type, ROOM_TYPES["freeplay"])
+
+
 class Scene:
     def __init__(self, world, id: int, name: str = "", domain: str = "life",
-                 flag_overrides: dict | None = None):
+                 flag_overrides: dict | None = None, type: str = "freeplay", theme: str = "open"):
         self.world = world
         self.id = id
         self.name = name
+        self.type = type
+        self.theme = theme
         self.domain = domain
         self.flag_overrides = flag_overrides or {}
         self.seats: list[int] = []            # seated human ids, in turn order
@@ -97,14 +123,16 @@ class Scene:
     # --- persistence (the world serialises its scenes through these) --------
 
     def to_state(self) -> dict[str, Any]:
-        return {"id": self.id, "name": self.name, "domain": self.domain,
-                "flag_overrides": self.flag_overrides, "seats": list(self.seats),
-                "props": list(self.props), "log": self.log[-200:], "turn": self.turn}
+        return {"id": self.id, "name": self.name, "type": self.type, "theme": self.theme,
+                "domain": self.domain, "flag_overrides": self.flag_overrides,
+                "seats": list(self.seats), "props": list(self.props),
+                "log": self.log[-200:], "turn": self.turn}
 
     @classmethod
     def from_state(cls, world, d: dict[str, Any]) -> "Scene":
         s = cls(world, id=d["id"], name=d.get("name", ""), domain=d.get("domain", "life"),
-                flag_overrides=d.get("flag_overrides", {}))
+                flag_overrides=d.get("flag_overrides", {}),
+                type=d.get("type", "freeplay"), theme=d.get("theme", "open"))
         s.seats = list(d.get("seats", []))
         s.props = list(d.get("props", []))
         s.log = list(d.get("log", []))
@@ -112,8 +140,8 @@ class Scene:
         return s
 
     def view(self) -> dict[str, Any]:
-        return {"id": self.id, "name": self.name, "domain": self.domain,
-                "flags": self.flag_overrides,
+        return {"id": self.id, "name": self.name, "type": self.type, "theme": self.theme,
+                "domain": self.domain, "flags": self.flag_overrides,
                 "seats": [{"id": h.id, "name": h.name, "mood": h.psyche.mood,
                            "wants": h.drives.dominant_goal()[0], "tau": h.tau}
                           for h in self.players()],
