@@ -5092,15 +5092,20 @@ const lwViewCache = {};      // roomId -> {x,y,scale}
 const LW_TABLE_R = 58;       // collating-table disc radius (world units)
 const LW_SOCKET_R = 80;      // radius of the ring the seat sockets sit on
 const LW_SNAP_DIST = 46;     // drop within this of a free socket → magnetic seat
+const LW_NUDGE = 6;          // world units an arrow-key press moves the selection
+// Tools each carry a one-key shortcut (shown in the dock, wired on the canvas).
+// Icons are drawn as inline vector — the whole canvas is off the emoji look.
 const LW_TOOLS = [
-  { id: "select", ico: "⤢", label: "Select" },
-  { id: "agent", ico: "🙂", label: "Agent" },
-  { id: "artifact", ico: "🗂️", label: "Artifact" },
-  { id: "manager", ico: "👔", label: "Manager" },
+  { id: "select",   key: "V", label: "Select" },
+  { id: "agent",    key: "A", label: "Agent" },
+  { id: "artifact", key: "O", label: "Object" },
+  { id: "manager",  key: "M", label: "Manager" },
 ];
-const LW_FIG_AGENT = ["🙂", "👩", "👨", "🧑", "👧", "🧓", "🦊", "🐼", "🤖", "🧠", "🎩", "👻"];
-const LW_FIG_MGR = ["👔", "🧑‍💼", "👑", "⭐", "🎩", "🗿"];
-const LW_FIG_ART = ["🗂️", "📇", "🃏", "📋", "🗓️", "📦", "🔧", "💡", "🖼️", "🗒️"];
+// The style variants a new person can wear; the final face blends the variant with
+// the agent's own identity, so two people who pick the same variant still differ.
+const LW_AV_VARIANTS = ["a", "b", "c", "d", "e", "f"];
+// The object "figure" choices — geometric vector glyphs (mono = a monogram letter).
+const LW_OBJ_ICONS = ["mono", "cards", "doc", "star", "gem", "ring"];
 
 // --- screen switch: bring the section on, hide every sibling (mirrors the Studio).
 function showLifeworld() {
@@ -5791,11 +5796,11 @@ function lwRenderRoom(room) {
     <div class="lw-canvas-wrap" id="lwCanvasWrap">
       <div class="lw-konva-host" id="lwKonvaHost"></div>
       <div class="lw-overlay" id="lwOverlay"></div>
-      <div class="lw-canvas-hint">drag empty space to pan · scroll to zoom · pick a tool, click to place</div>
+      <div class="lw-canvas-hint">drag to pan · scroll to zoom · click a token to focus · double-click to open · <b>V A O M</b> tools · <b>F</b> fit</div>
       <div class="lw-dock" id="lwDock">${lwDockHtml()}</div>
     </div>
     <div class="scene-controls">
-      <button class="sc-ctl primary" id="lwRound">▶ Play a round</button>
+      <button class="sc-ctl primary" id="lwRound" title="Advance the scene one beat: every seated agent perceives, clusters resolve together, then everyone consolidates. Free unless Live.">▶ Step the scene</button>
       <div class="ctl-spacer"></div>
       <span class="lw-cost-note">${lwLive
         ? "🧠 Live — a round asks real models to think and spends tokens"
@@ -5814,11 +5819,107 @@ function lwRenderRoom(room) {
   lwSeenLog = new Set(log.map((l) => String(l.n)));
 }
 
-// ---- the toolbox dock ----------------------------------------------------
+// ============================================================================
+// Figures — generated, not emoji. People wear deterministic "beam" avatars (a
+// face drawn from a hash of who they are, so everyone looks unique); objects wear
+// crisp vector glyphs. Both are pure SVG data-URIs: identical in the HTML palette
+// and on the Konva canvas, self-hosted, no assets, no external fetch. The avatar
+// maths is adapted from the MIT "boring-avatars" beam generator.
+// ============================================================================
+const LW_AV_PALETTES = [
+  ["#2E6E5B", "#8FC0A9", "#F6D6A8", "#E8896B", "#C05746"],
+  ["#3A6EA5", "#9DC3E6", "#F4E7C3", "#E0A96D", "#B5654B"],
+  ["#5B4B8A", "#B7A6E0", "#F3D2C1", "#EFA48B", "#8A5A83"],
+  ["#4C7A34", "#A7C957", "#F2E8CF", "#E9B44C", "#BC4B51"],
+  ["#1D6A70", "#63C7B2", "#F6E7B4", "#F2A15E", "#D46A6A"],
+];
+function lwHash(name) {
+  let h = 0; name = String(name || "?");
+  for (let i = 0; i < name.length; i++) { h = (h << 5) - h + name.charCodeAt(i); h |= 0; }
+  return Math.abs(h);
+}
+function lwAvDigit(n, k) { return Math.floor((n / Math.pow(10, k)) % 10); }
+function lwAvBool(n, k) { return (lwAvDigit(n, k) % 2) === 0; }
+function lwAvUnit(n, range, index) {
+  const v = n % range;
+  return (index && lwAvDigit(n, index) % 2 === 0) ? -v : v;
+}
+function lwAvContrast(hex) {
+  const c = hex.replace("#", "");
+  const r = parseInt(c.slice(0, 2), 16), g = parseInt(c.slice(2, 4), 16), b = parseInt(c.slice(4, 6), 16);
+  return (r * 0.299 + g * 0.587 + b * 0.114) > 150 ? "#22303a" : "#ffffff";
+}
+// The face a seed produces, and its SVG. S=36 canvas, masked to a circle.
+function lwAvatarSvg(seed, size) {
+  const n = lwHash(seed), S = 36, pal = LW_AV_PALETTES[n % LW_AV_PALETTES.length];
+  size = size || 40;
+  const wrap = pal[n % pal.length], bg = pal[(n + 13) % pal.length], face = lwAvContrast(wrap);
+  const preX = lwAvUnit(n, 10, 1), preY = lwAvUnit(n, 10, 2);
+  const wtx = preX < 5 ? preX + S / 9 : preX, wty = preY < 5 ? preY + S / 9 : preY;
+  const wrot = lwAvUnit(n, 360), wscale = 1 + lwAvUnit(n, S / 12) / 10;
+  const mouthOpen = lwAvBool(n, 2), eye = lwAvUnit(n, 5), mouth = lwAvUnit(n, 3);
+  const frot = lwAvUnit(n, 10, 3);
+  const ftx = wtx > S / 6 ? wtx / 2 : lwAvUnit(n, 8, 1), fty = wty > S / 6 ? wty / 2 : lwAvUnit(n, 7, 2);
+  const mid = S / 2, mid2 = "m" + (n % 1e6);
+  return `<svg viewBox="0 0 ${S} ${S}" width="${size}" height="${size}" fill="none" xmlns="http://www.w3.org/2000/svg">`
+    + `<mask id="${mid2}" maskUnits="userSpaceOnUse" x="0" y="0" width="${S}" height="${S}">`
+    + `<rect width="${S}" height="${S}" rx="${S * 2}" fill="#fff"/></mask>`
+    + `<g mask="url(#${mid2})"><rect width="${S}" height="${S}" fill="${bg}"/>`
+    + `<rect x="0" y="0" width="${S}" height="${S}" fill="${wrap}" `
+    + `transform="translate(${wtx} ${wty}) rotate(${wrot} ${mid} ${mid}) scale(${wscale})"/>`
+    + `<g transform="translate(${ftx} ${fty}) rotate(${frot} ${mid} ${mid})">`
+    + (mouthOpen
+      ? `<path d="M15 ${19 + mouth}c2 1 4 1 6 0" stroke="${face}" fill="none" stroke-linecap="round"/>`
+      : `<path d="M13,${19 + mouth} a1,0.75 0 0,0 10,0" fill="${face}"/>`)
+    + `<rect x="${14 - eye}" y="14" width="1.5" height="2" rx="1" fill="${face}"/>`
+    + `<rect x="${20 + eye}" y="14" width="1.5" height="2" rx="1" fill="${face}"/>`
+    + `</g></g></svg>`;
+}
+function lwAvatarColor(seed) { const n = lwHash(seed); return LW_AV_PALETTES[n % LW_AV_PALETTES.length][n % 5]; }
+function lwAvatarBg(seed) { const n = lwHash(seed); return LW_AV_PALETTES[n % LW_AV_PALETTES.length][(n + 13) % 5]; }
+function lwSvgUri(svg) { return "data:image/svg+xml," + encodeURIComponent(svg); }
+
+// The seed a token's face is drawn from: variant marker + who they are, so the
+// choice in the popover survives, but two people never collide.
+function lwAvatarSeed(a) {
+  const f = String((a && a.figure) || ""), id = (a && (a.name || ("soul#" + a.id))) || "soul";
+  if (f.startsWith("avm:")) return f.slice(4) + "|" + id;
+  if (f.startsWith("av:")) return f.slice(3) + "|" + id;
+  return id;
+}
+
+// ---- object vector glyphs (line icons; mono handled inline as a monogram) ----
+function lwObjGlyphSvg(key, size, color) {
+  size = size || 40; color = color || "#3a4a44";
+  const body = { stroke: color, "stroke-width": 1.7, fill: "none", "stroke-linejoin": "round", "stroke-linecap": "round" };
+  const attr = Object.entries(body).map(([k, v]) => `${k}="${v}"`).join(" ");
+  const paths = {
+    cards: `<rect x="4.5" y="7" width="10" height="13" rx="2" ${attr}/><rect x="9.5" y="4" width="10" height="13" rx="2" ${attr}/>`,
+    doc: `<path d="M7 3h7l4 4v14H7z" ${attr}/><path d="M14 3v4h4" ${attr}/><path d="M9.5 12h6M9.5 15.5h6" ${attr}/>`,
+    star: `<path d="M12 3.2l2.5 5.6 6.1.6-4.6 4 1.4 6-5.4-3.1-5.4 3.1 1.4-6-4.6-4 6.1-.6z" ${attr}/>`,
+    gem: `<path d="M6.5 4h11l3 5-8.5 11L3.5 9z" ${attr}/><path d="M3.5 9h17M9 4l-2 5 5 11 5-11-2-5" ${attr}/>`,
+    ring: `<circle cx="12" cy="12" r="8" ${attr}/><circle cx="12" cy="12" r="3.4" ${attr}/>`,
+  };
+  const inner = paths[key] || paths.ring;
+  return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">${inner}</svg>`;
+}
+
+// ---- dock: tools with vector icons + a keycap ------------------------------
+function lwToolIco(id) {
+  const a = `stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round" stroke-linecap="round"`;
+  const g = {
+    select: `<path d="M5 3l6.5 15 2-6 6-2z" ${a}/>`,
+    agent: `<circle cx="12" cy="8.2" r="3.6" ${a}/><path d="M5.5 20c0-3.6 2.9-6.2 6.5-6.2s6.5 2.6 6.5 6.2" ${a}/>`,
+    artifact: `<rect x="5" y="5" width="14" height="14" rx="3.2" ${a}/><path d="M9.5 12h5" ${a}/>`,
+    manager: `<circle cx="10.5" cy="8.4" r="3.2" ${a}/><path d="M4.5 20c0-3.4 2.7-5.8 6-5.8" ${a}/><path d="M17 5l1 2 2.2.3-1.6 1.5.4 2.2L17 10l-2 1 .4-2.2-1.6-1.5L16 7z" ${a}/>`,
+  };
+  return `<svg viewBox="0 0 24 24" width="20" height="20">${g[id] || g.select}</svg>`;
+}
 function lwDockHtml() {
   return LW_TOOLS.map((t) =>
-    `<button class="lw-tool${t.id === lwTool ? " on" : ""}" data-tool="${escapeHtml(t.id)}" title="${escapeHtml(t.label)}">
-      <span class="lw-tool-ico">${escapeHtml(t.ico)}</span><span class="lw-tool-lb">${escapeHtml(t.label)}</span>
+    `<button class="lw-tool${t.id === lwTool ? " on" : ""}" data-tool="${escapeHtml(t.id)}" title="${escapeHtml(t.label)} (${escapeHtml(t.key)})">
+      <span class="lw-tool-ico">${lwToolIco(t.id)}</span><span class="lw-tool-lb">${escapeHtml(t.label)}</span>
+      <span class="lw-tool-key">${escapeHtml(t.key)}</span>
     </button>`).join("");
 }
 function lwWireDock() {
@@ -5826,20 +5927,108 @@ function lwWireDock() {
   dock.querySelectorAll("[data-tool]").forEach((b) =>
     b.addEventListener("click", () => lwSetTool(b.dataset.tool)));
 }
+function lwToolCursor(t) { return t === "select" ? "grab" : "cell"; }
+function lwSetCursor(c) { if (lwKonva && lwKonva.host) lwKonva.host.style.cursor = c; }
 function lwSetTool(t) {
   lwTool = t;
   const dock = $("#lwDock");
   if (dock) dock.querySelectorAll("[data-tool]").forEach((b) => b.classList.toggle("on", b.dataset.tool === t));
   if (lwKonva && lwKonva.stage) {
-    lwKonva.stage.draggable(t === "select");
-    lwKonva.host.style.cursor = t === "select" ? "grab" : "crosshair";
+    lwKonva.stage.draggable(t === "select");   // only Select pans the floor; tokens always drag
+    lwSetCursor(lwToolCursor(t));
   }
+}
+
+// ---- selection: click focuses a token (a marching-ants halo), keys act on it -
+function lwSelRadius(sel) {
+  if (sel.kind === "prop") {
+    const slots = Number(sel.entry.data.slots) || 0;
+    if (slots > 0) return LW_TABLE_R + 12;
+    const kind = String(sel.entry.data.kind || "").toLowerCase();
+    return (kind.includes("deck") || kind.includes("card")) ? 40 : 40;
+  }
+  return 40;
+}
+function lwDeselect() {
+  if (!lwKonva || !lwKonva.selected) return;
+  const sel = lwKonva.selected;
+  if (sel.anim) sel.anim.stop();
+  const halo = sel.entry.node.findOne(".selhalo"); if (halo) halo.destroy();
+  lwKonva.selected = null;
+  lwKonva.worldLayer.batchDraw();
+}
+function lwSelect(kind, entry) {
+  if (!lwKonva) return;
+  if (lwKonva.selected && lwKonva.selected.entry === entry) return;   // already focused
+  lwDeselect();
+  const sel = { kind, entry };
+  lwKonva.selected = sel;
+  const halo = new Konva.Circle({ radius: lwSelRadius(sel), name: "selhalo", listening: false,
+    stroke: "hsl(150 66% 42%)", strokeWidth: 2.5, dash: [6, 6], opacity: 0.95,
+    shadowColor: "hsl(150 70% 45%)", shadowBlur: 16, shadowOpacity: 0.55 });
+  entry.node.add(halo); halo.moveToBottom();
+  if (!reduceMotion()) {
+    sel.anim = new Konva.Animation((f) => { halo.rotation((f.time / 55) % 360); }, lwKonva.worldLayer);
+    sel.anim.start();
+  }
+  lwKonva.worldLayer.batchDraw();
+}
+
+// ---- keyboard: the canvas listens while a room is open ---------------------
+let lwNudgeTimer = null;
+function lwOpenSelected() {
+  const sel = lwKonva && lwKonva.selected; if (!sel) return;
+  if (sel.kind === "agent") openPersonDrawer(sel.entry.data.id, sel.entry.data.name);
+  else lwOpenArtifactPeek(sel.entry.data.id);
+}
+function lwNudgeSelected(dx, dy) {
+  const sel = lwKonva && lwKonva.selected; if (!sel) return;
+  if (sel.kind === "agent" && sel.entry.seat) { toast("They're seated — unseat first (Delete) to move them."); return; }
+  const node = sel.entry.node, p = node.position();
+  const nx = p.x + dx, ny = p.y + dy;
+  node.position({ x: nx, y: ny });
+  if (sel.kind === "prop") lwFollowProp(sel.entry);    // seated agents + glow ride along
+  lwKonva.worldLayer.batchDraw();
+  clearTimeout(lwNudgeTimer);
+  const id = sel.entry.data.id;
+  lwNudgeTimer = setTimeout(() => {
+    api(`/api/lw/${lwWorldId}/pos`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, x: nx, y: ny }) }).catch(() => {});
+  }, 350);
+}
+function lwKeyHandler(e) {
+  if (!lwKonva || $("#lifeworld").hidden) return;
+  const tag = (document.activeElement && document.activeElement.tagName) || "";
+  const typing = tag === "INPUT" || tag === "TEXTAREA" || (document.activeElement && document.activeElement.isContentEditable);
+  if (e.key === "Escape") {
+    if (lwCreateFlow) { lwCancelCreate(); e.preventDefault(); }
+    else if (lwKonva.selected) { lwDeselect(); e.preventDefault(); }
+    return;
+  }
+  if (typing || lwCreateFlow) return;    // don't hijack keys while a dialog/field has focus
+  const k = e.key.toLowerCase();
+  const toolKey = { v: "select", a: "agent", o: "artifact", m: "manager", "1": "select", "2": "agent", "3": "artifact", "4": "manager" }[k];
+  if (toolKey) { lwSetTool(toolKey); e.preventDefault(); return; }
+  if (k === "f") { lwFitView(); lwSaveView(); e.preventDefault(); return; }
+  if (!lwKonva.selected) return;
+  const sel = lwKonva.selected;
+  if (e.key === "Enter" || e.key === " ") { lwOpenSelected(); e.preventDefault(); return; }
+  if (e.key === "Delete" || e.key === "Backspace") {
+    if (sel.kind === "agent" && sel.entry.seat) lwUnseatAgent(sel.entry.data, sel.entry.seat.propId);
+    else toast(sel.kind === "agent" ? "Only a seated agent can be popped out with Delete." : "Remove objects from the Artifacts tab.");
+    e.preventDefault(); return;
+  }
+  const step = e.shiftKey ? LW_NUDGE * 5 : LW_NUDGE;
+  const move = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+  if (move) { lwNudgeSelected(move[0], move[1]); e.preventDefault(); }
 }
 
 // ---- Stage + layers: pan, zoom-to-cursor, drag-only grid -----------------
 function lwDestroyCanvas() {
   if (lwCreateFlow) lwCleanupCreate();
   if (lwKonva) {
+    if (lwKonva.keyHandler) document.removeEventListener("keydown", lwKonva.keyHandler);
+    if (lwKonva.selected && lwKonva.selected.anim) lwKonva.selected.anim.stop();
     try { lwKonva.ro && lwKonva.ro.disconnect(); lwKonva.stage.destroy(); } catch (e) { /* already gone */ }
     lwKonva = null;
   }
@@ -5855,7 +6044,8 @@ function lwMountCanvas(room, agents, props) {
   stage.add(gridLayer); stage.add(worldLayer);
 
   lwKonva = { stage, gridLayer, worldLayer, host, roomId: String(lwRoomId),
-              agents: new Map(), props: new Map(), glowing: new Set(), snap: null, menuWorld: null };
+              agents: new Map(), props: new Map(), glowing: new Set(), snap: null,
+              menuWorld: null, selected: null, keyHandler: null };
 
   // Which agents are seated, and in which socket, so they render on the rim.
   const seatedMap = {};
@@ -5865,14 +6055,24 @@ function lwMountCanvas(room, agents, props) {
       p.seated.forEach((aid, i) => { if (aid != null) seatedMap[String(aid)] = { propId: String(p.id), slot: i }; });
   });
 
-  // Objects first (tables sit under their seated agents).
+  const hover = (node) => {
+    node.on("mouseenter", () => { if (!lwKonva) return; lwSetCursor(node.isDragging() ? "grabbing" : "grab"); });
+    node.on("mouseleave", () => lwSetCursor(lwToolCursor(lwTool)));
+  };
+
+  // Objects first (tables sit under their seated agents). Every object is draggable
+  // and persists; a table carries its ring of seated agents as it moves.
   props.forEach((p, i) => {
     const pos = lwNodePos(p, i, "prop");
     const node = lwPropNode(p, pos.x, pos.y);
-    lwKonva.props.set(String(p.id), { node, data: p });
+    const entry = { node, data: p, glow: null };
+    lwKonva.props.set(String(p.id), entry);
     worldLayer.add(node);
+    lwWirePropDrag(node, p, entry);
+    hover(node);
     node.on("contextmenu", (e) => { e.evt.preventDefault(); e.cancelBubble = true; lwPropMenu(e.evt, p); });
-    node.on("click tap", (e) => { e.cancelBubble = true; if (lwTool === "select") lwOpenArtifactPeek(p.id); });
+    node.on("click tap", (e) => { e.cancelBubble = true; if (lwTool === "select") lwSelect("prop", entry); });
+    node.on("dblclick dbltap", (e) => { e.cancelBubble = true; lwOpenArtifactPeek(p.id); });
   });
 
   // A cluster (a table with someone seated) glows as one entity — soft ring behind.
@@ -5881,7 +6081,7 @@ function lwMountCanvas(room, agents, props) {
     const seatedN = Array.isArray(p.seated) ? p.seated.filter((x) => x != null).length : 0;
     if (slots > 0 && seatedN > 0) {
       const entry = lwKonva.props.get(String(p.id));
-      if (entry) lwAddClusterGlow(entry.node, seatedN >= slots);
+      if (entry) lwAddClusterGlow(entry, seatedN >= slots);
     }
   });
 
@@ -5890,19 +6090,22 @@ function lwMountCanvas(room, agents, props) {
     const seat = seatedMap[String(a.id)];
     let pos;
     if (seat) {
-      const entry = lwKonva.props.get(seat.propId);
-      const base = entry ? entry.node.position() : { x: 0, y: 0 };
-      const off = lwSocketOffset(seat.slot, Number(entry && entry.data.slots) || 1);
+      const pe = lwKonva.props.get(seat.propId);
+      const base = pe ? pe.node.position() : { x: 0, y: 0 };
+      const off = lwSocketOffset(seat.slot, Number(pe && pe.data.slots) || 1);
       pos = { x: base.x + off.x, y: base.y + off.y };
     } else {
       pos = lwNodePos(a, i, "agent");
     }
     const node = lwAgentNode(a, pos.x, pos.y, { manager: lwIsManager(a) });
-    lwKonva.agents.set(String(a.id), { node, data: a, seat });
+    const entry = { node, data: a, seat };
+    lwKonva.agents.set(String(a.id), entry);
     worldLayer.add(node);
     lwWireAgentDrag(node, a);
+    hover(node);
     node.on("contextmenu", (e) => { e.evt.preventDefault(); e.cancelBubble = true; lwAgentMenu(e.evt, a); });
-    node.on("click tap", (e) => { e.cancelBubble = true; if (lwTool === "select") openPersonDrawer(a.id, a.name); });
+    node.on("click tap", (e) => { e.cancelBubble = true; if (lwTool === "select") lwSelect("agent", entry); });
+    node.on("dblclick dbltap", (e) => { e.cancelBubble = true; openPersonDrawer(a.id, a.name); });
     if (seat) lwSetSteadyGlow(node, true);
   });
 
@@ -5912,10 +6115,11 @@ function lwMountCanvas(room, agents, props) {
   else lwFitView();
 
   stage.draggable(lwTool === "select");
-  host.style.cursor = lwTool === "select" ? "grab" : "crosshair";
+  lwSetCursor(lwToolCursor(lwTool));
 
+  stage.on("dragstart", () => { if (lwTool === "select") lwSetCursor("grabbing"); });
   stage.on("dragmove", () => { if (lwTool === "select") lwShowGrid(); });
-  stage.on("dragend", () => { lwHideGrid(); lwSaveView(); });
+  stage.on("dragend", () => { lwHideGrid(); lwSaveView(); lwSetCursor(lwToolCursor(lwTool)); });
 
   stage.on("wheel", (e) => {
     e.evt.preventDefault();
@@ -5930,10 +6134,10 @@ function lwMountCanvas(room, agents, props) {
     lwShowGrid(); lwSaveView();
   });
 
-  // A placement tool + a click on empty floor drops a token there.
+  // Click on empty floor: Select clears the focus; a placement tool drops a token.
   stage.on("click tap", (e) => {
-    if (lwTool === "select") return;
     if (e.target !== stage) return;
+    if (lwTool === "select") { lwDeselect(); return; }
     const w = lwPointerWorld();
     if (w) lwStartCreate(lwTool, w);
   });
@@ -5949,6 +6153,9 @@ function lwMountCanvas(room, agents, props) {
     stage.width(host.clientWidth || W); stage.height(host.clientHeight || H);
   });
   lwKonva.ro.observe(host);
+
+  lwKonva.keyHandler = lwKeyHandler;
+  document.addEventListener("keydown", lwKeyHandler);
 
   gridLayer.hide();
   worldLayer.draw();
@@ -6017,7 +6224,8 @@ function lwHue(name) {
   return h % 360;
 }
 function lwIsManager(a) {
-  return !!(a && (a.manager || a.role === "manager" || a.kind === "manager" || a.figure === "👔"));
+  return !!(a && (a.manager || a.role === "manager" || a.kind === "manager"
+    || String(a.figure || "").startsWith("avm:") || a.figure === "👔"));
 }
 function lwNodePos(t, i, kind) {
   const p = t.pos;
@@ -6048,21 +6256,20 @@ function lwAgentNode(a, x, y, opts) {
   opts = opts || {};
   const g = new Konva.Group({ x, y, draggable: true, name: "token" });
   g.setAttr("lwType", "agent"); g.setAttr("lwId", String(a.id));
-  const R = 30, hue = lwHue(a.name);
-  const rimColor = opts.manager ? "#2C6A63" : `hsl(${hue} 46% 52%)`;
-  g.add(new Konva.Circle({ radius: R + 3, fill: rimColor, listening: true }));
-  g.add(new Konva.Circle({
-    radius: R, name: "body",
-    fillRadialGradientStartPoint: { x: -8, y: -8 }, fillRadialGradientStartRadius: 3,
-    fillRadialGradientEndPoint: { x: 0, y: 0 }, fillRadialGradientEndRadius: R,
-    fillRadialGradientColorStops: [0, `hsl(${hue} 55% 67%)`, 1, `hsl(${hue} 42% 48%)`],
-    stroke: "rgba(255,255,255,.85)", strokeWidth: 2,
-  }));
-  const glyph = (a.figure && String(a.figure).trim()) || ((a.name || "?")[0] || "?").toUpperCase();
-  g.add(new Konva.Text({ text: glyph, fontSize: a.figure ? 30 : 24, fontStyle: "bold", fontFamily: "sans-serif",
-    fill: "#fff", width: R * 2, height: R * 2, align: "center", verticalAlign: "middle", offsetX: R, offsetY: R, listening: false }));
+  const R = 30, seed = lwAvatarSeed(a);
+  const rim = opts.manager ? "#2C6A63" : lwAvatarColor(seed);
+  g.add(new Konva.Circle({ radius: R + 3, fill: rim, listening: true }));   // colored edge + hitbox
+  // the "body" disc is the glow/selection target and the fallback fill until the
+  // avatar image decodes; the generated face (a circular SVG) rides on top.
+  g.add(new Konva.Circle({ radius: R, name: "body", fill: lwAvatarBg(seed),
+    stroke: "rgba(255,255,255,.9)", strokeWidth: 2 }));
+  const img = new Image();
+  const face = new Konva.Image({ width: R * 2, height: R * 2, offsetX: R, offsetY: R, listening: false });
+  img.onload = () => { face.image(img); const l = face.getLayer(); if (l) l.batchDraw(); };
+  img.src = lwSvgUri(lwAvatarSvg(seed, R * 2));
+  g.add(face);   // image attaches on decode, so Konva never draws a half-loaded bitmap
   g.add(new Konva.Text({ text: a.name || "someone", fontSize: 12.5, fontFamily: "sans-serif", fill: "#1B2021",
-    width: 130, align: "center", offsetX: 65, y: R + 8, listening: false }));
+    width: 140, align: "center", offsetX: 70, y: R + 8, listening: false }));
   lwMoodBarNodes(a.mood, R + 26).forEach((b) => g.add(b));
   if (opts.manager)
     g.add(new Konva.Text({ text: "★", fontSize: 17, fill: "#E0A93B", width: 24, align: "center", offsetX: 12, y: -R - 18, listening: false }));
@@ -6100,11 +6307,25 @@ function lwTileNode(p, x, y) {
   g.add(new Konva.Rect({ x: -w / 2, y: -h / 2, width: w, height: h, cornerRadius: 12, name: "body",
     fill: `hsl(${hue} 24% 92%)`, stroke: `hsl(${hue} 34% 62%)`, strokeWidth: 2,
     shadowColor: "#000", shadowBlur: 6, shadowOpacity: 0.1 }));
-  const glyph = (p.figure && String(p.figure).trim()) || ((p.name || "?")[0] || "?").toUpperCase();
-  g.add(new Konva.Text({ text: glyph, fontSize: p.figure ? 26 : 22, fontStyle: "bold", fontFamily: "sans-serif",
-    fill: `hsl(${hue} 40% 40%)`, width: w, height: h, align: "center", verticalAlign: "middle", offsetX: w / 2, offsetY: h / 2, listening: false }));
+  const fig = String(p.figure || "");
+  const key = fig.startsWith("ic:") ? fig.slice(3) : "mono";
+  const ink = `hsl(${hue} 42% 38%)`;
+  if (key === "mono") {
+    g.add(new Konva.Text({ text: ((p.name || "?")[0] || "?").toUpperCase(), fontSize: 26, fontStyle: "bold",
+      fontFamily: "Georgia, serif", fill: ink, width: w, height: h, align: "center", verticalAlign: "middle",
+      offsetX: w / 2, offsetY: h / 2, listening: false }));
+  } else {
+    const gimg = new Image(); const D = 34;
+    const icon = new Konva.Image({ image: gimg, width: D, height: D, offsetX: D / 2, offsetY: D / 2, listening: false });
+    gimg.onload = () => { const l = icon.getLayer(); if (l) l.batchDraw(); };
+    gimg.src = lwSvgUri(lwObjGlyphSvg(key, D, ink));
+    g.add(icon);
+  }
   g.add(lwLabelNode(p.name || "object", h / 2 + 6));
-  if (p.sealed) g.add(new Konva.Text({ text: "🔒", fontSize: 13, x: w / 2 - 14, y: -h / 2 - 2, listening: false }));
+  if (p.sealed) {   // a small vector padlock, not an emoji
+    g.add(new Konva.Rect({ x: w / 2 - 16, y: -h / 2 + 3, width: 10, height: 7, cornerRadius: 2, fill: "#8a7f6c", listening: false }));
+    g.add(new Konva.Arc({ x: w / 2 - 11, y: -h / 2 + 3, innerRadius: 2.6, outerRadius: 4.2, angle: 180, rotation: 180, fill: "#8a7f6c", listening: false }));
+  }
   return g;
 }
 
@@ -6158,18 +6379,19 @@ function lwClearGlows() {
   lwKonva.glowing.forEach((n) => lwSetGlow(n, false));
   lwKonva.glowing.clear();
 }
-function lwAddClusterGlow(tableNode, full) {
-  const pos = tableNode.position();
+function lwAddClusterGlow(entry, full) {
+  const pos = entry.node.position();
   const ring = new Konva.Circle({ x: pos.x, y: pos.y, radius: LW_SOCKET_R + 26,
     stroke: full ? "hsl(150 55% 45%)" : "hsl(150 45% 55%)", strokeWidth: full ? 6 : 4, opacity: full ? 0.5 : 0.32,
     shadowColor: "hsl(150 60% 50%)", shadowBlur: full ? 26 : 16, shadowOpacity: 0.6, listening: false, name: "clusterGlow" });
   lwKonva.worldLayer.add(ring);
   ring.moveToBottom();
+  entry.glow = ring;
 }
 
 // ---- dragging: persist a move, or magnetically seat into a free socket -----
 function lwWireAgentDrag(node, a) {
-  node.on("dragstart", () => { lwShowGrid(); });
+  node.on("dragstart", () => { lwSetCursor("grabbing"); const e = lwKonva.agents.get(String(a.id)); if (e) lwSelect("agent", e); lwShowGrid(); });
   node.on("dragmove", () => {
     lwShowGrid();
     lwClearGlows();
@@ -6193,7 +6415,34 @@ function lwWireAgentDrag(node, a) {
     lwKonva.snap = best ? { propId: String(best.entry.data.id), slot: best.slot, x: best.x, y: best.y } : null;
     lwKonva.worldLayer.batchDraw();
   });
-  node.on("dragend", () => lwOnAgentDrop(node, a));
+  node.on("dragend", () => { lwSetCursor(lwToolCursor(lwTool)); lwOnAgentDrop(node, a); });
+}
+
+// A table carries its ring of seated agents and its cluster glow as it moves, so a
+// cluster drags as one single entity.
+function lwFollowProp(entry) {
+  const p = entry.data, base = entry.node.position(), slots = Number(p.slots) || 0;
+  if (entry.glow) entry.glow.position(base);
+  if (slots > 0 && Array.isArray(p.seated))
+    p.seated.forEach((aid, i) => {
+      if (aid == null) return;
+      const ae = lwKonva.agents.get(String(aid));
+      if (ae) { const off = lwSocketOffset(i, slots); ae.node.position({ x: base.x + off.x, y: base.y + off.y }); }
+    });
+}
+function lwWirePropDrag(node, p, entry) {
+  node.on("dragstart", () => { lwSetCursor("grabbing"); lwSelect("prop", entry); lwShowGrid(); });
+  node.on("dragmove", () => { lwShowGrid(); lwFollowProp(entry); lwKonva.worldLayer.batchDraw(); });
+  node.on("dragend", async () => {
+    lwHideGrid(); lwSetCursor(lwToolCursor(lwTool));
+    lwFollowProp(entry);
+    const gp = node.position();
+    try {
+      await api(`/api/lw/${lwWorldId}/pos`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: p.id, x: gp.x, y: gp.y }) });
+      lwSaveView();
+    } catch (e) { toast(`Could not move it: ${e.message}`); await lwReloadRoom(); }
+  });
 }
 
 async function lwOnAgentDrop(node, a) {
@@ -6245,7 +6494,10 @@ function lwStartCreate(tool, world) {
     }, lwKonva.worldLayer);
     anim.start();
   }
-  lwCreateFlow = { tool, kind, isManager, world, shimmer, anim, figure: null, seats: 0, name: "", brief: "", busy: false };
+  const figure = isManager ? "avm:" + LW_AV_VARIANTS[0]
+    : kind === "artifact" ? "ic:" + LW_OBJ_ICONS[0]
+    : "av:" + LW_AV_VARIANTS[0];
+  lwCreateFlow = { tool, kind, isManager, world, shimmer, anim, figure, seats: 0, name: "", brief: "", busy: false, dragged: false };
   lwOpenCreatePopover();
 }
 function lwPendingNode(x, y, kind) {
@@ -6262,49 +6514,120 @@ function lwSetPendingLabel(node, txt, small) {
 }
 function lwPositionOverlayAt(el, world, dy) {
   if (!lwKonva) return;
+  if (lwCreateFlow && lwCreateFlow.dragged && el.classList.contains("lw-create-pop")) return;  // user moved it
   const p = lwKonva.stage.getAbsoluteTransform().point(world);
-  el.style.left = p.x + "px";
-  el.style.top = (p.y + (dy || 0)) + "px";
+  const host = lwKonva.host;
+  const hw = host.clientWidth || 900, hh = host.clientHeight || 460;
+  const w = el.offsetWidth || 258, h = el.offsetHeight || 260;
+  // the popover is translateX(-50%); keep it fully inside the canvas, never off-edge.
+  let left = Math.min(Math.max(p.x, w / 2 + 8), hw - w / 2 - 8);
+  let top = Math.min(Math.max(p.y + (dy || 0), 8), Math.max(8, hh - h - 8));
+  el.style.left = left + "px";
+  el.style.top = top + "px";
 }
+
+// The figure chooser: generated avatar swatches for people (re-rendered as the name
+// is typed so the preview is the real face), vector-glyph swatches for objects.
+function lwFigPaletteHtml(flow) {
+  if (flow.kind === "artifact") {
+    return LW_OBJ_ICONS.map((key) => {
+      const on = flow.figure === "ic:" + key;
+      const inner = key === "mono" ? `<span class="lw-mono">A</span>` : lwObjGlyphSvg(key, 22, "currentColor");
+      return `<button class="lw-figbtn${on ? " on" : ""}" data-fig="ic:${escapeHtml(key)}" title="${escapeHtml(key)}">${inner}</button>`;
+    }).join("");
+  }
+  const marker = flow.isManager ? "avm:" : "av:";
+  const base = (flow.name || "").trim() || "new soul";
+  return LW_AV_VARIANTS.map((tag) => {
+    const on = flow.figure === marker + tag;
+    return `<button class="lw-figbtn lw-avbtn${on ? " on" : ""}" data-fig="${marker}${escapeHtml(tag)}" title="face ${escapeHtml(tag.toUpperCase())}">`
+      + `<img alt="" src="${lwSvgUri(lwAvatarSvg(tag + "|" + base, 30))}"></button>`;
+  }).join("");
+}
+
+// Let the operator slide the popover anywhere by its header — a smooth, real dialog.
+function lwMakeDraggable(pop, handle, flow) {
+  if (!handle) return;
+  let sx = 0, sy = 0, ox = 0, oy = 0, dragging = false;
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".lw-pop-x")) return;
+    dragging = true;
+    const r = pop.getBoundingClientRect();
+    const base = pop.offsetParent ? pop.offsetParent.getBoundingClientRect() : { left: 0, top: 0 };
+    pop.style.transform = "none";              // drop the centering transform once grabbed
+    ox = r.left - base.left; oy = r.top - base.top;
+    pop.style.left = ox + "px"; pop.style.top = oy + "px";
+    if (flow) flow.dragged = true;
+    sx = e.clientX; sy = e.clientY;
+    try { handle.setPointerCapture(e.pointerId); } catch (_) { /* older engines */ }
+    e.preventDefault();
+  });
+  handle.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    pop.style.left = (ox + e.clientX - sx) + "px";
+    pop.style.top = (oy + e.clientY - sy) + "px";
+  });
+  const stop = () => { dragging = false; };
+  handle.addEventListener("pointerup", stop);
+  handle.addEventListener("pointercancel", stop);
+}
+
 function lwOpenCreatePopover() {
   const flow = lwCreateFlow, overlay = $("#lwOverlay");
   if (!flow || !overlay) return;
   overlay.querySelectorAll(".lw-create-pop").forEach((n) => n.remove());
   const isArt = flow.kind === "artifact";
-  const palette = flow.isManager ? LW_FIG_MGR : isArt ? LW_FIG_ART : LW_FIG_AGENT;
-  flow.figure = flow.figure || palette[0];
   const pop = document.createElement("div");
-  pop.className = "lw-create-pop";
+  pop.className = "lw-create-pop" + (reduceMotion() ? "" : " lw-pop-in");
   pop.innerHTML = `
-    <div class="lw-pop-title">${escapeHtml(flow.isManager ? "New manager" : isArt ? "New object" : "New agent")}</div>
+    <div class="lw-pop-head" id="lwPopHead">
+      <span class="lw-pop-grip" aria-hidden="true"></span>
+      <span class="lw-pop-title">${escapeHtml(flow.isManager ? "New manager" : isArt ? "New object" : "New agent")}</span>
+      <button class="lw-pop-x" id="lwCX" title="Close (Esc)">✕</button>
+    </div>
     <input class="sc-name" id="lwCName" placeholder="Name (optional)" autocomplete="off">
     <div class="sc-label">${escapeHtml(isArt ? "What is it?" : "Who are they?")}</div>
     <textarea class="sc-input" id="lwCBrief" rows="2" placeholder="${escapeHtml(isArt ? "a deck of cards; a shared checklist…" : "a cautious accountant who loves poker…")}"></textarea>
-    <div class="sc-label">Figure</div>
-    <div class="lw-figpalette" id="lwCFig">${palette.map((f) =>
-      `<button class="lw-figbtn${f === flow.figure ? " on" : ""}" data-fig="${escapeHtml(f)}">${escapeHtml(f)}</button>`).join("")}</div>
+    <div class="sc-label">${escapeHtml(isArt ? "Glyph" : "Face")}</div>
+    <div class="lw-figpalette" id="lwCFig">${lwFigPaletteHtml(flow)}</div>
     ${isArt ? `<div class="sc-label">Seats <span class="dim">(&gt;0 makes a collating table)</span></div>
       <div class="sc-row" id="lwCSeats">${[0, 2, 4, 6].map((n) =>
         `<button class="sc-chip${n === flow.seats ? " on" : ""}" data-seats="${n}">${n === 0 ? "none" : n}</button>`).join("")}</div>` : ""}
     <div class="sc-actions">
       <button class="sc-ctl primary" id="lwCGo">${escapeHtml(flow.isManager ? "Add manager" : "Create")}</button>
       <button class="sc-ctl" id="lwCCancel">Cancel</button>
-    </div>`;
+    </div>
+    <div class="lw-pop-hint">↵ create · esc cancel · drag the header to move</div>`;
   overlay.appendChild(pop);
-  lwPositionOverlayAt(pop, flow.world, 16);
+  lwPositionOverlayAt(pop, flow.world, 18);
+  lwMakeDraggable(pop, pop.querySelector("#lwPopHead"), flow);
+
+  const wireFig = () => pop.querySelectorAll("#lwCFig [data-fig]").forEach((b) =>
+    b.addEventListener("click", () => {
+      flow.figure = b.dataset.fig;
+      pop.querySelectorAll("#lwCFig [data-fig]").forEach((x) => x.classList.toggle("on", x === b));
+    }));
+  wireFig();
+
   const nameEl = pop.querySelector("#lwCName");
-  if (nameEl) { nameEl.focus(); nameEl.addEventListener("input", (e) => { flow.name = e.target.value; }); }
+  if (nameEl) {
+    nameEl.focus();
+    nameEl.addEventListener("input", (e) => {
+      flow.name = e.target.value;
+      if (!isArt) { const box = pop.querySelector("#lwCFig"); if (box) { box.innerHTML = lwFigPaletteHtml(flow); wireFig(); } }
+    });
+  }
   pop.querySelector("#lwCBrief").addEventListener("input", (e) => { flow.brief = e.target.value; });
-  pop.querySelectorAll("[data-fig]").forEach((b) => b.addEventListener("click", () => {
-    flow.figure = b.dataset.fig;
-    pop.querySelectorAll("[data-fig]").forEach((x) => x.classList.toggle("on", x === b));
-  }));
   pop.querySelectorAll("[data-seats]").forEach((b) => b.addEventListener("click", () => {
     flow.seats = Number(b.dataset.seats);
     pop.querySelectorAll("[data-seats]").forEach((x) => x.classList.toggle("on", x === b));
   }));
+  pop.querySelector("#lwCX").addEventListener("click", lwCancelCreate);
   pop.querySelector("#lwCCancel").addEventListener("click", lwCancelCreate);
   pop.querySelector("#lwCGo").addEventListener("click", () => lwDoCreate(pop));
+  pop.addEventListener("keydown", (e) => {   // Enter submits, except inside the multi-line brief
+    if (e.key === "Enter" && e.target.id !== "lwCBrief") { e.preventDefault(); lwDoCreate(pop); }
+  });
 }
 function lwCreatedId(resp, keys) {
   if (!resp) return null;
@@ -6364,7 +6687,7 @@ function lwFloorMenu(evt, world) {
     { label: "Seat an existing agent", act: lwOpenSeatPicker },
     { label: "Place an existing object", act: lwOpenPlacePicker },
     { sep: true },
-    { label: "▶ Play a round", act: lwPlayRound },
+    { label: "▶ Step the scene", act: lwPlayRound },
   ]);
 }
 function lwAgentMenu(evt, a) {
@@ -6425,7 +6748,7 @@ async function lwPlayBubbles(lines) {
 // deterministic reflex is labelled as such. Only unseen lines animate in.
 function lwLogHtml(log, prevSeen) {
   if (!log || !log.length)
-    return `<div class="lw-log-empty">The ticker is quiet. Play a round to stir them.</div>`;
+    return `<div class="lw-log-empty">The ticker is quiet. Step the scene to stir them.</div>`;
   let newIdx = 0;
   return log.map((l) => {
     const isNew = !prevSeen.has(String(l.n));
@@ -6588,8 +6911,7 @@ async function openPersonDrawer(hid, name) {
     ? (p.text || p.what || p.name || JSON.stringify(p)) : String(p);
   box.innerHTML = `
     <div class="sd-head">
-      <div class="fig-emblem" style="background:${sigil(h.name || name || "?", "anthropic")}">
-        <span class="fig-initial">${escapeHtml((h.name || name || "?")[0] || "?")}</span></div>
+      <div class="fig-emblem lw-av-emblem"><img alt="" src="${lwSvgUri(lwAvatarSvg(lwAvatarSeed({ name: h.name || name, id: hid, figure: h.figure }), 48))}"></div>
       <div style="flex:1"><h3>${escapeHtml(h.name || name || "someone")}</h3>
         <p class="sd-persona">${escapeHtml(d.narrative || h.narrative || "no story yet")}</p></div>
       <button class="sd-close" id="lwDClose">✕</button>

@@ -1587,6 +1587,9 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
   box-shadow: var(--shadow); border: 2px solid var(--card);
   animation: breathe 5.5s ease-in-out infinite;
 }
+/* A generated-avatar emblem: the SVG face fills the disc (used in the peek drawer). */
+.lw-av-emblem { overflow: hidden; padding: 0; animation: none; }
+.lw-av-emblem img { width: 100%; height: 100%; display: block; border-radius: 50%; }
 /* Provider identity is a RIM + pip only — never a fill, so it can't be mistaken
    for the brick "a human is involved" wash. */
 .fig-emblem.prov-anthropic { outline: 2px solid #c96442; outline-offset: 1px; }
@@ -2245,13 +2248,19 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .lw-dock { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 10;
   display: flex; gap: 6px; padding: 6px; background: var(--card); border: 1px solid var(--line);
   border-radius: 14px; box-shadow: var(--shadow-lg); }
-.lw-tool { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 60px;
+.lw-tool { position: relative; display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 62px;
   padding: var(--ctl-pad-y-tight) var(--ctl-pad-x); border-radius: 10px; cursor: pointer;
-  background: var(--card-2); border: 1px solid var(--line); color: var(--dim); }
-.lw-tool:hover { border-color: var(--accent); }
+  background: var(--card-2); border: 1px solid var(--line); color: var(--dim);
+  transition: border-color .12s ease, background .12s ease, color .12s ease; }
+.lw-tool:hover { border-color: var(--accent); color: var(--text); }
 .lw-tool.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
-.lw-tool-ico { font-size: 17px; line-height: 1; }
+.lw-tool-ico { display: flex; align-items: center; justify-content: center; color: inherit; }
+.lw-tool-ico svg { display: block; }
 .lw-tool-lb { font-size: 10.5px; font-weight: 600; }
+.lw-tool-key { position: absolute; top: 4px; right: 5px; font-family: var(--mono); font-size: 8px;
+  color: var(--faint); border: 1px solid var(--line); border-radius: 3px; padding: 0 2px; line-height: 1.35; }
+.lw-tool.on .lw-tool-key { color: var(--accent); border-color: var(--accent); }
+@media (prefers-reduced-motion: reduce) { .lw-tool { transition: none; } }
 
 /* A cloud bubble over an acting agent, positioned by the Konva transform. */
 .lw-bubble { position: absolute; transform: translate(-50%, calc(-100% - 34px)); max-width: 210px;
@@ -2264,16 +2273,36 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .lw-bubble-thought { background: var(--warn-soft); border-color: var(--warn); }
 .lw-bubble-thought::after { border-top-color: var(--warn-soft); }
 
-/* The inline creation popover — name + brief + a figure palette, never a prompt. */
-.lw-create-pop { position: absolute; transform: translateX(-50%); width: 258px; z-index: 16;
-  background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px; box-shadow: var(--shadow-lg); }
-.lw-pop-title { font-size: 14px; font-weight: 650; margin-bottom: 6px; }
+/* The inline creation popover — a real, draggable dialog: name + brief + a figure
+   palette (generated avatars / vector glyphs), never a raw prompt. */
+.lw-create-pop { position: absolute; transform: translateX(-50%); width: 264px; z-index: 16;
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 0 12px 12px;
+  box-shadow: var(--shadow-lg); }
+.lw-pop-in { animation: lwPopIn .16s cubic-bezier(.2,.9,.3,1) both; }
+@keyframes lwPopIn { from { opacity: 0; transform: translateX(-50%) scale(.94); } to { opacity: 1; } }
+.lw-pop-head { display: flex; align-items: center; gap: 8px; margin: 0 -12px 8px; padding: 9px 12px 8px;
+  border-bottom: 1px solid var(--line-soft); cursor: grab; touch-action: none; user-select: none; }
+.lw-pop-head:active { cursor: grabbing; }
+.lw-pop-grip { width: 22px; height: 8px; flex: none; border-radius: 3px;
+  background: radial-gradient(circle 1.2px at 4px 2px, var(--faint) 99%, transparent 0) 0 0 / 6px 4px repeat; opacity: .7; }
+.lw-pop-title { font-size: 14px; font-weight: 650; flex: 1; }
+.lw-pop-x { flex: none; width: 22px; height: 22px; border-radius: 7px; border: 1px solid transparent;
+  background: transparent; color: var(--faint); cursor: pointer; font-size: 12px; line-height: 1; }
+.lw-pop-x:hover { color: var(--text); border-color: var(--line); background: var(--card-2); }
+.lw-pop-hint { margin-top: 10px; font-family: var(--mono); font-size: 9.5px; letter-spacing: .02em;
+  color: var(--faint); text-align: center; }
+.lw-pop-hint b { color: var(--dim); font-weight: 600; }
 .lw-create-pop .sc-actions { display: flex; gap: 8px; margin-top: 14px; }
-.lw-figpalette { display: flex; flex-wrap: wrap; gap: 5px; }
-.lw-figbtn { width: 34px; height: 34px; font-size: 18px; line-height: 1; padding: 0; border-radius: 9px;
-  background: var(--card-2); border: 1px solid var(--line); cursor: pointer; }
-.lw-figbtn:hover { border-color: var(--accent); }
-.lw-figbtn.on { background: var(--accent-soft); border-color: var(--accent); }
+.lw-figpalette { display: flex; flex-wrap: wrap; gap: 6px; }
+.lw-figbtn { width: 38px; height: 38px; display: flex; align-items: center; justify-content: center;
+  padding: 0; border-radius: 10px; overflow: hidden; background: var(--card-2); border: 1px solid var(--line);
+  color: var(--dim); cursor: pointer; transition: transform .12s ease, border-color .12s ease, color .12s ease; }
+.lw-figbtn:hover { border-color: var(--accent); color: var(--text); transform: translateY(-1px); }
+.lw-figbtn.on { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.lw-avbtn img { width: 34px; height: 34px; display: block; border-radius: 8px; }
+.lw-figbtn svg { display: block; }
+.lw-figbtn .lw-mono { font-family: Georgia, serif; font-weight: 700; font-size: 18px; color: var(--dim); }
+@media (prefers-reduced-motion: reduce) { .lw-figbtn { transition: none; } }
 
 @media (prefers-reduced-motion: reduce) {
   .lw-new { animation: none; }
