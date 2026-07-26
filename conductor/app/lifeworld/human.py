@@ -36,8 +36,9 @@ class Human(Being):
     kind = "human"
 
     def __init__(self, id: int, name: str = "", pos: tuple = (0.0, 0.0), tau: int = 0,
-                 psyche: Psyche | None = None, narrative: str = ""):
+                 psyche: Psyche | None = None, narrative: str = "", figure: str = ""):
         super().__init__(id, name, pos, tau)
+        self.figure = figure                         # the chosen figurine/icon (how they look)
         self.psyche = psyche or Psyche()
         self.senses = Senses()
         self.memory = Memory()
@@ -51,8 +52,8 @@ class Human(Being):
 
     @classmethod
     def newborn(cls, id: int, name: str, *, dials: dict | None = None,
-                senses: list | None = None) -> "Human":
-        h = cls(id, name, psyche=Psyche.newborn(dials))
+                senses: list | None = None, figure: str = "") -> "Human":
+        h = cls(id, name, psyche=Psyche.newborn(dials), figure=figure)
         if senses:
             h.senses.active = list(senses)
         return h
@@ -145,7 +146,8 @@ class Human(Being):
 
     def profile(self) -> dict[str, Any]:
         """The résumé card — identity, dominant drive, top skills, verified ledger."""
-        return {"id": self.id, "name": self.name, "tau": self.tau,
+        return {"id": self.id, "name": self.name, "tau": self.tau, "figure": self.figure,
+                "pos": list(self.pos),
                 "narrative": self.narrative, "mood": self.psyche.mood,
                 "traits": self.psyche.traits, "wants": self.drives.dominant_goal(),
                 "skills": self.skills.resume(), "resume": self.ledger.resume_stats(),
@@ -155,7 +157,7 @@ class Human(Being):
 
     def to_dict(self) -> dict[str, Any]:
         d = super().to_dict()
-        d.update(narrative=self.narrative, last_action=self.last_action,
+        d.update(narrative=self.narrative, last_action=self.last_action, figure=self.figure,
                  flag_overrides=self.flag_overrides,
                  psyche=self.psyche.to_dict(), senses=self.senses.to_dict(),
                  memory=self.memory.to_dict(), skills=self.skills.to_dict(),
@@ -167,7 +169,7 @@ class Human(Being):
     def from_dict(cls, d: dict[str, Any]) -> "Human":
         h = cls(id=d["id"], name=d.get("name", ""), pos=tuple(d.get("pos", (0, 0))),
                 tau=int(d.get("tau", 0)), psyche=Psyche.from_dict(d.get("psyche")),
-                narrative=d.get("narrative", ""))
+                narrative=d.get("narrative", ""), figure=d.get("figure", ""))
         h.senses = Senses.from_dict(d.get("senses"))
         h.memory = Memory.from_dict(d.get("memory"))
         h.skills = Skills.from_dict(d.get("skills"))

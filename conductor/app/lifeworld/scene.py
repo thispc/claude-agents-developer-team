@@ -139,15 +139,32 @@ class Scene:
         s.turn = int(d.get("turn", 0))
         return s
 
+    def props_here(self):
+        return [a for a in (self.world.get(i) for i in self.props) if a]
+
+    def clusters(self) -> list[dict]:
+        """Each collating artifact and the agents ringed around it — a glowing single
+        entity. The unit a round plays over."""
+        out = []
+        for a in self.props_here():
+            if getattr(a, "collating", lambda: False)():
+                out.append({"artifact": a.id, "seated": a.cluster(), "slots": a.slots,
+                            "full": len(a.cluster()) == a.slots})
+        return out
+
     def view(self) -> dict[str, Any]:
         return {"id": self.id, "name": self.name, "type": self.type, "theme": self.theme,
                 "domain": self.domain, "flags": self.flag_overrides,
-                "seats": [{"id": h.id, "name": h.name, "mood": h.psyche.mood,
-                           "wants": h.drives.dominant_goal()[0], "tau": h.tau}
-                          for h in self.players()],
-                "props": [{"id": a.id, "name": a.name, "kind": a.kind,
-                           "public": a.public, "sealed": bool(a.secret)}
-                          for a in (self.world.get(i) for i in self.props) if a],
+                # agents placed on the canvas, positioned by pos; the UI lays them out
+                "agents": [{"id": h.id, "name": h.name, "figure": h.figure,
+                            "pos": list(h.pos), "mood": h.psyche.mood,
+                            "wants": h.drives.dominant_goal()[0], "tau": h.tau}
+                           for h in self.players()],
+                "props": [{"id": a.id, "name": a.name, "kind": a.kind, "figure": a.figure,
+                           "pos": list(a.pos), "public": a.public, "sealed": bool(a.secret),
+                           "slots": a.slots, "seated": a.seated}
+                          for a in self.props_here()],
+                "clusters": self.clusters(),
                 "log": self.log[-60:]}
 
 

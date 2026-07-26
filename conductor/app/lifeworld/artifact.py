@@ -31,11 +31,36 @@ class Artifact(Entity):
     kind = "artifact"
 
     def __init__(self, id: int, name: str = "", pos: tuple = (0.0, 0.0), tau: int = 0,
-                 public: dict | None = None, secret: str = "", holder: int | None = None):
+                 public: dict | None = None, secret: str = "", holder: int | None = None,
+                 figure: str = "", slots: int = 0, seated: list | None = None):
         super().__init__(id, name, pos, tau)
         self.public: dict[str, Any] = public or {}
         self.secret: str = secret            # sealed ciphertext, or ""
         self.holder: int | None = holder     # the agent who holds it (and its key)
+        self.figure: str = figure            # the chosen visual token id (how it looks)
+        self.slots: int = slots              # a COLLATING artifact seats this many agents (0 = not)
+        self.seated: list = seated if seated is not None else [None] * slots  # agent id per slot
+
+    # --- collation: agents gather around a collating artifact into a cluster ---
+
+    def collating(self) -> bool:
+        return self.slots > 0
+
+    def seat(self, slot: int, agent_id: int) -> bool:
+        """Snap an agent into a slot, if it's free. Returns whether it took."""
+        if not (0 <= slot < self.slots) or self.seated[slot] is not None:
+            return False
+        if agent_id in self.seated:                     # one seat per agent per table
+            self.seated[self.seated.index(agent_id)] = None
+        self.seated[slot] = agent_id
+        return True
+
+    def unseat(self, agent_id: int) -> None:
+        self.seated = [None if s == agent_id else s for s in self.seated]
+
+    def cluster(self) -> list[int]:
+        """The agents seated here — a glowing single entity when the ring fills."""
+        return [s for s in self.seated if s is not None]
 
     def perceive(self, signal: Signal, world) -> Packet:
         """Artifacts don't appraise; an interaction with one is handled by `interact`.
@@ -67,14 +92,24 @@ class Artifact(Entity):
 
     def to_dict(self) -> dict[str, Any]:
         d = super().to_dict()
-        d.update(public=self.public, secret=self.secret, holder=self.holder)
+        d.update(public=self.public, secret=self.secret, holder=self.holder,
+                 figure=self.figure, slots=self.slots, seated=self.seated)
         return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Artifact":
         return cls(id=d["id"], name=d.get("name", ""), pos=tuple(d.get("pos", (0, 0))),
                    tau=int(d.get("tau", 0)), public=d.get("public", {}),
-                   secret=d.get("secret", ""), holder=d.get("holder"))
+                   secret=d.get("secret", ""), holder=d.get("holder"),
+                   figure=d.get("figure", ""), slots=int(d.get("slots", 0)),
+                   seated=d.get("seated"))
+
+
+@register
+class Prop(Artifact):
+    """A generic placed object — and, when it has slots, a collating table agents ring.
+    This is the token the toolbox drops onto the canvas for anything that isn't a deck."""
+    kind = "prop"
 
 
 @register
@@ -110,8 +145,8 @@ class Deck(Artifact):
     kind = "deck"
 
     def __init__(self, id, name="deck", pos=(0.0, 0.0), tau=0, public=None,
-                 secret="", holder=None, order=None):
-        super().__init__(id, name, pos, tau, public, secret, holder)
+                 secret="", holder=None, order=None, figure="", slots=0, seated=None):
+        super().__init__(id, name, pos, tau, public, secret, holder, figure, slots, seated)
         self.order: list = order or []        # the shuffled deal order — private, never viewed
 
     @classmethod
@@ -147,7 +182,8 @@ class Deck(Artifact):
     def from_dict(cls, d: dict[str, Any]) -> "Deck":
         return cls(id=d["id"], name=d.get("name", "deck"), pos=tuple(d.get("pos", (0, 0))),
                    tau=int(d.get("tau", 0)), public=d.get("public", {}),
-                   secret=d.get("secret", ""), holder=d.get("holder"), order=d.get("order", []))
+                   secret=d.get("secret", ""), holder=d.get("holder"), order=d.get("order", []),
+                   figure=d.get("figure", ""), slots=int(d.get("slots", 0)), seated=d.get("seated"))
 
     def interact(self, verb: str, agent, world) -> Signal:
         if verb == "draw":

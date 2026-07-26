@@ -357,6 +357,46 @@ def test_the_deck_of_cards_scenario_through_the_api(client):
     assert hand and all(h["value"] for h in hand)
 
 
+def test_a_collating_artifact_forms_a_cluster_and_a_round_plays_it(client):
+    """The owner's core canvas idea: an artifact with N seats; agents snap into slots;
+    the seated agents plus the artifact become one cluster a round plays over."""
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    ids = [client.post(f"/api/lw/{wid}/human", json={"name": n}).json()["human"]["id"]
+           for n in ("A", "B", "C")]
+    table = client.post(f"/api/lw/{wid}/artifact",
+                        json={"name": "round table", "brief": "a round table", "slots": 3}).json()["artifact"]
+    assert table["slots"] == 3 and table["kind"] == "prop"
+    rid = client.post(f"/api/lw/{wid}/room", json={"name": "R", "type": "freeplay"}).json()["room"]["id"]
+    client.post(f"/api/lw/{wid}/room/{rid}/place", params={"artifact_id": table["id"]})
+    for slot, hid in enumerate(ids):
+        client.post(f"/api/lw/{wid}/artifact/{table['id']}/seat", json={"slot": slot, "human_id": hid})
+    room = client.get(f"/api/lw/{wid}/room/{rid}").json()["room"]
+    cl = room["clusters"][0]
+    assert cl["full"] and sorted(cl["seated"]) == sorted(ids)      # the ring formed
+    r = client.post(f"/api/lw/{wid}/room/{rid}/round").json()
+    assert r["world_tau"] > 0 and sum(1 for e in r["room"]["log"] if e["billed"]) == 0
+
+
+def test_a_drag_position_persists(client):
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    hid = client.post(f"/api/lw/{wid}/human", json={"name": "Mover"}).json()["human"]["id"]
+    client.post(f"/api/lw/{wid}/pos", json={"id": hid, "x": 120, "y": 84})
+    a = next(a for a in client.get(f"/api/lw/{wid}").json()["agents"] if a["id"] == hid)
+    assert a["pos"] == [120, 84]
+
+
+def test_a_figure_is_carried_on_creation(client):
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    h = client.post(f"/api/lw/{wid}/human", json={"name": "Face", "figure": "wizard"}).json()["human"]
+    assert h["figure"] == "wizard"
+
+
 def test_a_world_is_private_to_its_owner(client, make_user):
     from conftest import login
     login(client, "root", "testpass")

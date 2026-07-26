@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from . import auth, providers, tuning
 from .lifeworld import store, authoring
-from .lifeworld.artifact import Deck, Artifact
+from .lifeworld.artifact import Deck, Prop
 from .lifeworld.scene import ROOM_TYPES
 from .routes import current_user
 
@@ -31,12 +31,26 @@ class NewWorld(BaseModel):
 class NewHuman(BaseModel):
     name: str = ""
     brief: str = ""                         # "a confident young lawyer, sharp but insecure"
+    figure: str = ""                        # the chosen figurine/icon
     parents: list[int] = Field(default_factory=list)   # optional: breed from two agents
 
 
 class NewArtifact(BaseModel):
     name: str = ""
-    brief: str = ""                         # "a worn deck of cards" / "a locked diary"
+    brief: str = ""                         # "a worn deck of cards" / "a round table for 4"
+    figure: str = ""
+    slots: int = 0                          # >0 = a collating artifact (a table for N)
+
+
+class Pos(BaseModel):
+    id: int
+    x: float
+    y: float
+
+
+class SeatSlot(BaseModel):
+    slot: int
+    human_id: int
 
 
 class NewRoom(BaseModel):
@@ -148,7 +162,7 @@ async def add_human(world_id: int, body: NewHuman, request: Request) -> dict:
             spec["dials"][t] = round(sum(vals) / len(vals))
         spec["narrative"] = f"{body.name or 'A child'}, of {' & '.join(p.name for p in parents)}."[:280]
     h = w.spawn_human(body.name or f"Person {len(w.humans())+1}", dials=spec["dials"],
-                      senses=spec.get("senses") or None)
+                      senses=spec.get("senses") or None, figure=body.figure)
     h.narrative = spec.get("narrative", h.narrative)[:280]
     for sk in spec.get("skills", []):
         if isinstance(sk, dict) and sk.get("path"):
@@ -181,13 +195,54 @@ async def add_artifact(world_id: int, body: NewArtifact, request: Request, seed:
                                            model=tuning.get("scene_default_model"))
     if spec["kind"] == "deck":
         a = Deck.fresh(w.next_id(), seed=seed, name=body.name or "deck of cards")
+        a.figure = body.figure or "deck"
     else:
-        a = Artifact(w.next_id(), name=body.name or "a thing",
-                     public=spec.get("public", {}) or {})
+        a = Prop(w.next_id(), name=body.name or "a thing", public=spec.get("public", {}) or {},
+                 figure=body.figure, slots=max(0, int(body.slots)))
     w.add(a)
     store.save(w)
-    return {"artifact": {"id": a.id, "name": a.name, "kind": a.kind,
+    return {"artifact": {"id": a.id, "name": a.name, "kind": a.kind, "figure": a.figure,
+                         "slots": a.slots, "seated": a.seated,
                          "sealed": bool(a.secret), "public": a.public}}
+
+
+@router.post("/{world_id}/pos")
+def move(world_id: int, body: Pos, request: Request) -> dict:
+    """Persist a drag — where a token sits on the canvas."""
+    _own(request, world_id)
+    w = store.load(world_id)
+    e = w.get(body.id)
+    if not e:
+        raise HTTPException(404, "no such token")
+    e.pos = (body.x, body.y)
+    store.save(w)
+    return {"ok": True, "id": body.id, "pos": [body.x, body.y]}
+
+
+@router.post("/{world_id}/artifact/{artifact_id}/seat")
+def seat_into_slot(world_id: int, artifact_id: int, body: SeatSlot, request: Request) -> dict:
+    """Snap an agent into a collating artifact's slot — the magnetic pull, made real. The
+    seated agents plus the artifact are then one cluster."""
+    _own(request, world_id)
+    w = store.load(world_id)
+    a, h = w.get(artifact_id), w.get(body.human_id)
+    if not a or not h or not getattr(a, "collating", lambda: False)():
+        raise HTTPException(404, "no such table or agent, or it doesn't collate")
+    ok = a.seat(body.slot, body.human_id)
+    store.save(w)
+    return {"ok": ok, "seated": a.seated, "cluster": a.cluster()}
+
+
+@router.post("/{world_id}/artifact/{artifact_id}/unseat")
+def unseat_from_slot(world_id: int, artifact_id: int, human_id: int, request: Request) -> dict:
+    _own(request, world_id)
+    w = store.load(world_id)
+    a = w.get(artifact_id)
+    if not a:
+        raise HTTPException(404, "no such table")
+    a.unseat(human_id)
+    store.save(w)
+    return {"ok": True, "seated": a.seated}
 
 
 # --- rooms ------------------------------------------------------------------
@@ -268,13 +323,25 @@ async def play_round(world_id: int, room_id: int, request: Request, live: int = 
     s = w.scene(room_id)
     if not s:
         raise HTTPException(404, "no such room")
-    deck = next((a for a in (w.get(i) for i in s.props) if a and a.kind == "deck"), None)
-    players = s.players()
-    for i, h in enumerate(players):
-        if deck:
-            await s.interact(h, deck.id, "draw")
-        if len(players) > 1:
-            await s.greet(h, players[(i + 1) % len(players)])
+    deck = next((a for a in s.props_here() if a.kind == "deck"), None)
+
+    async def play(ring):
+        for i, h in enumerate(ring):
+            if deck:
+                await s.interact(h, deck.id, "draw")
+            if len(ring) > 1:
+                await s.greet(h, ring[(i + 1) % len(ring)])
+
+    # Prefer clusters: each collating artifact's seated agents act as a ring. If no cluster
+    # has formed yet, fall back to everyone in the room so a round still does something.
+    rings = [[w.get(hid) for hid in a.cluster()]
+             for a in s.props_here()
+             if getattr(a, "collating", lambda: False)() and a.cluster()]
+    if rings:
+        for ring in rings:
+            await play([h for h in ring if h])
+    else:
+        await play(s.players())
     s.rest()
     store.save(w)
     return {"room": s.view(), "world_tau": w.tau}

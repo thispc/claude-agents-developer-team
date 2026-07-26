@@ -52,8 +52,8 @@ class World:
         return self.entities.get(id)
 
     def spawn_human(self, name: str, *, dials: dict | None = None,
-                    senses: list | None = None) -> Human:
-        h = Human.newborn(self.next_id(), name, dials=dials, senses=senses)
+                    senses: list | None = None, figure: str = "") -> Human:
+        h = Human.newborn(self.next_id(), name, dials=dials, senses=senses, figure=figure)
         return self.add(h)                    # type: ignore[return-value]
 
     def new_room(self, name: str, type: str = "freeplay"):
