@@ -5079,6 +5079,29 @@ let lwRoomTypes = [];          // [{type,theme,blurb}] from the API
 const LW_ROOM_HUES = [162, 26, 214, 276, 128, 336, 46, 194];
 const lwLiveQ = () => (lwLive ? "?live=1" : "");
 
+// --- Konva room canvas: the infinite paintable room -------------------------
+// One Stage per open room, mounted into #lwKonvaHost. Tokens live in worldLayer;
+// the dotted grid (worldLayer's sibling) is revealed only while something drags.
+// Pan/zoom is applied to the Stage (so it transforms every layer) and cached per
+// room so a rebuild after a drag/round/create never yanks the viewport.
+let lwKonva = null;          // { stage, gridLayer, worldLayer, host, agents:Map, props:Map, ... }
+let lwTool = "select";       // select | agent | artifact | manager
+let lwCreateFlow = null;     // active single-flight creation, or null
+let lwGridTimer = null;
+const lwViewCache = {};      // roomId -> {x,y,scale}
+const LW_TABLE_R = 58;       // collating-table disc radius (world units)
+const LW_SOCKET_R = 80;      // radius of the ring the seat sockets sit on
+const LW_SNAP_DIST = 46;     // drop within this of a free socket → magnetic seat
+const LW_TOOLS = [
+  { id: "select", ico: "⤢", label: "Select" },
+  { id: "agent", ico: "🙂", label: "Agent" },
+  { id: "artifact", ico: "🗂️", label: "Artifact" },
+  { id: "manager", ico: "👔", label: "Manager" },
+];
+const LW_FIG_AGENT = ["🙂", "👩", "👨", "🧑", "👧", "🧓", "🦊", "🐼", "🤖", "🧠", "🎩", "👻"];
+const LW_FIG_MGR = ["👔", "🧑‍💼", "👑", "⭐", "🎩", "🗿"];
+const LW_FIG_ART = ["🗂️", "📇", "🃏", "📋", "🗓️", "📦", "🔧", "💡", "🖼️", "🗒️"];
+
 // --- screen switch: bring the section on, hide every sibling (mirrors the Studio).
 function showLifeworld() {
   $("#home").hidden = true; $("main").hidden = true;
@@ -5158,12 +5181,6 @@ function lwWhen(t) {
   return String(t);
 }
 
-// Seats ring an oval, first seat at the near edge, going clockwise.
-function lwSeatPos(i, n) {
-  const theta = (Math.PI / 2) + (i / Math.max(1, n)) * Math.PI * 2;
-  return { x: 50 + Math.cos(theta) * 41, y: 52 + Math.sin(theta) * 41 };
-}
-
 // The dealable object in a room: a deck if one is placed, else the first prop.
 function findDeck(room) {
   const props = (room && room.props) || [];
@@ -5188,21 +5205,6 @@ function lwNameOf(v) {
   const agents = (lwWorld && lwWorld.agents) || [];
   const p = agents.find((x) => String(x.id) === String(v));
   return p ? (p.name || String(v)) : String(v);
-}
-
-// How many cards each holder is sitting on, derived from the room log's draws. The
-// values stay secret (only a peek decrypts them) — we show the count as backs.
-function lwHandCounts(room) {
-  const counts = {};
-  const log = (room && room.log) || [];
-  for (const l of log) {
-    const verb = l.verb || l.kind;
-    if (verb === "draw" || (typeof l.text === "string" && /\b(draws?|drew)\b/i.test(l.text))) {
-      const k = String(l.who);
-      counts[k] = (counts[k] || 0) + 1;
-    }
-  }
-  return counts;
 }
 
 function lwBilledCount(room) {
@@ -5327,6 +5329,7 @@ async function renderWorkspace() {
 }
 
 function selectLwTab(name) {
+  lwDestroyCanvas();   // leaving the room view tears its Konva stage down
   lwTab = name;
   // A tab click always lands on that tab's top view — for Rooms, the list, not
   // whatever room was last open (openRoom is the only path that sets lwRoomId).
@@ -5749,81 +5752,49 @@ async function openRoom(rid) {
   await renderRoomView();
 }
 
-// The centre of a casino is the poker felt; every other theme gets a simple,
-// CSS-only setting so a home never looks like a card table.
-function lwSettingHtml(theme, room, deck) {
-  let center;
-  if (theme === "home")
-    center = `<div class="lw-hearth"><span class="lw-flame"></span><span class="lw-flame f2"></span><span class="lw-flame f3"></span></div>`;
-  else if (theme === "classroom")
-    center = `<div class="lw-chalkboard"><span class="lw-chalk">${escapeHtml(room.blurb || "today: be curious")}</span></div>`;
-  else if (theme === "campus")
-    center = `<div class="lw-tree"><span class="lw-canopy"></span><span class="lw-trunk"></span></div>`;
-  else if (theme === "office")
-    center = `<div class="lw-office"><div class="lw-desk"></div><div class="lw-monitors"><span></span><span></span></div></div>`;
-  else
-    center = `<div class="lw-platform"></div>`;
-  const objs = deck ? `<div class="lw-setting-objs">${lwDeckHtml(deck)}</div>` : "";
-  const tau = (lwWorld && lwWorld.world && lwWorld.world.tau) ?? 0;
-  return `<div class="lw-setting-wrap"><div class="lw-setting">${center}${objs}</div>
-    <div class="lw-tick lw-tick-dark">τ <b>${escapeHtml(String(tau))}</b></div></div>`;
-}
-
-function lwDeckHtml(deck) {
-  const pub = deck && deck.public;
-  const count = deck && (deck.count ?? (pub && typeof pub === "object" && pub.count));
-  return `<div class="lw-deck" title="a placed object, dealt from here">
-    <span class="pcard back"><span class="pcard-weave"></span></span>
-    <span class="pcard back"><span class="pcard-weave"></span></span>
-    <span class="pcard back"><span class="pcard-weave"></span></span>
-    <span class="lw-deck-label">${escapeHtml(deck.name || "deck")}${count != null && count !== false ? ` · ${escapeHtml(String(count))}` : ""}</span>
-  </div>`;
-}
-
+// The room is a Konva canvas now, not a themed CSS set-piece. Fetch, then paint.
 async function renderRoomView() {
-  const stage = $("#lwStage");
   let d;
   try { d = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}`); }
-  catch (e) { stage.innerHTML = `<p class="empty">Could not open room: ${escapeHtml(e.message || String(e))}</p>`; return; }
-  lwRoom = d.room || d;
-  const room = lwRoom;
-  const theme = room.theme || "open";
-  setLwBar("room");
-  paintLwLive(); paintLwTau();
+  catch (e) { $("#lwStage").innerHTML = `<p class="empty">Could not open room: ${escapeHtml(e.message || String(e))}</p>`; return; }
+  lwRenderRoom(d.room || d);
+}
 
-  const seats = room.seats || [];
-  const deck = findDeck(room);
-  const handCounts = lwHandCounts(room);
+// Re-fetch this room and repaint — used after a seat/unseat/create/round, where
+// the server is the source of truth. The per-room view cache keeps pan/zoom.
+async function lwReloadRoom() {
+  try { const d = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}`); lwRenderRoom(d.room || d); }
+  catch (e) { toast(`Could not refresh the room: ${e.message}`); }
+}
+
+// Paint a ROOM object we already hold (no fetch): the topline, the canvas, the
+// toolbox dock, the cost-aware controls and the ticker. Every free string reaches
+// innerHTML through escapeHtml; on-canvas labels are Konva text (drawn to canvas).
+function lwRenderRoom(room) {
+  lwDestroyCanvas();
+  lwRoom = room;
+  const stage = $("#lwStage");
+  const theme = room.theme || "open";
+  const agents = room.agents || room.seats || [];
+  const props = room.props || [];
   const log = room.log || [];
   const prevSeen = lwSeenLog;
-  const tau = (lwWorld && lwWorld.world && lwWorld.world.tau) ?? 0;
-
-  const center = theme === "casino"
-    ? `<div class="poker-table">
-         <div class="table-rail"></div>
-         <div class="table-felt">
-           <div class="table-center">
-             ${deck ? lwDeckHtml(deck) : `<span class="board-empty">no deck placed — place one from the shelf</span>`}
-             <div class="lw-tick">τ <b>${escapeHtml(String(tau))}</b></div>
-           </div>
-         </div>
-       </div>`
-    : lwSettingHtml(theme, room, deck);
+  setLwBar("room");
+  paintLwLive(); paintLwTau();
 
   stage.innerHTML = `<div class="lw-room lw-theme-${escapeHtml(theme)}">
     <div class="lw-room-topline">
       <button class="scene-tolobby" id="lwRoomBack">← Rooms</button>
       <span class="lw-domain">${escapeHtml(room.name || "room")}</span>
-      <span class="lw-count">${escapeHtml(room.type || theme)} · ${seats.length} ${seats.length === 1 ? "person" : "people"}</span>
+      <span class="lw-count">${escapeHtml(room.type || theme)} · ${agents.length} ${agents.length === 1 ? "person" : "people"}</span>
     </div>
-    <div class="lw-room-stage" id="lwRoomStage">
-      ${center}
-      <div class="seat-layer" id="lwSeatLayer"></div>
-      ${!seats.length ? `<div class="table-hint">Empty. Seat an agent, then play a round.</div>` : ""}
+    <div class="lw-canvas-wrap" id="lwCanvasWrap">
+      <div class="lw-konva-host" id="lwKonvaHost"></div>
+      <div class="lw-overlay" id="lwOverlay"></div>
+      <div class="lw-canvas-hint">drag empty space to pan · scroll to zoom · pick a tool, click to place</div>
+      <div class="lw-dock" id="lwDock">${lwDockHtml()}</div>
     </div>
     <div class="scene-controls">
-      <button class="sc-ctl" id="lwSeatAgent">＋ Seat an agent</button>
-      <button class="sc-ctl" id="lwPlaceArtifact">＋ Place an object</button>
       <button class="sc-ctl primary" id="lwRound">▶ Play a round</button>
       <div class="ctl-spacer"></div>
       <span class="lw-cost-note">${lwLive
@@ -5832,50 +5803,622 @@ async function renderRoomView() {
     </div>
     <div class="scene-log lw-log" id="lwLog">${lwLogHtml(log, prevSeen)}</div>`;
 
-  const layer = $("#lwSeatLayer");
-  seats.forEach((s, i) => layer.appendChild(lwFigure(s, lwSeatPos(i, seats.length), handCounts)));
-
-  const wrap = $("#lwRoomStage");
-  wrap.addEventListener("contextmenu", (ev) => {
-    if (ev.target.closest(".seat-figure")) return;   // figures own their menu
-    lwRoomFloorMenu(ev);
+  $("#lwRoomBack").addEventListener("click", () => {
+    lwDestroyCanvas(); lwRoomId = null; lwRoom = null; selectLwTab("rooms");
   });
-  $("#lwRoomBack").addEventListener("click", () => { lwRoomId = null; lwRoom = null; selectLwTab("rooms"); });
-  $("#lwSeatAgent").addEventListener("click", lwOpenSeatPicker);
-  $("#lwPlaceArtifact").addEventListener("click", lwOpenPlacePicker);
   $("#lwRound").addEventListener("click", lwPlayRound);
+  lwWireDock();
+  lwMountCanvas(room, agents, props);
 
   // Everything on screen is now "seen"; only genuinely new lines animate next time.
   lwSeenLog = new Set(log.map((l) => String(l.n)));
 }
 
-function lwFigure(f, pos, handCounts) {
-  const el = document.createElement("div");
-  const hid = lwHumanId(f);
-  el.className = "seat-figure lw-figure";
-  el.style.left = pos.x + "%"; el.style.top = pos.y + "%";
-  el.dataset.hid = String(hid);
-  const mood = f.mood || {};
-  const n = handCounts[String(hid)] ?? handCounts[f.name] ?? 0;
-  const shown = Math.min(n, 5);
-  const backs = n
-    ? `<div class="seat-cards">${Array.from({ length: shown })
-        .map(() => `<span class="pcard back"><span class="pcard-weave"></span></span>`).join("")}${
-        n > 5 ? `<span class="lw-more">+${n - 5}</span>` : ""}</div>`
-    : "";
-  const want = dominantWant(f.wants);
-  el.innerHTML = `
-    ${backs}
-    <div class="fig-emblem" style="background:${sigil(f.name || "?", "anthropic")}">
-      <span class="fig-initial">${escapeHtml((f.name || "?")[0] || "?")}</span></div>
-    <div class="fig-name">${escapeHtml(f.name || "someone")}</div>
-    ${lwMoodBars(mood)}
-    ${want ? `<div class="lw-want" title="dominant drive">▸ ${escapeHtml(want.name)}${
-      want.pressure != null ? ` <i>${lwPct(want.pressure)}</i>` : ""}</div>` : ""}`;
-  el.title = "Click to peek — mood, drives, habits, bonds and their secret hand";
-  el.addEventListener("click", () => openPersonDrawer(hid, f.name));
-  el.addEventListener("contextmenu", (ev) => lwFigureMenu(ev, f, hid));
-  return el;
+// ---- the toolbox dock ----------------------------------------------------
+function lwDockHtml() {
+  return LW_TOOLS.map((t) =>
+    `<button class="lw-tool${t.id === lwTool ? " on" : ""}" data-tool="${escapeHtml(t.id)}" title="${escapeHtml(t.label)}">
+      <span class="lw-tool-ico">${escapeHtml(t.ico)}</span><span class="lw-tool-lb">${escapeHtml(t.label)}</span>
+    </button>`).join("");
+}
+function lwWireDock() {
+  const dock = $("#lwDock"); if (!dock) return;
+  dock.querySelectorAll("[data-tool]").forEach((b) =>
+    b.addEventListener("click", () => lwSetTool(b.dataset.tool)));
+}
+function lwSetTool(t) {
+  lwTool = t;
+  const dock = $("#lwDock");
+  if (dock) dock.querySelectorAll("[data-tool]").forEach((b) => b.classList.toggle("on", b.dataset.tool === t));
+  if (lwKonva && lwKonva.stage) {
+    lwKonva.stage.draggable(t === "select");
+    lwKonva.host.style.cursor = t === "select" ? "grab" : "crosshair";
+  }
+}
+
+// ---- Stage + layers: pan, zoom-to-cursor, drag-only grid -----------------
+function lwDestroyCanvas() {
+  if (lwCreateFlow) lwCleanupCreate();
+  if (lwKonva) {
+    try { lwKonva.ro && lwKonva.ro.disconnect(); lwKonva.stage.destroy(); } catch (e) { /* already gone */ }
+    lwKonva = null;
+  }
+}
+
+function lwMountCanvas(room, agents, props) {
+  const host = $("#lwKonvaHost");
+  if (!host || typeof Konva === "undefined") return;
+  const W = host.clientWidth || 900, H = host.clientHeight || 460;
+  const stage = new Konva.Stage({ container: host, width: W, height: H });
+  const gridLayer = new Konva.Layer({ listening: false });
+  const worldLayer = new Konva.Layer();
+  stage.add(gridLayer); stage.add(worldLayer);
+
+  lwKonva = { stage, gridLayer, worldLayer, host, roomId: String(lwRoomId),
+              agents: new Map(), props: new Map(), glowing: new Set(), snap: null, menuWorld: null };
+
+  // Which agents are seated, and in which socket, so they render on the rim.
+  const seatedMap = {};
+  props.forEach((p) => {
+    const slots = Number(p.slots) || 0;
+    if (slots > 0 && Array.isArray(p.seated))
+      p.seated.forEach((aid, i) => { if (aid != null) seatedMap[String(aid)] = { propId: String(p.id), slot: i }; });
+  });
+
+  // Objects first (tables sit under their seated agents).
+  props.forEach((p, i) => {
+    const pos = lwNodePos(p, i, "prop");
+    const node = lwPropNode(p, pos.x, pos.y);
+    lwKonva.props.set(String(p.id), { node, data: p });
+    worldLayer.add(node);
+    node.on("contextmenu", (e) => { e.evt.preventDefault(); e.cancelBubble = true; lwPropMenu(e.evt, p); });
+    node.on("click tap", (e) => { e.cancelBubble = true; if (lwTool === "select") lwOpenArtifactPeek(p.id); });
+  });
+
+  // A cluster (a table with someone seated) glows as one entity — soft ring behind.
+  props.forEach((p) => {
+    const slots = Number(p.slots) || 0;
+    const seatedN = Array.isArray(p.seated) ? p.seated.filter((x) => x != null).length : 0;
+    if (slots > 0 && seatedN > 0) {
+      const entry = lwKonva.props.get(String(p.id));
+      if (entry) lwAddClusterGlow(entry.node, seatedN >= slots);
+    }
+  });
+
+  // People on top: free agents at their pos, seated ones snapped to the socket.
+  agents.forEach((a, i) => {
+    const seat = seatedMap[String(a.id)];
+    let pos;
+    if (seat) {
+      const entry = lwKonva.props.get(seat.propId);
+      const base = entry ? entry.node.position() : { x: 0, y: 0 };
+      const off = lwSocketOffset(seat.slot, Number(entry && entry.data.slots) || 1);
+      pos = { x: base.x + off.x, y: base.y + off.y };
+    } else {
+      pos = lwNodePos(a, i, "agent");
+    }
+    const node = lwAgentNode(a, pos.x, pos.y, { manager: lwIsManager(a) });
+    lwKonva.agents.set(String(a.id), { node, data: a, seat });
+    worldLayer.add(node);
+    lwWireAgentDrag(node, a);
+    node.on("contextmenu", (e) => { e.evt.preventDefault(); e.cancelBubble = true; lwAgentMenu(e.evt, a); });
+    node.on("click tap", (e) => { e.cancelBubble = true; if (lwTool === "select") openPersonDrawer(a.id, a.name); });
+    if (seat) lwSetSteadyGlow(node, true);
+  });
+
+  // Restore the viewport we cached for this room, or frame everything once.
+  const view = lwViewCache[lwKonva.roomId];
+  if (view) { stage.position({ x: view.x, y: view.y }); stage.scale({ x: view.scale, y: view.scale }); }
+  else lwFitView();
+
+  stage.draggable(lwTool === "select");
+  host.style.cursor = lwTool === "select" ? "grab" : "crosshair";
+
+  stage.on("dragmove", () => { if (lwTool === "select") lwShowGrid(); });
+  stage.on("dragend", () => { lwHideGrid(); lwSaveView(); });
+
+  stage.on("wheel", (e) => {
+    e.evt.preventDefault();
+    const oldScale = stage.scaleX();
+    const pointer = stage.getPointerPosition(); if (!pointer) return;
+    const mp = { x: (pointer.x - stage.x()) / oldScale, y: (pointer.y - stage.y()) / oldScale };
+    const dir = e.evt.deltaY > 0 ? -1 : 1;
+    let ns = oldScale * (dir > 0 ? 1.08 : 1 / 1.08);
+    ns = Math.max(0.3, Math.min(3, ns));
+    stage.scale({ x: ns, y: ns });
+    stage.position({ x: pointer.x - mp.x * ns, y: pointer.y - mp.y * ns });
+    lwShowGrid(); lwSaveView();
+  });
+
+  // A placement tool + a click on empty floor drops a token there.
+  stage.on("click tap", (e) => {
+    if (lwTool === "select") return;
+    if (e.target !== stage) return;
+    const w = lwPointerWorld();
+    if (w) lwStartCreate(lwTool, w);
+  });
+  stage.on("contextmenu", (e) => {
+    e.evt.preventDefault();
+    if (e.target !== stage) return;
+    lwKonva.menuWorld = lwPointerWorld() || { x: 0, y: 0 };
+    lwFloorMenu(e.evt, lwKonva.menuWorld);
+  });
+
+  lwKonva.ro = new ResizeObserver(() => {
+    if (!lwKonva || lwKonva.stage !== stage) return;
+    stage.width(host.clientWidth || W); stage.height(host.clientHeight || H);
+  });
+  lwKonva.ro.observe(host);
+
+  gridLayer.hide();
+  worldLayer.draw();
+}
+
+function lwPointerWorld() {
+  const s = lwKonva && lwKonva.stage; if (!s) return null;
+  const p = s.getPointerPosition(); if (!p) return null;
+  return s.getAbsoluteTransform().copy().invert().point(p);
+}
+function lwSaveView() {
+  if (!lwKonva) return;
+  lwViewCache[lwKonva.roomId] = { x: lwKonva.stage.x(), y: lwKonva.stage.y(), scale: lwKonva.stage.scaleX() };
+}
+function lwFitView() {
+  if (!lwKonva) return;
+  const pts = [];
+  lwKonva.agents.forEach((e) => pts.push(e.node.position()));
+  lwKonva.props.forEach((e) => pts.push(e.node.position()));
+  const stage = lwKonva.stage;
+  if (!pts.length) { stage.position({ x: 0, y: 0 }); stage.scale({ x: 1, y: 1 }); lwSaveView(); return; }
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  pts.forEach((p) => { minX = Math.min(minX, p.x); minY = Math.min(minY, p.y); maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y); });
+  const pad = 130; minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+  const cw = Math.max(1, maxX - minX), ch = Math.max(1, maxY - minY);
+  const W = stage.width(), H = stage.height();
+  let scale = Math.min(W / cw, H / ch, 1.15); scale = Math.max(0.4, scale);
+  stage.scale({ x: scale, y: scale });
+  stage.position({ x: (W - cw * scale) / 2 - minX * scale, y: (H - ch * scale) / 2 - minY * scale });
+  lwSaveView();
+}
+
+// The dotted grid is a Miro-style affordance: hidden until a drag or a zoom, then
+// drawn in world coords across just the visible region and faded back out.
+function lwShowGrid() {
+  if (!lwKonva) return;
+  lwDrawGrid();
+  lwKonva.gridLayer.show(); lwKonva.gridLayer.batchDraw();
+  clearTimeout(lwGridTimer);
+  lwGridTimer = setTimeout(lwHideGrid, 900);
+}
+function lwHideGrid() {
+  if (!lwKonva) return;
+  lwKonva.gridLayer.hide(); lwKonva.gridLayer.batchDraw();
+}
+function lwDrawGrid() {
+  if (!lwKonva) return;
+  const { stage, gridLayer } = lwKonva;
+  gridLayer.destroyChildren();
+  const s = stage.scaleX() || 1;
+  const step = 34;
+  const left = -stage.x() / s, top = -stage.y() / s;
+  const right = left + stage.width() / s, bottom = top + stage.height() / s;
+  const x0 = Math.floor(left / step) * step, y0 = Math.floor(top / step) * step;
+  let count = 0;
+  for (let x = x0; x <= right && count < 5000; x += step)
+    for (let y = y0; y <= bottom && count < 5000; y += step) {
+      gridLayer.add(new Konva.Circle({ x, y, radius: 1.3, fill: "rgba(120,128,124,.5)", listening: false }));
+      count++;
+    }
+}
+
+// ---- token builders (Konva groups; hitbox = the body shape) --------------
+function lwHue(name) {
+  let h = 0; for (const c of String(name || "?")) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return h % 360;
+}
+function lwIsManager(a) {
+  return !!(a && (a.manager || a.role === "manager" || a.kind === "manager" || a.figure === "👔"));
+}
+function lwNodePos(t, i, kind) {
+  const p = t.pos;
+  if (Array.isArray(p) && Number.isFinite(+p[0]) && Number.isFinite(+p[1]) && !(+p[0] === 0 && +p[1] === 0))
+    return { x: +p[0], y: +p[1] };
+  const cols = 4, gx = 165, gy = 155;
+  return { x: (kind === "prop" ? 150 : 120) + (i % cols) * gx, y: 150 + Math.floor(i / cols) * gy };
+}
+function lwLabelNode(text, y) {
+  return new Konva.Text({ text: String(text), fontSize: 12, fontFamily: "sans-serif", fill: "#3a3f3d",
+    width: 170, align: "center", offsetX: 85, y, listening: false });
+}
+function lwMoodBarNodes(mood, y) {
+  mood = mood || {};
+  const conf = lwPct(mood.confidence) / 100, stress = lwPct(mood.stress) / 100;
+  const w = 26, h = 5, gap = 4, x0 = -(w * 2 + gap) / 2;
+  const mk = (bx, val, color) => [
+    new Konva.Rect({ x: bx, y, width: w, height: h, cornerRadius: 3, fill: "rgba(0,0,0,.13)", listening: false }),
+    new Konva.Rect({ x: bx, y, width: Math.max(1, w * val), height: h, cornerRadius: 3, fill: color, listening: false }),
+  ];
+  return [...mk(x0, conf, "#3F7A3F"), ...mk(x0 + w + gap, stress, "#8A6A1F")];
+}
+
+// An agent = a circular figurine (its emoji figure, else initial), a provider-ish
+// name-hued rim, its name and two tiny mood bars. The disc named "body" is the
+// hitbox and the thing that glows.
+function lwAgentNode(a, x, y, opts) {
+  opts = opts || {};
+  const g = new Konva.Group({ x, y, draggable: true, name: "token" });
+  g.setAttr("lwType", "agent"); g.setAttr("lwId", String(a.id));
+  const R = 30, hue = lwHue(a.name);
+  const rimColor = opts.manager ? "#2C6A63" : `hsl(${hue} 46% 52%)`;
+  g.add(new Konva.Circle({ radius: R + 3, fill: rimColor, listening: true }));
+  g.add(new Konva.Circle({
+    radius: R, name: "body",
+    fillRadialGradientStartPoint: { x: -8, y: -8 }, fillRadialGradientStartRadius: 3,
+    fillRadialGradientEndPoint: { x: 0, y: 0 }, fillRadialGradientEndRadius: R,
+    fillRadialGradientColorStops: [0, `hsl(${hue} 55% 67%)`, 1, `hsl(${hue} 42% 48%)`],
+    stroke: "rgba(255,255,255,.85)", strokeWidth: 2,
+  }));
+  const glyph = (a.figure && String(a.figure).trim()) || ((a.name || "?")[0] || "?").toUpperCase();
+  g.add(new Konva.Text({ text: glyph, fontSize: a.figure ? 30 : 24, fontStyle: "bold", fontFamily: "sans-serif",
+    fill: "#fff", width: R * 2, height: R * 2, align: "center", verticalAlign: "middle", offsetX: R, offsetY: R, listening: false }));
+  g.add(new Konva.Text({ text: a.name || "someone", fontSize: 12.5, fontFamily: "sans-serif", fill: "#1B2021",
+    width: 130, align: "center", offsetX: 65, y: R + 8, listening: false }));
+  lwMoodBarNodes(a.mood, R + 26).forEach((b) => g.add(b));
+  if (opts.manager)
+    g.add(new Konva.Text({ text: "★", fontSize: 17, fill: "#E0A93B", width: 24, align: "center", offsetX: 12, y: -R - 18, listening: false }));
+  return g;
+}
+
+function lwPropNode(p, x, y) {
+  const slots = Number(p.slots) || 0;
+  const kind = String(p.kind || "").toLowerCase();
+  if (slots > 0) return lwTableNode(p, x, y);
+  if (kind.includes("deck") || kind.includes("card")) return lwDeckNode(p, x, y);
+  return lwTileNode(p, x, y);
+}
+
+// A deck = a small stack of offset cards; the top card is the "body" hitbox.
+function lwDeckNode(p, x, y) {
+  const g = new Konva.Group({ x, y, draggable: true, name: "token" });
+  g.setAttr("lwType", "prop"); g.setAttr("lwId", String(p.id));
+  const cw = 40, ch = 56;
+  for (let i = 2; i >= 0; i--)
+    g.add(new Konva.Rect({ x: -cw / 2 + i * 4, y: -ch / 2 - i * 4, width: cw, height: ch, cornerRadius: 6,
+      fill: i === 0 ? "#fbfaf6" : "#efece3", stroke: "#cfc9bd", strokeWidth: 1.5, name: i === 0 ? "body" : "",
+      shadowColor: "#000", shadowBlur: i === 0 ? 6 : 0, shadowOpacity: 0.12 }));
+  g.add(new Konva.Rect({ x: -cw / 2 + 5, y: -ch / 2 - 3, width: cw - 10, height: ch - 10, cornerRadius: 4,
+    stroke: "rgba(46,110,91,.55)", dash: [3, 3], strokeWidth: 1, listening: false }));
+  g.add(lwLabelNode(p.name || "deck", ch / 2 + 6));
+  return g;
+}
+
+// A generic prop = a rounded, name-hued tile with its figure/initial.
+function lwTileNode(p, x, y) {
+  const g = new Konva.Group({ x, y, draggable: true, name: "token" });
+  g.setAttr("lwType", "prop"); g.setAttr("lwId", String(p.id));
+  const w = 58, h = 58, hue = lwHue(p.name);
+  g.add(new Konva.Rect({ x: -w / 2, y: -h / 2, width: w, height: h, cornerRadius: 12, name: "body",
+    fill: `hsl(${hue} 24% 92%)`, stroke: `hsl(${hue} 34% 62%)`, strokeWidth: 2,
+    shadowColor: "#000", shadowBlur: 6, shadowOpacity: 0.1 }));
+  const glyph = (p.figure && String(p.figure).trim()) || ((p.name || "?")[0] || "?").toUpperCase();
+  g.add(new Konva.Text({ text: glyph, fontSize: p.figure ? 26 : 22, fontStyle: "bold", fontFamily: "sans-serif",
+    fill: `hsl(${hue} 40% 40%)`, width: w, height: h, align: "center", verticalAlign: "middle", offsetX: w / 2, offsetY: h / 2, listening: false }));
+  g.add(lwLabelNode(p.name || "object", h / 2 + 6));
+  if (p.sealed) g.add(new Konva.Text({ text: "🔒", fontSize: 13, x: w / 2 - 14, y: -h / 2 - 2, listening: false }));
+  return g;
+}
+
+// A collating table (slots>0) = a ringed felt disc with N seat sockets around the
+// rim; filled sockets are solid rings, empty ones dashed. The disc is the "body".
+function lwTableNode(p, x, y) {
+  const g = new Konva.Group({ x, y, draggable: true, name: "token" });
+  g.setAttr("lwType", "prop"); g.setAttr("lwId", String(p.id));
+  const slots = Number(p.slots) || 1, R = LW_TABLE_R, hue = lwHue(p.name);
+  g.add(new Konva.Circle({ radius: R, name: "body",
+    fillRadialGradientStartPoint: { x: 0, y: 0 }, fillRadialGradientStartRadius: 4,
+    fillRadialGradientEndPoint: { x: 0, y: 0 }, fillRadialGradientEndRadius: R,
+    fillRadialGradientColorStops: [0, `hsl(${hue} 34% 62%)`, 1, `hsl(${hue} 40% 46%)`],
+    stroke: `hsl(${hue} 40% 40%)`, strokeWidth: 3, shadowColor: "#000", shadowBlur: 10, shadowOpacity: 0.16 }));
+  g.add(new Konva.Circle({ radius: R - 12, stroke: "rgba(255,255,255,.4)", strokeWidth: 1.5, listening: false }));
+  const seated = Array.isArray(p.seated) ? p.seated : [];
+  for (let i = 0; i < slots; i++) {
+    const off = lwSocketOffset(i, slots), filled = seated[i] != null;
+    g.add(new Konva.Circle({ x: off.x, y: off.y, radius: 15,
+      fill: filled ? "rgba(255,255,255,.16)" : "rgba(255,255,255,.05)",
+      stroke: filled ? "rgba(255,255,255,.75)" : "rgba(255,255,255,.5)", strokeWidth: 2,
+      dash: filled ? undefined : [4, 4], listening: false }));
+  }
+  const nSeated = seated.filter((s) => s != null).length;
+  g.add(lwLabelNode(`${p.name || "table"} · ${nSeated}/${slots} seated`, R + 16));
+  return g;
+}
+
+function lwSocketOffset(i, n) {
+  const theta = -Math.PI / 2 + (i / Math.max(1, n)) * Math.PI * 2;
+  return { x: Math.cos(theta) * LW_SOCKET_R, y: Math.sin(theta) * LW_SOCKET_R };
+}
+function lwPropRadius(p) {
+  const slots = Number(p.slots) || 0;
+  return slots > 0 ? LW_TABLE_R : 30;
+}
+
+// ---- glow: vicinity (transient, while dragging) + cluster/steady (at rest) --
+function lwSetGlow(node, on, color, blur, opacity) {
+  const body = node && node.findOne(".body"); if (!body) return;
+  if (on) { body.shadowColor(color); body.shadowBlur(blur); body.shadowOpacity(opacity); body.shadowEnabled(true); }
+  else body.shadowEnabled(false);
+}
+function lwVicinityGlow(node, color) {
+  lwSetGlow(node, true, color || "hsl(150 72% 45%)", 22, 0.9);
+  lwKonva.glowing.add(node);
+}
+function lwSetSteadyGlow(node, on) { lwSetGlow(node, on, "hsl(150 60% 45%)", 14, 0.55); }
+function lwClearGlows() {
+  if (!lwKonva) return;
+  lwKonva.glowing.forEach((n) => lwSetGlow(n, false));
+  lwKonva.glowing.clear();
+}
+function lwAddClusterGlow(tableNode, full) {
+  const pos = tableNode.position();
+  const ring = new Konva.Circle({ x: pos.x, y: pos.y, radius: LW_SOCKET_R + 26,
+    stroke: full ? "hsl(150 55% 45%)" : "hsl(150 45% 55%)", strokeWidth: full ? 6 : 4, opacity: full ? 0.5 : 0.32,
+    shadowColor: "hsl(150 60% 50%)", shadowBlur: full ? 26 : 16, shadowOpacity: 0.6, listening: false, name: "clusterGlow" });
+  lwKonva.worldLayer.add(ring);
+  ring.moveToBottom();
+}
+
+// ---- dragging: persist a move, or magnetically seat into a free socket -----
+function lwWireAgentDrag(node, a) {
+  node.on("dragstart", () => { lwShowGrid(); });
+  node.on("dragmove", () => {
+    lwShowGrid();
+    lwClearGlows();
+    const gp = node.position();
+    let near = false, best = null, bestD = Infinity;
+    lwKonva.props.forEach((entry) => {
+      const p = entry.data, base = entry.node.position(), slots = Number(p.slots) || 0;
+      if (slots > 0) {
+        const seated = Array.isArray(p.seated) ? p.seated : [];
+        for (let i = 0; i < slots; i++) {
+          if (seated[i] != null && String(seated[i]) !== String(a.id)) continue;
+          const off = lwSocketOffset(i, slots), sx = base.x + off.x, sy = base.y + off.y;
+          const d = Math.hypot(gp.x - sx, gp.y - sy);
+          if (d < LW_SNAP_DIST && d < bestD) { bestD = d; best = { entry, slot: i, x: sx, y: sy }; }
+        }
+      }
+      if (Math.hypot(gp.x - base.x, gp.y - base.y) < lwPropRadius(p) + 36) { lwVicinityGlow(entry.node); near = true; }
+    });
+    if (best) { lwVicinityGlow(best.entry.node, "hsl(150 78% 45%)"); near = true; }
+    if (near) lwVicinityGlow(node);
+    lwKonva.snap = best ? { propId: String(best.entry.data.id), slot: best.slot, x: best.x, y: best.y } : null;
+    lwKonva.worldLayer.batchDraw();
+  });
+  node.on("dragend", () => lwOnAgentDrop(node, a));
+}
+
+async function lwOnAgentDrop(node, a) {
+  lwHideGrid();
+  const snap = lwKonva && lwKonva.snap; lwKonva.snap = null;
+  const entry = lwKonva.agents.get(String(a.id));
+  const wasSeated = entry && entry.seat;
+  const gp = node.position();
+  lwClearGlows(); lwKonva.worldLayer.batchDraw();
+
+  if (snap) {
+    const seat = async () => {
+      try {
+        await api(`/api/lw/${lwWorldId}/artifact/${snap.propId}/seat`, { method: "POST",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slot: snap.slot, human_id: a.id }) });
+        await api(`/api/lw/${lwWorldId}/pos`, { method: "POST",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: a.id, x: snap.x, y: snap.y }) });
+      } catch (e) { toast(`Could not seat them: ${e.message}`); }
+      await lwReloadRoom();
+    };
+    if (reduceMotion()) { node.position({ x: snap.x, y: snap.y }); lwKonva.worldLayer.batchDraw(); seat(); }
+    else new Konva.Tween({ node, x: snap.x, y: snap.y, duration: 0.2, easing: Konva.Easings.EaseOut, onFinish: seat }).play();
+    return;
+  }
+
+  try {
+    if (wasSeated)
+      await api(`/api/lw/${lwWorldId}/artifact/${wasSeated.propId}/unseat?human_id=${encodeURIComponent(a.id)}`, { method: "POST" });
+    await api(`/api/lw/${lwWorldId}/pos`, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: a.id, x: gp.x, y: gp.y }) });
+    if (wasSeated) await lwReloadRoom();   // cluster changed → repaint
+    else lwSaveView();                     // token is already where it was dropped
+  } catch (e) { toast(`Could not move them: ${e.message}`); await lwReloadRoom(); }
+}
+
+// ---- creation: single-flight, a pending token + an inline figure popover ---
+function lwStartCreate(tool, world) {
+  if (lwCreateFlow || !lwKonva) return;           // ignore extra clicks until resolved
+  const kind = tool === "artifact" ? "artifact" : "agent";
+  const isManager = tool === "manager";
+  const shimmer = lwPendingNode(world.x, world.y, kind);
+  lwKonva.worldLayer.add(shimmer);
+  lwKonva.worldLayer.batchDraw();
+  let anim = null;
+  if (!reduceMotion()) {
+    anim = new Konva.Animation((frame) => {
+      const s = 1 + 0.08 * Math.sin(frame.time / 180);
+      shimmer.scale({ x: s, y: s });
+    }, lwKonva.worldLayer);
+    anim.start();
+  }
+  lwCreateFlow = { tool, kind, isManager, world, shimmer, anim, figure: null, seats: 0, name: "", brief: "", busy: false };
+  lwOpenCreatePopover();
+}
+function lwPendingNode(x, y, kind) {
+  const g = new Konva.Group({ x, y, listening: false, name: "pending" });
+  g.add(new Konva.Circle({ radius: 30, fill: "rgba(46,110,91,.10)", stroke: "hsl(160 45% 50%)", strokeWidth: 2, dash: [5, 5] }));
+  g.add(new Konva.Text({ text: kind === "artifact" ? "▢" : "＋", fontSize: 22, fontFamily: "sans-serif",
+    fill: "hsl(160 45% 40%)", width: 60, height: 60, align: "center", verticalAlign: "middle", offsetX: 30, offsetY: 30 }));
+  return g;
+}
+function lwSetPendingLabel(node, txt, small) {
+  const t = node && node.findOne("Text"); if (!t) return;
+  t.text(txt); t.fontSize(small ? 11 : 22);
+  lwKonva && lwKonva.worldLayer.batchDraw();
+}
+function lwPositionOverlayAt(el, world, dy) {
+  if (!lwKonva) return;
+  const p = lwKonva.stage.getAbsoluteTransform().point(world);
+  el.style.left = p.x + "px";
+  el.style.top = (p.y + (dy || 0)) + "px";
+}
+function lwOpenCreatePopover() {
+  const flow = lwCreateFlow, overlay = $("#lwOverlay");
+  if (!flow || !overlay) return;
+  overlay.querySelectorAll(".lw-create-pop").forEach((n) => n.remove());
+  const isArt = flow.kind === "artifact";
+  const palette = flow.isManager ? LW_FIG_MGR : isArt ? LW_FIG_ART : LW_FIG_AGENT;
+  flow.figure = flow.figure || palette[0];
+  const pop = document.createElement("div");
+  pop.className = "lw-create-pop";
+  pop.innerHTML = `
+    <div class="lw-pop-title">${escapeHtml(flow.isManager ? "New manager" : isArt ? "New object" : "New agent")}</div>
+    <input class="sc-name" id="lwCName" placeholder="Name (optional)" autocomplete="off">
+    <div class="sc-label">${escapeHtml(isArt ? "What is it?" : "Who are they?")}</div>
+    <textarea class="sc-input" id="lwCBrief" rows="2" placeholder="${escapeHtml(isArt ? "a deck of cards; a shared checklist…" : "a cautious accountant who loves poker…")}"></textarea>
+    <div class="sc-label">Figure</div>
+    <div class="lw-figpalette" id="lwCFig">${palette.map((f) =>
+      `<button class="lw-figbtn${f === flow.figure ? " on" : ""}" data-fig="${escapeHtml(f)}">${escapeHtml(f)}</button>`).join("")}</div>
+    ${isArt ? `<div class="sc-label">Seats <span class="dim">(&gt;0 makes a collating table)</span></div>
+      <div class="sc-row" id="lwCSeats">${[0, 2, 4, 6].map((n) =>
+        `<button class="sc-chip${n === flow.seats ? " on" : ""}" data-seats="${n}">${n === 0 ? "none" : n}</button>`).join("")}</div>` : ""}
+    <div class="sc-actions">
+      <button class="sc-ctl primary" id="lwCGo">${escapeHtml(flow.isManager ? "Add manager" : "Create")}</button>
+      <button class="sc-ctl" id="lwCCancel">Cancel</button>
+    </div>`;
+  overlay.appendChild(pop);
+  lwPositionOverlayAt(pop, flow.world, 16);
+  const nameEl = pop.querySelector("#lwCName");
+  if (nameEl) { nameEl.focus(); nameEl.addEventListener("input", (e) => { flow.name = e.target.value; }); }
+  pop.querySelector("#lwCBrief").addEventListener("input", (e) => { flow.brief = e.target.value; });
+  pop.querySelectorAll("[data-fig]").forEach((b) => b.addEventListener("click", () => {
+    flow.figure = b.dataset.fig;
+    pop.querySelectorAll("[data-fig]").forEach((x) => x.classList.toggle("on", x === b));
+  }));
+  pop.querySelectorAll("[data-seats]").forEach((b) => b.addEventListener("click", () => {
+    flow.seats = Number(b.dataset.seats);
+    pop.querySelectorAll("[data-seats]").forEach((x) => x.classList.toggle("on", x === b));
+  }));
+  pop.querySelector("#lwCCancel").addEventListener("click", lwCancelCreate);
+  pop.querySelector("#lwCGo").addEventListener("click", () => lwDoCreate(pop));
+}
+function lwCreatedId(resp, keys) {
+  if (!resp) return null;
+  for (const k of keys) if (resp[k] && resp[k].id != null) return resp[k].id;
+  return resp.id != null ? resp.id : null;
+}
+async function lwDoCreate(pop) {
+  const flow = lwCreateFlow;
+  if (!flow || flow.busy) return;                 // single-flight: one call, not three
+  flow.busy = true;
+  const go = pop.querySelector("#lwCGo");
+  if (go) { go.disabled = true; go.textContent = "creating…"; }
+  lwSetPendingLabel(flow.shimmer, "creating…", true);
+  try {
+    let newId = null;
+    if (flow.kind === "agent") {
+      const r = await api(`/api/lw/${lwWorldId}/human`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: (flow.name || "").trim(), brief: (flow.brief || "").trim(), figure: flow.figure }) });
+      newId = lwCreatedId(r, ["human", "person", "agent"]);
+      if (newId != null)
+        await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/seat?human_id=${encodeURIComponent(newId)}`, { method: "POST" });
+    } else {
+      const r = await api(`/api/lw/${lwWorldId}/artifact`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: (flow.name || "").trim(), brief: (flow.brief || "").trim(), figure: flow.figure, slots: flow.seats || 0 }) });
+      newId = lwCreatedId(r, ["artifact", "prop", "object"]);
+      if (newId != null)
+        await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/place?artifact_id=${encodeURIComponent(newId)}`, { method: "POST" });
+    }
+    if (newId != null)
+      await api(`/api/lw/${lwWorldId}/pos`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: newId, x: flow.world.x, y: flow.world.y }) });
+    lwCleanupCreate();
+    await lwReloadRoom();
+  } catch (e) {
+    toast(`Could not create it: ${e.message}`);
+    flow.busy = false;
+    if (go) { go.disabled = false; go.textContent = flow.isManager ? "Add manager" : "Create"; }
+    lwSetPendingLabel(flow.shimmer, flow.kind === "artifact" ? "▢" : "＋", false);
+  }
+}
+function lwCleanupCreate() {
+  const flow = lwCreateFlow; if (!flow) return;
+  if (flow.anim) flow.anim.stop();
+  if (flow.shimmer) flow.shimmer.destroy();
+  const overlay = $("#lwOverlay"); if (overlay) overlay.querySelectorAll(".lw-create-pop").forEach((n) => n.remove());
+  lwCreateFlow = null;
+  if (lwKonva) lwKonva.worldLayer.batchDraw();
+}
+function lwCancelCreate() { lwCleanupCreate(); }
+
+// ---- right-click menus (labels via studioMenu's createElement+textContent) --
+function lwFloorMenu(evt, world) {
+  studioMenu(evt.clientX, evt.clientY, [
+    { label: "＋ New agent here", act: () => lwStartCreate("agent", world) },
+    { label: "＋ New object here", act: () => lwStartCreate("artifact", world) },
+    { sep: true },
+    { label: "Seat an existing agent", act: lwOpenSeatPicker },
+    { label: "Place an existing object", act: lwOpenPlacePicker },
+    { sep: true },
+    { label: "▶ Play a round", act: lwPlayRound },
+  ]);
+}
+function lwAgentMenu(evt, a) {
+  const items = [{ label: `Peek ${a.name || "them"}`, act: () => openPersonDrawer(a.id, a.name) }];
+  const entry = lwKonva && lwKonva.agents.get(String(a.id));
+  if (entry && entry.seat)
+    items.push({ label: `Unseat ${a.name || "them"}`, act: () => lwUnseatAgent(a, entry.seat.propId) });
+  const deck = findDeck(lwRoom);
+  if (deck) items.push({ sep: true }, { label: `Deal a card to ${a.name || "them"}`, act: () => lwActOne(a.id, "draw", deck.id) });
+  studioMenu(evt.clientX, evt.clientY, items);
+}
+async function lwUnseatAgent(a, propId) {
+  try { await api(`/api/lw/${lwWorldId}/artifact/${propId}/unseat?human_id=${encodeURIComponent(a.id)}`, { method: "POST" }); await lwReloadRoom(); }
+  catch (e) { toast(`Could not unseat: ${e.message}`); }
+}
+function lwPropMenu(evt, p) {
+  const items = [{ label: `Peek ${p.name || "object"}`, act: () => lwOpenArtifactPeek(p.id) }];
+  if ((Number(p.slots) || 0) > 0) {
+    const entry = lwKonva && lwKonva.props.get(String(p.id));
+    const at = entry ? entry.node.position() : { x: 0, y: 0 };
+    items.push({ sep: true },
+      { label: "Add a manager (centre)", act: () => lwStartCreate("manager", { x: at.x, y: at.y }) },
+      { label: "Set the script", soon: true });
+  }
+  studioMenu(evt.clientX, evt.clientY, items);
+}
+
+// ---- speech bubbles: animate the round log over the acting agent's token ----
+async function lwPlayBubbles(lines) {
+  if (!lwKonva || !lines || !lines.length) return;
+  const overlay = $("#lwOverlay"); if (!overlay) return;
+  const reduce = reduceMotion();
+  for (const l of lines) {
+    if (l.who == null || !l.text) continue;
+    const entry = lwKonva.agents.get(String(l.who));
+    if (!entry) continue;
+    const el = document.createElement("div");
+    el.className = "lw-bubble" + ((l.tier === 2 || l.billed) ? " lw-bubble-thought" : "");
+    el.textContent = String(l.text);   // free text via textContent — never innerHTML
+    overlay.appendChild(el);
+    const abs = entry.node.getAbsolutePosition();
+    el.style.left = abs.x + "px"; el.style.top = abs.y + "px";
+    if (reduce) {
+      el.classList.add("in");
+      await new Promise((res) => setTimeout(res, 550));
+      el.remove();
+    } else {
+      requestAnimationFrame(() => el.classList.add("in"));
+      await new Promise((res) => setTimeout(res, 1400));
+      el.classList.remove("in");
+      await new Promise((res) => setTimeout(res, 320));
+      el.remove();
+    }
+  }
 }
 
 // Cost is visible: a billed / tier-2 line carries a 💭 thought marker; a free
@@ -5922,10 +6465,14 @@ function paintLwTau() {
 // ---- room controls -------------------------------------------------------
 async function lwPlayRound() {
   const b = $("#lwRound"); if (b) { b.disabled = true; b.classList.add("busy"); }
+  const prevSeen = new Set(lwSeenLog);   // capture before the repaint marks all lines seen
   try {
     const r = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/round${lwLiveQ()}`, { method: "POST" });
     if (r && r.world_tau != null && lwWorld && lwWorld.world) lwWorld.world.tau = r.world_tau;
-    await renderRoomView();
+    const room = r.room || (await api(`/api/lw/${lwWorldId}/room/${lwRoomId}`)).room;
+    lwRenderRoom(room);
+    // Cloud bubbles over each acting agent, for the lines this round added.
+    lwPlayBubbles((room.log || []).filter((l) => !prevSeen.has(String(l.n))));
   } catch (e) { toast(`Round failed: ${e.message}`); }
   finally { const bb = $("#lwRound"); if (bb) { bb.disabled = false; bb.classList.remove("busy"); } }
 }
@@ -5939,36 +6486,6 @@ async function lwActOne(hid, verb, target, extra) {
   } catch (e) { toast(`Could not act: ${e.message}`); }
 }
 
-function lwRoomFloorMenu(ev) {
-  ev.preventDefault();
-  studioMenu(ev.clientX, ev.clientY, [
-    { label: "＋ Seat an agent", act: lwOpenSeatPicker },
-    { label: "＋ Place an object", act: lwOpenPlacePicker },
-    { sep: true },
-    { label: "▶ Play a round", act: lwPlayRound },
-  ]);
-}
-
-function lwFigureMenu(ev, f, hid) {
-  ev.preventDefault(); ev.stopPropagation();
-  const seats = (lwRoom && lwRoom.seats) || [];
-  const i = seats.findIndex((s) => String(lwHumanId(s)) === String(hid));
-  const nb = seats.length > 1 && i >= 0 ? seats[(i + 1) % seats.length] : null;
-  const deck = findDeck(lwRoom);
-  const items = [{ label: `Peek ${f.name || "them"}`, act: () => openPersonDrawer(hid, f.name) }];
-  if (deck) {
-    items.push({ label: `Deal a card to ${f.name || "them"}`, act: () => lwActOne(hid, "draw", deck.id) });
-    items.push({ label: `Flip ${f.name || "their"} card`, act: () => lwActOne(hid, "flip", deck.id) });
-  }
-  if (nb) {
-    const nbId = lwHumanId(nb);
-    items.push({ sep: true });
-    items.push({ label: `${f.name || "They"} greet ${nb.name || "neighbour"}`, act: () => lwActOne(hid, "greet", nbId) });
-    items.push({ label: `${f.name || "They"} praise ${nb.name || "neighbour"}`, act: () => lwActOne(hid, "say", nbId, { kind: "praise", text: "" }) });
-    items.push({ label: `${f.name || "They"} needle ${nb.name || "neighbour"}`, act: () => lwActOne(hid, "say", nbId, { kind: "scold", text: "" }) });
-  }
-  studioMenu(ev.clientX, ev.clientY, items);
-}
 
 // Seat an agent: pick from the world's people not already in this room.
 function lwOpenSeatPicker() {
@@ -6127,8 +6644,9 @@ async function openPersonDrawer(hid, name) {
 
 // --- Lifeworld wiring (elements exist: app.js loads at the end of <body>). ---
 $("#modeLifeworld") && $("#modeLifeworld").addEventListener("click", () => openLifeworld());
-$("#lwBack") && $("#lwBack").addEventListener("click", () => showHome());
+$("#lwBack") && $("#lwBack").addEventListener("click", () => { lwDestroyCanvas(); showHome(); });
 $("#lwToLobby") && $("#lwToLobby").addEventListener("click", () => {
+  lwDestroyCanvas();
   lwWorldId = null; lwWorld = null; lwRoomId = null; lwRoom = null; lwTab = "overview";
   setHash("#/lifeworld"); renderLifeworld();
 });

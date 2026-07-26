@@ -2217,65 +2217,66 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 
 .lw-toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text); margin: 4px 0; cursor: pointer; }
 
-/* --- The room view --- */
+/* --- The room view: an infinite Konva canvas you paint on --- */
 .lw-room { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .lw-room-topline { position: absolute; top: 10px; left: 16px; z-index: 6; display: flex; align-items: center; gap: 12px; }
-.lw-room-stage { position: relative; width: 100%; height: calc(100% - 58px); min-height: 460px; overflow: hidden;
-  background: radial-gradient(circle at 50% 40%, var(--room) 0%, var(--room-edge) 72%); }
 .lw-cost-note { font-size: 12px; color: var(--dim); }
 
-/* Non-casino settings: a themed centrepiece over a theme-tinted floor. */
-.lw-setting-wrap { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
-.lw-setting { position: relative; display: flex; flex-direction: column; align-items: center; gap: 12px; }
-.lw-setting-objs { display: flex; align-items: center; }
-.lw-setting-objs .lw-deck-label { color: var(--dim); }
-.lw-tick-dark { color: var(--text); }
+/* The canvas fills the room; the controls sit below it in flow, the ticker floats. */
+.lw-canvas-wrap { position: relative; flex: 1; min-height: 0; overflow: hidden;
+  background: radial-gradient(circle at 50% 42%, var(--room) 0%, var(--room-edge) 74%); }
+.lw-room .scene-controls { position: static; }
+.lw-konva-host { position: absolute; inset: 0; }
+.lw-konva-host canvas { display: block; }
 
-.lw-theme-home .lw-room-stage { background: radial-gradient(circle at 50% 62%, #f4e6d6 0%, #e7d3bd 72%); }
-.lw-theme-classroom .lw-room-stage { background: radial-gradient(circle at 50% 40%, #e7edf2 0%, #d7e1ea 72%); }
-.lw-theme-campus .lw-room-stage { background: radial-gradient(circle at 50% 66%, #ddedd6 0%, #c7e0bd 74%); }
-.lw-theme-office .lw-room-stage { background: radial-gradient(circle at 50% 40%, #edeef1 0%, #dee3e8 72%); }
-.lw-theme-open .lw-room-stage { background: radial-gradient(circle at 50% 40%, var(--room) 0%, var(--room-edge) 72%); }
+/* Bubbles + the creation popover live here, aligned to the stage's origin. */
+.lw-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 12; }
+.lw-overlay > * { pointer-events: auto; }
 
-/* home — a brick hearth with a soft flame */
-.lw-hearth {
-  width: 150px; height: 92px; border-radius: 10px 10px 4px 4px; position: relative;
-  background: linear-gradient(#8a5a3a, #6f4426); border: 4px solid #5c3a22; box-shadow: var(--shadow-lg);
-}
-.lw-hearth::after { content: ""; position: absolute; inset: 14px 18px 0; background: #241610; border-radius: 6px 6px 0 0; }
-.lw-flame {
-  position: absolute; bottom: 4px; left: 50%; width: 24px; height: 38px; transform: translateX(-50%);
-  background: radial-gradient(circle at 50% 80%, #ffd24a, #ff7a1a 60%, transparent 72%);
-  border-radius: 50% 50% 50% 50% / 60% 60% 42% 42%; z-index: 2;
-  animation: lwFlame 1.6s ease-in-out infinite;
-}
-.lw-flame.f2 { width: 15px; height: 28px; opacity: .85; animation-delay: .3s; }
-.lw-flame.f3 { width: 9px; height: 20px; opacity: .7; animation-delay: .6s; }
-@keyframes lwFlame { 0%, 100% { transform: translateX(-50%) scaleY(1); } 50% { transform: translateX(-50%) scaleY(1.14); } }
+/* The theme only tints the felt, subtly — the canvas is the same for every room. */
+.lw-theme-home .lw-canvas-wrap { background: radial-gradient(circle at 50% 55%, #f2e7da 0%, var(--room-edge) 76%); }
+.lw-theme-classroom .lw-canvas-wrap { background: radial-gradient(circle at 50% 42%, #eaeff3 0%, var(--room-edge) 76%); }
+.lw-theme-campus .lw-canvas-wrap { background: radial-gradient(circle at 50% 58%, #e7f0e2 0%, var(--room-edge) 78%); }
+.lw-theme-office .lw-canvas-wrap { background: radial-gradient(circle at 50% 42%, #edeff2 0%, var(--room-edge) 76%); }
 
-/* classroom — a chalkboard */
-.lw-chalkboard {
-  width: 230px; height: 118px; border-radius: 8px; background: #2f4a3a; border: 8px solid #b98a52;
-  box-shadow: var(--shadow-lg); display: flex; align-items: center; justify-content: center; padding: 0 14px;
-}
-.lw-chalk { font-family: var(--serif); font-style: italic; color: rgba(255,255,255,.82); font-size: 15px; text-align: center; }
+/* A floating hint + the toolbox dock (Select · Agent · Artifact · Manager). */
+.lw-canvas-hint { position: absolute; top: 12px; right: 16px; z-index: 6; font-size: 11px; color: var(--dim);
+  background: var(--card); border: 1px solid var(--line-soft); border-radius: 8px; padding: 4px 9px; box-shadow: var(--shadow); }
+.lw-dock { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 10;
+  display: flex; gap: 6px; padding: 6px; background: var(--card); border: 1px solid var(--line);
+  border-radius: 14px; box-shadow: var(--shadow-lg); }
+.lw-tool { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 60px;
+  padding: var(--ctl-pad-y-tight) var(--ctl-pad-x); border-radius: 10px; cursor: pointer;
+  background: var(--card-2); border: 1px solid var(--line); color: var(--dim); }
+.lw-tool:hover { border-color: var(--accent); }
+.lw-tool.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.lw-tool-ico { font-size: 17px; line-height: 1; }
+.lw-tool-lb { font-size: 10.5px; font-weight: 600; }
 
-/* campus — a tree on the quad */
-.lw-tree { display: flex; flex-direction: column; align-items: center; }
-.lw-canopy { width: 128px; height: 108px; border-radius: 50%; background: radial-gradient(circle at 40% 35%, #6aa84f, #3f7a3f); box-shadow: var(--shadow-lg); }
-.lw-trunk { width: 22px; height: 58px; margin-top: -8px; background: linear-gradient(#8a5a3a, #6f4426); border-radius: 4px; }
+/* A cloud bubble over an acting agent, positioned by the Konva transform. */
+.lw-bubble { position: absolute; transform: translate(-50%, calc(-100% - 34px)); max-width: 210px;
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 8px 11px;
+  font-size: 12.5px; line-height: 1.4; color: var(--text); box-shadow: var(--shadow-lg);
+  opacity: 0; transition: opacity .3s ease; z-index: 14; }
+.lw-bubble::after { content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
+  border: 7px solid transparent; border-top-color: var(--card); }
+.lw-bubble.in { opacity: 1; }
+.lw-bubble-thought { background: var(--warn-soft); border-color: var(--warn); }
+.lw-bubble-thought::after { border-top-color: var(--warn-soft); }
 
-/* office — a desk with two monitors */
-.lw-office { display: flex; flex-direction: column; align-items: center; }
-.lw-desk { width: 210px; height: 66px; border-radius: 8px; background: linear-gradient(#cdd3da, #aeb6c0); box-shadow: var(--shadow-lg); order: 2; }
-.lw-monitors { display: flex; gap: 18px; justify-content: center; margin-bottom: -8px; order: 1; z-index: 2; }
-.lw-monitors span { width: 56px; height: 38px; border-radius: 4px; background: #26333f; border: 3px solid #4a5a68; box-shadow: var(--shadow); }
-
-/* freeplay / open — a soft spotlit platform */
-.lw-platform { width: 260px; height: 88px; border-radius: 50%; background: radial-gradient(ellipse at 50% 40%, var(--accent-soft), transparent 70%); border: 1px dashed var(--line); }
+/* The inline creation popover — name + brief + a figure palette, never a prompt. */
+.lw-create-pop { position: absolute; transform: translateX(-50%); width: 258px; z-index: 16;
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px; box-shadow: var(--shadow-lg); }
+.lw-pop-title { font-size: 14px; font-weight: 650; margin-bottom: 6px; }
+.lw-create-pop .sc-actions { display: flex; gap: 8px; margin-top: 14px; }
+.lw-figpalette { display: flex; flex-wrap: wrap; gap: 5px; }
+.lw-figbtn { width: 34px; height: 34px; font-size: 18px; line-height: 1; padding: 0; border-radius: 9px;
+  background: var(--card-2); border: 1px solid var(--line); cursor: pointer; }
+.lw-figbtn:hover { border-color: var(--accent); }
+.lw-figbtn.on { background: var(--accent-soft); border-color: var(--accent); }
 
 @media (prefers-reduced-motion: reduce) {
   .lw-new { animation: none; }
-  .lw-flame { animation: none; }
   .lw-card, .lw-room-card { transition: none; }
+  .lw-bubble { transition: none; }
 }
