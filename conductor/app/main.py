@@ -88,4 +88,6 @@ async def _preview_host(request, call_next):
 
 
 app.include_router(router)
+from .lifeworld_routes import router as lifeworld_router   # the Lifeworld: its own router
+app.include_router(lifeworld_router)
 app.mount("/", StaticFiles(directory=str(config.DASHBOARD_DIR), html=True), name="dashboard")

@@ -114,8 +114,8 @@ def test_the_table_count_matches_the_schema():
     from app import db, auth, findings
     declared = sum(mod.SCHEMA.count("CREATE TABLE IF NOT EXISTS")
                    for mod in (db, auth, findings))
-    assert "Twenty-seven tables" in _handbook() and declared == 27, \
-        f"{declared} tables are declared; the handbook says twenty-seven"
+    assert "Twenty-eight tables" in _handbook() and declared == 28, \
+        f"{declared} tables are declared; the handbook says twenty-eight"
 
 
 def test_the_round_table_range_matches_the_limits():

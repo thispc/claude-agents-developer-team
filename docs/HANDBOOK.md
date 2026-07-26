@@ -157,7 +157,7 @@ needs to evaluate, host or extend it.
 
 ### What "the conductor" actually is
 
-One program: a Python web server of about 13,500 lines doing five jobs and no
+One program: a Python web server of about 19,500 lines doing five jobs and no
 others.
 
 - **Serves the dashboard.** Plain HTML, CSS and JavaScript read off disk. No
@@ -207,7 +207,7 @@ so nothing depends on you having been watching.
 
 ### What the database holds
 
-Twenty-seven tables in one file. The ones worth knowing: **projects** and **tasks**
+Twenty-eight tables in one file. The ones worth knowing: **projects** and **tasks**
 (the work), **agents** (teammates and their memory), **runs** (one row per AI
 task — the source of all measurement), **events** (the permanent activity
 record), **findings** (what the platform believes is wrong with itself),
