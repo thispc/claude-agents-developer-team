@@ -71,13 +71,16 @@ def deterministic(human, signal: Signal, ctx: dict) -> Packet:
 
 
 async def model(human, signal: Signal, ctx: dict, *, settings: dict,
-                complete, model_name: str, max_tokens: int) -> Packet:
+                complete, model_name: str, max_tokens: int, rules: str = "") -> Packet:
     """Tier 2 — one bounded call, over only what this agent may see. `complete` is the
-    provider function injected by the world, so this module never imports the platform."""
+    provider function injected by the world, so this module never imports the platform.
+    `rules` are the scene's standing rules, obeyed every run."""
     sys = ("You are a character reacting to one event. Report its effect on your inner "
            "state as STRICT JSON: {understood, mood, vitals, drives, memory, action:{kind,text}, "
            "social:{'<id>':{trust,warmth}}}. mood keys: confidence,stress,hope,focus. "
            "Deltas are small suggestions in [-1,1].")
+    if rules and rules.strip():
+        sys += " SCENE RULES you must obey: " + rules.strip()[:600]
     prompt = (f"YOU: {json.dumps(_self_view(human))}\nEVENT: {json.dumps(_signal_view(signal))}\n"
               f"WHAT YOU RECALL: {human.memory.recall(signal.domain)[:600]}\n\nReturn only the JSON.")
     try:

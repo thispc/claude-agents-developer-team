@@ -792,18 +792,12 @@ function route() {
     }
     return;
   }
-  if (location.hash.startsWith("#/studio")) {
-    openStudio(true, location.hash.includes("/artifacts") ? "artifacts" : "agents");
-    return;
-  }
+  if (location.hash.startsWith("#/studio")) { openStudio(true); return; }
   {
     const sc = location.hash.match(/^#\/scenes(?:\/([\w-]+))?/);
     if (sc) { openScenes(true, sc[1] || null); return; }
   }
-  {
-    const lw = location.hash.match(/^#\/lifeworld(?:\/([\w-]+))?/);
-    if (lw) { openLifeworld(true, lw[1] || null); return; }
-  }
+  if (location.hash.startsWith("#/lifeworld")) { openStudio(true); return; }   // legacy link
   if (location.hash.startsWith("#/about")) { openAbout(true); return; }
   if (location.hash.startsWith("#/improve")) { openSelfRepair(true); return; }
   const m = location.hash.match(/^#\/p\/(\d+)(?:\/(\w+))?/);
@@ -3808,9 +3802,13 @@ function showStudioShell() {
 
 let studioTab = "agents";
 
-async function openStudio(skipHash, tab) {
-  showStudioShell();
-  await selectStudioTab(tab || "agents", skipHash);
+// The Studio IS the canvas now. This opens the one full-screen scene view. The old
+// tabbed studio (showStudioShell / selectStudioTab, below) is retired but kept defined
+// so the #studio section and its route/tab helpers stay present for existing tests.
+async function openStudio(skipHash) {
+  showLifeworld();
+  if (!skipHash) setHash("#/studio");
+  await lwEnterStudio();
 }
 
 // The bar carries per-tab actions (hire / new scene / new artifact, budget, meter,
@@ -5102,8 +5100,7 @@ const LW_TOOLS = [
   { id: "select",   key: "V", label: "Select" },
   { id: "agent",    key: "A", label: "Agent" },
   { id: "artifact", key: "O", label: "Object" },
-  { id: "manager",  key: "M", label: "Manager" },
-  { id: "arrow",    key: "L", label: "Arrow" },
+  { id: "shape",    key: "S", label: "Shape" },
 ];
 // The style variants a new person can wear; the final face blends the variant with
 // the agent's own identity, so two people who pick the same variant still differ.
@@ -5120,6 +5117,188 @@ function showLifeworld() {
   $("#projectBar").hidden = true;
   $("#lifeworld").hidden = false;
   currentProject = null;
+}
+
+// ============================================================================
+// The Studio — one implicit world per user; scenes are canvases; the canvas is the
+// hero. openStudio() brings the section on and calls lwEnterStudio() to open a scene.
+// ============================================================================
+let sdTau = 0;
+
+async function lwEnterStudio() {
+  let worlds = [];
+  try { worlds = (await api("/api/lw")).worlds || []; }
+  catch (e) { $("#lwStage").innerHTML = `<p class="empty">Could not open the Studio: ${escapeHtml(e.message || String(e))}</p>`; return; }
+  if (worlds.length) lwWorldId = worlds[0].id;
+  else {
+    try { lwWorldId = (await api("/api/lw", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Studio" }) })).world.id; }
+    catch (e) { toast(`Could not start the Studio: ${e.message}`); return; }
+  }
+  let ov = { rooms: [] };
+  try { ov = await api(`/api/lw/${lwWorldId}`); } catch (e) { /* a fresh world */ }
+  sdTau = (ov.world && ov.world.tau) || 0;
+  const rooms = ov.rooms || [];
+  let rid = rooms.length ? rooms[rooms.length - 1].id : null;
+  if (rid == null) {
+    try { rid = (await api(`/api/lw/${lwWorldId}/room`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "untitled", type: "freeplay" }) })).room.id; }
+    catch (e) { toast(`Could not create a scene: ${e.message}`); return; }
+  }
+  await lwOpenScene(rid);
+}
+
+async function lwOpenScene(rid) {
+  sdPause();
+  lwRoomId = rid; lwSeenLog = new Set();
+  let d;
+  try { d = await api(`/api/lw/${lwWorldId}/room/${rid}`); }
+  catch (e) { $("#lwStage").innerHTML = `<p class="empty">Could not open the scene: ${escapeHtml(e.message || String(e))}</p>`; return; }
+  lwRenderRoom(d.room || d);
+}
+
+// --- top bar: editable title, autosave indicator, scenes, rename -----------
+let sdSaveT = null;
+function sdFlash() {
+  const el = $("#sdSave"); if (!el) return;
+  el.className = "sd-save saving"; el.textContent = "";
+  clearTimeout(sdSaveT);
+  sdSaveT = setTimeout(() => {
+    if ($("#sdSave") !== el) return;
+    el.className = "sd-save saved"; el.textContent = "Saved";
+    setTimeout(() => { if ($("#sdSave") === el && el.classList.contains("saved")) { el.className = "sd-save"; el.textContent = ""; } }, 1500);
+  }, 300);
+}
+async function sdSaveNow() {
+  if (!lwWorldId) return;
+  sdFlash();
+  try { await api(`/api/lw/${lwWorldId}/touch`, { method: "POST" }); } catch (e) { /* the indicator already reassured */ }
+}
+async function sdRenameScene(name) {
+  if (!lwWorldId || !lwRoomId) return;
+  sdFlash();
+  try {
+    const d = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/scene`, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+    if (lwRoom) lwRoom.name = (d.room && d.room.name) || name;
+  } catch (e) { toast(`Could not rename: ${e.message}`); }
+}
+async function sdToggleScenes() {
+  const menu = $("#sdScenesMenu"), btn = $("#sdScenesBtn"); if (!menu) return;
+  if (!menu.hidden) { menu.hidden = true; if (btn) btn.setAttribute("aria-expanded", "false"); return; }
+  let rooms = [];
+  try { rooms = (await api(`/api/lw/${lwWorldId}`)).rooms || []; } catch (e) { toast(`Could not list scenes: ${e.message}`); return; }
+  menu.innerHTML = rooms.map((r) =>
+    `<button class="sd-menu-item${r.id === lwRoomId ? " on" : ""}" data-scene="${escapeHtml(String(r.id))}">
+      <span class="sd-menu-name">${escapeHtml(r.name || "untitled")}</span>
+      <span class="sd-menu-sub">${(r.agents || []).length} cast · ${(r.props || []).length} props</span>
+    </button>`).join("")
+    + `<button class="sd-menu-item sd-menu-new" id="sdNewScene">＋ New scene</button>`;
+  menu.hidden = false; if (btn) btn.setAttribute("aria-expanded", "true");
+  menu.querySelectorAll("[data-scene]").forEach((b) => b.addEventListener("click", () => { menu.hidden = true; lwOpenScene(Number(b.dataset.scene)); }));
+  $("#sdNewScene").addEventListener("click", async () => {
+    menu.hidden = true;
+    try { const r = await api(`/api/lw/${lwWorldId}/room`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "untitled", type: "freeplay" }) }); sdFlash(); lwOpenScene(r.room.id); }
+    catch (e) { toast(`Could not add a scene: ${e.message}`); }
+  });
+}
+
+// --- the Cast: every agent, grouped by the scene they are in ---------------
+async function sdOpenRoster() {
+  const host = $("#sdRosterHost"); if (!host || !lwWorldId) return;
+  host.hidden = false;
+  host.innerHTML = `<div class="sd-roster-card"><p class="dim">gathering the cast…</p></div>`;
+  let d;
+  try { d = await api(`/api/lw/${lwWorldId}`); }
+  catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="dim">Could not read the cast: ${escapeHtml(e.message)}</p></div>`; return; }
+  const rooms = d.rooms || [], agents = d.agents || [];
+  const byRoom = {}; agents.forEach((a) => { const k = a.room == null ? "loose" : String(a.room); (byRoom[k] = byRoom[k] || []).push(a); });
+  const nameOf = (k) => k === "loose" ? "Not in a scene" : ((rooms.find((r) => String(r.id) === k) || {}).name || "untitled");
+  const card = (a) => {
+    const seed = lwAvatarSeed({ name: a.name, id: a.id, figure: a.figure });
+    const want = (dominantWant(a.wants) || {}).name || "";
+    return `<button class="sd-cast" data-room="${a.room == null ? "" : escapeHtml(String(a.room))}" data-agent="${escapeHtml(String(a.id))}">
+      <span class="sd-cast-face"><img alt="" src="${lwSvgUri(lwAvatarSvg(seed, 40))}"></span>
+      <span class="sd-cast-name">${escapeHtml(a.name || "someone")}</span>
+      ${want ? `<span class="sd-cast-want">wants ${escapeHtml(want)}</span>` : ""}
+      ${lwMoodBars(a.mood || {})}
+    </button>`;
+  };
+  const groups = Object.keys(byRoom).sort((x, y) => (x === "loose") - (y === "loose"));
+  host.innerHTML = `<div class="sd-roster-card">
+    <div class="sd-roster-head"><h3>The Cast</h3>
+      <span class="dim">${agents.length} agent${agents.length === 1 ? "" : "s"} · ${rooms.length} scene${rooms.length === 1 ? "" : "s"}</span>
+      <button class="sd-close" id="sdRosterClose">✕</button></div>
+    ${groups.length ? groups.map((k) => `<div class="sd-roster-group">
+      <div class="sd-roster-scene">${escapeHtml(nameOf(k))} <span class="dim">· ${byRoom[k].length}</span></div>
+      <div class="sd-roster-grid">${byRoom[k].map(card).join("")}</div></div>`).join("")
+      : `<p class="dim">No agents yet. Pick the Agent tool and click the canvas.</p>`}
+  </div>`;
+  $("#sdRosterClose").addEventListener("click", () => { host.hidden = true; });
+  host.onclick = (e) => { if (e.target === host) host.hidden = true; };   // click backdrop to close
+  host.querySelectorAll("[data-agent]").forEach((b) => b.addEventListener("click", async () => {
+    host.hidden = true;
+    const rid = b.dataset.room;
+    if (rid) await lwOpenScene(Number(rid));
+    setTimeout(() => { const e = lwKonva && lwKonva.agents.get(String(b.dataset.agent)); if (e) lwSelSet("agent", e); }, 450);
+  }));
+}
+
+// --- the time transport: play/pause, single-step, speed --------------------
+let sdPlaying = false, sdTimer = null, sdSpeed = 2;   // seconds between runs
+function sdTimeBarHtml() {
+  return `<div class="sd-time" id="sdTime">
+    <button class="sd-play" id="sdPlay" title="Play — run a beat automatically">▶</button>
+    <button class="sd-step" id="sdStep" title="Run one beat">⏭</button>
+    <span class="sd-frame" id="sdFrame" aria-hidden="true"></span>
+    <label class="sd-speed">1 run / <b id="sdSpeedLbl">${sdSpeed}</b>s
+      <input type="range" id="sdSpeedRange" min="1" max="10" step="1" value="${sdSpeed}"></label>
+    <span class="sd-tau" id="lwTau"></span>
+  </div>`;
+}
+function sdWireTime() {
+  const p = $("#sdPlay"); if (p) p.addEventListener("click", sdTogglePlay);
+  const s = $("#sdStep"); if (s) s.addEventListener("click", () => { if (!sdPlaying) lwPlayRound(); });
+  const r = $("#sdSpeedRange");
+  if (r) r.addEventListener("input", (e) => { sdSpeed = Number(e.target.value); const l = $("#sdSpeedLbl"); if (l) l.textContent = sdSpeed; if (sdPlaying) sdArm(); });
+  paintPlay();
+}
+function paintPlay() { const b = $("#sdPlay"); if (b) { b.textContent = sdPlaying ? "⏸" : "▶"; b.classList.toggle("on", sdPlaying); } }
+function sdTogglePlay() { sdPlaying ? sdPause() : sdPlay(); }
+function sdPlay() { sdPlaying = true; paintPlay(); sdArm(); }
+function sdPause() { sdPlaying = false; clearTimeout(sdTimer); sdTimer = null; paintPlay(); }
+function sdArm() {
+  clearTimeout(sdTimer);
+  const tick = async () => {
+    if (!sdPlaying || !lwKonva) { sdPause(); return; }
+    sdPulse();
+    await lwPlayRound();
+    if (sdPlaying && lwKonva) sdTimer = setTimeout(tick, sdSpeed * 1000);
+    else sdPause();
+  };
+  sdTimer = setTimeout(tick, sdSpeed * 1000);
+}
+function sdPulse() { const f = $("#sdFrame"); if (!f || reduceMotion()) return; f.classList.remove("tick"); void f.offsetWidth; f.classList.add("tick"); }
+
+// --- scene rules: a small popover; saved to the scene, obeyed each run ------
+function sdToggleRules() {
+  const pop = $("#sdRulesPop"); if (!pop) return;
+  if (!pop.hidden) { pop.hidden = true; return; }
+  const rules = (lwRoom && lwRoom.rules) || "";
+  pop.innerHTML = `<div class="sd-rules-head">Scene rules <span class="dim">obeyed on every run</span></div>
+    <textarea class="sc-input" id="sdRulesText" rows="4" placeholder="e.g. Everyone stays in character. Keep it civil. No one reveals their card."></textarea>
+    <div class="sc-actions"><button class="sc-ctl primary" id="sdRulesSave">Save rules</button>
+      <button class="sc-ctl" id="sdRulesClose">Close</button></div>`;
+  pop.hidden = false;
+  const ta = $("#sdRulesText"); if (ta) { ta.value = rules; ta.focus(); }
+  $("#sdRulesClose").addEventListener("click", () => { pop.hidden = true; });
+  $("#sdRulesSave").addEventListener("click", async () => {
+    const val = ($("#sdRulesText").value || "");
+    sdFlash();
+    try {
+      await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/scene`, { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rules: val }) });
+      if (lwRoom) lwRoom.rules = val; pop.hidden = true;
+    } catch (e) { toast(`Could not save rules: ${e.message}`); }
+  });
 }
 
 async function openLifeworld(skipHash, worldId) {
@@ -5776,51 +5955,38 @@ async function lwReloadRoom() {
   catch (e) { toast(`Could not refresh the room: ${e.message}`); }
 }
 
-// Paint a ROOM object we already hold (no fetch): the topline, the canvas, the
-// toolbox dock, the cost-aware controls and the ticker. Every free string reaches
+// Paint the scene: a full-screen canvas with a floating toolbox, a video-style time
+// transport, and a rules button — nothing else on top of the floor. Free strings reach
 // innerHTML through escapeHtml; on-canvas labels are Konva text (drawn to canvas).
 function lwRenderRoom(room) {
   lwDestroyCanvas();
   lwRoom = room;
   const stage = $("#lwStage");
-  const theme = room.theme || "open";
   const agents = room.agents || room.seats || [];
   const props = room.props || [];
-  const log = room.log || [];
-  const prevSeen = lwSeenLog;
-  setLwBar("room");
-  paintLwLive(); paintLwTau();
+  // reflect this scene in the top bar (never clobber the title mid-edit)
+  const t = $("#sdTitle"); if (t && document.activeElement !== t) t.textContent = room.name || "untitled";
+  paintLwLive();
 
-  stage.innerHTML = `<div class="lw-room lw-theme-${escapeHtml(theme)}">
-    <div class="lw-room-topline">
-      <button class="scene-tolobby" id="lwRoomBack">← Rooms</button>
-      <span class="lw-domain">${escapeHtml(room.name || "room")}</span>
-      <span class="lw-count">${escapeHtml(room.type || theme)} · ${agents.length} ${agents.length === 1 ? "person" : "people"}</span>
-    </div>
-    <div class="lw-canvas-wrap" id="lwCanvasWrap">
+  stage.innerHTML = `<div class="sd-room">
+    <div class="lw-canvas-wrap sd-canvas" id="lwCanvasWrap">
       <div class="lw-konva-host" id="lwKonvaHost"></div>
       <div class="lw-overlay" id="lwOverlay"></div>
-      <div class="lw-canvas-hint">drag to pan · scroll to zoom · shift-drag to marquee · <b>V A O M L</b> tools · <b>⌘A</b> all · <b>F</b> fit</div>
-      <div class="lw-dock" id="lwDock">${lwDockHtml()}</div>
-    </div>
-    <div class="scene-controls">
-      <button class="sc-ctl primary" id="lwRound" title="Advance the scene one beat: every seated agent perceives, clusters resolve together, then everyone consolidates. Free unless Live.">▶ Step the scene</button>
-      <div class="ctl-spacer"></div>
-      <span class="lw-cost-note">${lwLive
-        ? "🧠 Live — a round asks real models to think and spends tokens"
-        : "💤 Deterministic — free, reproducible reflexes"}</span>
-    </div>
-    <div class="scene-log lw-log" id="lwLog">${lwLogHtml(log, prevSeen)}</div>`;
+      <div class="sd-hint">drag to pan · scroll to zoom · shift-drag to marquee · <b>V A O S</b> · <b>⌘A</b> all · <b>F</b> fit</div>
+      <div class="lw-dock sd-dock" id="lwDock">${lwDockHtml()}</div>
+      <button class="sd-rules-btn" id="sdRulesBtn" title="Scene rules — obeyed on every run">⚖ Rules</button>
+      <div class="sd-rules-pop" id="sdRulesPop" hidden></div>
+      ${sdTimeBarHtml()}
+    </div>`;
 
-  $("#lwRoomBack").addEventListener("click", () => {
-    lwDestroyCanvas(); lwRoomId = null; lwRoom = null; selectLwTab("rooms");
-  });
-  $("#lwRound").addEventListener("click", lwPlayRound);
   lwWireDock();
+  sdWireTime();
+  paintLwTau();
+  const rb = $("#sdRulesBtn"); if (rb) rb.addEventListener("click", sdToggleRules);
   lwMountCanvas(room, agents, props);
 
   // Everything on screen is now "seen"; only genuinely new lines animate next time.
-  lwSeenLog = new Set(log.map((l) => String(l.n)));
+  lwSeenLog = new Set((room.log || []).map((l) => String(l.n)));
 }
 
 // ============================================================================
@@ -5915,8 +6081,7 @@ function lwToolIco(id) {
     select: `<path d="M5 3l6.5 15 2-6 6-2z" ${a}/>`,
     agent: `<circle cx="12" cy="8.2" r="3.6" ${a}/><path d="M5.5 20c0-3.6 2.9-6.2 6.5-6.2s6.5 2.6 6.5 6.2" ${a}/>`,
     artifact: `<rect x="5" y="5" width="14" height="14" rx="3.2" ${a}/><path d="M9.5 12h5" ${a}/>`,
-    manager: `<circle cx="10.5" cy="8.4" r="3.2" ${a}/><path d="M4.5 20c0-3.4 2.7-5.8 6-5.8" ${a}/><path d="M17 5l1 2 2.2.3-1.6 1.5.4 2.2L17 10l-2 1 .4-2.2-1.6-1.5L16 7z" ${a}/>`,
-    arrow: `<path d="M4 15.5c3-6 6-9 15-9.5" ${a}/><path d="M14 5l5 1-1.5 5" ${a}/>`,
+    shape: `<circle cx="12" cy="12" r="4.4" ${a}/><circle cx="12" cy="4.4" r="1.7" fill="currentColor" stroke="none"/><circle cx="18.8" cy="15.8" r="1.7" fill="currentColor" stroke="none"/><circle cx="5.2" cy="15.8" r="1.7" fill="currentColor" stroke="none"/>`,
   };
   return `<svg viewBox="0 0 24 24" width="20" height="20">${g[id] || g.select}</svg>`;
 }
@@ -5932,18 +6097,15 @@ function lwWireDock() {
   dock.querySelectorAll("[data-tool]").forEach((b) =>
     b.addEventListener("click", () => lwSetTool(b.dataset.tool)));
 }
-function lwToolCursor(t) { return t === "select" ? "grab" : t === "arrow" ? "crosshair" : "cell"; }
+function lwToolCursor(t) { return t === "select" ? "grab" : "cell"; }
 function lwSetCursor(c) { if (lwKonva && lwKonva.host) lwKonva.host.style.cursor = c; }
 function lwSetTool(t) {
   lwTool = t;
   const dock = $("#lwDock");
   if (dock) dock.querySelectorAll("[data-tool]").forEach((b) => b.classList.toggle("on", b.dataset.tool === t));
-  if (lwKonva) {
-    if (t !== "arrow" && lwKonva.arrowSrc) lwArrowCancel();   // leaving the arrow tool drops a pending link
-    if (lwKonva.stage) {
-      lwKonva.stage.draggable(t === "select");   // only Select pans the floor; tokens always drag
-      lwSetCursor(lwToolCursor(t));
-    }
+  if (lwKonva && lwKonva.stage) {
+    lwKonva.stage.draggable(t === "select");   // only Select pans the floor; tokens always drag
+    lwSetCursor(lwToolCursor(t));
   }
 }
 
@@ -6010,66 +6172,9 @@ function lwSelAll() {
 function lwSelect(kind, entry) { lwSelSet(kind, entry); }   // legacy single-focus callers
 function lwDeselect() { lwSelClear(); }
 
-// ---- flow arrows: connect tokens into a directed flow ----------------------
-function lwEntryById(id) { return (lwKonva.agents.get(String(id)) || lwKonva.props.get(String(id))) || null; }
-function lwArrowKey(e) { return e.from + "->" + e.to; }
-function lwTokenRadius(entry) { return lwKonva.props.has(String(entry.data.id)) ? lwPropRadius(entry.data) + 6 : 34; }
-function lwArrowPoints(A, B) {
-  const a = A.node.position(), b = B.node.position();
-  const dx = b.x - a.x, dy = b.y - a.y, m = Math.hypot(dx, dy) || 1, ux = dx / m, uy = dy / m;
-  return [a.x + ux * lwTokenRadius(A), a.y + uy * lwTokenRadius(A),
-          b.x - ux * (lwTokenRadius(B) + 4), b.y - uy * (lwTokenRadius(B) + 4)];
-}
-function lwMakeArrow(edge) {
-  const A = lwEntryById(edge.from), B = lwEntryById(edge.to);
-  if (!A || !B) return null;
-  const arr = new Konva.Arrow({ points: lwArrowPoints(A, B), stroke: "#2E6E5B", fill: "#2E6E5B",
-    strokeWidth: 2.5, pointerLength: 10, pointerWidth: 9, opacity: 0.72, name: "flowArrow", hitStrokeWidth: 16 });
-  arr.setAttr("edge", edge);
-  arr.on("mouseenter", () => lwSetCursor("pointer"));
-  arr.on("mouseleave", () => lwSetCursor(lwToolCursor(lwTool)));
-  arr.on("contextmenu", (e) => { e.evt.preventDefault(); e.cancelBubble = true; lwArrowMenu(e.evt, edge); });
-  arr.on("click tap", (e) => { e.cancelBubble = true; if (lwTool === "select") lwArrowMenu(e.evt, edge); });
-  return arr;
-}
-function lwRenderArrows(edges) {
-  lwKonva.arrows = new Map();
-  (edges || []).forEach((e) => {
-    const arr = lwMakeArrow(e);
-    if (arr) { lwKonva.worldLayer.add(arr); arr.moveToBottom(); lwKonva.arrows.set(lwArrowKey(e), arr); }
-  });
-}
-function lwUpdateArrows() {
-  if (!lwKonva || !lwKonva.arrows) return;
-  lwKonva.arrows.forEach((arr) => {
-    const e = arr.getAttr("edge"), A = lwEntryById(e.from), B = lwEntryById(e.to);
-    if (A && B) arr.points(lwArrowPoints(A, B));
-  });
-}
-function lwArrowFlash(entry, on) {
-  if (on) { lwSetGlow(entry.node, true, "hsl(150 78% 45%)", 20, 0.9); lwKonva.glowing.add(entry.node); }
-  else { lwKonva.glowing.delete(entry.node); if (entry.seat) lwSetSteadyGlow(entry.node, true); else lwSetGlow(entry.node, false); }
-}
-function lwArrowCancel() {
-  if (lwKonva && lwKonva.arrowSrc) { lwArrowFlash(lwKonva.arrowSrc, false); lwKonva.arrowSrc = null; lwKonva.worldLayer.batchDraw(); }
-}
-function lwArrowClick(entry) {
-  if (!lwKonva.arrowSrc) { lwKonva.arrowSrc = entry; lwArrowFlash(entry, true); lwKonva.worldLayer.batchDraw(); return; }
-  const src = lwKonva.arrowSrc;
-  lwArrowFlash(src, false); lwKonva.arrowSrc = null; lwKonva.worldLayer.batchDraw();
-  if (src !== entry) lwLinkFlow(src.data.id, entry.data.id);
-}
-async function lwLinkFlow(a, b) {
-  try { await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/link`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ a, b }) }); await lwReloadRoom(); }
-  catch (e) { toast(`Could not draw the arrow: ${e.message}`); }
-}
-async function lwUnlinkFlow(a, b) {
-  try { await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/unlink`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ a, b }) }); await lwReloadRoom(); }
-  catch (e) { toast(`Could not remove the arrow: ${e.message}`); }
-}
-function lwArrowMenu(evt, edge) {
-  studioMenu(evt.clientX, evt.clientY, [{ label: "Remove this arrow", act: () => lwUnlinkFlow(edge.from, edge.to) }]);
-}
+// Arrows/flows were retired in the simplification — time is driven by the transport,
+// not by drawn edges. This stays a no-op so the drag handlers need no special-casing.
+function lwUpdateArrows() {}
 
 // ---- keyboard: the canvas listens while a room is open ---------------------
 let lwNudgeTimer = null;
@@ -6104,15 +6209,14 @@ function lwKeyHandler(e) {
   if (e.key === "Escape") {
     if (lwCreateFlow && lwCreateFlow.drawing) { lwCancelPathDraw(); e.preventDefault(); }
     else if (lwCreateFlow) { lwCancelCreate(); e.preventDefault(); }
-    else if (lwKonva.arrowSrc) { lwArrowCancel(); e.preventDefault(); }
     else if (lwSelList().length) { lwSelClear(); e.preventDefault(); }
     return;
   }
   if (typing || lwCreateFlow) return;    // don't hijack keys while a dialog/field has focus
   const k = e.key.toLowerCase();
   if ((e.metaKey || e.ctrlKey) && k === "a") { lwSelAll(); e.preventDefault(); return; }
-  const toolKey = { v: "select", a: "agent", o: "artifact", m: "manager", l: "arrow",
-                    "1": "select", "2": "agent", "3": "artifact", "4": "manager", "5": "arrow" }[k];
+  const toolKey = { v: "select", a: "agent", o: "artifact", s: "shape",
+                    "1": "select", "2": "agent", "3": "artifact", "4": "shape" }[k];
   if (toolKey && !e.metaKey && !e.ctrlKey) { lwSetTool(toolKey); e.preventDefault(); return; }
   if (k === "f") { lwFitView(); lwSaveView(); e.preventDefault(); return; }
   const list = lwSelList(); if (!list.length) return;
@@ -6169,10 +6273,8 @@ function lwMountCanvas(room, agents, props) {
     node.on("mouseenter", () => { if (!lwKonva) return; lwSetCursor(node.isDragging() ? "grabbing" : "grab"); });
     node.on("mouseleave", () => lwSetCursor(lwToolCursor(lwTool)));
   };
-  // A click either draws a flow (arrow tool), toggles into the selection (shift-click),
-  // or focuses just this token (plain select).
+  // A click toggles into the selection (shift-click) or focuses just this token.
   const pick = (kind, entry, e) => {
-    if (lwTool === "arrow") { lwArrowClick(entry); return; }
     if (lwTool !== "select") return;
     if (e.evt && e.evt.shiftKey) lwSelToggle(kind, entry); else lwSelSet(kind, entry);
   };
@@ -6224,9 +6326,6 @@ function lwMountCanvas(room, agents, props) {
     node.on("dblclick dbltap", (e) => { e.cancelBubble = true; openPersonDrawer(a.id, a.name); });
     if (seat) lwSetSteadyGlow(node, true);
   });
-
-  // Flow arrows ride beneath the tokens, following their endpoints as they move.
-  lwRenderArrows(room.edges);
 
   // Restore the viewport we cached for this room, or frame everything once.
   const view = lwViewCache[lwKonva.roomId];
@@ -6307,7 +6406,6 @@ function lwMountCanvas(room, agents, props) {
     if (lwKonva.suppressClick) { lwKonva.suppressClick = false; return; }
     if (lwCreateFlow && lwCreateFlow.drawing) { lwPathAddPoint(); return; }
     if (lwCreateFlow) { lwCancelCreate(); return; }
-    if (lwTool === "arrow") { lwArrowCancel(); return; }
     if (lwTool === "select") { lwSelClear(); return; }
     const w = lwPointerWorld();
     if (w) lwStartCreate(lwTool, w);
@@ -6767,8 +6865,8 @@ async function lwOnAgentDrop(node, a) {
 // ---- creation: single-flight, a pending token + an inline figure popover ---
 function lwStartCreate(tool, world) {
   if (lwCreateFlow || !lwKonva) return;           // ignore extra clicks until resolved
-  const kind = tool === "artifact" ? "artifact" : "agent";
-  const isManager = tool === "manager";
+  const isShape = tool === "shape";               // a shape is a collating artifact with slots
+  const kind = (tool === "agent") ? "agent" : "artifact";
   const shimmer = lwPendingNode(world.x, world.y, kind);
   lwKonva.worldLayer.add(shimmer);
   lwKonva.worldLayer.batchDraw();
@@ -6780,12 +6878,10 @@ function lwStartCreate(tool, world) {
     }, lwKonva.worldLayer);
     anim.start();
   }
-  const figure = isManager ? "avm:" + LW_AV_VARIANTS[0]
-    : kind === "artifact" ? "ic:" + LW_OBJ_ICONS[0]
-    : "av:" + LW_AV_VARIANTS[0];
-  lwCreateFlow = { tool, kind, isManager, world, shimmer, anim, figure, seats: 0, name: "", brief: "",
-                   shape: "circle", path: [], pathPts: [], drawing: false, pop: null, preview: null,
-                   busy: false, dragged: false };
+  const figure = kind === "artifact" ? "ic:" + LW_OBJ_ICONS[0] : "av:" + LW_AV_VARIANTS[0];
+  lwCreateFlow = { tool, kind, isShape, world, shimmer, anim, figure, seats: isShape ? 3 : 0,
+                   name: "", brief: "", shape: "circle", path: [], pathPts: [], drawing: false,
+                   pop: null, preview: null, busy: false, dragged: false };
   lwOpenCreatePopover();
 }
 function lwPendingNode(x, y, kind) {
@@ -6824,7 +6920,7 @@ function lwFigPaletteHtml(flow) {
       return `<button class="lw-figbtn${on ? " on" : ""}" data-fig="ic:${escapeHtml(key)}" title="${escapeHtml(key)}">${inner}</button>`;
     }).join("");
   }
-  const marker = flow.isManager ? "avm:" : "av:";
+  const marker = "av:";
   const base = (flow.name || "").trim() || "new soul";
   return LW_AV_VARIANTS.map((tag) => {
     const on = flow.figure === marker + tag;
@@ -6870,7 +6966,7 @@ function lwOpenCreatePopover() {
   pop.innerHTML = `
     <div class="lw-pop-head" id="lwPopHead">
       <span class="lw-pop-grip" aria-hidden="true"></span>
-      <span class="lw-pop-title">${escapeHtml(flow.isManager ? "New manager" : isArt ? "New object" : "New agent")}</span>
+      <span class="lw-pop-title">${escapeHtml(flow.isShape ? "New shape" : isArt ? "New object" : "New agent")}</span>
       <button class="lw-pop-x" id="lwCX" title="Close (Esc)" aria-label="Close"><svg viewBox="0 0 24 24" width="13" height="13"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg></button>
     </div>
     <input class="sc-name" id="lwCName" placeholder="Name (optional)" autocomplete="off">
@@ -6890,7 +6986,7 @@ function lwOpenCreatePopover() {
         </div>
       </div>` : ""}
     <div class="sc-actions">
-      <button class="sc-ctl primary" id="lwCGo">${escapeHtml(flow.isManager ? "Add manager" : "Create")}</button>
+      <button class="sc-ctl primary" id="lwCGo">Create</button>
       <button class="sc-ctl" id="lwCCancel">Cancel</button>
     </div>
     <div class="lw-pop-hint">↵ create · esc cancel · drag the header to move</div>`;
@@ -7048,7 +7144,7 @@ async function lwDoCreate(pop) {
   } catch (e) {
     toast(`Could not create it: ${e.message}`);
     flow.busy = false;
-    if (go) { go.disabled = false; go.textContent = flow.isManager ? "Add manager" : "Create"; }
+    if (go) { go.disabled = false; go.textContent = "Create"; }
     lwSetPendingLabel(flow.shimmer, flow.kind === "artifact" ? "▢" : "＋", false);
   }
 }
@@ -7069,13 +7165,13 @@ function lwFloorMenu(evt, world) {
   studioMenu(evt.clientX, evt.clientY, [
     { label: "＋ New agent here", act: () => lwStartCreate("agent", world) },
     { label: "＋ New object here", act: () => lwStartCreate("artifact", world) },
-    { label: "＋ New manager here", act: () => lwStartCreate("manager", world) },
+    { label: "＋ New shape here", act: () => lwStartCreate("shape", world) },
     { sep: true },
     { label: "Seat an existing agent", act: lwOpenSeatPicker },
     { label: "Place an existing object", act: lwOpenPlacePicker },
     { label: "Select everything", act: lwSelAll },
     { sep: true },
-    { label: "▶ Step the scene", act: lwPlayRound },
+    { label: "▶ Run one beat", act: lwPlayRound },
   ]);
 }
 function lwAgentMenu(evt, a) {
@@ -7092,15 +7188,7 @@ async function lwUnseatAgent(a, propId) {
   catch (e) { toast(`Could not unseat: ${e.message}`); }
 }
 function lwPropMenu(evt, p) {
-  const items = [{ label: `Peek ${p.name || "object"}`, act: () => lwOpenArtifactPeek(p.id) }];
-  if ((Number(p.slots) || 0) > 0) {
-    const entry = lwKonva && lwKonva.props.get(String(p.id));
-    const at = entry ? entry.node.position() : { x: 0, y: 0 };
-    items.push({ sep: true },
-      { label: "Add a manager (centre)", act: () => lwStartCreate("manager", { x: at.x, y: at.y }) },
-      { label: "Set the script", soon: true });
-  }
-  studioMenu(evt.clientX, evt.clientY, items);
+  studioMenu(evt.clientX, evt.clientY, [{ label: `Peek ${p.name || "object"}`, act: () => lwOpenArtifactPeek(p.id) }]);
 }
 
 // ---- speech bubbles: animate the round log over the acting agent's token ----
@@ -7168,25 +7256,22 @@ function paintLwLive() {
 function paintLwTau() {
   const m = $("#lwTau");
   if (!m) return;
-  const tau = (lwWorld && lwWorld.world && lwWorld.world.tau) ?? 0;
   const calls = lwBilledCount(lwRoom);
-  m.className = "scene-meter";
-  m.textContent = `τ ${tau} · ${calls} billed thought${calls === 1 ? "" : "s"}`;
+  m.textContent = `τ ${sdTau}` + (calls ? ` · ${calls} thought${calls === 1 ? "" : "s"}` : "");
 }
 
-// ---- room controls -------------------------------------------------------
+// ---- run one beat --------------------------------------------------------
 async function lwPlayRound() {
-  const b = $("#lwRound"); if (b) { b.disabled = true; b.classList.add("busy"); }
   const prevSeen = new Set(lwSeenLog);   // capture before the repaint marks all lines seen
   try {
     const r = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/round${lwLiveQ()}`, { method: "POST" });
-    if (r && r.world_tau != null && lwWorld && lwWorld.world) lwWorld.world.tau = r.world_tau;
+    if (r && r.world_tau != null) sdTau = r.world_tau;
     const room = r.room || (await api(`/api/lw/${lwWorldId}/room/${lwRoomId}`)).room;
     lwRenderRoom(room);
+    sdFlash();
     // Cloud bubbles over each acting agent, for the lines this round added (fire-and-forget).
     lwPlayBubbles((room.log || []).filter((l) => !prevSeen.has(String(l.n)))).catch(() => {});
   } catch (e) { toast(`Round failed: ${e.message}`); }
-  finally { const bb = $("#lwRound"); if (bb) { bb.disabled = false; bb.classList.remove("busy"); } }
 }
 
 async function lwActOne(hid, verb, target, extra) {
@@ -7355,7 +7440,7 @@ async function openPersonDrawer(hid, name) {
 
 // --- Lifeworld wiring (elements exist: app.js loads at the end of <body>). ---
 $("#modeLifeworld") && $("#modeLifeworld").addEventListener("click", () => openLifeworld());
-$("#lwBack") && $("#lwBack").addEventListener("click", () => { lwDestroyCanvas(); showHome(); });
+$("#lwBack") && $("#lwBack").addEventListener("click", () => { sdPause(); lwDestroyCanvas(); showHome(); });
 $("#lwToLobby") && $("#lwToLobby").addEventListener("click", () => {
   lwDestroyCanvas();
   lwWorldId = null; lwWorld = null; lwRoomId = null; lwRoom = null; lwTab = "overview";
@@ -7374,6 +7459,31 @@ $("#lwLive") && $("#lwLive").addEventListener("click", () => {
 });
 document.querySelectorAll(".lw-tab").forEach((b) =>
   b.addEventListener("click", () => selectLwTab(b.dataset.lwtab)));
+
+// --- Studio top-bar wiring (the bar elements are static inside #lifeworld) ---
+(() => {
+  const title = $("#sdTitle");
+  if (title) {
+    const commit = () => {
+      const v = (title.textContent || "").replace(/\s+/g, " ").trim() || "untitled";
+      title.textContent = v;
+      if (lwRoom && v !== (lwRoom.name || "")) sdRenameScene(v);
+    };
+    title.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); title.blur(); } });
+    title.addEventListener("blur", commit);
+  }
+  $("#sdScenesBtn") && $("#sdScenesBtn").addEventListener("click", (e) => { e.stopPropagation(); sdToggleScenes(); });
+  $("#sdRoster") && $("#sdRoster").addEventListener("click", sdOpenRoster);
+  document.addEventListener("click", (e) => {          // click-away closes the scenes menu
+    const menu = $("#sdScenesMenu");
+    if (menu && !menu.hidden && !e.target.closest("#sdScenesMenu") && !e.target.closest("#sdScenesBtn")) menu.hidden = true;
+  });
+  document.addEventListener("keydown", (e) => {        // ⌘/Ctrl+S saves; Esc closes the Cast
+    if ($("#lifeworld").hidden) return;
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") { e.preventDefault(); sdSaveNow(); return; }
+    if (e.key === "Escape") { const rh = $("#sdRosterHost"); if (rh && !rh.hidden) { rh.hidden = true; return; } const sm = $("#sdScenesMenu"); if (sm && !sm.hidden) sm.hidden = true; }
+  });
+})();
 
 
 async function boot() {

@@ -55,9 +55,9 @@ class SeatSlot(BaseModel):
     human_id: int
 
 
-class Edge(BaseModel):
-    a: int                                  # from-token id (agent or artifact)
-    b: int                                  # to-token id
+class SceneUpdate(BaseModel):
+    name: str | None = None                 # rename the scene (its editable title)
+    rules: str | None = None                # the standing rules obeyed on every run
 
 
 class NewRoom(BaseModel):
@@ -296,29 +296,29 @@ def place(world_id: int, room_id: int, artifact_id: int, request: Request) -> di
     return {"room": s.view()}
 
 
-@router.post("/{world_id}/room/{room_id}/link")
-def link_flow(world_id: int, room_id: int, body: Edge, request: Request) -> dict:
-    """Draw a flow arrow between two tokens present in the room."""
+@router.post("/{world_id}/room/{room_id}/scene")
+def update_scene(world_id: int, room_id: int, body: SceneUpdate, request: Request) -> dict:
+    """Rename a scene or set its standing rules — the editable title and the rules box."""
     _own(request, world_id)
     w = store.load(world_id)
     s = w.scene(room_id)
     if not s:
         raise HTTPException(404, "no such room")
-    ok = s.link(body.a, body.b)
+    if body.name is not None:
+        s.name = body.name.strip()[:120]
+    if body.rules is not None:
+        s.rules = body.rules[:2000]
     store.save(w)
-    return {"ok": ok, "edges": s._live_edges()}
+    return {"room": s.view()}
 
 
-@router.post("/{world_id}/room/{room_id}/unlink")
-def unlink_flow(world_id: int, room_id: int, body: Edge, request: Request) -> dict:
+@router.post("/{world_id}/touch")
+def touch(world_id: int, request: Request) -> dict:
+    """An explicit save — re-persist the world so Cmd+S has something honest to confirm."""
     _own(request, world_id)
     w = store.load(world_id)
-    s = w.scene(room_id)
-    if not s:
-        raise HTTPException(404, "no such room")
-    s.unlink(body.a, body.b)
     store.save(w)
-    return {"ok": True, "edges": s._live_edges()}
+    return {"ok": True}
 
 
 @router.get("/{world_id}/room/{room_id}")
@@ -366,21 +366,12 @@ async def play_round(world_id: int, room_id: int, request: Request, live: int = 
             if len(ring) > 1:
                 await s.greet(h, ring[(i + 1) % len(ring)])
 
-    # Order of preference: a drawn flow (arrows) defines the turn order if one exists;
-    # else each collating artifact's seated agents act as a ring; else everyone in the
-    # room, so a round always does something.
-    flow = s.flow_ring()
+    # Prefer clusters: each collating artifact's seated agents act as a ring. If no cluster
+    # has formed yet, fall back to everyone in the room so a round still does something.
     rings = [[w.get(hid) for hid in a.cluster()]
              for a in s.props_here()
              if getattr(a, "collating", lambda: False)() and a.cluster()]
-    if flow:
-        # the flow sets the ORDER, but every seated agent still gets their beat — an
-        # un-arrowed person in the room is not silently dropped from the round.
-        ordered = [h for h in flow if h]
-        seen = {h.id for h in ordered}
-        ordered += [h for h in s.players() if h.id not in seen]
-        await play(ordered)
-    elif rings:
+    if rings:
         for ring in rings:
             await play([h for h in ring if h])
     else:

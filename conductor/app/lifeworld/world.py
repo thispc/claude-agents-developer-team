@@ -29,6 +29,7 @@ class World:
         self.entities: dict[int, Entity] = {}
         self.scenes: dict[int, Any] = {}      # id -> Scene (holds a back-ref to this world)
         self._active_flags = self.flags
+        self._scene_rules = ""                # rules of the scene currently delivering a signal
         self._seq = 0
         # the one spend, injected — the engine never imports providers itself
         self._complete = complete
@@ -79,8 +80,9 @@ class World:
     def flags_for(self, entity: Entity) -> Flags:
         return self._active_flags.derive(getattr(entity, "flag_overrides", None))
 
-    def enter_scene_flags(self, scene_overrides: dict | None) -> None:
+    def enter_scene_flags(self, scene_overrides: dict | None, rules: str = "") -> None:
         self._active_flags = self.flags.derive(scene_overrides)
+        self._scene_rules = rules or ""
 
     # --- the one spend ------------------------------------------------------
 
@@ -89,7 +91,7 @@ class World:
         if self._complete is not None and self.flags_for(human).on("emotions"):
             return await appr.model(human, signal, ctx, settings=self._settings,
                                      complete=self._complete, model_name=self._model_name,
-                                     max_tokens=self._utter_tokens)
+                                     max_tokens=self._utter_tokens, rules=self._scene_rules)
         return appr.deterministic(human, signal, ctx)
 
     # --- persistence hook ---------------------------------------------------

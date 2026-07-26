@@ -2317,3 +2317,87 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
   .lw-card, .lw-room-card { transition: none; }
   .lw-bubble { transition: none; }
 }
+
+/* ===== The Studio — the full-screen canvas shell ========================== */
+.sd-bar { gap: 12px; }
+.sd-title { font-size: 16px; font-weight: 650; color: var(--text); padding: 2px 7px; border-radius: 7px;
+  outline: none; cursor: text; min-width: 60px; max-width: 42vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sd-title:hover { background: var(--card-2); }
+.sd-title:focus { background: var(--card-2); box-shadow: inset 0 -2px 0 var(--accent); overflow: visible; text-overflow: clip; }
+.sd-save { min-width: 22px; font-size: 11px; font-family: var(--mono); color: var(--faint); display: inline-flex; align-items: center; gap: 6px; }
+.sd-save.saving::before { content: ""; width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid var(--line); border-top-color: var(--accent); animation: sdspin .7s linear infinite; }
+.sd-save.saving::after { content: "Saving"; }
+.sd-save.saved { color: var(--good); }
+.sd-save.saved::before { content: "✓ "; }
+@keyframes sdspin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .sd-save.saving::before { animation: none; } }
+
+.sd-chip { font-size: 12.5px; font-weight: 550; padding: 6px 11px; border-radius: 9px; border: 1px solid var(--line);
+  background: var(--card-2); color: var(--dim); cursor: pointer; }
+.sd-chip:hover { border-color: var(--accent); color: var(--text); }
+.sd-scenes-wrap { position: relative; }
+.sd-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; min-width: 224px; max-height: 62vh; overflow-y: auto;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 6px; }
+.sd-menu-item { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; text-align: left;
+  padding: 8px 10px; border-radius: 8px; border: none; background: transparent; cursor: pointer; }
+.sd-menu-item:hover { background: var(--card-2); }
+.sd-menu-item.on { background: var(--accent-soft); }
+.sd-menu-name { font-size: 13px; font-weight: 550; color: var(--text); }
+.sd-menu-sub { font-size: 10.5px; font-family: var(--mono); color: var(--faint); }
+.sd-menu-new { color: var(--accent); font-weight: 600; border-top: 1px solid var(--line-soft); border-radius: 0 0 8px 8px; margin-top: 4px; }
+
+.sd-room { flex: 1; display: flex; min-height: 0; }
+.sd-canvas { background: radial-gradient(circle at 50% 42%, #f3f0ea 0%, #e6e2da 84%); }
+.sd-hint { position: absolute; top: 12px; right: 16px; z-index: 6; font-size: 11px; color: var(--dim);
+  background: var(--card); border: 1px solid var(--line-soft); border-radius: 8px; padding: 4px 9px;
+  box-shadow: var(--shadow); pointer-events: none; }
+.sd-hint b { color: var(--text); font-family: var(--mono); }
+.sd-dock { left: 16px; transform: none; }
+
+/* the video-style time transport, floating bottom-centre */
+.sd-time { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 10;
+  display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 30px; box-shadow: var(--shadow-lg); }
+.sd-play, .sd-step { width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line); background: var(--card-2);
+  color: var(--text); cursor: pointer; font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.sd-play:hover, .sd-step:hover { border-color: var(--accent); }
+.sd-play.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sd-frame { width: 10px; height: 10px; border-radius: 3px; background: var(--line); }
+.sd-frame.tick { animation: sdframe .5s ease; }
+@keyframes sdframe { 0% { background: var(--accent); box-shadow: 0 0 0 0 var(--accent-soft); }
+  100% { background: var(--line); box-shadow: 0 0 0 12px transparent; } }
+.sd-speed { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--dim); font-family: var(--mono); white-space: nowrap; }
+.sd-speed input[type=range] { width: 82px; accent-color: var(--accent); }
+.sd-tau { font-family: var(--mono); font-size: 11px; color: var(--faint); padding-left: 8px; border-left: 1px solid var(--line-soft); }
+
+.sd-rules-btn { position: absolute; right: 16px; bottom: 16px; z-index: 10; font-size: 12.5px; font-weight: 550;
+  padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--dim);
+  cursor: pointer; box-shadow: var(--shadow); }
+.sd-rules-btn:hover { border-color: var(--accent); color: var(--text); }
+.sd-rules-pop { position: absolute; right: 16px; bottom: 60px; z-index: 16; width: 306px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow-lg); padding: 12px; }
+.sd-rules-head { font-size: 13px; font-weight: 650; margin-bottom: 8px; }
+.sd-rules-pop .sc-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* the Cast overlay — every agent grouped by scene */
+.sd-roster { position: fixed; inset: 0; z-index: 60; background: rgba(20,24,22,.42);
+  display: flex; align-items: flex-start; justify-content: center; padding: 40px 20px; overflow-y: auto; }
+.sd-roster-card { width: min(920px, 96vw); background: var(--card); border: 1px solid var(--line);
+  border-radius: 16px; box-shadow: var(--shadow-lg); padding: 20px 22px; }
+.sd-roster-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.sd-roster-head h3 { font-size: 17px; font-weight: 650; }
+.sd-roster-head .dim { flex: 1; font-size: 12px; }
+.sd-roster-group { margin-bottom: 16px; }
+.sd-roster-scene { font-family: var(--serif); font-style: italic; font-size: 14px; color: var(--text); margin-bottom: 8px; }
+.sd-roster-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.sd-cast { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 8px; border-radius: 12px;
+  border: 1px solid var(--line-soft); background: var(--card-2); cursor: pointer; transition: transform .12s ease, border-color .12s ease; }
+.sd-cast:hover { border-color: var(--accent); transform: translateY(-2px); }
+.sd-cast-face img { width: 44px; height: 44px; border-radius: 50%; display: block; }
+.sd-cast-name { font-size: 13px; font-weight: 550; color: var(--text); }
+.sd-cast-want { font-size: 10.5px; color: var(--accent); }
+.sd-close { margin-left: auto; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--card-2); color: var(--dim); cursor: pointer; font-size: 12px; }
+.sd-close:hover { border-color: var(--accent); color: var(--text); }
+@media (prefers-reduced-motion: reduce) { .sd-cast, .sd-frame.tick { transition: none; animation: none; } }

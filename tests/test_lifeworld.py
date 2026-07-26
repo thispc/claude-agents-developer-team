@@ -427,25 +427,6 @@ def test_a_collating_artifact_remembers_its_shape_and_path():
     assert q.collating() and q.seat(0, 999) and q.cluster() == [999]   # slots still work
 
 
-def test_flow_arrows_link_unlink_prune_and_set_the_order():
-    """Arrows are a directed graph drawn between tokens; the agents they touch become the
-    turn order, and danglers are dropped on read."""
-    w = free_world()
-    a, b, c = (w.spawn_human(n) for n in ("A", "B", "C"))
-    sc = w.new_room("R")
-    for h in (a, b, c):
-        sc.seat(h)
-    assert sc.link(a.id, b.id) and sc.link(b.id, c.id)
-    assert not sc.link(a.id, b.id)          # no duplicate
-    assert not sc.link(a.id, a.id)          # no self-loop
-    assert not sc.link(a.id, 99999)         # both ends must be in the room
-    assert [h.id for h in sc.flow_ring()] == [a.id, b.id, c.id]   # order follows the arrows
-    sc.unlink(a.id, b.id)
-    assert {(e["from"], e["to"]) for e in sc._live_edges()} == {(b.id, c.id)}
-    sc.edges.append({"from": a.id, "to": 4242})     # a dangling arrow
-    assert all(e["to"] != 4242 for e in sc._live_edges())        # pruned on read
-
-
 def test_a_shape_and_path_survive_the_create_endpoint(client):
     from conftest import login
     login(client, "root", "testpass")
@@ -461,48 +442,34 @@ def test_a_shape_and_path_survive_the_create_endpoint(client):
     assert prop["shape"] == "path" and len(prop["path"]) == 4
 
 
-def test_the_round_follows_the_drawn_flow(client):
+def test_a_scene_remembers_its_name_and_rules(client):
+    """The editable title and the rules box persist through the scene-update endpoint and a
+    reload of the world."""
     from conftest import login
     login(client, "root", "testpass")
-    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
-    ids = [client.post(f"/api/lw/{wid}/human", json={"name": n}).json()["human"]["id"]
-           for n in ("A", "B")]
-    rid = client.post(f"/api/lw/{wid}/room", json={"name": "R", "type": "freeplay"}).json()["room"]["id"]
-    for hid in ids:
-        client.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": hid})
-    r = client.post(f"/api/lw/{wid}/room/{rid}/link", json={"a": ids[0], "b": ids[1]}).json()
-    assert r["ok"] and {(e["from"], e["to"]) for e in r["edges"]} == {(ids[0], ids[1])}
-    room = client.get(f"/api/lw/{wid}/room/{rid}").json()["room"]
-    assert any(e["from"] == ids[0] and e["to"] == ids[1] for e in room["edges"])
-    rr = client.post(f"/api/lw/{wid}/room/{rid}/round").json()
-    assert rr["world_tau"] > 0 and sum(1 for e in rr["room"]["log"] if e["billed"]) == 0   # still free
-    client.post(f"/api/lw/{wid}/room/{rid}/unlink", json={"a": ids[0], "b": ids[1]})
-    assert client.get(f"/api/lw/{wid}/room/{rid}").json()["room"]["edges"] == []
+    wid = client.post("/api/lw", json={"name": "Studio"}).json()["world"]["id"]
+    rid = client.post(f"/api/lw/{wid}/room", json={"name": "untitled", "type": "freeplay"}).json()["room"]["id"]
+    r = client.post(f"/api/lw/{wid}/room/{rid}/scene",
+                    json={"name": "Board meeting", "rules": "Everyone is polite and brief."}).json()["room"]
+    assert r["name"] == "Board meeting" and "polite" in r["rules"]
+    again = client.get(f"/api/lw/{wid}/room/{rid}").json()["room"]     # survives a fresh load
+    assert again["name"] == "Board meeting" and again["rules"] == "Everyone is polite and brief."
+    assert client.post(f"/api/lw/{wid}/touch").json()["ok"] is True    # explicit save is honest
 
 
-def test_flow_ring_follows_topology_not_draw_order():
-    """The order must be the direction the arrows point, regardless of the order they were
-    drawn — draw B→C first, then A→B, and the flow is still A, B, C."""
-    w = free_world()
-    a, b, c = (w.spawn_human(n) for n in ("A", "B", "C"))
-    sc = w.new_room("R")
-    for h in (a, b, c):
-        sc.seat(h)
-    assert sc.link(b.id, c.id) and sc.link(a.id, b.id)    # drawn back-first
-    assert [h.id for h in sc.flow_ring()] == [a.id, b.id, c.id]
+def test_scene_rules_reach_the_model_appraisal():
+    """A scene's rules must be handed to the one bounded model call, verbatim, so Live runs
+    honor them."""
+    seen = {}
 
+    async def complete(provider, model, system, prompt, settings, max_tokens=2000):
+        seen["system"] = system
+        return '{"understood":"ok","action":{"kind":"say","text":"ok"}}'
 
-def test_a_flow_orders_but_does_not_drop_un_arrowed_seated_agents(client):
-    """Drawing one arrow must not silently exclude the rest of the room from the round."""
-    from conftest import login
-    login(client, "root", "testpass")
-    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
-    ids = [client.post(f"/api/lw/{wid}/human", json={"name": n}).json()["human"]["id"]
-           for n in ("A", "B", "C")]
-    rid = client.post(f"/api/lw/{wid}/room", json={"name": "R", "type": "freeplay"}).json()["room"]["id"]
-    for hid in ids:
-        client.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": hid})
-    client.post(f"/api/lw/{wid}/room/{rid}/link", json={"a": ids[0], "b": ids[1]})   # C is un-arrowed
-    r = client.post(f"/api/lw/{wid}/room/{rid}/round").json()
-    actors = {e["who"] for e in r["room"]["log"] if e.get("who") is not None}
-    assert ids[2] in actors      # the un-arrowed seated agent still got a beat
+    w = World(name="live", complete=complete, settings={})
+    a, b = w.spawn_human("A"), w.spawn_human("B")
+    sc = Scene(w, id=1, name="s", domain="talk"); sc.seat(a); sc.seat(b)
+    sc.rules = "Speak only in questions."
+    asyncio.run(sc.say(a, b, "something genuinely novel and weighty", kind="say",
+                       intensity=0.9, stakes=0.9))               # reaches the bounded model call
+    assert "Speak only in questions." in seen.get("system", ""), "scene rules never reached the model"

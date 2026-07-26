@@ -56,7 +56,7 @@ class Scene:
         self.flag_overrides = flag_overrides or {}
         self.seats: list[int] = []            # seated human ids, in turn order
         self.props: list[int] = []            # artifact ids present
-        self.edges: list[dict] = []           # directed flow arrows: {"from": id, "to": id}
+        self.rules: str = ""                  # free-text scene rules, obeyed on every run
         self.log: list[dict] = []
         self.turn = 0
 
@@ -69,62 +69,6 @@ class Scene:
     def place(self, artifact) -> None:
         if artifact.id not in self.props:
             self.props.append(artifact.id)
-
-    # --- flow arrows: a directed graph the operator draws between tokens ------
-
-    def link(self, a: int, b: int) -> bool:
-        """Draw a flow arrow a → b. No self-loops, no duplicates, and both ends must be
-        tokens present in this room."""
-        here = set(self.seats) | set(self.props)
-        if a == b or a not in here or b not in here:
-            return False
-        if any(e["from"] == a and e["to"] == b for e in self.edges):
-            return False
-        self.edges.append({"from": a, "to": b})
-        return True
-
-    def unlink(self, a: int, b: int) -> None:
-        self.edges = [e for e in self.edges if not (e["from"] == a and e["to"] == b)]
-
-    def _live_edges(self) -> list[dict]:
-        """Arrows whose endpoints are both still in the room — drop danglers on read."""
-        here = set(self.seats) | set(self.props)
-        return [e for e in self.edges if e["from"] in here and e["to"] in here]
-
-    def flow_ring(self) -> list["Human"]:
-        """When arrows exist, they define the turn order by following the flow's DIRECTION:
-        begin at the sources (nothing points at them) and walk the arrows forward, so the
-        order is the drawn topology — not the order the arrows happened to be drawn in.
-        Cycles and any unreached nodes trail at the end."""
-        edges = self._live_edges()
-        if not edges:
-            return []
-        nodes: list[int] = []
-        outgoing: dict[int, list[int]] = {}
-        indeg: dict[int, int] = {}
-        for e in edges:
-            for hid in (e["from"], e["to"]):
-                if hid not in indeg:
-                    indeg[hid] = 0
-                    nodes.append(hid)
-        for e in edges:
-            outgoing.setdefault(e["from"], []).append(e["to"])
-            indeg[e["to"]] += 1
-        from collections import deque
-        dq = deque([n for n in nodes if indeg[n] == 0] or nodes[:1])
-        order: list[int] = []
-        seen: set[int] = set()
-        while dq:
-            n = dq.popleft()
-            if n in seen:
-                continue
-            seen.add(n)
-            order.append(n)
-            for m in outgoing.get(n, []):
-                if m not in seen:
-                    dq.append(m)
-        order += [n for n in nodes if n not in seen]       # cycles / islands
-        return [h for h in (self.world.get(i) for i in order) if isinstance(h, Human)]
 
     def players(self) -> list[Human]:
         return [self.world.get(i) for i in self.seats if isinstance(self.world.get(i), Human)]
@@ -140,7 +84,7 @@ class Scene:
         """The atom of scene time: one human perceives one signal. The domain is stamped
         so the experience credits the right competency."""
         signal.domain = signal.domain or self.domain
-        self.world.enter_scene_flags(self.flag_overrides)
+        self.world.enter_scene_flags(self.flag_overrides, self.rules)
         packet = await to.perceive(signal, self.world)
         self.world.tau += 1
         say = (packet.action or {}).get("text") or packet.understood
@@ -183,7 +127,7 @@ class Scene:
         return {"id": self.id, "name": self.name, "type": self.type, "theme": self.theme,
                 "domain": self.domain, "flag_overrides": self.flag_overrides,
                 "seats": list(self.seats), "props": list(self.props),
-                "edges": list(self.edges), "log": self.log[-200:], "turn": self.turn}
+                "rules": self.rules, "log": self.log[-200:], "turn": self.turn}
 
     @classmethod
     def from_state(cls, world, d: dict[str, Any]) -> "Scene":
@@ -192,7 +136,7 @@ class Scene:
                 type=d.get("type", "freeplay"), theme=d.get("theme", "open"))
         s.seats = list(d.get("seats", []))
         s.props = list(d.get("props", []))
-        s.edges = list(d.get("edges", []))
+        s.rules = d.get("rules", "")
         s.log = list(d.get("log", []))
         s.turn = int(d.get("turn", 0))
         return s
@@ -212,7 +156,7 @@ class Scene:
 
     def view(self) -> dict[str, Any]:
         return {"id": self.id, "name": self.name, "type": self.type, "theme": self.theme,
-                "domain": self.domain, "flags": self.flag_overrides,
+                "domain": self.domain, "flags": self.flag_overrides, "rules": self.rules,
                 # agents placed on the canvas, positioned by pos; the UI lays them out
                 "agents": [{"id": h.id, "name": h.name, "figure": h.figure,
                             "pos": list(h.pos), "mood": h.psyche.mood,
@@ -224,7 +168,6 @@ class Scene:
                            "shape": getattr(a, "shape", "circle"), "path": getattr(a, "path", [])}
                           for a in self.props_here()],
                 "clusters": self.clusters(),
-                "edges": self._live_edges(),
                 "log": self.log[-60:]}
 
 

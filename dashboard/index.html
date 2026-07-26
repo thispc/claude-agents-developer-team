@@ -59,24 +59,16 @@
         merges — over as many sprints as you ask for.</span>
       <span class="entry-go">Start building →</span>
     </button>
-    <button class="entry-card" id="modeStudio">
-      <span class="entry-ico">🏡</span>
+    <button class="entry-card feature" id="modeStudio">
+      <span class="entry-ico">🎬</span>
       <span class="entry-name">The Studio</span>
-      <span class="entry-desc">Where your AI teammates reside between jobs. Hire them, give them a
-        character, seat them at a scene to play, and stock a shelf of props — all under one roof.</span>
-      <span class="entry-go">Enter the Studio →</span>
+      <span class="entry-desc">An infinite canvas. Drop in agents and objects, arrange them into
+        a scene, set the rules, and press play to watch them think — one screen, autosaved.</span>
+      <span class="entry-go">Open the Studio →</span>
     </button>
-    <button class="entry-card" id="modeLifeworld">
-      <span class="entry-ico">🌍</span>
-      <span class="entry-name">The Lifeworld</span>
-      <span class="entry-desc">A little society of synthetic people who live in scenes and play
-        with a deck of cards. Deal, greet, needle — and watch their mood, drives, memories and
-        habits change. Operate a world, like a game.</span>
-      <span class="entry-go">Enter the Lifeworld →</span>
-    </button>
-    <button class="entry-card" id="modeImprove" hidden>
+    <button class="entry-card" id="modeImprove">
       <span class="entry-ico">⟲</span>
-      <span class="entry-name">Improve devteam</span>
+      <span class="entry-name">Self repair</span>
       <span class="entry-desc">Point the team at this platform's own codebase. File an
         issue, let it fix itself, review the PR, redeploy.</span>
       <span class="entry-go">Open self-repair →</span>
@@ -210,35 +202,27 @@
   </div>
 </section>
 
-<!-- The Lifeworld — a world holds three registries (Agents, Artifacts, Rooms). One
-     workspace with four tabs: Overview is the MAP (every person + object as a card,
-     grouped and coloured by the room it's in); Agents / Artifacts are galleries built
-     by a free-text brief; Rooms are places with a type. Opening a room gives the ROOM
-     VIEW, themed by room.theme — only a casino renders the poker felt, other themes a
-     tasteful CSS-only setting. Play a round / act; every Live model call is billed and
-     shown in the ticker. Reuses the Studio figure/sigil language, composers and menus. -->
+<!-- The Studio — one full-screen canvas is the hero. The thin bar carries only what you
+     need across every scene: back home, the editable scene title, an autosave indicator,
+     a Scenes dropdown (your saved canvases), the Cast (all agents grouped by scene), and
+     the Live/Deterministic toggle. Everything else — the toolbox, the time transport, the
+     rules — floats over the canvas itself. No tabs, no worlds/rooms vocabulary. -->
 <section id="lifeworld" hidden>
-  <div class="studio-bar lw-bar">
+  <div class="studio-bar sd-bar">
     <button class="studio-back" id="lwBack">← Home</button>
-    <h2>🌍 The Lifeworld</h2>
-    <button class="scene-tolobby" id="lwToLobby" hidden>← All worlds</button>
-    <span class="scene-title-inline" id="lwTitle" hidden></span>
-    <nav class="studio-tabs lw-tabs" id="lwTabs" role="tablist" hidden>
-      <button class="lw-tab active" data-lwtab="overview" role="tab">Overview</button>
-      <button class="lw-tab" data-lwtab="agents" role="tab">Agents</button>
-      <button class="lw-tab" data-lwtab="artifacts" role="tab">Artifacts</button>
-      <button class="lw-tab" data-lwtab="rooms" role="tab">Rooms</button>
-    </nav>
+    <span class="sd-title" id="sdTitle" contenteditable="true" spellcheck="false" role="textbox" aria-label="Scene name">untitled</span>
+    <span class="sd-save" id="sdSave" title="Autosaves as you work · ⌘S to save now"></span>
     <div class="studio-spacer"></div>
-    <button class="lw-live" id="lwLive" hidden aria-pressed="false">💤 Deterministic (free)</button>
-    <span class="scene-meter" id="lwTau" hidden title="World time and the number of billed model thoughts"></span>
-    <button class="studio-hire" id="lwNewWorld" hidden>＋ New world</button>
-    <button class="studio-hire" id="lwNewAgent" hidden>＋ New agent</button>
-    <button class="studio-hire" id="lwNewArtifact" hidden>＋ New artifact</button>
-    <button class="studio-hire" id="lwNewRoom" hidden>＋ New room</button>
+    <div class="sd-scenes-wrap">
+      <button class="sd-chip" id="sdScenesBtn" aria-haspopup="true" aria-expanded="false">🎞 Scenes ▾</button>
+      <div class="sd-menu" id="sdScenesMenu" hidden></div>
+    </div>
+    <button class="sd-chip" id="sdRoster">👥 Cast</button>
+    <button class="lw-live sd-chip" id="lwLive" aria-pressed="false">💤 Deterministic</button>
   </div>
-  <div class="lw-stage" id="lwStage"></div>
+  <div class="lw-stage sd-stage" id="lwStage"></div>
   <div class="studio-detail" id="lwDetail" hidden></div>
+  <div class="sd-roster" id="sdRosterHost" hidden></div>
 </section>
 
 <section id="aboutPage" hidden>
