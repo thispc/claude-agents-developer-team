@@ -112,7 +112,10 @@ def _mk(client, name="W", **_):
 
 def _open_scene(page, wid, rid):
     """Bring the Studio section on and open one specific scene (bypasses world auto-pick)."""
-    page.evaluate("() => showLifeworld()")
+    page.evaluate("""() => {
+        for (const id of ['#sdRosterHost', '#sdScenesMenu']) { const e = document.querySelector(id); if (e) e.hidden = true; }
+        showLifeworld();
+    }""")
     page.evaluate("([wid, rid]) => { lwWorldId = wid; return lwOpenScene(rid); }", [wid, rid])
     for _ in range(40):
         if page.evaluate("() => (typeof lwKonva!=='undefined') && !!lwKonva"):
@@ -251,3 +254,60 @@ def test_the_cast_roster_lists_agents_grouped_by_scene(server, page):
     page.wait_for_selector(".sd-roster-card .sd-cast", timeout=5000)
     names = page.eval_on_selector_all(".sd-cast-name", "els => els.map(e => e.textContent)")
     assert "Ada" in names and "Ravi" in names, f"cast roster missing agents: {names}"
+
+
+def test_object_popover_has_no_slots_but_shape_popover_has_a_slider(server, page):
+    c = server["client"]; wid, rid = _mk(c, "Pop")
+    _open_scene(page, wid, rid)
+    b = page.evaluate("() => { const x=lwKonva.stage.container().getBoundingClientRect(); return {x:x.left+160,y:x.top+160}; }")
+    page.evaluate("() => lwSetTool('artifact')")
+    page.mouse.click(b["x"], b["y"]); page.wait_for_selector(".lw-create-pop", timeout=5000)
+    assert page.query_selector("#lwCSlots") is None, "an object must not ask for slots"
+    assert page.query_selector("#lwCShape") is None, "an object must not ask for a shape"
+    page.evaluate("() => lwCancelCreate()")
+    page.evaluate("() => lwSetTool('shape')")
+    page.mouse.click(b["x"], b["y"]); page.wait_for_selector(".lw-create-pop", timeout=5000)
+    assert page.query_selector("#lwCSlots") is not None, "a shape must have a slots slider"
+    assert page.query_selector("#lwCShape") is not None, "a shape must have a shape chooser"
+    mn = page.eval_on_selector("#lwCSlots", "el => el.min")
+    assert int(mn) >= 1, "a shape cannot have zero slots"
+    page.evaluate("() => lwCancelCreate()")
+
+
+def test_from_cast_places_an_existing_agent(server, page):
+    c = server["client"]; wid, rid = _mk(c, "Reuse")
+    rid2 = c.post(f"/api/lw/{wid}/room", json={"name": "other", "type": "freeplay"}).json()["room"]["id"]
+    hid = c.post(f"/api/lw/{wid}/human", json={"name": "Reused"}).json()["human"]["id"]
+    c.post(f"/api/lw/{wid}/room/{rid2}/seat", params={"human_id": hid})
+    _open_scene(page, wid, rid)
+    before = len(c.get(f"/api/lw/{wid}/room/{rid}").json()["room"]["agents"])
+    page.evaluate("() => lwSetTool('agent')")
+    b = page.evaluate("() => { const x=lwKonva.stage.container().getBoundingClientRect(); return {x:x.left+160,y:x.top+160}; }")
+    page.mouse.click(b["x"], b["y"]); page.wait_for_selector(".lw-create-pop", timeout=5000)
+    page.click("[data-mode=cast]"); page.wait_for_selector(".lw-cast-item", timeout=5000)
+    page.click(".lw-cast-item"); page.wait_for_timeout(800)
+    after = c.get(f"/api/lw/{wid}/room/{rid}").json()["room"]["agents"]
+    assert any(a["id"] == hid for a in after) and len(after) == before + 1
+
+
+def test_play_stops_at_the_cap(server, page):
+    c = server["client"]; wid, rid = _mk(c, "Cap")
+    for n in ("A", "B"):
+        h = c.post(f"/api/lw/{wid}/human", json={"name": n}).json()["human"]["id"]
+        c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    _open_scene(page, wid, rid)
+    page.evaluate("() => { sdMax = 4; sdSpeed = 1; }")
+    page.click("#sdPlay"); page.wait_for_timeout(8000)
+    assert page.evaluate("() => sdPlaying") is False, "play did not stop at the cap"
+    assert page.evaluate("() => sdRun") == 4, "play did not run exactly cap beats"
+
+
+def test_the_activity_panel_lists_what_happened(server, page):
+    c = server["client"]; wid, rid = _mk(c, "Act")
+    for n in ("A", "B"):
+        h = c.post(f"/api/lw/{wid}/human", json={"name": n}).json()["human"]["id"]
+        c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    _open_scene(page, wid, rid)
+    page.click("#sdStep"); page.wait_for_timeout(700)
+    page.click("#sdActBtn"); page.wait_for_selector(".sd-activity .sd-act-row", timeout=5000)
+    assert page.eval_on_selector_all(".sd-act-row", "els => els.length") > 0

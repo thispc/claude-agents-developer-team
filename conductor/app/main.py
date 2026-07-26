@@ -87,6 +87,20 @@ async def _preview_host(request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def _no_stale_dashboard(request, call_next):
+    """The dashboard is one hand-written app.js/style.css with no build hash, so an
+    aggressive browser cache can keep serving yesterday's JS after a redeploy — which
+    looks exactly like "the fix didn't ship" (e.g. dragging silently broken). Force a
+    revalidation on the HTML/JS/CSS so a deploy is always picked up; StaticFiles still
+    answers 304 when nothing changed, so it stays cheap."""
+    resp = await call_next(request)
+    path = request.url.path
+    if request.method in ("GET", "HEAD") and (path == "/" or path.endswith((".html", ".js", ".css", ".map"))):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 app.include_router(router)
 from .lifeworld_routes import router as lifeworld_router   # the Lifeworld: its own router
 app.include_router(lifeworld_router)

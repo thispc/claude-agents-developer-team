@@ -473,3 +473,18 @@ def test_scene_rules_reach_the_model_appraisal():
     asyncio.run(sc.say(a, b, "something genuinely novel and weighty", kind="say",
                        intensity=0.9, stakes=0.9))               # reaches the bounded model call
     assert "Speak only in questions." in seen.get("system", ""), "scene rules never reached the model"
+
+
+def test_a_shape_with_slots_is_a_table_even_if_its_brief_says_cards(client):
+    """A Shape asks for slots, so it must be a collating Prop — never authored into a
+    slot-less deck just because its brief mentions cards. A card brief with no slots is
+    still a deck."""
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    table = client.post(f"/api/lw/{wid}/artifact",
+                        json={"name": "felt", "brief": "a poker table with a deck of cards", "slots": 4}).json()["artifact"]
+    assert table["kind"] == "prop" and table["slots"] == 4
+    deck = client.post(f"/api/lw/{wid}/artifact",
+                       json={"name": "shoe", "brief": "a deck of cards", "slots": 0}).json()["artifact"]
+    assert deck["kind"] == "deck"

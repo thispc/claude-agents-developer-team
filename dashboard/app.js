@@ -5157,16 +5157,15 @@ async function lwOpenScene(rid) {
 
 // --- top bar: editable title, autosave indicator, scenes, rename -----------
 let sdSaveT = null;
+// The whole scene autosaves in the DB on every action; this indicator just tells the
+// truth about it. Idle rests on "Saved"; a change flashes the spinner, then back to Saved.
 function sdFlash() {
   const el = $("#sdSave"); if (!el) return;
   el.className = "sd-save saving"; el.textContent = "";
   clearTimeout(sdSaveT);
-  sdSaveT = setTimeout(() => {
-    if ($("#sdSave") !== el) return;
-    el.className = "sd-save saved"; el.textContent = "Saved";
-    setTimeout(() => { if ($("#sdSave") === el && el.classList.contains("saved")) { el.className = "sd-save"; el.textContent = ""; } }, 1500);
-  }, 300);
+  sdSaveT = setTimeout(() => { if ($("#sdSave") !== el) return; el.className = "sd-save saved"; el.textContent = "Saved"; }, 350);
 }
+function sdSavedIdle() { const el = $("#sdSave"); if (el && !el.classList.contains("saving")) { el.className = "sd-save saved"; el.textContent = "Saved"; } }
 async function sdSaveNow() {
   if (!lwWorldId) return;
   sdFlash();
@@ -5243,14 +5242,17 @@ async function sdOpenRoster() {
 }
 
 // --- the time transport: play/pause, single-step, speed --------------------
-let sdPlaying = false, sdTimer = null, sdSpeed = 2;   // seconds between runs
+let sdPlaying = false, sdTimer = null, sdSpeed = 2, sdMax = 10, sdRun = 0;   // sec between beats, cap, done
 function sdTimeBarHtml() {
+  const maxLbl = sdMax === Infinity ? "∞" : sdMax;
   return `<div class="sd-time" id="sdTime">
-    <button class="sd-play" id="sdPlay" title="Play — run a beat automatically">▶</button>
-    <button class="sd-step" id="sdStep" title="Run one beat">⏭</button>
-    <span class="sd-frame" id="sdFrame" aria-hidden="true"></span>
-    <label class="sd-speed">1 run / <b id="sdSpeedLbl">${sdSpeed}</b>s
-      <input type="range" id="sdSpeedRange" min="1" max="10" step="1" value="${sdSpeed}"></label>
+    <button class="sd-play" id="sdPlay" title="Play — run beats automatically until the cap">▶</button>
+    <button class="sd-step" id="sdStep" title="Run one beat now">⏭</button>
+    <div class="sd-progress" id="sdProg" title="beats run in this play">
+      <i class="sd-prog-fill" id="sdProgFill"></i><span class="sd-prog-lbl" id="sdProgLbl">0 / ${maxLbl}</span></div>
+    <label class="sd-speed" title="seconds between beats">⏱<input type="range" id="sdSpeedRange" min="1" max="10" step="1" value="${sdSpeed}"><b id="sdSpeedLbl">${sdSpeed}s</b></label>
+    <label class="sd-maxwrap" title="stop after this many beats">cap
+      <select id="sdMaxSel">${[5, 10, 25, 50].map((v) => `<option value="${v}"${v === sdMax ? " selected" : ""}>${v}</option>`).join("")}<option value="inf"${sdMax === Infinity ? " selected" : ""}>∞</option></select></label>
     <span class="sd-tau" id="lwTau"></span>
   </div>`;
 }
@@ -5258,25 +5260,63 @@ function sdWireTime() {
   const p = $("#sdPlay"); if (p) p.addEventListener("click", sdTogglePlay);
   const s = $("#sdStep"); if (s) s.addEventListener("click", () => { if (!sdPlaying) lwPlayRound(); });
   const r = $("#sdSpeedRange");
-  if (r) r.addEventListener("input", (e) => { sdSpeed = Number(e.target.value); const l = $("#sdSpeedLbl"); if (l) l.textContent = sdSpeed; if (sdPlaying) sdArm(); });
-  paintPlay();
+  if (r) r.addEventListener("input", (e) => { sdSpeed = Number(e.target.value); const l = $("#sdSpeedLbl"); if (l) l.textContent = sdSpeed + "s"; if (sdPlaying) sdArm(); });
+  const m = $("#sdMaxSel");
+  if (m) m.addEventListener("change", (e) => { sdMax = e.target.value === "inf" ? Infinity : Number(e.target.value); sdPaintProg(); });
+  paintPlay(); sdPaintProg();
 }
 function paintPlay() { const b = $("#sdPlay"); if (b) { b.textContent = sdPlaying ? "⏸" : "▶"; b.classList.toggle("on", sdPlaying); } }
+function sdPaintProg() {
+  const fill = $("#sdProgFill"), lbl = $("#sdProgLbl"); if (!fill) return;
+  const inf = sdMax === Infinity;
+  fill.style.width = inf ? "0%" : Math.min(100, (sdRun / sdMax) * 100) + "%";
+  fill.classList.toggle("indet", inf && sdPlaying);
+  if (lbl) lbl.textContent = `${sdRun} / ${inf ? "∞" : sdMax}`;
+}
 function sdTogglePlay() { sdPlaying ? sdPause() : sdPlay(); }
-function sdPlay() { sdPlaying = true; paintPlay(); sdArm(); }
-function sdPause() { sdPlaying = false; clearTimeout(sdTimer); sdTimer = null; paintPlay(); }
+function sdPlay() { sdRun = 0; sdPlaying = true; paintPlay(); sdPaintProg(); sdArm(); }
+function sdPause() { sdPlaying = false; clearTimeout(sdTimer); sdTimer = null; paintPlay(); sdPaintProg(); }
 function sdArm() {
   clearTimeout(sdTimer);
   const tick = async () => {
     if (!sdPlaying || !lwKonva) { sdPause(); return; }
     sdPulse();
     await lwPlayRound();
-    if (sdPlaying && lwKonva) sdTimer = setTimeout(tick, sdSpeed * 1000);
-    else sdPause();
+    if (!lwKonva) { sdPause(); return; }
+    sdRun++; sdPaintProg();
+    if (sdRun >= sdMax) { sdPause(); return; }        // bounded — stop at the cap
+    if (sdPlaying) sdTimer = setTimeout(tick, sdSpeed * 1000);
   };
   sdTimer = setTimeout(tick, sdSpeed * 1000);
 }
-function sdPulse() { const f = $("#sdFrame"); if (!f || reduceMotion()) return; f.classList.remove("tick"); void f.offsetWidth; f.classList.add("tick"); }
+function sdPulse() { const f = $("#sdProgFill"); if (!f || reduceMotion()) return; f.classList.remove("beat"); void f.offsetWidth; f.classList.add("beat"); }
+
+// --- activity: a categorised log of what each beat did ---------------------
+let sdActOpen = false;
+function sdActivityHtml(log) {
+  log = log || [];
+  if (!log.length) return `<div class="sd-act-head">Activity<button class="sd-act-x" id="sdActX" aria-label="Close">✕</button></div><p class="sd-act-empty">Nothing yet. Run a beat to see what happens.</p>`;
+  const rows = log.slice(-100).reverse().map((l) => {
+    const thought = l.tier === 2 || l.billed, who = l.who != null ? lwNameOf(l.who) : "";
+    return `<div class="sd-act-row${thought ? " thought" : ""}">
+      <span class="sd-act-kind k-${escapeHtml(String(l.kind || "x"))}">${escapeHtml(String(l.kind || ""))}</span>
+      <span class="sd-act-text">${who ? `<b>${escapeHtml(who)}</b> ` : ""}${escapeHtml(String(l.text || ""))}</span>
+      ${thought ? `<span class="sd-act-badge" title="a model actually thought — billed">💭</span>` : ""}
+    </div>`;
+  }).join("");
+  return `<div class="sd-act-head">Activity <span class="dim">${log.length}</span><button class="sd-act-x" id="sdActX" aria-label="Close">✕</button></div><div class="sd-act-list">${rows}</div>`;
+}
+function sdShowActivity(open) {
+  sdActOpen = open;
+  const panel = $("#sdActivity"); if (!panel) return;
+  panel.hidden = !open;
+  const btn = $("#sdActBtn"); if (btn) btn.classList.toggle("on", open);
+  if (open) {
+    panel.innerHTML = sdActivityHtml(lwRoom && lwRoom.log);
+    const x = $("#sdActX"); if (x) x.addEventListener("click", () => sdShowActivity(false));
+  }
+}
+function sdToggleActivity() { sdShowActivity(!sdActOpen); }
 
 // --- scene rules: a small popover; saved to the scene, obeyed each run ------
 function sdToggleRules() {
@@ -5976,13 +6016,16 @@ function lwRenderRoom(room) {
       <div class="lw-dock sd-dock" id="lwDock">${lwDockHtml()}</div>
       <button class="sd-rules-btn" id="sdRulesBtn" title="Scene rules — obeyed on every run">⚖ Rules</button>
       <div class="sd-rules-pop" id="sdRulesPop" hidden></div>
+      <div class="sd-activity" id="sdActivity"${sdActOpen ? "" : " hidden"}></div>
       ${sdTimeBarHtml()}
     </div>`;
 
   lwWireDock();
   sdWireTime();
   paintLwTau();
+  sdSavedIdle();
   const rb = $("#sdRulesBtn"); if (rb) rb.addEventListener("click", sdToggleRules);
+  if (sdActOpen) sdShowActivity(true);      // refresh the activity panel after a beat
   lwMountCanvas(room, agents, props);
 
   // Everything on screen is now "seen"; only genuinely new lines animate next time.
@@ -6881,7 +6924,7 @@ function lwStartCreate(tool, world) {
   const figure = kind === "artifact" ? "ic:" + LW_OBJ_ICONS[0] : "av:" + LW_AV_VARIANTS[0];
   lwCreateFlow = { tool, kind, isShape, world, shimmer, anim, figure, seats: isShape ? 3 : 0,
                    name: "", brief: "", shape: "circle", path: [], pathPts: [], drawing: false,
-                   pop: null, preview: null, busy: false, dragged: false };
+                   mode: "new", pop: null, preview: null, busy: false, dragged: false };
   lwOpenCreatePopover();
 }
 function lwPendingNode(x, y, kind) {
@@ -6916,8 +6959,8 @@ function lwFigPaletteHtml(flow) {
   if (flow.kind === "artifact") {
     return LW_OBJ_ICONS.map((key) => {
       const on = flow.figure === "ic:" + key;
-      const inner = key === "mono" ? `<span class="lw-mono">A</span>` : lwObjGlyphSvg(key, 22, "currentColor");
-      return `<button class="lw-figbtn${on ? " on" : ""}" data-fig="ic:${escapeHtml(key)}" title="${escapeHtml(key)}">${inner}</button>`;
+      const inner = key === "mono" ? `<span class="lw-mono">A</span>` : lwObjGlyphSvg(key, 26, "currentColor");
+      return `<button class="lw-figbtn${on ? " on" : ""}" data-fig="ic:${escapeHtml(key)}" title="${escapeHtml(key === "mono" ? "monogram" : key)}">${inner}</button>`;
     }).join("");
   }
   const marker = "av:";
@@ -6960,31 +7003,56 @@ function lwOpenCreatePopover() {
   const flow = lwCreateFlow, overlay = $("#lwOverlay");
   if (!flow || !overlay) return;
   overlay.querySelectorAll(".lw-create-pop").forEach((n) => n.remove());
-  const isArt = flow.kind === "artifact";
+  const isShape = flow.isShape, isAgent = flow.kind === "agent", isObj = flow.kind === "artifact" && !isShape;
   const pop = document.createElement("div");
   pop.className = "lw-create-pop" + (reduceMotion() ? "" : " lw-pop-in");
+
+  let body;
+  if (isAgent) {
+    // create-new OR place someone already in the cast
+    body = `
+      <div class="lw-mode" id="lwCMode">
+        <button class="lw-mode-tab on" data-mode="new">Create new</button>
+        <button class="lw-mode-tab" data-mode="cast">From cast</button>
+      </div>
+      <div id="lwCNew">
+        <input class="sc-name" id="lwCName" placeholder="Name (optional)" autocomplete="off">
+        <div class="sc-label">Who are they?</div>
+        <textarea class="sc-input" id="lwCBrief" rows="2" placeholder="a cautious accountant who loves poker…"></textarea>
+        <div class="sc-label">Face</div>
+        <div class="lw-figpalette" id="lwCFig">${lwFigPaletteHtml(flow)}</div>
+      </div>
+      <div id="lwCCast" hidden><div class="lw-cast-list" id="lwCCastList"><p class="dim">loading cast…</p></div></div>`;
+  } else if (isObj) {
+    body = `
+      <input class="sc-name" id="lwCName" placeholder="Name (optional)" autocomplete="off">
+      <div class="sc-label">What is it?</div>
+      <textarea class="sc-input" id="lwCBrief" rows="2" placeholder="a deck of cards; a key; a note…"></textarea>
+      <div class="sc-label">Icon <span class="dim">how it looks on the canvas</span></div>
+      <div class="lw-figpalette" id="lwCFig">${lwFigPaletteHtml(flow)}</div>`;
+  } else {   // shape — a collating sticker; always has slots, never a glyph
+    body = `
+      <input class="sc-name" id="lwCName" placeholder="Name (optional)" autocomplete="off">
+      <div class="sc-label">What is it? <span class="dim">(optional)</span></div>
+      <textarea class="sc-input" id="lwCBrief" rows="2" placeholder="a poker table; a meeting circle…"></textarea>
+      <div class="sc-label">Slots <span class="dim">how many agents can gather</span></div>
+      <div class="lw-slots"><input type="range" id="lwCSlots" min="1" max="8" step="1" value="${flow.seats}">
+        <b id="lwCSlotsN">${flow.seats}</b></div>
+      <div class="sc-label">Shape</div>
+      <div class="sc-row" id="lwCShape">
+        <button class="sc-chip${flow.shape === "circle" ? " on" : ""}" data-shape="circle">◯ Circle</button>
+        <button class="sc-chip${flow.shape === "rect" ? " on" : ""}" data-shape="rect">▭ Rect</button>
+        <button class="sc-chip${flow.shape === "path" ? " on" : ""}" data-shape="draw">${flow.shape === "path" ? "✎ Custom ✓" : "✎ Draw"}</button>
+      </div>`;
+  }
+
   pop.innerHTML = `
     <div class="lw-pop-head" id="lwPopHead">
       <span class="lw-pop-grip" aria-hidden="true"></span>
-      <span class="lw-pop-title">${escapeHtml(flow.isShape ? "New shape" : isArt ? "New object" : "New agent")}</span>
+      <span class="lw-pop-title">${escapeHtml(isShape ? "New shape" : isObj ? "New object" : "New agent")}</span>
       <button class="lw-pop-x" id="lwCX" title="Close (Esc)" aria-label="Close"><svg viewBox="0 0 24 24" width="13" height="13"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg></button>
     </div>
-    <input class="sc-name" id="lwCName" placeholder="Name (optional)" autocomplete="off">
-    <div class="sc-label">${escapeHtml(isArt ? "What is it?" : "Who are they?")}</div>
-    <textarea class="sc-input" id="lwCBrief" rows="2" placeholder="${escapeHtml(isArt ? "a deck of cards; a shared checklist…" : "a cautious accountant who loves poker…")}"></textarea>
-    <div class="sc-label">${escapeHtml(isArt ? "Glyph" : "Face")}</div>
-    <div class="lw-figpalette" id="lwCFig">${lwFigPaletteHtml(flow)}</div>
-    ${isArt ? `<div class="sc-label">Seats <span class="dim">(&gt;0 makes a collating table)</span></div>
-      <div class="sc-row" id="lwCSeats">${[0, 2, 4, 6].map((n) =>
-        `<button class="sc-chip${n === flow.seats ? " on" : ""}" data-seats="${n}">${n === 0 ? "none" : n}</button>`).join("")}</div>
-      <div id="lwCShapeWrap" ${flow.seats > 0 ? "" : "hidden"}>
-        <div class="sc-label">Shape <span class="dim">(where the seats sit)</span></div>
-        <div class="sc-row" id="lwCShape">
-          <button class="sc-chip${flow.shape === "circle" ? " on" : ""}" data-shape="circle">◯ Circle</button>
-          <button class="sc-chip${flow.shape === "rect" ? " on" : ""}" data-shape="rect">▭ Rect</button>
-          <button class="sc-chip${flow.shape === "path" ? " on" : ""}" data-shape="draw">${flow.shape === "path" ? "✎ Custom ✓" : "✎ Draw"}</button>
-        </div>
-      </div>` : ""}
+    ${body}
     <div class="sc-actions">
       <button class="sc-ctl primary" id="lwCGo">Create</button>
       <button class="sc-ctl" id="lwCCancel">Cancel</button>
@@ -7007,27 +7075,66 @@ function lwOpenCreatePopover() {
     nameEl.focus();
     nameEl.addEventListener("input", (e) => {
       flow.name = e.target.value;
-      if (!isArt) { const box = pop.querySelector("#lwCFig"); if (box) { box.innerHTML = lwFigPaletteHtml(flow); wireFig(); } }
+      if (isAgent) { const box = pop.querySelector("#lwCFig"); if (box) { box.innerHTML = lwFigPaletteHtml(flow); wireFig(); } }
     });
   }
-  pop.querySelector("#lwCBrief").addEventListener("input", (e) => { flow.brief = e.target.value; });
-  pop.querySelectorAll("[data-seats]").forEach((b) => b.addEventListener("click", () => {
-    flow.seats = Number(b.dataset.seats);
-    pop.querySelectorAll("[data-seats]").forEach((x) => x.classList.toggle("on", x === b));
-    const wrap = pop.querySelector("#lwCShapeWrap"); if (wrap) wrap.hidden = !(flow.seats > 0);
-  }));
+  const briefEl = pop.querySelector("#lwCBrief");
+  if (briefEl) briefEl.addEventListener("input", (e) => { flow.brief = e.target.value; });
+
+  // shape: slots slider + shape chooser
+  const slots = pop.querySelector("#lwCSlots");
+  if (slots) slots.addEventListener("input", (e) => { flow.seats = Number(e.target.value); const n = pop.querySelector("#lwCSlotsN"); if (n) n.textContent = flow.seats; });
   pop.querySelectorAll("[data-shape]").forEach((b) => b.addEventListener("click", () => {
     const s = b.dataset.shape;
     if (s === "draw") { lwBeginPathDraw(); return; }   // enter the paint-a-shape mode
     flow.shape = s; flow.path = []; flow.pathPts = [];
     lwSyncShapeChips();
   }));
+
+  // agent: switch between Create-new and From-cast
+  pop.querySelectorAll("#lwCMode [data-mode]").forEach((b) => b.addEventListener("click", () => {
+    const mode = b.dataset.mode; flow.mode = mode;
+    pop.querySelectorAll("#lwCMode [data-mode]").forEach((x) => x.classList.toggle("on", x === b));
+    const nw = pop.querySelector("#lwCNew"), ct = pop.querySelector("#lwCCast");
+    if (nw) nw.hidden = mode !== "new";
+    if (ct) ct.hidden = mode !== "cast";
+    pop.querySelector("#lwCGo").style.display = mode === "cast" ? "none" : "";
+    if (mode === "cast") lwFillCast(pop);
+  }));
+
   pop.querySelector("#lwCX").addEventListener("click", lwCancelCreate);
   pop.querySelector("#lwCCancel").addEventListener("click", lwCancelCreate);
   pop.querySelector("#lwCGo").addEventListener("click", () => lwDoCreate(pop));
   pop.addEventListener("keydown", (e) => {   // Enter submits, except inside the multi-line brief
     if (e.key === "Enter" && e.target.id !== "lwCBrief") { e.preventDefault(); lwDoCreate(pop); }
   });
+}
+
+// Place an agent that already exists in the world's cast, instead of authoring a new one.
+async function lwFillCast(pop) {
+  const box = pop.querySelector("#lwCCastList"); if (!box) return;
+  let agents = [];
+  try { agents = (await api(`/api/lw/${lwWorldId}`)).agents || []; }
+  catch (e) { box.innerHTML = `<p class="dim">Could not load the cast.</p>`; return; }
+  const here = new Set(((lwRoom && lwRoom.agents) || []).map((a) => String(a.id)));
+  const avail = agents.filter((a) => !here.has(String(a.id)));
+  if (!avail.length) { box.innerHTML = `<p class="dim">Everyone is already in this scene.</p>`; return; }
+  box.innerHTML = avail.map((a) => {
+    const seed = lwAvatarSeed({ name: a.name, id: a.id, figure: a.figure });
+    return `<button class="lw-cast-item" data-cast="${escapeHtml(String(a.id))}">
+      <img alt="" src="${lwSvgUri(lwAvatarSvg(seed, 30))}"><span>${escapeHtml(a.name || "someone")}</span></button>`;
+  }).join("");
+  box.querySelectorAll("[data-cast]").forEach((b) => b.addEventListener("click", () => lwPlaceExisting(Number(b.dataset.cast))));
+}
+async function lwPlaceExisting(hid) {
+  const flow = lwCreateFlow; if (!flow || flow.busy) return;
+  flow.busy = true;
+  try {
+    await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/seat?human_id=${encodeURIComponent(hid)}`, { method: "POST" });
+    await api(`/api/lw/${lwWorldId}/pos`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: hid, x: flow.world.x, y: flow.world.y }) });
+    lwTool = "select"; lwCleanupCreate(); sdFlash(); await lwReloadRoom();
+  } catch (e) { toast(`Could not add them: ${e.message}`); flow.busy = false; }
 }
 function lwSyncShapeChips() {
   const flow = lwCreateFlow; if (!flow || !flow.pop) return;
@@ -7114,6 +7221,7 @@ function lwCreatedId(resp, keys) {
 async function lwDoCreate(pop) {
   const flow = lwCreateFlow;
   if (!flow || flow.busy) return;                 // single-flight: one call, not three
+  if (flow.mode === "cast") return;               // "From cast" places via lwPlaceExisting, not Create
   flow.busy = true;
   const go = pop.querySelector("#lwCGo");
   if (go) { go.disabled = true; go.textContent = "creating…"; }
@@ -7473,6 +7581,7 @@ document.querySelectorAll(".lw-tab").forEach((b) =>
     title.addEventListener("blur", commit);
   }
   $("#sdScenesBtn") && $("#sdScenesBtn").addEventListener("click", (e) => { e.stopPropagation(); sdToggleScenes(); });
+  $("#sdActBtn") && $("#sdActBtn").addEventListener("click", sdToggleActivity);
   $("#sdRoster") && $("#sdRoster").addEventListener("click", sdOpenRoster);
   document.addEventListener("click", (e) => {          // click-away closes the scenes menu
     const menu = $("#sdScenesMenu");

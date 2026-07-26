@@ -200,7 +200,9 @@ async def add_artifact(world_id: int, body: NewArtifact, request: Request, seed:
     spec = await authoring.author_artifact(body.name or "a thing", body.brief,
                                            complete=complete, settings=settings,
                                            model=tuning.get("scene_default_model"))
-    if spec["kind"] == "deck":
+    if spec["kind"] == "deck" and int(body.slots) <= 0:
+        # a deck only when no slots were asked for — a Shape (slots > 0) is always a
+        # collating Prop, even if its brief mentions cards.
         a = Deck.fresh(w.next_id(), seed=seed, name=body.name or "deck of cards")
         a.figure = body.figure or "deck"
     else:
