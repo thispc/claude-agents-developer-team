@@ -532,6 +532,18 @@ def test_floating_chrome_never_steals_the_pointer_from_the_canvas():
 
 
 @pytest.mark.hostonly
+def test_a_transform_change_redraws_the_hit_graph():
+    """Every path that changes the stage transform (fit, zoom, resize) must redraw the layer,
+    so the invisible hit graph tracks the visible scene — otherwise a token sits where the
+    click can't reach it. (Konva's autoDraw usually covers this, but we don't rely on it.)"""
+    js = _dash("app.js")
+    fit = js.split("function lwFitView")[1].split("\nfunction ")[0]
+    assert fit.count("batchDraw()") >= 2, "lwFitView must redraw on both the empty and fitted paths"
+    ro = js.split("new ResizeObserver")[1].split("});")[0]
+    assert "batchDraw()" in ro, "the ResizeObserver must redraw after resizing the stage (which clears the hit canvas)"
+
+
+@pytest.mark.hostonly
 def test_canvas_debug_logs_are_root_gated_and_free_when_off():
     """The canvas interaction log is a control-plane diagnostic: the Canvas tab is gated on
     me.is_root, and logging costs nothing (returns immediately) when capture is off."""

@@ -114,6 +114,8 @@ def _open_scene(page, wid, rid):
     """Bring the Studio section on and open one specific scene (bypasses world auto-pick)."""
     page.evaluate("""() => {
         for (const id of ['#sdRosterHost', '#sdScenesMenu']) { const e = document.querySelector(id); if (e) e.hidden = true; }
+        if (typeof sdActOpen !== 'undefined') sdActOpen = false;   // don't inherit a previous test's open Activity panel (a side panel covers tokens)
+        const ap = document.querySelector('#sdActivity'); if (ap) ap.hidden = true;
         showLifeworld();
     }""")
     page.evaluate("([wid, rid]) => { lwWorldId = wid; return lwOpenScene(rid); }", [wid, rid])
@@ -428,6 +430,41 @@ def test_the_title_trash_deletes_the_scene_and_opens_another(server, page):
     assert page.evaluate("() => lwRoomId") == keep, "did not fall back to the surviving scene"
     rooms = [r["id"] for r in c.get(f"/api/lw/{wid}").json()["rooms"]]
     assert doomed not in rooms and keep in rooms, f"scene not deleted server-side: {rooms}"
+
+
+def test_the_hit_graph_resolves_a_token_at_its_centre(server, page):
+    """The invisible hit region must sit exactly where the token is drawn: getIntersection at
+    a token's on-screen centre resolves to that token, not empty floor. (Guards the class of
+    'the token is right there but the click misses it'.)"""
+    c = server["client"]; wid, rid = _mk(c, "Hit")
+    h = c.post(f"/api/lw/{wid}/human", json={"name": "Ada"}).json()["human"]["id"]
+    c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/pos", json={"id": h, "x": 178, "y": 4})
+    _open_scene(page, wid, rid); page.wait_for_timeout(350)
+    who = page.evaluate("""(id) => { const e = lwKonva.agents.get(String(id)); const p = e.node.getAbsolutePosition();
+        const sh = lwKonva.stage.getIntersection(p); const t = sh && sh.findAncestor && sh.findAncestor('.token', true);
+        return t ? t.getAttr('lwId') : (sh ? ((sh.name && sh.name()) || '?') : 'stage'); }""", h)
+    assert who == str(h), f"the hit graph does not resolve the token at its own centre (got {who!r})"
+
+
+def test_a_missed_press_on_a_token_still_grabs_it(server, page):
+    """Root-cause-agnostic safety net: if the hit graph goes stale/offset so a press on a token
+    lands on 'empty floor', a press geometrically on the token's disc still recovers into a grab —
+    the person can never become un-grabbable. Simulated by forcing this token's hit to miss."""
+    c = server["client"]; wid, rid = _mk(c, "Recover")
+    h = c.post(f"/api/lw/{wid}/human", json={"name": "Ada"}).json()["human"]["id"]
+    c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/pos", json={"id": h, "x": 300, "y": 240})
+    _open_scene(page, wid, rid); page.wait_for_timeout(300)
+    page.evaluate("(id) => { lwKonva.agents.get(String(id)).node.listening(false); lwKonva.worldLayer.drawHit(); }", h)
+    missed = page.evaluate("""(id) => { const e = lwKonva.agents.get(String(id)); const p = e.node.getAbsolutePosition();
+        const sh = lwKonva.stage.getIntersection(p); return !sh || sh === lwKonva.stage; }""", h)
+    assert missed, "setup failed: the token's hit should be missing"
+    s = _agent_screen(page, h)
+    before = page.evaluate("(id) => lwKonva.agents.get(String(id)).node.x()", h)
+    _drag(page, s, {"x": s["x"] + 120, "y": s["y"] + 70})
+    after = page.evaluate("(id) => lwKonva.agents.get(String(id)).node.x()", h)
+    assert abs(after - before) > 30, f"a press on a token whose hit graph missed did not recover into a grab ({before}->{after})"
 
 
 def test_root_only_canvas_logs_capture_and_filter_an_interaction(server, page):

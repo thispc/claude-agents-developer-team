@@ -6576,7 +6576,7 @@ function lwMountCanvas(room, agents, props) {
   const worldLayer = new Konva.Layer();
   stage.add(gridLayer); stage.add(worldLayer);
 
-  lwKonva = { stage, gridLayer, worldLayer, host, roomId: String(lwRoomId),
+  lwKonva = { stage, gridLayer, worldLayer, host, roomId: lwWorldId + ":" + lwRoomId,   // world-scoped: room ids repeat across worlds, so a bare id bleeds one scene's view (and off-screen tokens) into another
               agents: new Map(), props: new Map(), glowing: new Set(), snap: null,
               menuWorld: null, sel: new Map(), arrows: null, arrowSrc: null, drag: null,
               marquee: null, panning: false, keyHandler: null, keyUpHandler: null, overPortal: false };
@@ -6714,10 +6714,40 @@ function lwMountCanvas(room, agents, props) {
         const scr = lwKonva.stage.getPointerPosition();
         if (scr) data.screen = { x: Math.round(scr.x), y: Math.round(scr.y) };
         data.view = { x: Math.round(lwKonva.stage.x()), y: Math.round(lwKonva.stage.y()), scale: +lwKonva.stage.scaleX().toFixed(3) };
+        if (near && near.insideBox && scr) {          // PARADOX: a token is under the click but the hit graph said empty
+          const idAt = (sx, sy) => { const sh = lwKonva.stage.getIntersection({ x: sx, y: sy }); const t = sh && lwTokenAncestor(sh); return t ? String(t.getAttr("lwId")) : (sh ? ((sh.name && sh.name()) || "?") : "-"); };
+          data.vprobe = [-24, -12, 0, 12, 24].map((d) => `${d}:${idAt(scr.x, scr.y + d)}`).join(" ");   // where does the hit region sit, vertically?
+          data.hprobe = [-24, -12, 0, 12, 24].map((d) => `${d}:${idAt(scr.x + d, scr.y)}`).join(" ");     // ...and horizontally?
+          try {
+            const hc = lwKonva.worldLayer.hitCanvas, sc = lwKonva.worldLayer.getCanvas();
+            data.ratios = { hit: hc && hc.pixelRatio, scene: sc && sc.pixelRatio };
+            if (hc && hc._canvas) data.hitPx = { w: hc._canvas.width, h: hc._canvas.height };
+          } catch (er) { /* internals moved */ }
+          lwKonva.worldLayer.drawHit();               // force-refresh the hit graph, then retry the exact point
+          data.afterRedraw = idAt(scr.x, scr.y);
+        }
       }
       lwLog("pointer", "down on " + lwHitDesc(e.target), data, "info");
     }
     if (lwTool !== "select" || e.target !== stage || lwKonva.panning) return;   // space held → let it pan
+    // Recovery: the press hit "empty floor", but if a token is geometrically on its disc the hit
+    // graph is stale/offset (proven by getClientRect, which doesn't use the hit canvas). Refresh
+    // the hit graph and grab that token instead of starting a marquee — so a click on a person can
+    // never silently miss, whatever the underlying Konva hit glitch. Only fires on a genuine miss.
+    const wr = lwPointerWorld();
+    const near = wr && lwNearestToken(wr);
+    if (near && near.dist < 36) {                 // within a disc radius of a token's centre
+      const entry = (near.type === "agent" ? lwKonva.agents : lwKonva.props).get(String(near.id));
+      if (entry) {
+        lwLogOn && lwLog("hit", `recovered a missed press → ${near.type}#${near.id} (hit graph was offset)`, { dist: Math.round(near.dist) }, "warn");
+        lwKonva.worldLayer.drawHit();             // also refresh so subsequent hovers/clicks resolve
+        lwSelSet(near.type, entry);
+        lwKonva.suppressClick = true;             // don't let the trailing stage-click clear the recovered selection
+        setTimeout(() => { if (lwKonva) lwKonva.suppressClick = false; }, 0);
+        try { entry.node.startDrag(); } catch (er) { /* a plain click still selected it */ }
+        return;
+      }
+    }
     const w = lwPointerWorld(); if (!w) return;
     const rect = new Konva.Rect({ x: w.x, y: w.y, width: 0, height: 0, fill: "rgba(46,110,91,.08)",
       stroke: "#2E6E5B", strokeWidth: 1, dash: [4, 4], listening: false, name: "marquee" });
@@ -6766,8 +6796,13 @@ function lwMountCanvas(room, agents, props) {
     if (!lwKonva || lwKonva.stage !== stage) return;
     const w = host.clientWidth, h = host.clientHeight;
     if (w > 0 && h > 0) {                         // never shrink to a fallback when host reads 0
-      if (stage.width() !== w || stage.height() !== h) { stage.width(w); stage.height(h); }
-      if (!lwKonva.framed) { lwFitView(); lwKonva.framed = true; }
+      const sized = stage.width() !== w || stage.height() !== h;
+      if (sized) { stage.width(w); stage.height(h); }   // this CLEARS both the scene AND hit canvases
+      let fitted = false;
+      if (!lwKonva.framed) { lwFitView(); lwKonva.framed = true; fitted = true; }
+      // A resize (or a fit) leaves the hit canvas cleared/mis-transformed relative to the scene
+      // until a full draw — the source of "the token is right there but the click misses it".
+      if (sized || fitted) lwKonva.worldLayer.batchDraw();
     }
   });
   lwKonva.ro.observe(host);
@@ -6798,8 +6833,8 @@ function lwSettleSize(stage, host) {
     if (w > 0 && h > 0) {
       if (stage.width() !== w || stage.height() !== h) { stage.width(w); stage.height(h); }
       if (!lwKonva.framed) { lwFitView(); lwKonva.framed = true; }
-      lwKonva.worldLayer.batchDraw();
-      return;                             // settled
+      lwKonva.worldLayer.draw();          // SYNC (not batchDraw): close the window where the hit graph
+      return;                             // is stale between the resize and the next animation frame
     }
     if (tries++ < 60) requestAnimationFrame(step);
   };
@@ -6821,7 +6856,7 @@ function lwFitView() {
   lwKonva.agents.forEach((e) => pts.push(e.node.position()));
   lwKonva.props.forEach((e) => pts.push(e.node.position()));
   const stage = lwKonva.stage;
-  if (!pts.length) { stage.position({ x: 0, y: 0 }); stage.scale({ x: 1, y: 1 }); lwSaveView(); return; }
+  if (!pts.length) { stage.position({ x: 0, y: 0 }); stage.scale({ x: 1, y: 1 }); lwSaveView(); lwKonva.worldLayer.batchDraw(); return; }
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   pts.forEach((p) => { minX = Math.min(minX, p.x); minY = Math.min(minY, p.y); maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y); });
   const pad = 130; minX -= pad; minY -= pad; maxX += pad; maxY += pad;
@@ -6831,6 +6866,7 @@ function lwFitView() {
   stage.scale({ x: scale, y: scale });
   stage.position({ x: (W - cw * scale) / 2 - minX * scale, y: (H - ch * scale) / 2 - minY * scale });
   lwSaveView();
+  lwKonva.worldLayer.batchDraw();   // a fit moves the transform — redraw so the HIT graph tracks the scene
 }
 
 // The dotted grid is a Miro-style affordance: hidden until a drag or a zoom, then
