@@ -800,6 +800,31 @@ def test_a_round_over_threads_plays_and_the_rulebook_round_trips(client):
     assert room["threads"][0]["rulebook"] == "be brief"
 
 
+def test_the_graph_chat_talks_to_agents_and_the_manager(client):
+    """The user can chat with any agent in the graph, or with the pinned manager; replies are
+    generated (deterministic offline) and the whole conversation persists per peer."""
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    rid = client.post(f"/api/lw/{wid}/room", json={"name": "r", "type": "freeplay"}).json()["room"]["id"]
+    a = client.post(f"/api/lw/{wid}/human", json={"name": "Harvey"}).json()["human"]["id"]
+    b = client.post(f"/api/lw/{wid}/human", json={"name": "Mike"}).json()["human"]["id"]
+    for h in (a, b):
+        client.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    th = client.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b}).json()["thread"]
+    client.post(f"/api/lw/{wid}/room/{rid}/thread/{th['id']}", json={"rulebook": "debate route A to B", "manager": {"budget": 2}})
+    # chat with the manager (pinned)
+    r = client.post(f"/api/lw/{wid}/room/{rid}/thread/{th['id']}/chat", json={"to": "manager", "text": "who's here?"}).json()
+    assert r["to"] == "manager" and len(r["chat"]) == 2 and r["chat"][-1]["role"] == "manager"
+    assert "harvey" in r["chat"][-1]["text"].lower() and "mike" in r["chat"][-1]["text"].lower()
+    # chat with a specific agent
+    r2 = client.post(f"/api/lw/{wid}/room/{rid}/thread/{th['id']}/chat", json={"to": str(a), "text": "hello"}).json()
+    assert r2["chat"][-1]["role"] == "agent" and r2["chat"][-1]["text"]
+    # both conversations persist, keyed by peer
+    hist = client.get(f"/api/lw/{wid}/room/{rid}/thread/{th['id']}/chat").json()["chats"]
+    assert "manager" in hist and str(a) in hist and len(hist["manager"]) == 2
+
+
 def test_a_thread_mediates_a_conversation_round_free():
     """Connected agents TALK: the manager composes a line for each (free & deterministic offline),
     each is its own 'say' beat grounded in the topic, and the whole round stays free."""
@@ -826,6 +851,35 @@ def test_a_one_way_arrow_restricts_who_hears():
     s.disconnect(a.id, b.id); s.connect(a.id, b.id, dir="both")
     t = s.threads[0]
     assert s._hears(t, a.id, b.id) and s._hears(t, b.id, a.id)           # bidirectional: both hear
+
+
+def test_agent_model_session_usage_and_sleep():
+    """An agent tracks model-uses in a rolling session window; at the cap it sleeps until the
+    window passes — the meter/red state the canvas shows."""
+    w = free_world()
+    a = w.spawn_human("A")
+    cap, win = a._session_params()
+    t0 = 1_000_000.0
+    assert a.usage(t0)["frac"] == 0.0 and not a.asleep(t0)
+    for i in range(cap):
+        a.note_spend(t0 + i)                                   # burn the whole session
+    u = a.usage(t0 + cap)
+    assert u["asleep"] is True and u["frac"] == 1.0 and u["used"] == cap
+    assert a.asleep(t0 + cap) is True
+    assert a.asleep(t0 + cap + win + 1) is False                # the window rolls off → awake again
+
+
+def test_a_sleeping_agent_sits_out_the_conversation():
+    """A resting agent (out of session quota) is skipped: only awake members talk in a round."""
+    _w, s, (a, b) = _threaded_room(("A", "B"))
+    cap, _ = b._session_params()
+    for _ in range(cap):
+        b.note_spend()                                         # B exhausts its session (uses real time)
+    assert b.asleep()
+    t = s.threads[0]; t["manager"] = {"model": "", "budget": 2}
+    asyncio.run(s.run_thread(t))
+    says = [r for r in s.log if r["kind"] == "say"]
+    assert {r["frm"] for r in says} == {a.id}                  # only the awake agent spoke
 
 
 def test_the_manager_mediates_the_whole_round_in_one_call():

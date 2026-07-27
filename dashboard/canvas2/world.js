@@ -37,9 +37,9 @@ export function createWorld(host) {
   svg.setAttribute("overflow", "visible");
   // one shared arrowhead marker for directed wires
   const defs = svgEl("defs", null, [
-    svgEl("marker", { id: "lw2-arrow", viewBox: "0 0 10 10", refX: "9", refY: "5",
-      markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" },
-      [svgEl("path", { d: "M0,0 L10,5 L0,10 z", fill: "hsl(160 45% 42%)" })]),
+    svgEl("marker", { id: "lw2-arrow", viewBox: "0 0 12 12", refX: "10", refY: "6",
+      markerWidth: "11", markerHeight: "11", orient: "auto-start-reverse" },
+      [svgEl("path", { d: "M1,1 L11,6 L1,11 z", fill: "hsl(160 52% 38%)" })]),
   ]);
   // A huge transparent rect that CATCHES empty-floor presses (pointer-events:all fires even on a
   // transparent fill), so marquee/pan start reliably and e.target is always a real SVG node.

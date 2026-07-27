@@ -150,6 +150,27 @@ class World:
         except Exception:
             return None
 
+    async def host_reply(self, cfg: dict, ring, rulebook: str, convo: list) -> str | None:
+        """The manager answering the USER in the graph's chat — one bounded call per user message.
+        It speaks as the mediator: it can explain what the agents are discussing, how it's holding
+        them to the rules, or take the user's direction. None → free deterministic fallback."""
+        if self._complete is None:
+            return None
+        import json
+        model = cfg.get("model") if cfg.get("model") in MODEL_WHITELIST else self._model_name
+        sys = ("You are the HOST/manager mediating a small group of agents for the USER. Answer the "
+               "user's latest message helpfully and briefly (2-4 sentences), in your own voice as the "
+               "mediator — explain what the agents are discussing, how you're enforcing the rules, or "
+               "take the user's direction. Plain text only.")
+        hist = "\n".join(f"{m.get('role')}: {m.get('text')}" for m in convo[-10:])
+        prompt = (f"AGENTS: {json.dumps([h.name for h in ring])}\nRULES: {json.dumps(rulebook or '(none set)')}\n"
+                  f"CHAT SO FAR:\n{hist}\nReply as the manager (plain text).")
+        try:
+            raw = await self._complete("anthropic", model, sys, prompt, self._settings, max_tokens=220)
+            return (raw or "").strip()[:600] or None
+        except Exception:
+            return None
+
     async def appraise(self, human: Human, signal: Signal, ctx: dict, free: bool = False) -> Packet:
         from . import appraise as appr
         # `free` forces Tier 0 even in Live mode — used for the conversation BROADCAST (a listener
@@ -158,6 +179,8 @@ class World:
             packet = await appr.model(human, signal, ctx, settings=self._settings,
                                       complete=self._complete, model_name=self.model_for(human),
                                       max_tokens=self._utter_tokens, rules=self._scene_rules)
+            if getattr(packet, "spent", 0):
+                human.note_spend()               # a real model-use counts against this agent's session
         else:
             packet = appr.deterministic(human, signal, ctx)
         # The code disposes: scene SHAPE rules clamp/bias the deltas AFTER the appraiser, so a rule

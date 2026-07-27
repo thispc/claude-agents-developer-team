@@ -16,6 +16,12 @@ def _flag(name: str, default: bool = False) -> bool:
 # engine remains as a fallback: set CANVAS_V2=0 (or false/no/off) to serve it.
 CANVAS_V2 = _flag("CANVAS_V2", default=True)
 
+# Per-agent MODEL session usage — an agent that burns its model's session quota goes to sleep
+# until the rolling window passes (starting model: Claude, whose subscription session is ~5h).
+# Usage = model-uses within the window; at the cap the agent sleeps. Both are env-tunable.
+AGENT_SESSION_WINDOW_S = int(_env("AGENT_SESSION_WINDOW_S", str(5 * 3600)))   # Claude session ≈ 5h rolling
+AGENT_SESSION_CAP = int(_env("AGENT_SESSION_CAP", "30"))                      # model-uses before sleep
+
 ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY")
 # Subscription auth (Claude Pro/Max): long-lived OAuth token from `claude setup-token`.
 # If both are set, the API key wins and BILLS API CREDIT — set only one.

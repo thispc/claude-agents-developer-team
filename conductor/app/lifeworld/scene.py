@@ -215,13 +215,16 @@ class Scene:
         says what, in what order, and each utterance is broadcast to whoever the arrows let hear it."""
         from .threads import members_of
         ring = [h for h in (self.world.get(i) for i in members_of(thread)) if isinstance(h, Human)]
+        ring = [h for h in ring if not h.asleep()]     # agents that hit their model's session cap are resting
         if not ring:
             return
         cfg = thread.get("manager", {}) or {}
+        budget = max(0, min(int(cfg.get("budget", 2) or 0), 4))
         rulebook = (thread.get("rulebook") or thread.get("manager", {}).get("note", "") or "").strip()
         # The manager's ONE bounded spend (Live only): a single call that both enforces and mediates.
+        # Skip it entirely when the budget is 0 — a muted graph must never pay for a discarded call.
         plan = None
-        if self.world.is_live() and cfg.get("model"):
+        if self.world.is_live() and cfg.get("model") and budget > 0:
             plan = await self.world.host_plan(cfg, ring, rulebook, self._thread_transcript(ring))
         await self._host_manage(thread, ring, plan)   # survey + enforce (from the one plan, or free rulebook)
         await self._converse(thread, ring, plan)      # mediate one round; the members talk (or free round)
@@ -275,6 +278,7 @@ class Scene:
             return
         topic = (thread.get("rulebook") or "").strip() or "the matter at hand"
         # The round comes from the manager's single plan (Live); free & deterministic otherwise.
+        live_round = bool(plan and plan.get("round"))
         lines = (plan or {}).get("round") or self._free_round(ring, topic)
         # The code disposes: each agent SAYS its line (a beat), broadcast free to whoever can hear it.
         for item in lines:
@@ -284,10 +288,58 @@ class Scene:
             text = str(item.get("text", ""))[:200]
             if not text:
                 continue
+            if live_round:
+                speaker.note_spend()          # participating in a model-backed round uses this agent's session
             self._record("say", speaker.id, f"{speaker.name}: {text}", frm=speaker.id)
             for listener in ring:
                 if listener.id != speaker.id and self._hears(thread, speaker.id, listener.id):
                     await self._hear(speaker, listener, text)
+
+    # --- direct chat: the user talks to any agent, or to the graph's manager (pinned) ----
+    async def chat(self, thread: dict, to: str, text: str) -> dict:
+        text = (text or "").strip()[:500]
+        chats = thread.setdefault("chats", {})
+        key = "manager" if str(to) == "manager" else str(to)
+        convo = chats.setdefault(key, [])
+        if not text:
+            return {"chat": convo[-40:], "to": key}
+        convo.append({"role": "user", "text": text, "ts": time.time()})
+        from .threads import members_of
+        ring = [h for h in (self.world.get(i) for i in members_of(thread)) if isinstance(h, Human)]
+        if key == "manager":
+            reply = await self._manager_reply(thread, ring, convo)
+            convo.append({"role": "manager", "text": reply, "ts": time.time()})
+        else:
+            agent = self.world.get(int(key)) if key.lstrip("-").isdigit() else None
+            if not isinstance(agent, Human):
+                convo.pop()
+                return {"error": "no such agent"}
+            convo.append({"role": "agent", "text": await self._agent_reply(agent, text), "ts": time.time()})
+        chats[key] = convo[-40:]                     # bound the history we keep
+        return {"chat": chats[key], "to": key}
+
+    async def _agent_reply(self, agent: Human, text: str) -> str:
+        if agent.asleep():
+            return f"({agent.name} is resting — out of model quota for now)"
+        packet = await self.deliver(
+            Signal(kind="say", from_id=None, sense="hearing", intensity=0.6, stakes=0.6,
+                   payload={"text": text, "tone": "neutral"}, domain=self.domain), agent)
+        reply = (packet.action or {}).get("text") or packet.understood
+        if not self.world.is_live():                 # offline: a persona-flavoured line beats the canned reflex
+            reply = self._free_line(agent, text)
+        return str(reply or "…")[:600]
+
+    async def _manager_reply(self, thread: dict, ring: list[Human], convo: list) -> str:
+        cfg = thread.get("manager", {}) or {}
+        rulebook = (thread.get("rulebook") or "").strip()
+        if self.world.is_live() and cfg.get("model"):
+            r = await self.world.host_reply(cfg, ring, rulebook, convo)
+            if r:
+                return r
+        names = ", ".join(h.name for h in ring) or "the group"
+        if rulebook:
+            return f"I'm mediating {names} under: “{rulebook[:140]}”. Tell me how you'd like to steer it, or press step to run a round."
+        return f"I'm mediating {names}. Give me a rulebook (set the graph's rules) and I'll run a discussion — or ask me anything about them."
 
     async def _host_manage(self, thread: dict, ring: list[Human], plan: dict | None = None) -> None:
         """The hidden manager surveys the graph and issues up to `budget` rule-enforcement lines to
@@ -353,7 +405,8 @@ class Scene:
                 # agents placed on the canvas, positioned by pos; the UI lays them out
                 "agents": [{"id": h.id, "name": h.name, "figure": h.figure,
                             "pos": list(h.pos), "mood": h.psyche.mood,
-                            "wants": h.drives.dominant_goal()[0], "tau": h.tau}
+                            "wants": h.drives.dominant_goal()[0], "tau": h.tau,
+                            "usage": h.usage()}                       # model session usage → the meter/sleep
                            for h in self.players()],
                 "props": [{"id": a.id, "name": a.name, "kind": a.kind, "figure": a.figure,
                            "pos": list(a.pos), "public": a.public, "sealed": bool(a.secret),

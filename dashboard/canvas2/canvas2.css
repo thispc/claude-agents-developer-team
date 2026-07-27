@@ -17,7 +17,9 @@
 .lw2-label { font: 12.5px system-ui, sans-serif; fill: #1b2021; pointer-events: none; }
 .lw2-deck .lw2-label, .lw2-tile .lw2-label, .lw2-table .lw2-label { fill: #3a3f3d; font-size: 12px; }
 .lw2-star { fill: #e0a93b; font-size: 17px; pointer-events: none; }
-.lw2-mood { pointer-events: none; }
+.lw2-usage { pointer-events: none; }
+.lw2-token.lw2-asleep { opacity: 0.5; }            /* out of model session quota → resting */
+.lw2-zzz { fill: #6b7a76; font: 700 15px system-ui, sans-serif; pointer-events: none; }
 
 /* selection — a green ring on the body + a soft lift on the group */
 .lw2-token.lw2-sel { filter: drop-shadow(0 1px 4px rgba(46, 110, 91, 0.45)); }
@@ -28,16 +30,21 @@
 .lw2-handle { fill: #fff; stroke: hsl(160 62% 42%); stroke-width: 2; cursor: crosshair; }
 .lw2-handle:hover { fill: hsl(160 62% 92%); }
 
-/* wires */
+/* wires — two-way reads lighter/plain, one-way reads bold with a clear arrowhead */
 .lw2-wire { cursor: pointer; }
-.lw2-wire-sel .lw2-wire-vis { stroke: hsl(160 55% 36%); stroke-width: 4; }
+.lw2-wire-both .lw2-wire-vis { opacity: 0.62; }
+.lw2-wire-one .lw2-wire-vis { opacity: 0.95; }
+.lw2-wire-sel .lw2-wire-vis { stroke: hsl(160 55% 36%); stroke-width: 4; opacity: 1; }
 .lw2-rubber { stroke: hsl(160 62% 42%); stroke-width: 2; stroke-dasharray: 6 4; pointer-events: none; }
 
 /* marquee */
 .lw2-marquee { fill: rgba(46, 110, 91, 0.08); stroke: #2e6e5b; stroke-width: 1; stroke-dasharray: 4 4; pointer-events: none; }
 
-/* speech bubbles — the agents talking, one per speaker for the latest round */
-.lw2-bubble-fo { overflow: visible; }
+/* speech bubbles — the agents talking, revealed in the manager's speaking order (numbered) */
+.lw2-bubble-fo { overflow: visible; transition: opacity 0.28s ease; }
+.lw2-bubble-n { display: inline-flex; align-items: center; justify-content: center; min-width: 15px; height: 15px;
+  margin-right: 5px; padding: 0 3px; border-radius: 8px; background: hsl(160 45% 42%); color: #fff;
+  font-size: 9.5px; font-weight: 700; vertical-align: 1px; }
 .lw2-bubble-wrap { display: flex; justify-content: center; align-items: flex-end; height: 96px; }
 .lw2-bubble {
   max-width: 186px; padding: 7px 10px; border-radius: 12px;

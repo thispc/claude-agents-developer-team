@@ -13,17 +13,16 @@ const clamp01 = (v) => Math.max(0, Math.min(1, v == null ? 0.5 : +v));
 export function tokenTransform(x, y) { return `translate(${x} ${y})`; }
 export function setPos(g, x, y) { g.setAttribute("transform", tokenTransform(x, y)); }
 
-// A small horizontal confidence/stress pair, matching v1's lwMoodBarNodes.
-function moodBars(mood, y) {
-  mood = mood || {};
-  const w = 26, h = 5, gap = 4, x0 = -(w * 2 + gap) / 2;
-  const bar = (bx, frac, color) => svgEl("g", null, [
-    svgEl("rect", { x: bx, y, width: w, height: h, rx: 3, fill: "rgba(0,0,0,.13)" }),
-    svgEl("rect", { x: bx, y, width: Math.max(1, w * clamp01(frac)), height: h, rx: 3, fill: color }),
-  ]);
-  return svgEl("g", { class: "lw2-mood" }, [
-    bar(x0, mood.confidence, "#3F7A3F"),
-    bar(x0 + w + gap, mood.stress, "#8A6A1F"),
+// The MODEL SESSION USAGE meter (replaces the old mood bars): green while there's headroom,
+// amber as the agent nears its model's session cap, red when it's out and asleep.
+function usageMeter(usage, y) {
+  usage = usage || {};
+  const frac = clamp01(usage.frac || 0);
+  const w = 56, h = 6, x0 = -w / 2;
+  const color = usage.asleep ? "#b23b3b" : frac >= 0.85 ? "#c9721f" : frac >= 0.6 ? "#c9a11f" : "#3F7A3F";
+  return svgEl("g", { class: "lw2-usage" }, [
+    svgEl("rect", { x: x0, y, width: w, height: h, rx: 3, fill: "rgba(0,0,0,.13)" }),
+    svgEl("rect", { x: x0, y, width: Math.max(1, w * frac), height: h, rx: 3, fill: color }),
   ]);
 }
 
@@ -34,15 +33,17 @@ function labelText(text, y) {
 export function agentNode(a) {
   const R = SIZES.AGENT_R, seed = W.lwAvatarSeed(a), manager = W.lwIsManager(a);
   const rim = manager ? "#2C6A63" : W.lwAvatarColor(seed);
-  const g = svgEl("g", { class: "lw2-token lw2-agent" + (manager ? " lw2-manager" : ""), "data-id": String(a.id), "data-kind": "agent" });
+  const asleep = !!(a.usage && a.usage.asleep);
+  const g = svgEl("g", { class: "lw2-token lw2-agent" + (manager ? " lw2-manager" : "") + (asleep ? " lw2-asleep" : ""), "data-id": String(a.id), "data-kind": "agent" });
   g.append(
     svgEl("circle", { r: R + 3, fill: rim, class: "lw2-rim" }),
     svgEl("circle", { r: R, class: "lw2-body", fill: W.lwAvatarBg(seed), stroke: "rgba(255,255,255,.9)", "stroke-width": 2 }),
     svgEl("image", { href: W.lwSvgUri(W.lwAvatarSvg(seed, R * 2)), x: -R, y: -R, width: R * 2, height: R * 2, "pointer-events": "none" }),
     labelText(a.name || "someone", R + 8),
-    moodBars(a.mood, R + 26),
+    usageMeter(a.usage, R + 26),
   );
   if (manager) g.append(svgEl("text", { class: "lw2-star", x: 0, y: -R - 10, "text-anchor": "middle", text: "★" }));
+  if (asleep) g.append(svgEl("text", { class: "lw2-zzz", x: R - 4, y: -R + 2, "text-anchor": "middle", text: "z" }));
   return g;
 }
 
@@ -113,13 +114,14 @@ export function node(kind, data) { return kind === "agent" ? agentNode(data) : p
 
 // A speech bubble above a token (foreignObject → an HTML div so text wraps). Non-interactive;
 // it rides the token's own transform, so it moves when the token moves. Rebuilt each round.
-export function speechBubble(text) {
+export function speechBubble(text, order) {
   const fo = svgEl("foreignObject", { class: "lw2-bubble-fo", x: -95, y: -118, width: 190, height: 96, "pointer-events": "none", overflow: "visible" });
   const wrap = document.createElement("div");
   wrap.className = "lw2-bubble-wrap";
   const div = document.createElement("div");
   div.className = "lw2-bubble";
-  div.textContent = String(text || "").slice(0, 180);
+  if (order) { const n = document.createElement("span"); n.className = "lw2-bubble-n"; n.textContent = String(order); div.appendChild(n); }   // speaking order
+  div.appendChild(document.createTextNode(String(text || "").slice(0, 180)));
   wrap.appendChild(div);
   fo.appendChild(wrap);
   return fo;
@@ -129,12 +131,15 @@ export function speechBubble(text) {
 // hit-line sits under the thin visible one so it's easy to click (native hit-testing on the stroke).
 export function wireNode(edge) {
   const dir = edge.dir || "both";
-  const g = svgEl("g", { class: "lw2-wire", "data-tid": String(edge.tid), "data-a": String(edge.a), "data-b": String(edge.b) });
+  const oneWay = dir === "a2b" || dir === "b2a";
+  const g = svgEl("g", { class: "lw2-wire" + (oneWay ? " lw2-wire-one" : " lw2-wire-both"),
+    "data-tid": String(edge.tid), "data-a": String(edge.a), "data-b": String(edge.b) });
   g.append(
     svgEl("line", { class: "lw2-wire-hit", x1: edge.ax, y1: edge.ay, x2: edge.bx, y2: edge.by,
       stroke: "transparent", "stroke-width": 18, "pointer-events": "stroke" }),
+    // one-way: a bold solid line + a clear arrowhead at the head. two-way: a lighter plain line, no head.
     svgEl("line", { class: "lw2-wire-vis", x1: edge.ax, y1: edge.ay, x2: edge.bx, y2: edge.by,
-      stroke: "hsl(160 45% 42%)", "stroke-width": 2, "stroke-linecap": "round", "pointer-events": "none",
+      stroke: "hsl(160 45% 42%)", "stroke-width": oneWay ? 2.75 : 2, "stroke-linecap": "round", "pointer-events": "none",
       "stroke-dasharray": edge.closed ? null : "8 5",
       "marker-end": dir === "a2b" ? "url(#lw2-arrow)" : null,
       "marker-start": dir === "b2a" ? "url(#lw2-arrow)" : null }),

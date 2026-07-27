@@ -68,6 +68,7 @@ export function mount(host, ctx) {
 
 export function destroy() {
   const inst = ARM; if (!inst) return;
+  if (inst._speechTimers) inst._speechTimers.forEach((t) => clearTimeout(t));
   try { inst._teardown && inst._teardown(); } catch (e) { /* */ }
   try { inst.world.destroy(); } catch (e) { /* */ }
   if (W.LWCanvas2._inst === inst) W.LWCanvas2._inst = null;
@@ -92,15 +93,25 @@ function refresh(inst, room, agents, props) {
 // Speech bubbles for the MOST RECENT round's utterances — so a step visibly shows the agents
 // talking. One bubble per speaker; rebuilt on every refresh (the next round replaces them).
 function showSpeech(inst, room) {
+  if (inst._speechTimers) inst._speechTimers.forEach((t) => clearTimeout(t));
+  inst._speechTimers = [];
   const says = (room.log || []).filter((r) => r.kind === "say" && r.frm != null);
   if (!says.length) return;
   const maxRound = Math.max(...says.map((r) => r.round || 0));
-  const latest = new Map();
-  says.forEach((r) => { if ((r.round || 0) === maxRound) latest.set(String(r.frm), r.text); });
-  latest.forEach((text, id) => {
-    const t = inst.tokens.get(id); if (!t) return;
-    const say = String(text).replace(/^[^:]+:\s*/, "");   // drop the "Name: " prefix the beat carries
-    t.g.appendChild(speechBubble(say));
+  // log order within the round == the manager's chosen SPEAKING order — preserve it, one bubble/speaker
+  const seen = new Set(), ordered = [];
+  says.filter((r) => (r.round || 0) === maxRound).forEach((r) => {
+    const id = String(r.frm); if (!inst.tokens.get(id)) return;
+    const say = String(r.text).replace(/^[^:]+:\s*/, "");   // drop the "Name: " prefix the beat carries
+    const found = ordered.find((o) => o.id === id);
+    if (found) found.text = say; else { seen.add(id); ordered.push({ id, text: say }); }
+  });
+  // reveal them one at a time, in order, so a debate is followable (numbered 1..N)
+  ordered.forEach((o, i) => {
+    const t = inst.tokens.get(o.id); if (!t) return;
+    const fo = speechBubble(o.text, ordered.length > 1 ? i + 1 : 0);
+    if (ordered.length > 1) { fo.style.opacity = "0"; inst._speechTimers.push(setTimeout(() => { fo.style.opacity = "1"; }, i * 650)); }
+    t.g.appendChild(fo);
   });
 }
 
@@ -192,7 +203,8 @@ function graphSelect(inst, id) {
   [...new Set(t.edges.flatMap((e) => [String(e[0]), String(e[1])]))].forEach((nid) => addSel(inst, nid));
   try {
     W.lwShowActions && W.lwShowActions("graph", [
-      { label: "⚙ Manage", onClick: () => W.sdOpenThreads && W.sdOpenThreads(t.id) },
+      { label: "💬 Chat", onClick: () => W.sdOpenChat && W.sdOpenChat(t.id) },
+      { label: "⚙ Rules", onClick: () => W.sdOpenThreads && W.sdOpenThreads(t.id) },
       { label: "✕ Delete graph", danger: true, onClick: async () => {
         if (!confirm("Delete this graph? The tokens stay; only the connections go.")) return;
         try { await W.api(`/api/lw/${inst.ctx.worldId}/room/${inst.ctx.roomId}/thread/${t.id}`, { method: "DELETE" }); W.sdFlash && W.sdFlash(); W.lwReloadRoom && W.lwReloadRoom(); }

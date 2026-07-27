@@ -89,6 +89,11 @@ class RefineBody(BaseModel):
     text: str = ""
 
 
+class ChatBody(BaseModel):
+    to: str = "manager"                     # "manager" (pinned) or an agent id in the graph
+    text: str = ""
+
+
 class NewRoom(BaseModel):
     name: str = "a room"
     type: str = "freeplay"                  # home | school | college | office | casino | freeplay
@@ -494,6 +499,37 @@ def thread_delete(world_id: int, room_id: int, tid: int, request: Request) -> di
     s.threads = [t for t in s.threads if t["id"] != tid]
     store.save(w)
     return {"threads": s.threads}
+
+
+@router.get("/{world_id}/room/{room_id}/thread/{tid}/chat")
+def thread_chat_history(world_id: int, room_id: int, tid: int, request: Request) -> dict:
+    """The saved chats for a graph: {peer_id | "manager": [{role, text, ts}, …]}."""
+    _own(request, world_id)
+    w = store.load(world_id)
+    s = w.scene(room_id)
+    if not s:
+        raise HTTPException(404, "no such room")
+    t = s.thread(tid)
+    if not t:
+        raise HTTPException(404, "no such thread")
+    return {"chats": t.get("chats", {})}
+
+
+@router.post("/{world_id}/room/{room_id}/thread/{tid}/chat")
+async def thread_chat(world_id: int, room_id: int, tid: int, body: ChatBody, request: Request) -> dict:
+    """Send a message to an agent in the graph, or to the graph's manager (pinned). One bounded
+    model call per message in Live mode (deterministic offline); the reply is appended and saved."""
+    _own(request, world_id)
+    w = store.load(world_id)
+    s = w.scene(room_id)
+    if not s:
+        raise HTTPException(404, "no such room")
+    t = s.thread(tid)
+    if not t:
+        raise HTTPException(404, "no such thread")
+    res = await s.chat(t, body.to, body.text)
+    store.save(w)
+    return res
 
 
 @router.post("/{world_id}/touch")

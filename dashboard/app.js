@@ -5567,25 +5567,24 @@ async function sdOpenThreads(focusId) {
   const models = LW_MODELS.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join("");
   let threads = (room.threads || []).slice();
   if (focusId != null) threads.sort((a, b) => (a.id === focusId ? -1 : b.id === focusId ? 1 : 0));   // focused graph first
+  // ONE rules field for the whole graph — no thread/arrow/edge plumbing exposed. A graph's rules
+  // ARE its manager's brief; the manager (model + a bounded per-round budget) runs them.
   const card = (t) => `<div class="sd-thread" data-tid="${t.id}">
-      <div class="sd-thread-head"><input class="sd-thread-name" value="${escapeHtml(t.name || ("graph " + t.id))}">
-        <span class="sd-thread-dir">${t.edges && t.edges.some((e) => e[2] !== "both") ? "→" : "⇄"}</span>
-        <button class="sd-thread-del" title="Break this graph apart">✕</button></div>
       <div class="sd-thread-members">${escapeHtml([...new Set((t.edges || []).flatMap((e) => [e[0], e[1]]))].map(nameOf).join(" · ") || "no members")}</div>
-      <div class="sc-label">Rulebook <span class="dim">what the manager makes happen in this graph</span></div>
-      <textarea class="sc-input sd-thread-book" rows="4" placeholder="e.g. anyone can start — I want a debate on the most sustainable route from A to B.">${escapeHtml(t.rulebook || "")}</textarea>
+      <div class="sc-label">Rules for this graph <span class="dim">plain language — the manager makes it happen</span></div>
+      <textarea class="sc-input sd-thread-book" rows="5" placeholder="e.g. anyone can start — I want a debate on the most sustainable route from A to B.">${escapeHtml(t.rulebook || "")}</textarea>
       <div class="sd-book-actions"><button class="sd-book-refine">✨ Refine with AI</button></div>
       <div class="sc-label">Hidden manager <span class="dim">orchestrates it · a black box unless you're root</span></div>
       <div class="sd-thread-mgr">
         <label>Model <select class="sd-mgr-model">${models}</select></label>
         <label>Budget <input class="sd-mgr-budget" type="number" min="0" max="4" value="${(t.manager && t.manager.budget) ?? 2}"></label>
       </div>
-      <div class="sc-actions"><button class="sc-ctl primary sd-thread-save">Save</button></div>
+      <div class="sc-actions"><button class="sc-ctl primary sd-thread-save">Save rules</button></div>
     </div>`;
   host.innerHTML = `<div class="sd-roster-card sd-threads-card">
-    <div class="sd-roster-head"><h3>Graphs</h3><span class="dim">${threads.length} · connect nodes with the handles on a selected token</span>
+    <div class="sd-roster-head"><h3>Graph rules</h3><span class="dim">the manager runs these across the graph</span>
       <button class="sd-close" id="sdThreadsClose">✕</button></div>
-    <div class="sd-threads-list">${threads.length ? threads.map(card).join("") : `<p class="dim">No graphs yet. Select a token, then drag one of its four handles onto another token to connect them.</p>`}</div>
+    <div class="sd-threads-list">${threads.length ? threads.map(card).join("") : `<p class="dim">No graph yet. Select a token, then drag one of its four handles onto another token to connect them.</p>`}</div>
   </div>`;
   $("#sdThreadsClose").addEventListener("click", () => { host.hidden = true; });
   threads.forEach((t) => {
@@ -5598,19 +5597,84 @@ async function sdOpenThreads(focusId) {
       catch (e) { toast(`Could not refine: ${e.message}`); }
       btn.disabled = false; btn.textContent = "✨ Refine with AI";
     });
-    el.querySelector(".sd-thread-del").addEventListener("click", async () => {
-      if (!confirm(`Break "${t.name || "this graph"}" apart? The tokens stay; only the connections go.`)) return;
-      try { await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${t.id}`, { method: "DELETE" }); sdFlash(); await lwReloadRoom(); sdOpenThreads(); }
-      catch (e) { toast(`Could not delete: ${e.message}`); }
-    });
     el.querySelector(".sd-thread-save").addEventListener("click", async () => {
-      const body = { name: el.querySelector(".sd-thread-name").value, rulebook: book.value,
+      const body = { rulebook: book.value,
         manager: { model: mm ? mm.value : "", budget: Number(el.querySelector(".sd-mgr-budget").value) || 0 } };
       sdFlash();
-      try { await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${t.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); toast("rulebook saved"); await lwReloadRoom(); }
+      try { await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${t.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); toast("rules saved"); await lwReloadRoom(); }
       catch (e) { toast(`Could not save: ${e.message}`); }
     });
   });
+}
+
+// ---- the graph chat: talk to any agent, or to the pinned manager (the main use case) ----
+let sdChatState = null;
+async function sdOpenChat(tid, peer) {
+  const host = $("#sdRosterHost"); if (!host || !lwWorldId) return;
+  host.hidden = false;
+  host.innerHTML = `<div class="sd-roster-card"><p class="dim">opening chat…</p></div>`;
+  let room;
+  try { room = (await api(`/api/lw/${lwWorldId}/room/${lwRoomId}`)).room; }
+  catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="dim">Could not open chat: ${escapeHtml(e.message)}</p></div>`; return; }
+  const threads = room.threads || [];
+  const t = (tid != null && threads.find((x) => x.id === tid)) || threads[0];
+  if (!t) { host.innerHTML = `<div class="sd-roster-card"><div class="sd-roster-head"><h3>Chat</h3><button class="sd-close" onclick="this.closest('#sdRosterHost').hidden=true">✕</button></div><p class="dim">Connect some tokens into a graph first.</p></div>`; return; }
+  const agentById = new Map((room.agents || []).map((a) => [a.id, a]));
+  const members = [...new Set((t.edges || []).flatMap((e) => [e[0], e[1]]))].map((id) => agentById.get(id)).filter(Boolean);
+  sdChatState = { tid: t.id, peer: peer || (sdChatState && sdChatState.tid === t.id ? sdChatState.peer : "manager"), members, chats: t.chats || {}, search: "" };
+  sdRenderChat();
+}
+function sdScrollChat() { const m = $("#sdChatMsgs"); if (m) m.scrollTop = m.scrollHeight; }
+function sdRenderChat() {
+  const host = $("#sdRosterHost"), st = sdChatState; if (!host || !st) return;
+  const peers = [{ id: "manager", name: "Manager", manager: true }, ...st.members.map((a) => ({ id: a.id, name: a.name, agent: a }))];
+  const q = (st.search || "").toLowerCase();
+  const shown = peers.filter((p) => p.manager || p.name.toLowerCase().includes(q));   // the manager is always pinned + shown
+  const av = (p) => p.manager ? `<div class="sd-chat-av mgr">★</div>`
+    : `<img class="sd-chat-av" alt="" src="${lwSvgUri(lwAvatarSvg(lwAvatarSeed(p.agent), 36))}">`;
+  const peerRow = (p) => {
+    const on = String(p.id) === String(st.peer), last = (st.chats[String(p.id)] || []).slice(-1)[0];
+    return `<button class="sd-chat-peer${on ? " on" : ""}${p.manager ? " pinned" : ""}" data-peer="${escapeHtml(String(p.id))}">
+      ${av(p)}<span class="sd-chat-peer-main"><span class="sd-chat-peer-name">${escapeHtml(p.name)}${p.manager ? ` <span class="sd-chat-pin">pinned</span>` : (p.agent && p.agent.usage && p.agent.usage.asleep ? ` <span class="sd-chat-zzz">z</span>` : "")}</span>
+      <span class="sd-chat-peer-last">${last ? escapeHtml(trim(last.text, 40)) : `<span class="dim">no messages yet</span>`}</span></span></button>`;
+  };
+  const active = peers.find((p) => String(p.id) === String(st.peer)) || peers[0];
+  const convo = st.chats[String(st.peer)] || [];
+  const msgs = convo.length ? convo.map((m) => `<div class="sd-msg ${m.role === "user" ? "me" : "them"}"><div class="sd-msg-b">${escapeHtml(m.text)}</div></div>`).join("")
+    : `<p class="dim sd-chat-empty">Say hello to ${escapeHtml(active.name)}.${active.manager ? " The manager mediates the whole graph." : ""}</p>`;
+  host.innerHTML = `<div class="sd-roster-card sd-chat-card">
+    <div class="sd-roster-head"><h3>Chat</h3><span class="dim">graph ${st.tid}</span><button class="sd-close" id="sdChatClose">✕</button></div>
+    <div class="sd-chat-body">
+      <div class="sd-chat-list">
+        <input class="sd-chat-search" placeholder="Search people…" value="${escapeHtml(st.search)}">
+        <div class="sd-chat-peers">${shown.map(peerRow).join("")}</div>
+      </div>
+      <div class="sd-chat-pane">
+        <div class="sd-chat-pane-head">${av(active)}<span>${escapeHtml(active.name)}${active.manager ? ` · <span class="dim">mediator</span>` : ""}</span></div>
+        <div class="sd-chat-msgs" id="sdChatMsgs">${msgs}</div>
+        <div class="sd-chat-compose"><input id="sdChatText" placeholder="Message ${escapeHtml(active.name)}…" autocomplete="off"><button id="sdChatSend" class="sc-ctl primary">Send</button></div>
+      </div>
+    </div></div>`;
+  $("#sdChatClose").addEventListener("click", () => { host.hidden = true; });
+  const search = host.querySelector(".sd-chat-search");
+  search.addEventListener("input", (e) => { st.search = e.target.value; const at = e.target.selectionStart; sdRenderChat(); const s2 = host.querySelector(".sd-chat-search"); if (s2) { s2.focus(); s2.setSelectionRange(at, at); } });
+  host.querySelectorAll(".sd-chat-peer").forEach((b) => b.addEventListener("click", () => { st.peer = b.dataset.peer; sdRenderChat(); }));
+  const send = async () => {
+    const inp = $("#sdChatText"), text = inp.value.trim(); if (!text) return;
+    inp.value = "";
+    (st.chats[String(st.peer)] = st.chats[String(st.peer)] || []).push({ role: "user", text });   // optimistic
+    sdRenderChat(); sdScrollChat();
+    const busy = $("#sdChatMsgs"); if (busy) busy.insertAdjacentHTML("beforeend", `<div class="sd-msg them" id="sdChatBusy"><div class="sd-msg-b dim">…</div></div>`); sdScrollChat();
+    try {
+      const r = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${st.tid}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: st.peer, text }) });
+      if (r.chat) st.chats[String(st.peer)] = r.chat;
+    } catch (e) { toast(`Could not send: ${e.message}`); }
+    sdRenderChat(); sdScrollChat();
+  };
+  $("#sdChatSend").addEventListener("click", send);
+  $("#sdChatText").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); send(); } });
+  $("#sdChatText").focus();
+  sdScrollChat();
 }
 
 function sdToggleRules() {
@@ -6430,20 +6494,22 @@ function lwDockHtml() {
       <span class="lw-tool-ico">${lwToolIco(t.id)}</span><span class="lw-tool-lb">${escapeHtml(t.label)}</span>
       <span class="lw-tool-key">${escapeHtml(t.key)}</span>
     </button>`).join("");
-  // the thread-direction toggle — how a connection you draw flows
-  const dir = `<button class="lw-dir" id="lwDirToggle" title="How a thread you draw flows: both ways, or tail→head">
-      ${lwThreadDir === "one" ? "→ one-way" : "⇄ both"}</button>`;
-  return tools + `<span class="lw-dock-sep"></span>` + dir;
+  // How a connection you draw flows — two explicit choices, not one ambiguous toggle. The active
+  // one is highlighted; drag a token's handle onto another to draw a link of that kind.
+  const dir = `<span class="lw-dock-sep"></span>
+    <button class="lw-dirbtn${lwThreadDir === "both" ? " on" : ""}" data-dir="both" title="Two-way link — both hear each other">⇄ link</button>
+    <button class="lw-dirbtn${lwThreadDir === "one" ? " on" : ""}" data-dir="one" title="One-way arrow — only tail → head hears">→ arrow</button>`;
+  return tools + dir;
 }
 function lwWireDock() {
   const dock = $("#lwDock"); if (!dock) return;
   dock.querySelectorAll("[data-tool]").forEach((b) =>
     b.addEventListener("click", () => lwSetTool(b.dataset.tool)));
-  const dir = $("#lwDirToggle");
-  if (dir) dir.addEventListener("click", () => {
-    lwThreadDir = lwThreadDir === "one" ? "both" : "one";
-    dir.textContent = lwThreadDir === "one" ? "→ one-way" : "⇄ both";
-  });
+  dock.querySelectorAll("[data-dir]").forEach((b) =>
+    b.addEventListener("click", () => {
+      lwThreadDir = b.dataset.dir;
+      dock.querySelectorAll("[data-dir]").forEach((x) => x.classList.toggle("on", x.dataset.dir === lwThreadDir));
+    }));
 }
 function lwToolCursor(t) { return t === "select" ? "default" : "cell"; }
 function lwSetCursor(c) {
@@ -7600,7 +7666,8 @@ function lwGraphSelect(id) {
     const en = lwNodeById(nid); if (en) lwSelAdd(lwNodeKind(nid), en);
   });
   lwShowActions("graph", [
-    { label: "⚙ Manage", onClick: () => sdOpenThreads(t.id) },
+    { label: "💬 Chat", onClick: () => sdOpenChat(t.id) },
+    { label: "⚙ Rules", onClick: () => sdOpenThreads(t.id) },
     { label: "✕ Delete graph", danger: true, onClick: async () => {
       if (!confirm("Delete this graph? The tokens stay; only the connections go.")) return;
       try { await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${t.id}`, { method: "DELETE" }); sdFlash(); lwClearGraphUI(); await lwReloadRoom(); }

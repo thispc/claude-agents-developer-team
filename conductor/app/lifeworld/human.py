@@ -51,6 +51,7 @@ class Human(Being):
         self.narrative = narrative or f"{name}, newly arrived."
         self.last_action: dict[str, Any] = {}
         self.flag_overrides: dict[str, bool] = {}    # the AGENT flag layer (world < scene < agent)
+        self.spends: list[float] = []                # wall-clock timestamps of this agent's model-uses (session usage)
 
     @classmethod
     def newborn(cls, id: int, name: str, *, dials: dict | None = None,
@@ -146,6 +147,43 @@ class Human(Being):
                 + ", ".join(f"{k} {v:.2f}" for k, v in self.psyche.mood.items())
                 + "\nRecall: " + self.memory.recall()[:400])
 
+    # --- model session usage: an agent that burns its quota sleeps until the window passes ----
+    @staticmethod
+    def _session_params():
+        try:
+            from ..config import AGENT_SESSION_CAP, AGENT_SESSION_WINDOW_S
+            return max(1, AGENT_SESSION_CAP), max(1, AGENT_SESSION_WINDOW_S)
+        except Exception:
+            return 30, 5 * 3600
+
+    def _now(self, now=None):
+        if now is not None:
+            return now
+        import time
+        return time.time()
+
+    def note_spend(self, now=None) -> None:
+        """Record one use of this agent's model (a Tier-2 call on its behalf) against its session."""
+        now = self._now(now)
+        _, win = self._session_params()
+        self.spends = [t for t in self.spends if now - t < win]
+        self.spends.append(now)
+
+    def usage(self, now=None) -> dict[str, Any]:
+        now = self._now(now)
+        cap, win = self._session_params()
+        self.spends = [t for t in self.spends if now - t < win]
+        used = len(self.spends)
+        asleep = used >= cap
+        return {"used": used, "cap": cap, "frac": round(min(1.0, used / cap), 3),
+                "asleep": asleep, "wakes_at": (min(self.spends) + win) if (asleep and self.spends) else 0.0,
+                "window": win, "model": self.model}
+
+    def asleep(self, now=None) -> bool:
+        cap, win = self._session_params()
+        now = self._now(now)
+        return len([t for t in self.spends if now - t < win]) >= cap
+
     def profile(self) -> dict[str, Any]:
         """The résumé card — identity, dominant drive, top skills, verified ledger."""
         return {"id": self.id, "name": self.name, "tau": self.tau, "figure": self.figure,
@@ -160,7 +198,7 @@ class Human(Being):
     def to_dict(self) -> dict[str, Any]:
         d = super().to_dict()
         d.update(narrative=self.narrative, last_action=self.last_action, figure=self.figure,
-                 model=self.model, flag_overrides=self.flag_overrides,
+                 model=self.model, flag_overrides=self.flag_overrides, spends=self.spends,
                  psyche=self.psyche.to_dict(), senses=self.senses.to_dict(),
                  memory=self.memory.to_dict(), skills=self.skills.to_dict(),
                  drives=self.drives.to_dict(), rules=self.rules.to_dict(),
@@ -182,4 +220,5 @@ class Human(Being):
         h.last_action = d.get("last_action", {})
         h.model = d.get("model", "")
         h.flag_overrides = d.get("flag_overrides", {})
+        h.spends = list(d.get("spends", []) or [])
         return h
