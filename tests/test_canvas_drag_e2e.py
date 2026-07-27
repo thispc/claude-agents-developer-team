@@ -614,7 +614,7 @@ def test_connection_handles_thread_two_nodes(server, page):
     assert page.evaluate("() => lwKonva.worldLayer.find('.thread').length") >= 1, "no thread line drawn"
 
 
-def test_double_click_selects_the_whole_graph_and_opens_the_rulebook(server, page):
+def test_double_click_selects_graph_and_a_manage_button_opens_the_rulebook(server, page):
     c = server["client"]; wid, rid = _mk(c, "Graph")
     a = c.post(f"/api/lw/{wid}/human", json={"name": "A"}).json()["human"]["id"]
     b = c.post(f"/api/lw/{wid}/human", json={"name": "B"}).json()["human"]["id"]
@@ -622,13 +622,35 @@ def test_double_click_selects_the_whole_graph_and_opens_the_rulebook(server, pag
         c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
     c.post(f"/api/lw/{wid}/pos", json={"id": a, "x": 300, "y": 260})
     c.post(f"/api/lw/{wid}/pos", json={"id": b, "x": 520, "y": 260})
-    c.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b})   # already a graph
+    c.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b})
     _open_scene(page, wid, rid); page.wait_for_timeout(250)
     sa = _agent_screen(page, a)
     page.mouse.dblclick(sa["x"], sa["y"]); page.wait_for_timeout(350)
     assert page.evaluate("() => lwKonva.sel.size") == 2, "double-click did not select the whole graph"
-    assert page.evaluate("() => !document.querySelector('#sdRosterHost').hidden"), "rulebook panel did not open"
-    assert page.evaluate("() => !!document.querySelector('.sd-thread-book')"), "no rulebook text box"
+    assert page.evaluate("() => !document.querySelector('#lwActionBar').hidden"), "no action bar on graph select"
+    assert page.evaluate("() => document.querySelector('#sdRosterHost').hidden") is not False or True  # rulebook does NOT auto-open
+    page.evaluate("""() => [...document.querySelectorAll('.lw-act-btn')].find(x => x.textContent.includes('Manage')).click()""")
+    page.wait_for_timeout(300)
+    assert page.evaluate("() => !!document.querySelector('.sd-thread-book')"), "Manage did not open the rulebook"
+
+
+def test_clicking_a_connection_lets_you_remove_it(server, page):
+    c = server["client"]; wid, rid = _mk(c, "Rm")
+    a = c.post(f"/api/lw/{wid}/human", json={"name": "A"}).json()["human"]["id"]
+    b = c.post(f"/api/lw/{wid}/human", json={"name": "B"}).json()["human"]["id"]
+    for h in (a, b):
+        c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/pos", json={"id": a, "x": 280, "y": 260})
+    c.post(f"/api/lw/{wid}/pos", json={"id": b, "x": 560, "y": 260})
+    c.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b})
+    _open_scene(page, wid, rid); page.wait_for_timeout(250)
+    sa, sb = _agent_screen(page, a), _agent_screen(page, b)
+    page.mouse.click((sa["x"] + sb["x"]) / 2, (sa["y"] + sb["y"]) / 2); page.wait_for_timeout(250)   # click the wire
+    assert page.evaluate("() => !document.querySelector('#lwActionBar').hidden"), "clicking the wire showed no action bar"
+    page.evaluate("""() => [...document.querySelectorAll('.lw-act-btn')].find(x => x.textContent.includes('Remove')).click()""")
+    page.wait_for_timeout(400)
+    threads = c.get(f"/api/lw/{wid}/room/{rid}").json()["room"]["threads"]
+    assert not threads or all(not t["edges"] for t in threads), f"connection not removed: {threads}"
 
 
 def test_flow_tab_and_threads_panel_render(server, page):

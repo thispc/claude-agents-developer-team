@@ -6741,6 +6741,7 @@ function lwMountCanvas(room, agents, props) {
   // A click toggles into the selection (shift-click) or focuses just this token.
   const pick = (kind, entry, e) => {
     if (lwTool !== "select") return;
+    lwClearGraphUI();                          // a single-node click drops any edge/graph selection chrome
     if (e.evt && e.evt.shiftKey) lwSelToggle(kind, entry); else lwSelSet(kind, entry);
   };
 
@@ -6921,7 +6922,7 @@ function lwMountCanvas(room, agents, props) {
     if (lwKonva.suppressClick) { lwKonva.suppressClick = false; return; }
     if (lwCreateFlow && lwCreateFlow.drawing) { lwPathAddPoint(); return; }
     if (lwCreateFlow) { lwCancelCreate(); return; }
-    if (lwTool === "select") { lwSelClear(); return; }
+    if (lwTool === "select") { lwSelClear(); lwClearGraphUI(); return; }
     const w = lwPointerWorld();
     if (w) lwStartCreate(lwTool, w);
   });
@@ -7345,15 +7346,62 @@ function lwUpdateHandles() {
   });
   lwKonva.worldLayer.batchDraw();
 }
-// Double-click a node → select its whole graph and open the rulebook. Returns false if it's ungrouped.
+// ---- the contextual action bar (top of the canvas) ------------------------
+function lwActionBarEl() {
+  let el = $("#lwActionBar");
+  if (!el) { const o = $("#lwOverlay"); if (!o) return null; el = document.createElement("div"); el.id = "lwActionBar"; el.className = "lw-actionbar"; el.hidden = true; o.appendChild(el); }
+  return el;
+}
+function lwShowActions(title, items) {
+  const el = lwActionBarEl(); if (!el) return;
+  el.innerHTML = `<span class="lw-act-title">${escapeHtml(title)}</span>`;
+  items.forEach((it) => {
+    const b = document.createElement("button");
+    b.className = "lw-act-btn" + (it.danger ? " danger" : "");
+    b.textContent = it.label;
+    b.addEventListener("click", it.onClick);
+    el.appendChild(b);
+  });
+  el.hidden = false;
+}
+function lwHideActions() { const el = $("#lwActionBar"); if (el) { el.hidden = true; el.innerHTML = ""; } }
+
+let lwSelEdge = null;   // the currently selected connection {tid, a, b}
+function lwClearGraphUI() {                       // drop any edge/graph selection chrome
+  lwSelEdge = null;
+  lwHideActions();
+  if (lwKonva) { lwKonva.worldLayer.find(".thread").forEach((l) => { l.strokeWidth(2); l.opacity(0.55); }); lwKonva.worldLayer.batchDraw(); }
+}
+function lwSelectEdge(line, tid, a, b) {
+  lwSelClear();                                   // an edge selection isn't a node selection
+  lwSelEdge = { tid, a, b };
+  lwKonva.worldLayer.find(".thread").forEach((l) => { l.strokeWidth(2); l.opacity(0.35); });
+  line.strokeWidth(4); line.opacity(1); lwKonva.worldLayer.batchDraw();
+  lwShowActions("connection", [{ label: "✕ Remove", danger: true, onClick: async () => {
+    try {
+      await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/disconnect`, { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ a, b }) });
+      sdFlash(); lwClearGraphUI(); await lwReloadRoom();
+    } catch (e) { toast(`Could not remove: ${e.message}`); }
+  } }]);
+}
+// Double-click a node → select its whole graph and surface a manage button. Returns false if ungrouped.
 function lwGraphSelect(id) {
   const t = ((lwRoom && lwRoom.threads) || []).find((th) => (th.edges || []).some((e) => e[0] === id || e[1] === id));
   if (!t) return false;
+  lwClearGraphUI();
   lwSelClear();
   [...new Set(t.edges.flatMap((e) => [e[0], e[1]]))].forEach((nid) => {
     const en = lwNodeById(nid); if (en) lwSelAdd(lwNodeKind(nid), en);
   });
-  sdOpenThreads(t.id);
+  lwShowActions("graph", [
+    { label: "⚙ Manage", onClick: () => sdOpenThreads(t.id) },
+    { label: "✕ Delete graph", danger: true, onClick: async () => {
+      if (!confirm("Delete this graph? The tokens stay; only the connections go.")) return;
+      try { await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${t.id}`, { method: "DELETE" }); sdFlash(); lwClearGraphUI(); await lwReloadRoom(); }
+      catch (e) { toast(`Could not delete: ${e.message}`); }
+    } },
+  ]);
   return true;
 }
 function lwRenderThreads(threads) {
@@ -7361,14 +7409,15 @@ function lwRenderThreads(threads) {
   lwKonva.worldLayer.find(".thread").forEach((n) => n.destroy());
   lwKonva.threadLines = [];
   (threads || []).forEach((t) => (t.edges || []).forEach((e) => {
-    const A = lwKonva.agents.get(String(e[0])), B = lwKonva.agents.get(String(e[1]));
+    const A = lwNodeById(e[0]), B = lwNodeById(e[1]);      // agents OR objects
     if (!A || !B) return;
     const pa = A.node.position(), pb = B.node.position(), dir = e[2] || "both";
     const line = new Konva.Arrow({ points: [pa.x, pa.y, pb.x, pb.y], stroke: "hsl(160 45% 42%)",
-      fill: "hsl(160 45% 42%)", strokeWidth: 2, opacity: 0.6, dash: t.closed ? [] : [8, 5], name: "thread",
+      fill: "hsl(160 45% 42%)", strokeWidth: 2, opacity: 0.55, dash: t.closed ? [] : [8, 5], name: "thread",
       pointerLength: dir === "both" ? 0 : 9, pointerWidth: dir === "both" ? 0 : 9,
-      pointerAtBeginning: dir === "b2a", hitStrokeWidth: 14, listening: true });
-    line.on("click tap", (ev) => { ev.cancelBubble = true; sdOpenThreads(t.id); });
+      pointerAtBeginning: dir === "b2a", hitStrokeWidth: 16, listening: true });
+    line.on("click tap", (ev) => { ev.cancelBubble = true; lwSelectEdge(line, t.id, e[0], e[1]); });   // click a wire → select it (Remove appears)
+    line.on("mouseenter", () => lwSetCursor("pointer"));
     lwKonva.worldLayer.add(line); line.moveToBottom();
     lwKonva.threadLines.push({ line, a: e[0], b: e[1] });
   }));

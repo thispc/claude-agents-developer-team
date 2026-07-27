@@ -1722,6 +1722,16 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .sd-book-refine:hover { background: var(--accent); color: #fff; }
 .sd-book-refine:disabled { opacity: .6; cursor: default; }
 
+/* the contextual action bar — floats top-centre when an edge or a graph is selected */
+.lw-actionbar { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 15;
+  display: flex; align-items: center; gap: 8px; padding: 5px 8px 5px 12px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 22px; box-shadow: var(--shadow-lg); }
+.lw-act-title { font-size: 10.5px; font-family: var(--mono); text-transform: uppercase; letter-spacing: .06em; color: var(--faint); }
+.lw-act-btn { font-size: 12px; font-weight: 550; padding: 5px 12px; border-radius: 16px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--card-2); color: var(--text); }
+.lw-act-btn:hover { border-color: var(--accent); color: var(--accent); }
+.lw-act-btn.danger:hover { border-color: #c0392b; color: #c0392b; background: #fbe9e7; }
+
 /* the thread-direction toggle in the dock */
 .lw-dock-sep { width: 1px; align-self: stretch; background: var(--line); margin: 2px; }
 .lw-dir { font-size: 11.5px; font-weight: 600; color: var(--dim); background: var(--card-2);
