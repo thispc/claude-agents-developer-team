@@ -37,7 +37,8 @@ class World:
         self.entities: dict[int, Entity] = {}
         self.scenes: dict[int, Any] = {}      # id -> Scene (holds a back-ref to this world)
         self._active_flags = self.flags
-        self._scene_rules = ""                # rules of the scene currently delivering a signal
+        self._scene_rules = ""                # compiled rules prompt of the scene currently delivering
+        self._ruleset = None                  # the SceneRuleSet currently active (gate + shape)
         self._seq = 0
         # the one spend, injected — the engine never imports providers itself
         self._complete = complete
@@ -88,9 +89,16 @@ class World:
     def flags_for(self, entity: Entity) -> Flags:
         return self._active_flags.derive(getattr(entity, "flag_overrides", None))
 
-    def enter_scene_flags(self, scene_overrides: dict | None, rules: str = "") -> None:
+    def enter_scene_flags(self, scene_overrides: dict | None, rules: str = "",
+                          rules_rows: list | None = None) -> None:
+        from .scene_rules import SceneRuleSet
         self._active_flags = self.flags.derive(scene_overrides)
-        self._scene_rules = rules or ""
+        self._ruleset = SceneRuleSet(rules_rows or [], note=rules or "")
+        self._scene_rules = self._ruleset.as_prompt()   # the compiled block the model is handed
+
+    def ruleset(self):
+        from .scene_rules import SceneRuleSet
+        return self._ruleset if self._ruleset is not None else SceneRuleSet([], "")
 
     # --- the one spend ------------------------------------------------------
 
@@ -102,10 +110,14 @@ class World:
     async def appraise(self, human: Human, signal: Signal, ctx: dict) -> Packet:
         from . import appraise as appr
         if self._complete is not None and self.flags_for(human).on("emotions"):
-            return await appr.model(human, signal, ctx, settings=self._settings,
-                                     complete=self._complete, model_name=self.model_for(human),
-                                     max_tokens=self._utter_tokens, rules=self._scene_rules)
-        return appr.deterministic(human, signal, ctx)
+            packet = await appr.model(human, signal, ctx, settings=self._settings,
+                                      complete=self._complete, model_name=self.model_for(human),
+                                      max_tokens=self._utter_tokens, rules=self._scene_rules)
+        else:
+            packet = appr.deterministic(human, signal, ctx)
+        # The code disposes: scene SHAPE rules clamp/bias the deltas AFTER the appraiser, so a rule
+        # bites even when the (free) reflex or the (paid) model ignored it.
+        return self.ruleset().shape(packet, signal, ctx)
 
     # --- persistence hook ---------------------------------------------------
 

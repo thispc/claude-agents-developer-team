@@ -57,7 +57,8 @@ class SeatSlot(BaseModel):
 
 class SceneUpdate(BaseModel):
     name: str | None = None                 # rename the scene (its editable title)
-    rules: str | None = None                # the standing rules obeyed on every run
+    rules: str | None = None                # the free-text note, folded into the rules prompt
+    rules_rows: list | None = None          # ordered typed rule rows (AWS-ingress style)
 
 
 class NewRoom(BaseModel):
@@ -310,6 +311,9 @@ def update_scene(world_id: int, room_id: int, body: SceneUpdate, request: Reques
         s.name = body.name.strip()[:120]
     if body.rules is not None:
         s.rules = body.rules[:2000]
+    if body.rules_rows is not None:
+        from app.lifeworld.scene_rules import validate_rows
+        s.rules_rows = validate_rows(body.rules_rows)      # the trust boundary: coerce + whitelist + cap
     store.save(w)
     return {"room": s.view()}
 

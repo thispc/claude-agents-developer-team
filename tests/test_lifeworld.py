@@ -572,3 +572,82 @@ def test_a_beat_stamps_every_log_row_with_a_sender_and_a_round(client):
     assert all(row["round"] >= 1 for row in log)
     directed = [row for row in log if row["kind"] == "act" and row["frm"] is not None]
     assert directed and any(row["frm"] != row["who"] for row in directed), "no directed sender→receiver beat"
+
+
+# --------------------------------------------------------------------------
+# 10. scene rules — typed "ingress rows" (stages 2-3)
+# --------------------------------------------------------------------------
+
+def test_scene_rule_rows_are_validated_whitelisted_and_capped():
+    from app.lifeworld.scene_rules import validate_rows, MAX_ROWS
+    rows = validate_rows([
+        {"effect": "deny", "when": {"kind": "scold"}},
+        {"effect": "clamp", "field": "mood.stress", "value": 0.2},
+        {"effect": "bias", "field": "drives.social", "value": 0.1},
+        {"effect": "annotate", "note": "be gentle"},
+        {"effect": "nuke", "when": {"kind": "x"}},                 # unknown effect → dropped
+        {"effect": "clamp", "field": "secret.value", "value": 1},  # non-whitelisted family → dropped
+        {"effect": "clamp", "field": "social.trust", "value": 1},  # relationships out of range → dropped
+        {"effect": "deny", "when": {"evil": True}},                # unknown when-key stripped, row kept
+    ])
+    assert [r["effect"] for r in rows] == ["deny", "clamp", "bias", "annotate", "deny"]
+    assert [r["n"] for r in rows] == list(range(len(rows)))        # renumbered
+    assert rows[-1]["when"] == {}                                  # the bogus when-key was stripped
+    assert len(validate_rows([{"effect": "annotate", "note": "x"}] * 100)) == MAX_ROWS
+
+
+def test_a_deny_rule_blocks_a_beat_before_it_can_spend():
+    spy = Spy()
+    w = World(name="live", complete=spy.complete, settings={})
+    a, b = w.spawn_human("A"), w.spawn_human("B")
+    sc = Scene(w, id=1, name="s", domain="talk"); sc.seat(a); sc.seat(b)
+    sc.rules_rows = [{"effect": "deny", "when": {"kind": "greet"}}]
+    p = asyncio.run(sc.greet(a, b))
+    assert spy.calls == 0                                          # blocked before perceive → zero spend
+    assert "blocked" in p.understood and sc.log[-1]["kind"] == "blocked"
+
+
+def test_a_clamp_rule_bounds_the_packet_and_leaves_other_fields_alone():
+    from app.lifeworld.scene_rules import SceneRuleSet
+    p = Packet(mood={"stress": 0.9, "confidence": -0.5})
+    SceneRuleSet([{"effect": "clamp", "field": "mood.stress", "value": 0.1}]).shape(p)
+    assert p.mood["stress"] == 0.1 and p.mood["confidence"] == -0.5
+
+
+def test_a_shape_rule_can_never_touch_a_non_whitelisted_family():
+    from app.lifeworld.scene_rules import SceneRuleSet
+    p = Packet(social={"5": {"trust": 0.0}})
+    SceneRuleSet([{"effect": "bias", "field": "social.trust", "value": 1.0}]).shape(p)
+    assert p.social == {"5": {"trust": 0.0}}                       # relationships stay out of rule range
+
+
+def test_the_rules_prompt_block_compiles_rows_and_the_note():
+    from app.lifeworld.scene_rules import SceneRuleSet
+    block = SceneRuleSet([{"effect": "annotate", "note": "no bluffing"},
+                          {"effect": "clamp", "field": "mood.stress", "value": 0.2, "note": "stay calm"}],
+                         note="the house always wins").as_prompt()
+    assert "no bluffing" in block and "stay calm" in block and "the house always wins" in block
+
+
+def test_the_clamp_rule_disposes_even_when_the_model_proposes_more(monkeypatch):
+    """The model proposes a big stress spike; a scene clamp bounds it after the fact."""
+    async def complete(provider, model, system, prompt, settings, max_tokens=2000):
+        return '{"understood":"noted","mood":{"stress":0.95},"action":{"kind":"say","text":"ok"}}'
+    w = World(name="live", complete=complete, settings={})
+    a, b = w.spawn_human("A"), w.spawn_human("B")
+    sc = Scene(w, id=1, name="s", domain="talk"); sc.seat(a); sc.seat(b)
+    sc.rules_rows = [{"effect": "clamp", "field": "mood.stress", "value": 0.1}]
+    p = asyncio.run(sc.say(a, b, "something novel and weighty", intensity=0.9, stakes=0.9))
+    assert p.tier == 2 and p.mood.get("stress", 0) <= 0.1 + 1e-9   # code disposed of the model's number
+
+
+def test_scene_rule_rows_round_trip_through_the_api(client):
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    rid = client.post(f"/api/lw/{wid}/room", json={"name": "r", "type": "freeplay"}).json()["room"]["id"]
+    posted = [{"effect": "deny", "when": {"kind": "scold"}}, {"effect": "nuke"}]  # 1 valid, 1 dropped
+    d = client.post(f"/api/lw/{wid}/room/{rid}/scene", json={"rules_rows": posted}).json()["room"]
+    assert len(d["rules_rows"]) == 1 and d["rules_rows"][0]["effect"] == "deny"
+    d2 = client.get(f"/api/lw/{wid}/room/{rid}").json()["room"]        # survives a reload
+    assert d2["rules_rows"][0]["effect"] == "deny"

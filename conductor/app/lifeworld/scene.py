@@ -56,7 +56,8 @@ class Scene:
         self.flag_overrides = flag_overrides or {}
         self.seats: list[int] = []            # seated human ids, in turn order
         self.props: list[int] = []            # artifact ids present
-        self.rules: str = ""                  # free-text scene rules, obeyed on every run
+        self.rules: str = ""                  # free-text scene note, folded into the rules prompt
+        self.rules_rows: list[dict] = []      # ordered typed rule rows (AWS-ingress style)
         self.log: list[dict] = []
         self.turn = 0
         self.round_no = 0                     # bumped once per beat, stamped on each log row (for the flow view)
@@ -90,7 +91,12 @@ class Scene:
         """The atom of scene time: one human perceives one signal. The domain is stamped
         so the experience credits the right competency."""
         signal.domain = signal.domain or self.domain
-        self.world.enter_scene_flags(self.flag_overrides, self.rules)
+        self.world.enter_scene_flags(self.flag_overrides, self.rules, self.rules_rows)
+        # Seam 1 — the gate: a denied beat never reaches perceive, so it spends nothing.
+        if not self.world.ruleset().gate(signal, {}):
+            self.world.tau += 1
+            self._record("blocked", to.id, f"{to.name}: (a scene rule blocked this)", frm=signal.from_id)
+            return Packet(understood="(blocked by a scene rule)")
         packet = await to.perceive(signal, self.world)
         self.world.tau += 1
         say = (packet.action or {}).get("text") or packet.understood
@@ -133,7 +139,8 @@ class Scene:
         return {"id": self.id, "name": self.name, "type": self.type, "theme": self.theme,
                 "domain": self.domain, "flag_overrides": self.flag_overrides,
                 "seats": list(self.seats), "props": list(self.props),
-                "rules": self.rules, "log": self.log[-200:], "turn": self.turn, "round_no": self.round_no}
+                "rules": self.rules, "rules_rows": self.rules_rows,
+                "log": self.log[-200:], "turn": self.turn, "round_no": self.round_no}
 
     @classmethod
     def from_state(cls, world, d: dict[str, Any]) -> "Scene":
@@ -143,6 +150,7 @@ class Scene:
         s.seats = list(d.get("seats", []))
         s.props = list(d.get("props", []))
         s.rules = d.get("rules", "")
+        s.rules_rows = list(d.get("rules_rows", []))
         s.log = list(d.get("log", []))
         s.turn = int(d.get("turn", 0))
         s.round_no = int(d.get("round_no", 0))
@@ -163,7 +171,8 @@ class Scene:
 
     def view(self) -> dict[str, Any]:
         return {"id": self.id, "name": self.name, "type": self.type, "theme": self.theme,
-                "domain": self.domain, "flags": self.flag_overrides, "rules": self.rules,
+                "domain": self.domain, "flags": self.flag_overrides,
+                "rules": self.rules, "rules_rows": self.rules_rows,
                 # agents placed on the canvas, positioned by pos; the UI lays them out
                 "agents": [{"id": h.id, "name": h.name, "figure": h.figure,
                             "pos": list(h.pos), "mood": h.psyche.mood,
