@@ -389,9 +389,10 @@ def test_drag_empty_marquees_and_moves_the_group_space_drag_pans(server, page):
 
 
 def test_a_multi_selection_drags_as_a_group_from_any_gap(server, page):
-    """After marquee-selecting several tokens, a draggable frame lets you move the whole
-    group by pressing ANYWHERE inside it — including the gaps between tokens — so a group
-    is easy to move, not fiddly."""
+    """After marquee-selecting several tokens, pressing ANYWHERE inside the selection —
+    including the gaps between tokens — drags the whole group. The dashed frame is a purely
+    VISUAL overlay (listening:false) so it can never occlude the tokens on the hit canvas;
+    the group-drag from a gap is driven geometrically, not by a draggable frame."""
     c = server["client"]; wid, rid = _mk(c, "Frame")
     ids = []
     for n, x in (("A", 300), ("B", 480), ("C", 660)):
@@ -405,12 +406,17 @@ def test_a_multi_selection_drags_as_a_group_from_any_gap(server, page):
     page.wait_for_timeout(250)
     assert page.evaluate("() => !!lwKonva.worldLayer.findOne('.selframe')"), "no selection frame for a multi-selection"
     gapx = (pts[0]["x"] + pts[1]["x"]) / 2; gapy = pts[0]["y"]
+    # The frame must be HIT-TRANSPARENT: getIntersection at the gap must NOT return the frame
+    # (that opaque hit footprint was the root cause of the post-group selection/dblclick death).
     hit = page.evaluate("([x,y])=>{const b=lwKonva.stage.container().getBoundingClientRect(); const sh=lwKonva.stage.getIntersection({x:x-b.left,y:y-b.top}); return sh?sh.name():'';}", [gapx, gapy])
-    assert hit == "selframe", f"the gap between selected tokens is not grabbable (hit={hit})"
+    assert hit != "selframe", f"the selection frame is still occluding the hit canvas (hit={hit})"
+    # ...and the tokens themselves remain hittable through the frame.
+    ta = page.evaluate("([x,y])=>{const b=lwKonva.stage.container().getBoundingClientRect(); const sh=lwKonva.stage.getIntersection({x:x-b.left,y:y-b.top}); const t=sh&&sh.findAncestor&&sh.findAncestor('.token',true); return !!t;}", [pts[0]["x"], pts[0]["y"]])
+    assert ta, "a selected token is not hittable through the (transparent) frame"
     before = [page.evaluate("(id)=>lwKonva.agents.get(String(id)).node.x()", h) for h in ids]
     _drag(page, {"x": gapx, "y": gapy}, {"x": gapx - 140, "y": gapy + 90})
     after = [page.evaluate("(id)=>lwKonva.agents.get(String(id)).node.x()", h) for h in ids]
-    assert all(abs(after[i] - before[i]) > 40 for i in range(3)), "dragging the frame from a gap did not move the group"
+    assert all(abs(after[i] - before[i]) > 40 for i in range(3)), "dragging from a gap did not move the group"
 
 
 def test_the_title_trash_deletes_the_scene_and_opens_another(server, page):
@@ -650,6 +656,24 @@ def test_double_click_selects_graph_and_a_manage_button_opens_the_rulebook(serve
     page.evaluate("""() => [...document.querySelectorAll('.lw-act-btn')].find(x => x.textContent.includes('Manage')).click()""")
     page.wait_for_timeout(300)
     assert page.evaluate("() => !!document.querySelector('.sd-thread-book')"), "Manage did not open the rulebook"
+
+
+def test_double_click_selects_the_graph_even_when_the_hit_graph_misses(server, page):
+    """The exact reported bug: a token whose Konva hit graph is offset never fired its node dblclick,
+    so double-clicking it did nothing. Double-click is now geometric at the stage level → consistent."""
+    c = server["client"]; wid, rid = _mk(c, "GG")
+    a = c.post(f"/api/lw/{wid}/human", json={"name": "A"}).json()["human"]["id"]
+    b = c.post(f"/api/lw/{wid}/human", json={"name": "B"}).json()["human"]["id"]
+    for h in (a, b):
+        c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/pos", json={"id": a, "x": 300, "y": 260})
+    c.post(f"/api/lw/{wid}/pos", json={"id": b, "x": 540, "y": 260})
+    c.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b})
+    _open_scene(page, wid, rid); page.wait_for_timeout(300)
+    page.evaluate("(id) => { lwKonva.agents.get(String(id)).node.listening(false); lwKonva.worldLayer.drawHit(); }", a)  # force the miss
+    sa = _agent_screen(page, a)
+    page.mouse.dblclick(sa["x"], sa["y"]); page.wait_for_timeout(350)
+    assert page.evaluate("() => lwKonva.sel.size") == 2, "double-click on a hit-missed token did not select the graph"
 
 
 def test_clicking_a_connection_lets_you_remove_it(server, page):

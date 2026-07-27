@@ -567,8 +567,12 @@ def test_interaction_state_cannot_get_stranded_on():
     for hook in ('addEventListener("blur", lwForceIdle', "pointercancel", "visibilitychange"):
         assert hook in js, f"panic reset not wired to {hook}"
     assert "lwKonva.panning = false" in js.split("function lwSetTool")[1][:400], "lwSetTool must clear the pan flag"
-    # the cursor is event-driven (enter/leave), not a per-mousemove hit-graph poll
-    assert 'node.on("mouseenter"' in js and "getIntersection" not in js.split("The Studio —")[1].split("async function boot")[0]
+    # The cursor is driven GEOMETRICALLY (nearest-token distance), never via the flaky hit graph.
+    # enter/leave polling of getIntersection was what flickered and stranded the cursor; the
+    # mousemove handler must use lwNearestToken and must NOT call getIntersection.
+    move = js.split('stage.on("mousemove touchmove"')[1].split("stage.on(")[0]
+    assert "lwNearestToken" in move, "cursor is not driven geometrically"
+    assert "getIntersection" not in move, "cursor must not poll the flaky hit graph"
 
 
 @pytest.mark.hostonly

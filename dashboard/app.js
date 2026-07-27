@@ -6547,37 +6547,17 @@ function lwUpdateSelFrame() {
   lwKonva.selframe = null;
   if (lwSelList().length < 2) return;                 // single selection drags its own token
   const b = lwSelBounds();
+  // PURELY VISUAL. The frame must be `listening:false`: a draggable/listening Rect paints an
+  // opaque colorKey across its whole area on the HIT canvas (even at 0.05 fill), which occludes
+  // every selected token — so getIntersection returns the frame, not the token, and the tokens'
+  // own click/dblclick/hover handlers go dark for the rest of the session. That was the root of
+  // the "selection & double-click become inconsistent after grouping" bug. Group DRAG does not
+  // need the frame: dragging any selected node moves the whole group (lwDragBegin → group:true).
   const frame = new Konva.Rect({ x: b.x, y: b.y, width: b.w, height: b.h, cornerRadius: 12,
-    fill: "rgba(46,110,91,0.05)", stroke: "#2E6E5B", strokeWidth: 1.5, dash: [7, 5], name: "selframe", draggable: true });
+    fill: "rgba(46,110,91,0.05)", stroke: "#2E6E5B", strokeWidth: 1.5, dash: [7, 5], name: "selframe", listening: false });
   lwKonva.worldLayer.add(frame); frame.moveToTop();
   lwKonva.selframe = frame;
-  frame.on("mouseenter", () => { if (!lwKonva.panning && !lwKonva.drag) lwSetCursor("move"); });
-  frame.on("mouseleave", () => { if (!lwKonva.panning && !lwKonva.drag) lwSetCursor(lwToolCursor(lwTool)); });
-  frame.on("dragstart", () => {
-    lwSetCursor("grabbing");
-    frame.members = lwSelList().map((s) => ({ kind: s.kind, entry: s.entry, node: s.entry.node, x0: s.entry.node.x(), y0: s.entry.node.y() }));
-    frame.fx0 = frame.x(); frame.fy0 = frame.y();
-    lwShowGrid(); lwPortalShow(true);
-  });
-  frame.on("dragmove", () => {
-    const dx = frame.x() - frame.fx0, dy = frame.y() - frame.fy0;
-    (frame.members || []).forEach((m) => { m.node.position({ x: m.x0 + dx, y: m.y0 + dy }); if (m.kind === "prop") lwFollowProp(m.entry); });
-    lwShowGrid(); lwPortalOver(); lwKonva.worldLayer.batchDraw();
-  });
-  frame.on("dragend", async () => {
-    lwHideGrid();
-    const members = frame.members || [];
-    if (lwKonva.overPortal) { frame.destroy(); lwKonva.selframe = null; await lwPortalSink(members); return; }
-    lwSetCursor("move");                          // still over the selection frame
-    lwPortalShow(false);
-    await Promise.all(members.map((m) => {
-      const p = m.node.position();
-      return api(`/api/lw/${lwWorldId}/pos`, { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: m.entry.data.id, x: p.x, y: p.y }) }).catch(() => {});
-    }));
-    lwSaveView();
-    lwUpdateSelFrame();                                // re-fit the frame to the new positions
-  });
+  lwKonva.worldLayer.batchDraw();
 }
 function lwSelect(kind, entry) { lwSelSet(kind, entry); }   // legacy single-focus callers
 function lwDeselect() { lwSelClear(); }
@@ -6734,10 +6714,9 @@ function lwMountCanvas(room, agents, props) {
   // between a token's own parts never re-fires), so the cursor changes only on a real crossing
   // of the token's edge — it can't flicker the way re-polling the hit graph every mousemove did,
   // and it isn't hostage to a stale panning/drag flag beyond the one guard below.
-  const hover = (node) => {
-    node.on("mouseenter", () => { lwLogOn && lwLog("cursor", `enter ${node.getAttr("lwType")}#${node.getAttr("lwId")}`, { blocked: !!(lwKonva.panning || lwKonva.drag) }, "debug"); if (!lwKonva.panning && !lwKonva.drag) lwSetCursor("move"); });
-    node.on("mouseleave", () => { lwLogOn && lwLog("cursor", `leave ${node.getAttr("lwType")}#${node.getAttr("lwId")}`, null, "debug"); if (!lwKonva.panning && !lwKonva.drag) lwSetCursor(lwToolCursor(lwTool)); });
-  };
+  // Cursor is driven GEOMETRICALLY by the stage mousemove (below), not per-node enter/leave —
+  // Konva's hit graph is unreliable at DPR 2 in some states, which made the cursor flicker.
+  const hover = () => {};
   // A click toggles into the selection (shift-click) or focuses just this token.
   const pick = (kind, entry, e) => {
     if (lwTool !== "select") return;
@@ -6757,7 +6736,7 @@ function lwMountCanvas(room, agents, props) {
     hover(node);
     node.on("contextmenu", (e) => { e.evt.preventDefault(); e.cancelBubble = true; lwPropMenu(e.evt, p); });
     node.on("click tap", (e) => { e.cancelBubble = true; pick("prop", entry, e); });
-    node.on("dblclick dbltap", (e) => { e.cancelBubble = true; if (!lwGraphSelect(p.id)) lwOpenArtifactPeek(p.id); });
+    // double-click is handled geometrically at the stage level (works even when the hit graph misses)
   });
 
   // A full ring reads as one entity — a soft, tight glow behind the table, and only
@@ -6789,7 +6768,7 @@ function lwMountCanvas(room, agents, props) {
     hover(node);
     node.on("contextmenu", (e) => { e.evt.preventDefault(); e.cancelBubble = true; lwAgentMenu(e.evt, a); });
     node.on("click tap", (e) => { e.cancelBubble = true; pick("agent", entry, e); });
-    node.on("dblclick dbltap", (e) => { e.cancelBubble = true; if (!lwGraphSelect(a.id)) openPersonDrawer(a.id, a.name); });
+    // double-click is handled geometrically at the stage level (works even when the hit graph misses)
     if (seat) lwSetSteadyGlow(node, true);
   });
 
@@ -6885,6 +6864,8 @@ function lwMountCanvas(room, agents, props) {
       if (entry) {
         lwLogOn && lwLog("hit", `recovered a missed press → ${near.type}#${near.id}`, { dist: Math.round(near.dist) }, "warn");
         lwKonva.worldLayer.draw();                // FULL draw (not drawHit) — this is what actually refreshes it
+        // Pressing a token that's part of a live 2+ selection drags the WHOLE group (don't collapse to one).
+        if (lwSelList().length >= 2 && lwSelHas(entry) && !(e.evt && e.evt.shiftKey)) { lwArmGroupGrab(e.evt); return; }
         lwClearGraphUI();
         if (e.evt && e.evt.shiftKey) lwSelToggle(near.type, entry); else lwSelSet(near.type, entry);
         lwKonva.suppressClick = true;
@@ -6892,6 +6873,11 @@ function lwMountCanvas(room, agents, props) {
         lwArmGrab(entry.node, e.evt);              // drag only on movement; otherwise it was a click
         return;
       }
+    }
+    // Inside a 2+ selection's bounds but not on a token → drag the whole group (frameless), never marquee.
+    if (lwSelList().length >= 2 && !(e.evt && e.evt.shiftKey)) {
+      const bb = lwSelBounds();
+      if (bb && w.x >= bb.x - 8 && w.x <= bb.x + bb.w + 8 && w.y >= bb.y - 8 && w.y <= bb.y + bb.h + 8) { lwArmGroupGrab(e.evt); return; }
     }
     // Near a connection line? Select that edge (the arrow's own Konva hit-routing is flaky too).
     const edge = lwGeomHitEdge(w);
@@ -6906,12 +6892,20 @@ function lwMountCanvas(room, agents, props) {
     window.addEventListener("pointercancel", endMarquee, true);
   });
   stage.on("mousemove touchmove", () => {
-    if (!lwKonva.marquee) return;              // the cursor is driven by per-token enter/leave now
-    const w = lwPointerWorld(); if (!w) return;
-    const m = lwKonva.marquee;
-    m.rect.position({ x: Math.min(w.x, m.x0), y: Math.min(w.y, m.y0) });
-    m.rect.size({ width: Math.abs(w.x - m.x0), height: Math.abs(w.y - m.y0) });
-    worldLayer.batchDraw();
+    if (lwKonva.marquee) {
+      const w = lwPointerWorld(); if (!w) return;
+      const m = lwKonva.marquee;
+      m.rect.position({ x: Math.min(w.x, m.x0), y: Math.min(w.y, m.y0) });
+      m.rect.size({ width: Math.abs(w.x - m.x0), height: Math.abs(w.y - m.y0) });
+      worldLayer.batchDraw();
+      return;
+    }
+    if (lwKonva.panning || lwKonva.drag || lwKonva.connecting) return;
+    // Cursor driven GEOMETRICALLY (node positions), not via the flaky hit graph → no flicker.
+    const w = lwPointerWorld(); if (!w) { lwSetCursor(lwToolCursor(lwTool)); return; }
+    const near = lwNearestToken(w);
+    if (near && near.dist < 34) { lwSetCursor("move"); return; }
+    lwSetCursor(lwGeomHitEdge(w) ? "pointer" : lwToolCursor(lwTool));
   });
   // Pointer left the whole canvas (onto the top bar, a dock button, another window): settle the
   // cursor to the tool default so it never gets stranded on 'move' or 'grab'.
@@ -6930,7 +6924,18 @@ function lwMountCanvas(room, agents, props) {
     if (w) lwStartCreate(lwTool, w);
   });
   stage.on("dblclick dbltap", () => {
-    if (lwCreateFlow && lwCreateFlow.drawing) lwFinishPathDraw();
+    if (lwCreateFlow && lwCreateFlow.drawing) { lwFinishPathDraw(); return; }
+    if (lwTool !== "select") return;
+    // Double-click GEOMETRICALLY (not via the node's own handler, which never fires when the hit
+    // graph misses that token) → select its graph, or open its detail if it's ungrouped. Consistent.
+    const w = lwPointerWorld(); const near = w && lwNearestToken(w);
+    if (near && near.dist < 34) {
+      if (!lwGraphSelect(near.id)) {
+        const entry = lwNodeById(near.id);
+        if (near.type === "agent") openPersonDrawer(near.id, entry && entry.data.name);
+        else lwOpenArtifactPeek(near.id);
+      }
+    }
   });
   stage.on("contextmenu", (e) => {
     e.evt.preventDefault();
@@ -7317,6 +7322,44 @@ function lwArmGrab(node, downEvt) {
   window.addEventListener("touchmove", onMove, true);
   window.addEventListener("touchend", onUp, true);
 }
+// Group drag WITHOUT a draggable frame. The selection frame is now hit-transparent (so it can't
+// poison the hit graph), so pressing inside a 2+ selection — on a gap between tokens, or on a token
+// the hit graph missed — is caught here and drives the whole group. Movement >4px starts the drag;
+// a release without moving is a plain click (selection preserved). Mirrors the node group-drag path.
+function lwArmGroupGrab(downEvt) {
+  const cx = (ev) => ev.clientX != null ? ev.clientX : (ev.touches && ev.touches[0] ? ev.touches[0].clientX : null);
+  const cy = (ev) => ev.clientY != null ? ev.clientY : (ev.touches && ev.touches[0] ? ev.touches[0].clientY : null);
+  const sx = downEvt && cx(downEvt), sy = downEvt && cy(downEvt);
+  if (sx == null || sy == null) return;
+  const members = lwSelList().map((s) => ({ kind: s.kind, entry: s.entry, node: s.entry.node, x0: s.entry.node.x(), y0: s.entry.node.y() }));
+  if (members.length < 2) return;
+  const scale = () => (lwKonva.stage.scaleX() || 1);
+  let dragging = false, done = false;
+  const cleanup = () => { if (done) return; done = true; window.removeEventListener("mousemove", onMove, true); window.removeEventListener("mouseup", onUp, true); window.removeEventListener("touchmove", onMove, true); window.removeEventListener("touchend", onUp, true); };
+  const onMove = (ev) => {
+    const x = cx(ev), y = cy(ev); if (x == null) return;
+    if (!dragging) {
+      if (Math.hypot(x - sx, y - sy) <= 4) return;
+      dragging = true; lwKonva.drag = { group: true, members }; lwSetCursor("grabbing"); lwShowGrid(); lwPortalShow(true);
+      lwLog("drag", "begin group (frameless)", { members: members.length }, "info");
+    }
+    const dx = (x - sx) / scale(), dy = (y - sy) / scale();
+    members.forEach((m) => { m.node.position({ x: m.x0 + dx, y: m.y0 + dy }); if (m.kind === "prop") lwFollowProp(m.entry); });
+    lwFitSelFrame(); lwUpdateArrows(); lwShowGrid(); lwPortalOver(); lwKonva.worldLayer.batchDraw();
+  };
+  const onUp = async () => {
+    cleanup(); if (!dragging) return;              // click on a gap → keep the selection as-is
+    lwKonva.drag = null; lwHideGrid();
+    if (lwKonva.overPortal) { lwLog("drag", "group (frameless) → PORTAL delete", { n: members.length }, "info"); await lwPortalSink(members); return; }
+    lwPortalShow(false); lwSetCursor("move");
+    lwLog("drag", "group (frameless) → move", { n: members.length }, "info");
+    await lwDragGroupPersist(members); lwFitSelFrame(); lwKonva.worldLayer.batchDraw();
+  };
+  window.addEventListener("mousemove", onMove, true);
+  window.addEventListener("mouseup", onUp, true);
+  window.addEventListener("touchmove", onMove, true);
+  window.addEventListener("touchend", onUp, true);
+}
 // Geometric edge pick: which thread line (if any) the world point is on — the arrows' own hit
 // routing misses under the same DPR glitch, so a press near a line selects the edge deterministically.
 function lwPointToSeg(p, a, b) {
@@ -7502,11 +7545,16 @@ function lwDragBegin(kind, entry, node) {
   lwLog("drag", `begin ${kind}#${entry && entry.data && entry.data.id}`, { group: members.length > 1, members: members.length, at: lwRoundPt(node.position()) }, "info");
   lwShowGrid(); lwPortalShow(true);
 }
+function lwFitSelFrame() {                             // reposition the visual frame without destroy/recreate
+  const f = lwKonva && lwKonva.selframe; if (!f) return;
+  const b = lwSelBounds(); f.position({ x: b.x, y: b.y }); f.size({ width: b.w, height: b.h });
+}
 function lwDragGroupMove() {
   const dg = lwKonva.drag; if (!dg) return;
   const dx = dg.leadNode.x() - dg.leadX0, dy = dg.leadNode.y() - dg.leadY0;
   dg.members.forEach((m) => { if (m.node !== dg.leadNode) m.node.position({ x: m.x0 + dx, y: m.y0 + dy }); });
   dg.members.forEach((m) => { if (m.kind === "prop") lwFollowProp(m.entry); });
+  lwFitSelFrame();                                    // keep the dashed frame glued to the moving group
   lwUpdateArrows(); lwShowGrid(); lwPortalOver(); lwKonva.worldLayer.batchDraw();
 }
 async function lwDragGroupPersist(members) {
@@ -7607,7 +7655,7 @@ function lwWireAgentDrag(node, a) {
     if (lwKonva.overPortal) { lwLog("drag", `end agent#${a.id} → PORTAL delete`, { n: dg && dg.group ? dg.members.length : 1 }, "info"); lwHideGrid(); await lwPortalSink(dg && dg.group ? dg.members : [{ kind: "agent", entry: getEntry() }]); return; }
     lwSetCursor("move");                          // the pointer is still on the token you just dropped
     lwPortalShow(false);
-    if (dg && dg.group) { lwLog("drag", `end agent#${a.id} → group move`, { n: dg.members.length }, "info"); await lwDragGroupPersist(dg.members); lwHideGrid(); return; }
+    if (dg && dg.group) { lwLog("drag", `end agent#${a.id} → group move`, { n: dg.members.length }, "info"); await lwDragGroupPersist(dg.members); lwHideGrid(); lwFitSelFrame(); lwKonva.worldLayer.batchDraw(); return; }
     lwLog("drag", `end agent#${a.id} → drop`, { at: lwRoundPt(node.position()), snapSeat: lwKonva.snap ? lwKonva.snap.propId : null }, "info");
     await lwOnAgentDrop(node, a);
   });
@@ -7639,7 +7687,7 @@ function lwWirePropDrag(node, p, entry) {
     if (lwKonva.overPortal) { lwLog("drag", `end prop#${p.id} → PORTAL delete`, { n: dg && dg.group ? dg.members.length : 1 }, "info"); await lwPortalSink(dg && dg.group ? dg.members : [{ kind: "prop", entry }]); return; }
     lwSetCursor("move");                          // still hovering the object you just dropped
     lwPortalShow(false);
-    if (dg && dg.group) { lwLog("drag", `end prop#${p.id} → group move`, { n: dg.members.length }, "info"); await lwDragGroupPersist(dg.members); return; }
+    if (dg && dg.group) { lwLog("drag", `end prop#${p.id} → group move`, { n: dg.members.length }, "info"); await lwDragGroupPersist(dg.members); lwFitSelFrame(); lwKonva.worldLayer.batchDraw(); return; }
     lwFollowProp(entry);
     const gp = node.position();
     lwLog("drag", `end prop#${p.id} → drop`, { at: lwRoundPt(gp) }, "info");
