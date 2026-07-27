@@ -7776,19 +7776,24 @@ async function lwOnAgentDrop(node, a) {
 
 // ---- creation: single-flight, a pending token + an inline figure popover ---
 function lwStartCreate(tool, world) {
-  if (lwCreateFlow || !lwKonva) return;           // ignore extra clicks until resolved
+  if (lwCreateFlow) return;                        // ignore extra clicks until resolved
+  const v2 = lwCanvasV2On();
+  if (!v2 && !lwKonva) return;
   const isShape = tool === "shape";               // a shape is a collating artifact with slots
   const kind = (tool === "agent") ? "agent" : "artifact";
-  const shimmer = lwPendingNode(world.x, world.y, kind);
-  lwKonva.worldLayer.add(shimmer);
-  lwKonva.worldLayer.batchDraw();
-  let anim = null;
-  if (!reduceMotion()) {
-    anim = new Konva.Animation((frame) => {
-      const s = 1 + 0.08 * Math.sin(frame.time / 180);
-      shimmer.scale({ x: s, y: s });
-    }, lwKonva.worldLayer);
-    anim.start();
+  // v2 draws no Konva shimmer — the popover opens straight at the click point.
+  let shimmer = null, anim = null;
+  if (!v2) {
+    shimmer = lwPendingNode(world.x, world.y, kind);
+    lwKonva.worldLayer.add(shimmer);
+    lwKonva.worldLayer.batchDraw();
+    if (!reduceMotion()) {
+      anim = new Konva.Animation((frame) => {
+        const s = 1 + 0.08 * Math.sin(frame.time / 180);
+        shimmer.scale({ x: s, y: s });
+      }, lwKonva.worldLayer);
+      anim.start();
+    }
   }
   const figure = kind === "artifact" ? "ic:" + LW_OBJ_ICONS[0] : "av:" + LW_AV_VARIANTS[0];
   lwCreateFlow = { tool, kind, isShape, world, shimmer, anim, figure, seats: isShape ? 3 : 0,
@@ -7810,10 +7815,17 @@ function lwSetPendingLabel(node, txt, small) {
   lwKonva && lwKonva.worldLayer.batchDraw();
 }
 function lwPositionOverlayAt(el, world, dy) {
-  if (!lwKonva) return;
   if (lwCreateFlow && lwCreateFlow.dragged && el.classList.contains("lw-create-pop")) return;  // user moved it
-  const p = lwKonva.stage.getAbsoluteTransform().point(world);
-  const host = lwKonva.host;
+  let p, host;
+  if (lwCanvasV2On()) {
+    const inst = window.LWCanvas2._inst; if (!inst) return;
+    host = inst.host; const r = host.getBoundingClientRect(), s = inst.world.toScreen(world.x, world.y);
+    p = { x: s.x - r.left, y: s.y - r.top };       // host-relative (toScreen returns client coords)
+  } else {
+    if (!lwKonva) return;
+    p = lwKonva.stage.getAbsoluteTransform().point(world);
+    host = lwKonva.host;
+  }
   const hw = host.clientWidth || 900, hh = host.clientHeight || 460;
   const w = el.offsetWidth || 258, h = el.offsetHeight || 260;
   // the popover is translateX(-50%); keep it fully inside the canvas, never off-edge.
