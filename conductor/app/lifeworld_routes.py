@@ -466,11 +466,20 @@ async def thread_refine(world_id: int, room_id: int, tid: int, body: RefineBody,
         return {"text": ""}
     if complete is None:
         return {"text": text}                      # offline: unchanged (no spend)
-    sys = ("Rewrite these table rules into a short, clear, unambiguous rulebook a silent host can enforce. "
-           "Keep the intent; number the rules; no preamble.")
+    sys = ("You are a text formatter. You receive a DRAFT of rules for a group of agents — it may be "
+           "informal, terse, or a single sentence like 'I want mike to ask harvey stuff'. Your ONLY job "
+           "is to rewrite that draft as a clean, numbered rulebook of clear, enforceable directives. "
+           "ALWAYS rewrite whatever you are given — never ask a question, never request clarification, "
+           "never add preamble, commentary, or a closing line, never refuse. If the draft is one "
+           "instruction, express it as one or two concrete rules. Output ONLY the numbered rules.")
+    prompt = f"DRAFT:\n{text}\n\nRewrite the DRAFT as a numbered rulebook. Output only the rules."
     try:
-        raw = await complete("anthropic", tuning.get("scene_default_model"), sys, text, settings, max_tokens=300)
-        return {"text": (raw or text).strip()[:2000]}
+        raw = (await complete("anthropic", tuning.get("scene_default_model"), sys, prompt, settings, max_tokens=350) or "").strip()
+        low = raw.lower()
+        # guard: if the model ignored the instruction and asked for input, keep the draft unchanged
+        if not raw or any(p in low for p in ("could you", "please provide", "i need the", "i'm ready to help", "clarification")):
+            return {"text": text}
+        return {"text": raw[:2000]}
     except Exception:
         return {"text": text}
 
