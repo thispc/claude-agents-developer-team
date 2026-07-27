@@ -149,6 +149,15 @@ def _drag(page, fromxy, toxy):
     page.mouse.up(); page.wait_for_timeout(400)
 
 
+def _wscreen(page, wx, wy):
+    """World point → client screen coords (for pressing handles / wire midpoints)."""
+    return page.evaluate("""([wx, wy]) => {
+        const p = lwKonva.stage.getAbsoluteTransform().copy().point({x: wx, y: wy});
+        const b = lwKonva.stage.container().getBoundingClientRect();
+        return { x: b.left + p.x, y: b.top + p.y };
+    }""", [wx, wy])
+
+
 # --- the tests -------------------------------------------------------------
 
 def test_the_studio_opens_on_one_click_with_nothing_over_the_canvas(server, page):
@@ -656,6 +665,84 @@ def test_double_click_selects_graph_and_a_manage_button_opens_the_rulebook(serve
     page.evaluate("""() => [...document.querySelectorAll('.lw-act-btn')].find(x => x.textContent.includes('Manage')).click()""")
     page.wait_for_timeout(300)
     assert page.evaluate("() => !!document.querySelector('.sd-thread-book')"), "Manage did not open the rulebook"
+
+
+def test_a_single_click_selects_a_token_and_it_stays_selected(server, page):
+    """The reported bug: a click would select on mousedown then a trailing empty-floor click
+    CLEARED it (the setTimeout(0) suppressClick race). Selection is now decided only on
+    mousedown, geometrically — a click selects and STAYS selected."""
+    c = server["client"]; wid, rid = _mk(c, "Stay")
+    h = c.post(f"/api/lw/{wid}/human", json={"name": "Solo"}).json()["human"]["id"]
+    c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/pos", json={"id": h, "x": 380, "y": -560})   # negative-y, the failing regime
+    _open_scene(page, wid, rid); page.wait_for_timeout(250)
+    s = _agent_screen(page, h)
+    page.mouse.move(s["x"], s["y"]); page.mouse.down(); page.mouse.up()
+    page.wait_for_timeout(350)   # long enough for any trailing click to fire
+    assert page.evaluate("() => lwKonva.sel.size") == 1, "the click did not leave the token selected"
+
+
+def test_grabbing_a_connection_handle_draws_a_wire(server, page):
+    """Scenario 1: select an agent, then press its connection handle (reach 42) and drag onto
+    another agent → a thread is created. Previously the tiny handle's hit missed and the press
+    fell through to a selection-clearing marquee."""
+    c = server["client"]; wid, rid = _mk(c, "Wire")
+    a = c.post(f"/api/lw/{wid}/human", json={"name": "Harvey"}).json()["human"]["id"]
+    b = c.post(f"/api/lw/{wid}/human", json={"name": "Mike"}).json()["human"]["id"]
+    for h in (a, b):
+        c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/pos", json={"id": a, "x": 355, "y": -577})
+    c.post(f"/api/lw/{wid}/pos", json={"id": b, "x": 640, "y": -568})
+    _open_scene(page, wid, rid); page.wait_for_timeout(250)
+    sa = _agent_screen(page, a); sb = _agent_screen(page, b)
+    page.mouse.click(sa["x"], sa["y"]); page.wait_for_timeout(200)   # select A → its handles appear
+    pa = page.evaluate("(id)=>{const p=lwKonva.agents.get(String(id)).node.position();return{x:p.x,y:p.y};}", a)
+    hnd = _wscreen(page, pa["x"] + 42, pa["y"])                       # the east handle
+    page.mouse.move(hnd["x"], hnd["y"]); page.mouse.down()
+    page.mouse.move(sb["x"], sb["y"], steps=12); page.mouse.up(); page.wait_for_timeout(600)
+    assert page.evaluate("() => ((lwRoom && lwRoom.threads) || []).length") >= 1, "no connection was created from the handle"
+
+
+def test_the_wire_selects_on_single_click_even_with_the_graph_selected(server, page):
+    """Scenario 2: after a double-click selects the whole graph, a single click on the wire
+    still selects the EDGE (Remove appears) — the wire lies inside the selection's bounding box
+    but the edge pick is checked before the group-drag path."""
+    c = server["client"]; wid, rid = _mk(c, "Edge")
+    a = c.post(f"/api/lw/{wid}/human", json={"name": "A"}).json()["human"]["id"]
+    b = c.post(f"/api/lw/{wid}/human", json={"name": "B"}).json()["human"]["id"]
+    for h in (a, b):
+        c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/pos", json={"id": a, "x": 340, "y": -570})
+    c.post(f"/api/lw/{wid}/pos", json={"id": b, "x": 650, "y": -560})
+    c.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b})
+    _open_scene(page, wid, rid); page.wait_for_timeout(250)
+    sa = _agent_screen(page, a)
+    page.mouse.dblclick(sa["x"], sa["y"]); page.wait_for_timeout(300)
+    assert page.evaluate("() => lwKonva.sel.size") == 2, "double-click did not select the whole graph"
+    pa = page.evaluate("(id)=>{const p=lwKonva.agents.get(String(id)).node.position();return{x:p.x,y:p.y};}", a)
+    pb = page.evaluate("(id)=>{const p=lwKonva.agents.get(String(id)).node.position();return{x:p.x,y:p.y};}", b)
+    mid = _wscreen(page, (pa["x"] + pb["x"]) / 2, (pa["y"] + pb["y"]) / 2)
+    page.mouse.click(mid["x"], mid["y"]); page.wait_for_timeout(250)
+    assert page.evaluate("() => !!lwSelEdge"), "single-click on the wire did not select the edge"
+
+
+def test_clicking_a_member_of_a_selected_graph_collapses_to_just_it(server, page):
+    """Scenario 2: with the whole graph selected, a plain click on one member collapses the
+    selection to just that node (a drag would still move the group)."""
+    c = server["client"]; wid, rid = _mk(c, "Collapse")
+    a = c.post(f"/api/lw/{wid}/human", json={"name": "A"}).json()["human"]["id"]
+    b = c.post(f"/api/lw/{wid}/human", json={"name": "B"}).json()["human"]["id"]
+    for h in (a, b):
+        c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/pos", json={"id": a, "x": 340, "y": -570})
+    c.post(f"/api/lw/{wid}/pos", json={"id": b, "x": 650, "y": -560})
+    c.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b})
+    _open_scene(page, wid, rid); page.wait_for_timeout(250)
+    sa = _agent_screen(page, a); sb = _agent_screen(page, b)
+    page.mouse.dblclick(sa["x"], sa["y"]); page.wait_for_timeout(300)
+    assert page.evaluate("() => lwKonva.sel.size") == 2
+    page.mouse.click(sb["x"], sb["y"]); page.wait_for_timeout(250)
+    assert page.evaluate("() => lwKonva.sel.size") == 1, "clicking a member did not collapse the selection to one"
 
 
 def test_double_click_selects_the_graph_even_when_the_hit_graph_misses(server, page):

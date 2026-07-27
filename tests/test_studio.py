@@ -567,11 +567,11 @@ def test_interaction_state_cannot_get_stranded_on():
     for hook in ('addEventListener("blur", lwForceIdle', "pointercancel", "visibilitychange"):
         assert hook in js, f"panic reset not wired to {hook}"
     assert "lwKonva.panning = false" in js.split("function lwSetTool")[1][:400], "lwSetTool must clear the pan flag"
-    # The cursor is driven GEOMETRICALLY (nearest-token distance), never via the flaky hit graph.
-    # enter/leave polling of getIntersection was what flickered and stranded the cursor; the
-    # mousemove handler must use lwNearestToken and must NOT call getIntersection.
+    # The cursor is driven GEOMETRICALLY (the same pickers the mousedown uses), never via the flaky
+    # hit graph. enter/leave polling of getIntersection was what flickered and stranded the cursor;
+    # the mousemove handler must use the geometric pickers and must NOT call getIntersection.
     move = js.split('stage.on("mousemove touchmove"')[1].split("stage.on(")[0]
-    assert "lwNearestToken" in move, "cursor is not driven geometrically"
+    assert "lwPickToken" in move and "lwPickHandle" in move, "cursor is not driven by the geometric pickers"
     assert "getIntersection" not in move, "cursor must not poll the flaky hit graph"
 
 
