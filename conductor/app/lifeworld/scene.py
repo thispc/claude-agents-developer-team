@@ -226,6 +226,8 @@ class Scene:
         plan = None
         if self.world.is_live() and cfg.get("model") and budget > 0:
             plan = await self.world.host_plan(cfg, ring, rulebook, self._thread_transcript(ring))
+            if plan is None:                          # the model was expected but unreachable — say so, don't fake it
+                self._record("manage", None, f"host could not reach the model for thread {thread['id']} — free replies this round")
         await self._host_manage(thread, ring, plan)   # survey + enforce (from the one plan, or free rulebook)
         await self._converse(thread, ring, plan)      # mediate one round; the members talk (or free round)
 
@@ -333,7 +335,7 @@ class Scene:
         cfg = thread.get("manager", {}) or {}
         rulebook = (thread.get("rulebook") or "").strip()
         if self.world.is_live() and cfg.get("model"):
-            r = await self.world.host_reply(cfg, ring, rulebook, convo)
+            r = await self.world.host_reply(cfg, ring, rulebook, convo, self._thread_transcript(ring))
             if r:
                 return r
         names = ", ".join(h.name for h in ring) or "the group"

@@ -150,21 +150,24 @@ class World:
         except Exception:
             return None
 
-    async def host_reply(self, cfg: dict, ring, rulebook: str, convo: list) -> str | None:
+    async def host_reply(self, cfg: dict, ring, rulebook: str, convo: list, transcript: str = "") -> str | None:
         """The manager answering the USER in the graph's chat — one bounded call per user message.
-        It speaks as the mediator: it can explain what the agents are discussing, how it's holding
-        them to the rules, or take the user's direction. None → free deterministic fallback."""
+        It speaks as the mediator: it can explain what the agents ALREADY discussed (the DISCUSSION
+        transcript), how it's holding them to the rules, or take the user's direction. None → free
+        deterministic fallback."""
         if self._complete is None:
             return None
         import json
         model = cfg.get("model") if cfg.get("model") in MODEL_WHITELIST else self._model_name
-        sys = ("You are the HOST/manager mediating a small group of agents for the USER. Answer the "
-               "user's latest message helpfully and briefly (2-4 sentences), in your own voice as the "
-               "mediator — explain what the agents are discussing, how you're enforcing the rules, or "
-               "take the user's direction. Plain text only.")
+        sys = ("You are the HOST/manager mediating a small group of agents that ALREADY EXIST and may "
+               "have already discussed the topic (see DISCUSSION). Answer the USER's latest message "
+               "helpfully and briefly (2-4 sentences), in your own voice as the mediator — summarise or "
+               "explain what the agents said, how you're holding them to the rules, or take the user's "
+               "direction. Never offer to create the agents; they are already here. Plain text only.")
         hist = "\n".join(f"{m.get('role')}: {m.get('text')}" for m in convo[-10:])
         prompt = (f"AGENTS: {json.dumps([h.name for h in ring])}\nRULES: {json.dumps(rulebook or '(none set)')}\n"
-                  f"CHAT SO FAR:\n{hist}\nReply as the manager (plain text).")
+                  f"DISCUSSION SO FAR:\n{transcript[:1200] or '(they have not spoken yet)'}\n"
+                  f"CHAT WITH USER:\n{hist}\nReply as the manager (plain text).")
         try:
             raw = await self._complete("anthropic", model, sys, prompt, self._settings, max_tokens=220)
             return (raw or "").strip()[:600] or None

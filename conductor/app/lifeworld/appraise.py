@@ -89,7 +89,14 @@ async def model(human, signal: Signal, ctx: dict, *, settings: dict,
         p = deterministic(human, signal, ctx)
         p.understood = f"(model unavailable: {str(e)[:60]}) " + p.understood
         return p
-    p = Packet.from_dict(_parse(raw))
+    d = _parse(raw)
+    # Trust boundary: the model sometimes returns mood/vitals/drives/social/action as a LIST or
+    # scalar instead of an object. The appliers call .items()/dict access, so coerce non-dicts to {}
+    # (a live agent chat crashed here — 'list' object has no attribute 'items').
+    for k in ("mood", "vitals", "drives", "social", "action"):
+        if k in d and not isinstance(d[k], dict):
+            d[k] = {}
+    p = Packet.from_dict(d)
     p.tier, p.spent = 2, 1
     if not p.memory:
         p.memory = p.understood or signal.text()
