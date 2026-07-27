@@ -488,3 +488,38 @@ def test_a_shape_with_slots_is_a_table_even_if_its_brief_says_cards(client):
     deck = client.post(f"/api/lw/{wid}/artifact",
                        json={"name": "shoe", "brief": "a deck of cards", "slots": 0}).json()["artifact"]
     assert deck["kind"] == "deck"
+
+
+def test_a_scene_can_be_deleted_but_its_cast_survives(client):
+    """Deleting a scene removes only the canvas; the agents/artifacts are world-level and
+    remain in the cast and any other scene."""
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    r1 = client.post(f"/api/lw/{wid}/room", json={"name": "one", "type": "freeplay"}).json()["room"]["id"]
+    r2 = client.post(f"/api/lw/{wid}/room", json={"name": "two", "type": "freeplay"}).json()["room"]["id"]
+    hid = client.post(f"/api/lw/{wid}/human", json={"name": "Shared"}).json()["human"]["id"]
+    client.post(f"/api/lw/{wid}/room/{r1}/seat", params={"human_id": hid})
+    client.post(f"/api/lw/{wid}/room/{r2}/seat", params={"human_id": hid})
+    assert client.delete(f"/api/lw/{wid}/room/{r1}").json()["ok"] is True
+    ov = client.get(f"/api/lw/{wid}").json()
+    assert [r["id"] for r in ov["rooms"]] == [r2]                 # only the deleted scene is gone
+    assert any(a["id"] == hid for a in ov["agents"])              # the agent survives in the cast
+    assert client.get(f"/api/lw/{wid}/room/{r1}").status_code == 404
+
+
+def test_an_entity_can_be_deleted_and_leaves_every_scene_and_table(client):
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    rid = client.post(f"/api/lw/{wid}/room", json={"name": "r", "type": "freeplay"}).json()["room"]["id"]
+    table = client.post(f"/api/lw/{wid}/artifact", json={"name": "t", "brief": "a round table", "slots": 3}).json()["artifact"]
+    client.post(f"/api/lw/{wid}/room/{rid}/place", params={"artifact_id": table["id"]})
+    hid = client.post(f"/api/lw/{wid}/human", json={"name": "Doomed"}).json()["human"]["id"]
+    client.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": hid})
+    client.post(f"/api/lw/{wid}/artifact/{table['id']}/seat", json={"slot": 0, "human_id": hid})
+    assert client.delete(f"/api/lw/{wid}/entity/{hid}").json()["ok"] is True
+    room = client.get(f"/api/lw/{wid}/room/{rid}").json()["room"]
+    assert all(a["id"] != hid for a in room["agents"])            # gone from the scene
+    assert hid not in room["props"][0]["seated"]                  # unseated from the table
+    assert all(a["id"] != hid for a in client.get(f"/api/lw/{wid}").json()["agents"])   # gone from the world

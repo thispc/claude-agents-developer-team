@@ -2347,6 +2347,36 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .sd-menu-sub { font-size: 10.5px; font-family: var(--mono); color: var(--faint); }
 .sd-menu-new { color: var(--accent); font-weight: 600; border-top: 1px solid var(--line-soft); border-radius: 0 0 8px 8px; margin-top: 4px; }
 
+/* Each scene row in the dropdown carries its own delete, revealed on hover. */
+.sd-menu-row { display: flex; align-items: stretch; border-radius: 8px; }
+.sd-menu-row.on { background: var(--accent-soft); }
+.sd-menu-row .sd-menu-item { flex: 1; min-width: 0; }
+.sd-menu-row .sd-menu-name, .sd-menu-row .sd-menu-sub { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sd-menu-del, .sd-title-del { flex: none; border: none; background: transparent; color: var(--faint);
+  cursor: pointer; border-radius: 8px; font-size: 13px; line-height: 1; }
+.sd-menu-del { align-self: stretch; padding: 0 11px; opacity: .45; }
+.sd-menu-row:hover .sd-menu-del { opacity: 1; }
+.sd-menu-del:hover, .sd-title-del:hover { color: #c0392b; background: #fbe9e7; }
+.sd-title-del { padding: 4px 6px; opacity: 0; margin-left: -2px; transition: opacity .12s ease; }
+.sd-bar:hover .sd-title-del, .sd-title-del:focus-visible { opacity: .5; }
+.sd-bar:hover .sd-title-del:hover { opacity: 1; }
+
+/* The delete portal — a sink that slides in from the right edge while you drag, and
+   glows open when the pointer enters its pull zone. Screen-fixed, never eats clicks. */
+.sd-portal { position: absolute; top: 50%; right: 0; z-index: 30; transform: translate(60%, -50%);
+  width: 132px; height: 172px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  border-radius: 86px 0 0 86px; pointer-events: none; opacity: 0; transition: transform .22s ease, opacity .22s ease, box-shadow .18s ease;
+  background: radial-gradient(ellipse at 30% 50%, rgba(192,57,43,0.16), rgba(192,57,43,0.05) 70%, transparent);
+  border: 1.5px dashed rgba(192,57,43,0.45); border-right: none; color: #9c342a; }
+.sd-portal.active { opacity: 1; transform: translate(6%, -50%); }
+.sd-portal.hot { transform: translate(0, -50%); box-shadow: -8px 0 40px rgba(192,57,43,0.28);
+  background: radial-gradient(ellipse at 30% 50%, rgba(192,57,43,0.30), rgba(192,57,43,0.10) 72%, transparent);
+  border-color: rgba(192,57,43,0.8); border-style: solid; }
+.sd-portal.ingest { box-shadow: -8px 0 60px rgba(192,57,43,0.45); }
+.sd-portal-icon { font-size: 30px; line-height: 1; filter: saturate(.9); transition: transform .18s ease; }
+.sd-portal.hot .sd-portal-icon { transform: scale(1.22) rotate(-6deg); }
+.sd-portal-lbl { font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .6px; opacity: .85; }
+
 .sd-room { flex: 1; display: flex; min-height: 0; }
 .sd-canvas { background: radial-gradient(circle at 50% 42%, #f3f0ea 0%, #e6e2da 84%); }
 .sd-hint { position: absolute; top: 12px; right: 16px; z-index: 6; font-size: 11px; color: var(--dim);

@@ -5186,19 +5186,44 @@ async function sdToggleScenes() {
   let rooms = [];
   try { rooms = (await api(`/api/lw/${lwWorldId}`)).rooms || []; } catch (e) { toast(`Could not list scenes: ${e.message}`); return; }
   menu.innerHTML = rooms.map((r) =>
-    `<button class="sd-menu-item${r.id === lwRoomId ? " on" : ""}" data-scene="${escapeHtml(String(r.id))}">
-      <span class="sd-menu-name">${escapeHtml(r.name || "untitled")}</span>
-      <span class="sd-menu-sub">${(r.agents || []).length} cast · ${(r.props || []).length} props</span>
-    </button>`).join("")
+    `<div class="sd-menu-row${r.id === lwRoomId ? " on" : ""}">
+      <button class="sd-menu-item" data-scene="${escapeHtml(String(r.id))}">
+        <span class="sd-menu-name">${escapeHtml(r.name || "untitled")}</span>
+        <span class="sd-menu-sub">${(r.agents || []).length} cast · ${(r.props || []).length} props</span>
+      </button>
+      <button class="sd-menu-del" data-del="${escapeHtml(String(r.id))}" data-name="${escapeHtml(r.name || "untitled")}" title="Delete scene" aria-label="Delete this scene">🗑</button>
+    </div>`).join("")
     + `<button class="sd-menu-item sd-menu-new" id="sdNewScene">＋ New scene</button>`;
   menu.hidden = false; if (btn) btn.setAttribute("aria-expanded", "true");
   menu.querySelectorAll("[data-scene]").forEach((b) => b.addEventListener("click", () => { menu.hidden = true; lwOpenScene(Number(b.dataset.scene)); }));
+  menu.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", (ev) => {
+    ev.stopPropagation(); menu.hidden = true; sdDeleteScene(Number(b.dataset.del), b.dataset.name);
+  }));
   $("#sdNewScene").addEventListener("click", async () => {
     menu.hidden = true;
     try { const r = await api(`/api/lw/${lwWorldId}/room`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "untitled", type: "freeplay" }) }); sdFlash(); lwOpenScene(r.room.id); }
     catch (e) { toast(`Could not add a scene: ${e.message}`); }
   });
 }
+
+// Delete a scene (from the dropdown or the title-bar trash). The cast is world-level, so
+// agents/props survive; only this canvas goes. Afterwards we open another scene, or mint a
+// fresh untitled one so the Studio is never empty.
+async function sdDeleteScene(rid, name) {
+  if (!lwWorldId || rid == null) return;
+  if (!confirm(`Delete the scene "${name || "untitled"}"?\n\nIts agents and props stay in your cast — only this canvas is removed.`)) return;
+  sdPause();
+  try { await api(`/api/lw/${lwWorldId}/room/${rid}`, { method: "DELETE" }); }
+  catch (e) { toast(`Could not delete the scene: ${e.message}`); return; }
+  sdFlash(); toast("Scene deleted");
+  let rooms = [];
+  try { rooms = (await api(`/api/lw/${lwWorldId}`)).rooms || []; } catch (e) { /* fall through to a fresh scene */ }
+  const next = rooms.find((r) => r.id !== rid);
+  if (next) { lwOpenScene(next.id); return; }
+  try { const r = await api(`/api/lw/${lwWorldId}/room`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "untitled", type: "freeplay" }) }); lwOpenScene(r.room.id); }
+  catch (e) { toast(`Could not open a scene: ${e.message}`); }
+}
+function sdDeleteCurrentScene() { if (lwRoomId != null) sdDeleteScene(lwRoomId, (lwRoom && lwRoom.name) || "untitled"); }
 
 // --- the Cast: every agent, grouped by the scene they are in ---------------
 async function sdOpenRoster() {
@@ -6241,16 +6266,19 @@ function lwUpdateSelFrame() {
     lwSetCursor("grabbing");
     frame.members = lwSelList().map((s) => ({ kind: s.kind, entry: s.entry, node: s.entry.node, x0: s.entry.node.x(), y0: s.entry.node.y() }));
     frame.fx0 = frame.x(); frame.fy0 = frame.y();
-    lwShowGrid();
+    lwShowGrid(); lwPortalShow(true);
   });
   frame.on("dragmove", () => {
     const dx = frame.x() - frame.fx0, dy = frame.y() - frame.fy0;
     (frame.members || []).forEach((m) => { m.node.position({ x: m.x0 + dx, y: m.y0 + dy }); if (m.kind === "prop") lwFollowProp(m.entry); });
-    lwShowGrid(); lwKonva.worldLayer.batchDraw();
+    lwShowGrid(); lwPortalOver(); lwKonva.worldLayer.batchDraw();
   });
   frame.on("dragend", async () => {
     lwHideGrid(); lwSetCursor(lwToolCursor(lwTool));
-    await Promise.all((frame.members || []).map((m) => {
+    const members = frame.members || [];
+    if (lwKonva.overPortal) { frame.destroy(); lwKonva.selframe = null; await lwPortalSink(members); return; }
+    lwPortalShow(false);
+    await Promise.all(members.map((m) => {
       const p = m.node.position();
       return api(`/api/lw/${lwWorldId}/pos`, { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: m.entry.data.id, x: p.x, y: p.y }) }).catch(() => {});
@@ -6367,7 +6395,7 @@ function lwMountCanvas(room, agents, props) {
   lwKonva = { stage, gridLayer, worldLayer, host, roomId: String(lwRoomId),
               agents: new Map(), props: new Map(), glowing: new Set(), snap: null,
               menuWorld: null, sel: new Map(), arrows: null, arrowSrc: null, drag: null,
-              marquee: null, panning: false, keyHandler: null, keyUpHandler: null };
+              marquee: null, panning: false, keyHandler: null, keyUpHandler: null, overPortal: false };
 
   // Which agents are seated, and in which socket, so they render on the rim.
   const seatedMap = {};
@@ -6893,23 +6921,74 @@ function lwDragBegin(kind, entry, node) {
   if (!lwSelHas(entry)) lwSelSet(kind, entry);        // dragging an unselected token focuses just it
   const members = lwSelList().map((s) => ({ kind: s.kind, entry: s.entry, node: s.entry.node, x0: s.entry.node.x(), y0: s.entry.node.y() }));
   lwKonva.drag = { lead: entry, leadNode: node, leadX0: node.x(), leadY0: node.y(), members, group: members.length > 1 };
-  lwShowGrid();
+  lwShowGrid(); lwPortalShow(true);
 }
 function lwDragGroupMove() {
   const dg = lwKonva.drag; if (!dg) return;
   const dx = dg.leadNode.x() - dg.leadX0, dy = dg.leadNode.y() - dg.leadY0;
   dg.members.forEach((m) => { if (m.node !== dg.leadNode) m.node.position({ x: m.x0 + dx, y: m.y0 + dy }); });
   dg.members.forEach((m) => { if (m.kind === "prop") lwFollowProp(m.entry); });
-  lwUpdateArrows(); lwShowGrid(); lwKonva.worldLayer.batchDraw();
+  lwUpdateArrows(); lwShowGrid(); lwPortalOver(); lwKonva.worldLayer.batchDraw();
 }
-async function lwDragGroupPersist() {
-  const dg = lwKonva.drag; if (!dg) return;
-  await Promise.all(dg.members.map((m) => {
+async function lwDragGroupPersist(members) {
+  members = members || (lwKonva.drag && lwKonva.drag.members);
+  if (!members) return;
+  await Promise.all(members.map((m) => {
     const pos = m.node.position();
     return api(`/api/lw/${lwWorldId}/pos`, { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: m.entry.data.id, x: pos.x, y: pos.y }) }).catch(() => {});
   }));
   lwSaveView();
+}
+
+// ---- the delete portal: drag a token or a group to the far right to dump it -------
+// A screen-fixed sink on the right edge that appears while dragging, glows when the
+// pointer enters it, and swallows what you drop — animating the sink, then deleting on
+// the server. If a delete fails the reload brings that item back, so it's safe.
+function lwPortalEl() {
+  let el = $("#sdPortal");
+  if (!el) {
+    const overlay = $("#lwOverlay"); if (!overlay) return null;
+    el = document.createElement("div"); el.id = "sdPortal"; el.className = "sd-portal";
+    el.innerHTML = `<span class="sd-portal-icon" aria-hidden="true">🗑</span><span class="sd-portal-lbl">drop to delete</span>`;
+    overlay.appendChild(el);
+  }
+  return el;
+}
+function lwPortalShow(on) {
+  const el = lwPortalEl(); if (!el) return;
+  el.classList.toggle("active", !!on);
+  if (!on) { el.classList.remove("hot"); if (lwKonva) lwKonva.overPortal = false; }
+}
+function lwPortalOver() {
+  if (!lwKonva) return;
+  const el = $("#sdPortal"); if (!el) return;
+  const pos = lwKonva.stage.getPointerPosition(); if (!pos) return;
+  const over = pos.x >= (lwKonva.host.clientWidth || 900) - 130;   // the pull zone: right 130px
+  el.classList.toggle("hot", over);
+  lwKonva.overPortal = over;
+}
+async function lwPortalSink(members) {
+  if (!members || !members.length) { lwPortalShow(false); return; }
+  const el = lwPortalEl(); if (el) el.classList.add("ingest");
+  lwPortalShow(false);
+  const stage = lwKonva.stage;
+  const zx = (lwKonva.host.clientWidth || 900) - 44, zy = (lwKonva.host.clientHeight || 600) / 2;
+  const world = stage.getAbsoluteTransform().copy().invert().point({ x: zx, y: zy });
+  const ids = members.map((m) => m.entry.data.id);
+  await Promise.all(members.map((m) => new Promise((res) => {
+    const node = m.entry.node;
+    if (reduceMotion()) { node.hide(); res(); return; }
+    new Konva.Tween({ node, x: world.x, y: world.y, scaleX: 0.05, scaleY: 0.05, opacity: 0, rotation: 200,
+      duration: 0.45, easing: Konva.Easings.EaseIn, onFinish: res }).play();
+  })));
+  if (lwKonva) lwKonva.worldLayer.batchDraw();
+  let ok = 0;
+  await Promise.all(ids.map((id) => api(`/api/lw/${lwWorldId}/entity/${id}`, { method: "DELETE" }).then(() => { ok++; }).catch(() => {})));
+  if (el) el.classList.remove("ingest");
+  toast(ok === ids.length ? `Deleted ${ok} ${ok === 1 ? "thing" : "things"}` : `Deleted ${ok} of ${ids.length} — the rest rolled back`);
+  sdFlash(); lwSelClear();
+  await lwReloadRoom();      // server truth: deleted ones are gone, any that failed reappear
 }
 
 function lwWireAgentDrag(node, a) {
@@ -6937,13 +7016,15 @@ function lwWireAgentDrag(node, a) {
     if (best) { lwVicinityGlow(best.entry.node, "hsl(150 78% 45%)"); near = true; }
     if (near) lwVicinityGlow(node);
     lwKonva.snap = best ? { propId: String(best.entry.data.id), slot: best.slot, x: best.x, y: best.y } : null;
-    lwUpdateArrows();
+    lwUpdateArrows(); lwPortalOver();
     lwKonva.worldLayer.batchDraw();
   });
   node.on("dragend", async () => {
     lwSetCursor(lwToolCursor(lwTool));
-    if (lwKonva.drag && lwKonva.drag.group) { lwKonva.drag = null; await lwDragGroupPersist(); lwHideGrid(); return; }
-    lwKonva.drag = null;
+    const dg = lwKonva.drag; lwKonva.drag = null;
+    if (lwKonva.overPortal) { lwHideGrid(); await lwPortalSink(dg && dg.group ? dg.members : [{ kind: "agent", entry: getEntry() }]); return; }
+    lwPortalShow(false);
+    if (dg && dg.group) { await lwDragGroupPersist(dg.members); lwHideGrid(); return; }
     await lwOnAgentDrop(node, a);
   });
 }
@@ -6964,12 +7045,14 @@ function lwWirePropDrag(node, p, entry) {
   node.on("dragstart", () => lwDragBegin("prop", entry, node));
   node.on("dragmove", () => {
     if (lwKonva.drag && lwKonva.drag.group) { lwDragGroupMove(); return; }
-    lwShowGrid(); lwFollowProp(entry); lwUpdateArrows(); lwKonva.worldLayer.batchDraw();
+    lwShowGrid(); lwFollowProp(entry); lwUpdateArrows(); lwPortalOver(); lwKonva.worldLayer.batchDraw();
   });
   node.on("dragend", async () => {
     lwHideGrid(); lwSetCursor(lwToolCursor(lwTool));
-    if (lwKonva.drag && lwKonva.drag.group) { lwKonva.drag = null; await lwDragGroupPersist(); return; }
-    lwKonva.drag = null;
+    const dg = lwKonva.drag; lwKonva.drag = null;
+    if (lwKonva.overPortal) { await lwPortalSink(dg && dg.group ? dg.members : [{ kind: "prop", entry }]); return; }
+    lwPortalShow(false);
+    if (dg && dg.group) { await lwDragGroupPersist(dg.members); return; }
     lwFollowProp(entry);
     const gp = node.position();
     try {
@@ -7689,6 +7772,7 @@ document.querySelectorAll(".lw-tab").forEach((b) =>
     title.addEventListener("blur", commit);
   }
   $("#sdScenesBtn") && $("#sdScenesBtn").addEventListener("click", (e) => { e.stopPropagation(); sdToggleScenes(); });
+  $("#sdSceneDel") && $("#sdSceneDel").addEventListener("click", (e) => { e.stopPropagation(); sdDeleteCurrentScene(); });
   $("#sdActBtn") && $("#sdActBtn").addEventListener("click", sdToggleActivity);
   $("#sdRoster") && $("#sdRoster").addEventListener("click", sdOpenRoster);
   document.addEventListener("click", (e) => {          // click-away closes the scenes menu

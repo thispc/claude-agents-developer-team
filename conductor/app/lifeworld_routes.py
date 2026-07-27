@@ -323,6 +323,34 @@ def touch(world_id: int, request: Request) -> dict:
     return {"ok": True}
 
 
+@router.delete("/{world_id}/room/{room_id}")
+def delete_room(world_id: int, room_id: int, request: Request) -> dict:
+    """Delete a scene (its canvas). Agents and artifacts are world-level, so they survive
+    in the cast and any other scene they're in — only this scene goes."""
+    _own(request, world_id)
+    w = store.load(world_id)
+    w.scenes.pop(room_id, None)
+    store.save(w)
+    return {"ok": True, "deleted": room_id}
+
+
+@router.delete("/{world_id}/entity/{entity_id}")
+def delete_entity(world_id: int, entity_id: int, request: Request) -> dict:
+    """Delete an agent or artifact from the world entirely — dropped from the cast, removed
+    from every scene, and unseated from any table it sat at."""
+    _own(request, world_id)
+    w = store.load(world_id)
+    w.entities.pop(entity_id, None)
+    for s in w.scenes.values():
+        s.seats = [i for i in s.seats if i != entity_id]
+        s.props = [i for i in s.props if i != entity_id]
+    for a in w.artifacts():                       # pop the deleted agent out of any table's ring
+        if entity_id in (getattr(a, "seated", None) or []):
+            a.unseat(entity_id)
+    store.save(w)
+    return {"ok": True, "deleted": entity_id}
+
+
 @router.get("/{world_id}/room/{room_id}")
 def room_view(world_id: int, room_id: int, request: Request) -> dict:
     _own(request, world_id)

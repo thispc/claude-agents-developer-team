@@ -409,3 +409,42 @@ def test_a_multi_selection_drags_as_a_group_from_any_gap(server, page):
     _drag(page, {"x": gapx, "y": gapy}, {"x": gapx - 140, "y": gapy + 90})
     after = [page.evaluate("(id)=>lwKonva.agents.get(String(id)).node.x()", h) for h in ids]
     assert all(abs(after[i] - before[i]) > 40 for i in range(3)), "dragging the frame from a gap did not move the group"
+
+
+def test_the_title_trash_deletes_the_scene_and_opens_another(server, page):
+    """The trash by the title removes the current scene (after confirm) and lands on a
+    surviving scene — the Studio is never left empty."""
+    c = server["client"]
+    wid = c.post("/api/lw", json={"name": "Del"}).json()["world"]["id"]
+    keep = c.post(f"/api/lw/{wid}/room", json={"name": "keep", "type": "freeplay"}).json()["room"]["id"]
+    doomed = c.post(f"/api/lw/{wid}/room", json={"name": "doomed", "type": "freeplay"}).json()["room"]["id"]
+    _open_scene(page, wid, doomed)
+    page.on("dialog", lambda d: d.accept())          # accept the confirm()
+    page.click("#sdSceneDel")
+    for _ in range(40):
+        if page.evaluate("() => lwRoomId") != doomed:
+            break
+        page.wait_for_timeout(150)
+    assert page.evaluate("() => lwRoomId") == keep, "did not fall back to the surviving scene"
+    rooms = [r["id"] for r in c.get(f"/api/lw/{wid}").json()["rooms"]]
+    assert doomed not in rooms and keep in rooms, f"scene not deleted server-side: {rooms}"
+
+
+def test_dragging_a_token_to_the_right_portal_deletes_it(server, page):
+    """Drag a token into the far-right sink and it is removed from the world — the
+    portal's whole purpose."""
+    c = server["client"]; wid, rid = _mk(c, "Portal")
+    hid = c.post(f"/api/lw/{wid}/human", json={"name": "Trash me"}).json()["human"]["id"]
+    c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": hid})
+    c.post(f"/api/lw/{wid}/pos", json={"id": hid, "x": 250, "y": 300})
+    _open_scene(page, wid, rid); page.wait_for_timeout(200)
+    s = _agent_screen(page, hid)
+    box = page.evaluate("() => { const b = lwKonva.stage.container().getBoundingClientRect(); return {right:b.left+b.width, top:b.top, h:b.height}; }")
+    # drag to well inside the right pull zone
+    _drag(page, s, {"x": box["right"] - 30, "y": box["top"] + box["h"] / 2})
+    for _ in range(40):
+        if all(a["id"] != hid for a in c.get(f"/api/lw/{wid}").json()["agents"]):
+            break
+        page.wait_for_timeout(150)
+    agents = c.get(f"/api/lw/{wid}").json()["agents"]
+    assert all(a["id"] != hid for a in agents), "the token was not deleted by the portal"
