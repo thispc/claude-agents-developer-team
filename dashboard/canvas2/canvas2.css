@@ -1,0 +1,50 @@
+/* Canvas v2 — SVG/DOM engine. Native hit-testing, native :hover cursors (no JS cursor logic),
+   GPU-composited CSS-transform pan/zoom. Scoped under .lw2-host so it never touches v1. */
+
+.lw2-host {
+  position: absolute; inset: 0; overflow: hidden;
+  touch-action: none;                 /* we own panning/zooming */
+  background:
+    radial-gradient(circle at 1px 1px, rgba(46, 110, 91, 0.10) 1px, transparent 0) 0 0 / 26px 26px,
+    #f4f2ec;
+  cursor: default; user-select: none; -webkit-user-select: none;
+}
+.lw2-viewport { position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; }
+.lw2-svg { position: absolute; top: 0; left: 0; width: 1px; height: 1px; overflow: visible; }
+
+/* tokens */
+.lw2-token { cursor: move; }
+.lw2-label { font: 12.5px system-ui, sans-serif; fill: #1b2021; pointer-events: none; }
+.lw2-deck .lw2-label, .lw2-tile .lw2-label, .lw2-table .lw2-label { fill: #3a3f3d; font-size: 12px; }
+.lw2-star { fill: #e0a93b; font-size: 17px; pointer-events: none; }
+.lw2-mood { pointer-events: none; }
+
+/* selection — a green ring on the body + a soft lift on the group */
+.lw2-token.lw2-sel { filter: drop-shadow(0 1px 4px rgba(46, 110, 91, 0.45)); }
+.lw2-token.lw2-sel .lw2-body { stroke: #2e6e5b; stroke-width: 3.5; }
+.lw2-token.lw2-snap .lw2-body { stroke: hsl(150 78% 42%); stroke-width: 3.5; }
+
+/* connection handles */
+.lw2-handle { fill: #fff; stroke: hsl(160 62% 42%); stroke-width: 2; cursor: crosshair; }
+.lw2-handle:hover { fill: hsl(160 62% 92%); }
+
+/* wires */
+.lw2-wire { cursor: pointer; }
+.lw2-wire-sel .lw2-wire-vis { stroke: hsl(160 55% 36%); stroke-width: 4; }
+.lw2-rubber { stroke: hsl(160 62% 42%); stroke-width: 2; stroke-dasharray: 6 4; pointer-events: none; }
+
+/* marquee */
+.lw2-marquee { fill: rgba(46, 110, 91, 0.08); stroke: #2e6e5b; stroke-width: 1; stroke-dasharray: 4 4; pointer-events: none; }
+
+/* gesture cursors win over element cursors while a gesture owns the pointer */
+.lw2-host.lw2-panning, .lw2-host.lw2-panning * { cursor: grabbing !important; }
+.lw2-host.lw2-dragging, .lw2-host.lw2-dragging * { cursor: grabbing !important; }
+.lw2-host.lw2-connecting, .lw2-host.lw2-connecting * { cursor: crosshair !important; }
+
+@media (prefers-color-scheme: dark) {
+  .lw2-host { background:
+    radial-gradient(circle at 1px 1px, rgba(120, 200, 175, 0.10) 1px, transparent 0) 0 0 / 26px 26px,
+    #1a1e1c; }
+  .lw2-label { fill: #e7ece9; }
+  .lw2-deck .lw2-label, .lw2-tile .lw2-label, .lw2-table .lw2-label { fill: #c7cec9; }
+}

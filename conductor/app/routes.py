@@ -235,6 +235,7 @@ def me(request: Request) -> dict:
     return {"signed_in": True, "username": u["username"], "is_root": bool(u["is_root"]),
             "has_ai_credentials": auth.has_own_ai_credentials(u),
             "may_self_repair": config.may_self_repair(u["username"], bool(u["is_root"])),
+            "canvas_v2": config.CANVAS_V2,
             "settings": auth.redacted(s)}
 
 

@@ -6455,6 +6455,7 @@ function lwSetTool(t) {
   lwTool = t;
   const dock = $("#lwDock");
   if (dock) dock.querySelectorAll("[data-tool]").forEach((b) => b.classList.toggle("on", b.dataset.tool === t));
+  if (lwCanvasV2On()) { window.LWCanvas2.setTool(t); return; }
   lwUpdateHandles();                             // handles belong to select mode only
   if (lwKonva && lwKonva.stage) {
     lwKonva.panning = false;                    // a stale pan flag would keep the cursor/marquee dead
@@ -6664,8 +6665,10 @@ function lwForceIdle() {
 function lwOnVisChange() { if (document.hidden) lwForceIdle(); }
 
 // ---- Stage + layers: pan, zoom-to-cursor, drag-only grid -----------------
+function lwCanvasV2On() { return !!(me && me.canvas_v2 && window.LWCanvas2); }
 function lwDestroyCanvas() {
   if (lwCreateFlow) lwCleanupCreate();
+  if (window.LWCanvas2 && window.LWCanvas2._inst) { try { window.LWCanvas2.destroy(); } catch (e) { /* */ } }
   if (lwKonva) {
     if (lwKonva.keyHandler) document.removeEventListener("keydown", lwKonva.keyHandler);
     if (lwKonva.keyUpHandler) document.removeEventListener("keyup", lwKonva.keyUpHandler);
@@ -6684,7 +6687,17 @@ function lwDestroyCanvas() {
 
 function lwMountCanvas(room, agents, props) {
   const host = $("#lwKonvaHost");
-  if (!host || typeof Konva === "undefined") return;
+  if (!host) return;
+  // Canvas v2 (SVG/DOM, native hit-testing) when the CANVAS_V2 flag is served. v1 (Konva) below.
+  if (lwCanvasV2On()) {
+    lwRoom = room;
+    window.LWCanvas2.mount(host, {
+      worldId: lwWorldId, roomId: lwRoomId, room, agents, props,
+      getTool: () => lwTool, getDir: () => lwThreadDir,
+    });
+    return;
+  }
+  if (typeof Konva === "undefined") return;
   // The host can read 0×0 for a frame right after innerHTML (layout not settled yet). A
   // small fallback there would leave the canvas smaller than the visible floor, so clicks
   // and drags in the uncovered region silently miss — the inconsistent "won't select"
