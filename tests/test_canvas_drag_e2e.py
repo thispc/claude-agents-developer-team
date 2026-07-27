@@ -335,3 +335,52 @@ def test_the_canvas_fills_the_host_no_dead_zone(server, page):
         page.mouse.click(s["x"], s["y"]); page.wait_for_timeout(120)
         assert page.evaluate("() => lwKonva.sel.size") == 1, f"{kind} did not select"
         page.evaluate("() => lwSelClear()")
+
+
+def test_clicking_a_persons_name_grabs_them_and_cursor_signals_movable(server, page):
+    """The whole visible person (disc + name) is grabbable, and the cursor is 'move' over
+    a token vs the default over empty floor — so you never pan when you meant to grab."""
+    c = server["client"]; wid, rid = _mk(c, "Grab")
+    hid = c.post(f"/api/lw/{wid}/human", json={"name": "Ada"}).json()["human"]["id"]
+    c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": hid})
+    c.post(f"/api/lw/{wid}/pos", json={"id": hid, "x": 400, "y": 300})
+    _open_scene(page, wid, rid); page.wait_for_timeout(200)
+    s = _agent_screen(page, hid)
+    over_disc = page.evaluate("([x,y]) => { const el=document.elementFromPoint(x,y); return getComputedStyle(lwKonva.host).cursor; }", [s["x"], s["y"]]) or ""
+    page.mouse.move(s["x"], s["y"]); page.wait_for_timeout(60)
+    assert page.evaluate("() => getComputedStyle(lwKonva.host).cursor") == "move", "cursor over a token should be 'move'"
+    page.mouse.move(s["x"], s["y"] + 38); page.wait_for_timeout(60)   # the NAME label, below the disc
+    assert page.evaluate("() => getComputedStyle(lwKonva.host).cursor") == "move", "cursor over the name should be 'move'"
+    page.mouse.click(s["x"], s["y"] + 38); page.wait_for_timeout(120)
+    assert page.evaluate("() => lwKonva.sel.size") == 1, "clicking the person's name did not grab them"
+    page.mouse.move(s["x"] + 260, s["y"]); page.wait_for_timeout(60)
+    assert page.evaluate("() => getComputedStyle(lwKonva.host).cursor") == "default", "empty floor should not look grabbable"
+    page.evaluate("() => lwSelClear()")
+
+
+def test_drag_empty_marquees_and_moves_the_group_space_drag_pans(server, page):
+    c = server["client"]; wid, rid = _mk(c, "Marq")
+    ids = []
+    for n, x in (("A", 300), ("B", 430), ("C", 560)):
+        h = c.post(f"/api/lw/{wid}/human", json={"name": n}).json()["human"]["id"]
+        c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+        c.post(f"/api/lw/{wid}/pos", json={"id": h, "x": x, "y": 320}); ids.append(h)
+    _open_scene(page, wid, rid); page.wait_for_timeout(200)
+    pts = [_agent_screen(page, h) for h in ids]
+    x0 = min(p["x"] for p in pts) - 60; y0 = min(p["y"] for p in pts) - 60
+    x1 = max(p["x"] for p in pts) + 60; y1 = max(p["y"] for p in pts) + 60
+    page.mouse.move(x0, y0); page.mouse.down(); page.mouse.move(x1, y1, steps=16); page.mouse.up(); page.wait_for_timeout(250)
+    assert page.evaluate("() => lwKonva.sel.size") == 3, "drag-marquee did not select all three"
+    before = [page.evaluate("(id)=>lwKonva.agents.get(String(id)).node.x()", h) for h in ids]
+    s = _agent_screen(page, ids[1])
+    _drag(page, s, {"x": s["x"] - 110, "y": s["y"] + 90})
+    after = [page.evaluate("(id)=>lwKonva.agents.get(String(id)).node.x()", h) for h in ids]
+    assert all(abs(after[i] - before[i]) > 40 for i in range(3)), "group did not move together"
+    page.evaluate("() => lwSelClear()")
+    # space-drag pans; a plain empty drag must NOT pan (it marquees)
+    sx = page.evaluate("() => lwKonva.stage.x()")
+    page.keyboard.down(" "); page.mouse.move(700, 400); page.mouse.down(); page.mouse.move(560, 300, steps=10); page.mouse.up(); page.keyboard.up(" "); page.wait_for_timeout(150)
+    assert abs(page.evaluate("() => lwKonva.stage.x()") - sx) > 40, "space-drag did not pan"
+    sx2 = page.evaluate("() => lwKonva.stage.x()")
+    page.mouse.move(120, 170); page.mouse.down(); page.mouse.move(260, 300, steps=8); page.mouse.up(); page.wait_for_timeout(120)
+    assert abs(page.evaluate("() => lwKonva.stage.x()") - sx2) < 5, "a plain empty drag should not pan"

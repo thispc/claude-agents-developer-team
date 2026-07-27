@@ -6012,7 +6012,7 @@ function lwRenderRoom(room) {
     <div class="lw-canvas-wrap sd-canvas" id="lwCanvasWrap">
       <div class="lw-konva-host" id="lwKonvaHost"></div>
       <div class="lw-overlay" id="lwOverlay"></div>
-      <div class="sd-hint">drag to pan · scroll to zoom · shift-drag to marquee · <b>V A O S</b> · <b>⌘A</b> all · <b>F</b> fit</div>
+      <div class="sd-hint">drag a token to move it · drag empty to select · <b>space</b>-drag to pan · scroll to zoom · <b>F</b> fit</div>
       <div class="lw-dock sd-dock" id="lwDock">${lwDockHtml()}</div>
       <button class="sd-rules-btn" id="sdRulesBtn" title="Scene rules — obeyed on every run">⚖ Rules</button>
       <div class="sd-rules-pop" id="sdRulesPop" hidden></div>
@@ -6140,14 +6140,14 @@ function lwWireDock() {
   dock.querySelectorAll("[data-tool]").forEach((b) =>
     b.addEventListener("click", () => lwSetTool(b.dataset.tool)));
 }
-function lwToolCursor(t) { return t === "select" ? "grab" : "cell"; }
+function lwToolCursor(t) { return t === "select" ? "default" : "cell"; }
 function lwSetCursor(c) { if (lwKonva && lwKonva.host) lwKonva.host.style.cursor = c; }
 function lwSetTool(t) {
   lwTool = t;
   const dock = $("#lwDock");
   if (dock) dock.querySelectorAll("[data-tool]").forEach((b) => b.classList.toggle("on", b.dataset.tool === t));
   if (lwKonva && lwKonva.stage) {
-    lwKonva.stage.draggable(t === "select");   // only Select pans the floor; tokens always drag
+    lwKonva.stage.draggable(false);            // pan is space-drag; tokens always drag, empty marquees
     lwSetCursor(lwToolCursor(t));
   }
 }
@@ -6256,6 +6256,10 @@ function lwKeyHandler(e) {
     return;
   }
   if (typing || lwCreateFlow) return;    // don't hijack keys while a dialog/field has focus
+  if (e.key === " ") {                   // hold Space to pan the floor (a drag selects instead)
+    if (!lwKonva.panning) { lwKonva.panning = true; lwKonva.stage.draggable(true); lwSetCursor("grab"); }
+    e.preventDefault(); return;
+  }
   const k = e.key.toLowerCase();
   if ((e.metaKey || e.ctrlKey) && k === "a") { lwSelAll(); e.preventDefault(); return; }
   const toolKey = { v: "select", a: "agent", o: "artifact", s: "shape",
@@ -6263,7 +6267,7 @@ function lwKeyHandler(e) {
   if (toolKey && !e.metaKey && !e.ctrlKey) { lwSetTool(toolKey); e.preventDefault(); return; }
   if (k === "f") { lwFitView(); lwSaveView(); e.preventDefault(); return; }
   const list = lwSelList(); if (!list.length) return;
-  if (e.key === "Enter" || e.key === " ") { lwOpenSelected(); e.preventDefault(); return; }
+  if (e.key === "Enter") { lwOpenSelected(); e.preventDefault(); return; }
   if (e.key === "Delete" || e.key === "Backspace") {
     const seated = list.filter((s) => s.kind === "agent" && s.entry.seat);
     if (seated.length) seated.forEach((s) => lwUnseatAgent(s.entry.data, s.entry.seat.propId));
@@ -6274,12 +6278,20 @@ function lwKeyHandler(e) {
   const move = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
   if (move) { lwNudgeSelection(move[0], move[1]); e.preventDefault(); }
 }
+function lwKeyUp(e) {   // releasing Space ends the pan and restores the select cursor
+  if (!lwKonva) return;
+  if (e.key === " " && lwKonva.panning) {
+    lwKonva.panning = false; lwKonva.stage.draggable(false);
+    lwSetCursor(lwToolCursor(lwTool));
+  }
+}
 
 // ---- Stage + layers: pan, zoom-to-cursor, drag-only grid -----------------
 function lwDestroyCanvas() {
   if (lwCreateFlow) lwCleanupCreate();
   if (lwKonva) {
     if (lwKonva.keyHandler) document.removeEventListener("keydown", lwKonva.keyHandler);
+    if (lwKonva.keyUpHandler) document.removeEventListener("keyup", lwKonva.keyUpHandler);
     if (lwKonva.endMarquee) {   // detach any window listeners a mid-gesture marquee left
       window.removeEventListener("mouseup", lwKonva.endMarquee, true);
       window.removeEventListener("touchend", lwKonva.endMarquee, true);
@@ -6308,7 +6320,7 @@ function lwMountCanvas(room, agents, props) {
   lwKonva = { stage, gridLayer, worldLayer, host, roomId: String(lwRoomId),
               agents: new Map(), props: new Map(), glowing: new Set(), snap: null,
               menuWorld: null, sel: new Map(), arrows: null, arrowSrc: null, drag: null,
-              marquee: null, keyHandler: null };
+              marquee: null, panning: false, keyHandler: null, keyUpHandler: null };
 
   // Which agents are seated, and in which socket, so they render on the rim.
   const seatedMap = {};
@@ -6319,8 +6331,8 @@ function lwMountCanvas(room, agents, props) {
   });
 
   const hover = (node) => {
-    node.on("mouseenter", () => { if (!lwKonva) return; lwSetCursor(node.isDragging() ? "grabbing" : "grab"); });
-    node.on("mouseleave", () => lwSetCursor(lwToolCursor(lwTool)));
+    node.on("mouseenter", () => { if (!lwKonva || lwKonva.panning) return; lwSetCursor(node.isDragging() ? "grabbing" : "move"); });
+    node.on("mouseleave", () => { if (!lwKonva || lwKonva.panning) return; lwSetCursor(lwToolCursor(lwTool)); });
   };
   // A click toggles into the selection (shift-click) or focuses just this token.
   const pick = (kind, entry, e) => {
@@ -6383,12 +6395,12 @@ function lwMountCanvas(room, agents, props) {
   if (view) { stage.position({ x: view.x, y: view.y }); stage.scale({ x: view.scale, y: view.scale }); lwKonva.framed = true; }
   else { lwFitView(); lwKonva.framed = host.clientWidth > 0 && host.clientHeight > 0; }
 
-  stage.draggable(lwTool === "select");
+  stage.draggable(false);            // pan is space-drag now; a plain drag on empty marquee-selects
   lwSetCursor(lwToolCursor(lwTool));
 
-  stage.on("dragstart", () => { if (lwTool === "select") lwSetCursor("grabbing"); });
-  stage.on("dragmove", () => { if (lwTool === "select") lwShowGrid(); });
-  stage.on("dragend", () => { lwHideGrid(); lwSaveView(); lwSetCursor(lwToolCursor(lwTool)); });
+  stage.on("dragstart", () => { lwSetCursor("grabbing"); });      // only fires while space-panning
+  stage.on("dragmove", () => { lwShowGrid(); });
+  stage.on("dragend", () => { lwHideGrid(); lwSaveView(); lwSetCursor(lwKonva.panning ? "grab" : lwToolCursor(lwTool)); });
 
   stage.on("wheel", (e) => {
     e.evt.preventDefault();
@@ -6403,9 +6415,10 @@ function lwMountCanvas(room, agents, props) {
     lwShowGrid(); lwSaveView();
   });
 
-  // Shift-drag on empty floor rubber-bands a marquee that selects what it encloses.
-  // The gesture ENDS on a window listener, not the stage — so releasing over the dock, a
-  // popover, or off-canvas can never leave the floor un-draggable or a ghost rect behind.
+  // A plain drag on empty floor rubber-bands a marquee that selects everything it encloses
+  // (shift-drag ADDS to the selection). Pan is space-drag instead. The gesture ENDS on a
+  // window listener, not the stage, so releasing over the dock/popover/off-canvas can never
+  // strand the floor or leave a ghost rect.
   const endMarquee = () => {
     const m = lwKonva && lwKonva.marquee; if (!m) return;
     lwKonva.marquee = null;
@@ -6414,28 +6427,24 @@ function lwMountCanvas(room, agents, props) {
     window.removeEventListener("pointercancel", endMarquee, true);
     const bx = m.rect.x(), by = m.rect.y(), bw = m.rect.width(), bh = m.rect.height();
     m.rect.destroy();
-    stage.draggable(lwTool === "select");
     if (bw > 4 || bh > 4) {
-      lwSelClear();
+      if (!m.add) lwSelClear();
       const inside = (n) => { const p = n.position(); return p.x >= bx && p.x <= bx + bw && p.y >= by && p.y <= by + bh; };
       lwKonva.props.forEach((en) => { if (inside(en.node)) lwSelAdd("prop", en); });
       lwKonva.agents.forEach((en) => { if (inside(en.node)) lwSelAdd("agent", en); });
-      // Swallow the trailing click Konva may fire; a timeout clears the flag in case the
-      // gesture emits no click at all.
-      lwKonva.suppressClick = true;
+      lwKonva.suppressClick = true;   // swallow the trailing click Konva may fire after a drag
       setTimeout(() => { if (lwKonva) lwKonva.suppressClick = false; }, 0);
     }
     worldLayer.batchDraw();
   };
   lwKonva.endMarquee = endMarquee;         // so teardown can detach any pending listeners
   stage.on("mousedown touchstart", (e) => {
-    if (lwTool !== "select" || e.target !== stage || !(e.evt && e.evt.shiftKey)) return;
+    if (lwTool !== "select" || e.target !== stage || lwKonva.panning) return;   // space held → let it pan
     const w = lwPointerWorld(); if (!w) return;
-    stage.draggable(false);
     const rect = new Konva.Rect({ x: w.x, y: w.y, width: 0, height: 0, fill: "rgba(46,110,91,.08)",
       stroke: "#2E6E5B", strokeWidth: 1, dash: [4, 4], listening: false, name: "marquee" });
     worldLayer.add(rect); rect.moveToTop();
-    lwKonva.marquee = { x0: w.x, y0: w.y, rect };
+    lwKonva.marquee = { x0: w.x, y0: w.y, rect, add: !!(e.evt && e.evt.shiftKey) };
     window.addEventListener("mouseup", endMarquee, true);
     window.addEventListener("touchend", endMarquee, true);
     window.addEventListener("pointercancel", endMarquee, true);
@@ -6483,7 +6492,9 @@ function lwMountCanvas(room, agents, props) {
   lwSettleSize(stage, host);          // catch the 0×0-at-mount race by polling a few frames
 
   lwKonva.keyHandler = lwKeyHandler;
+  lwKonva.keyUpHandler = lwKeyUp;
   document.addEventListener("keydown", lwKeyHandler);
+  document.addEventListener("keyup", lwKeyUp);
 
   gridLayer.hide();
   worldLayer.draw();
@@ -6585,6 +6596,14 @@ function lwLabelNode(text, y) {
   return new Konva.Text({ text: String(text), fontSize: 12, fontFamily: "sans-serif", fill: "#3a3f3d",
     width: 170, align: "center", offsetX: 85, y, listening: false });
 }
+// A transparent grab rectangle covering a token's WHOLE visible footprint (disc/body +
+// its name label), so a click anywhere on the token grabs it instead of falling through
+// to the empty stage (a canvas pan). A near-zero fill alpha keeps it invisible while
+// still registering on Konva's hit graph.
+function lwAddHit(g, x, y, w, h) {
+  const r = new Konva.Rect({ x, y, width: w, height: h, cornerRadius: 10, fill: "rgba(0,0,0,0.002)", name: "hit", listening: true });
+  g.add(r); r.moveToBottom();
+}
 function lwMoodBarNodes(mood, y) {
   mood = mood || {};
   const conf = lwPct(mood.confidence) / 100, stress = lwPct(mood.stress) / 100;
@@ -6604,6 +6623,7 @@ function lwAgentNode(a, x, y, opts) {
   const g = new Konva.Group({ x, y, draggable: true, name: "token" });
   g.setAttr("lwType", "agent"); g.setAttr("lwId", String(a.id));
   const R = 30, seed = lwAvatarSeed(a);
+  lwAddHit(g, -R - 6, -R - 6, (R + 6) * 2, (R + 6) * 2 + 34);   // grab the whole person: disc + name + mood
   const rim = opts.manager ? "#2C6A63" : lwAvatarColor(seed);
   g.add(new Konva.Circle({ radius: R + 3, fill: rim, listening: true }));   // colored edge + hitbox
   // the "body" disc is the glow/selection target and the fallback fill until the
@@ -6636,6 +6656,7 @@ function lwDeckNode(p, x, y) {
   const g = new Konva.Group({ x, y, draggable: true, name: "token" });
   g.setAttr("lwType", "prop"); g.setAttr("lwId", String(p.id));
   const cw = 40, ch = 56;
+  lwAddHit(g, -cw / 2 - 8, -ch / 2 - 12, cw + 16, ch + 46);   // grab the stack + its label
   for (let i = 2; i >= 0; i--)
     g.add(new Konva.Rect({ x: -cw / 2 + i * 4, y: -ch / 2 - i * 4, width: cw, height: ch, cornerRadius: 6,
       fill: i === 0 ? "#fbfaf6" : "#efece3", stroke: "#cfc9bd", strokeWidth: 1.5, name: i === 0 ? "body" : "",
@@ -6651,6 +6672,7 @@ function lwTileNode(p, x, y) {
   const g = new Konva.Group({ x, y, draggable: true, name: "token" });
   g.setAttr("lwType", "prop"); g.setAttr("lwId", String(p.id));
   const w = 58, h = 58, hue = lwHue(p.name);
+  lwAddHit(g, -w / 2 - 6, -h / 2 - 6, w + 12, h + 40);   // grab the tile + its label
   g.add(new Konva.Rect({ x: -w / 2, y: -h / 2, width: w, height: h, cornerRadius: 12, name: "body",
     fill: `hsl(${hue} 24% 92%)`, stroke: `hsl(${hue} 34% 62%)`, strokeWidth: 2,
     shadowColor: "#000", shadowBlur: 6, shadowOpacity: 0.1 }));
@@ -6703,6 +6725,7 @@ function lwTableNode(p, x, y) {
     g.add(new Konva.Circle({ radius: R - 12, stroke: "rgba(255,255,255,.4)", strokeWidth: 1.5, listening: false }));
     labelY = R + 16;
   }
+  lwAddHit(g, -70, labelY - 6, 140, 26);   // the big body already grabs; also grab by the label
   const seated = Array.isArray(p.seated) ? p.seated : [], pos = lwSlotPositions(p);
   for (let i = 0; i < slots; i++) {
     const off = pos[i] || { x: 0, y: 0 }, filled = seated[i] != null;
