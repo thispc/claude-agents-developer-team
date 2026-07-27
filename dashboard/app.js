@@ -5100,10 +5100,8 @@ const LW_TOOLS = [
   { id: "select",   key: "V", label: "Select" },
   { id: "agent",    key: "A", label: "Agent" },
   { id: "artifact", key: "O", label: "Object" },
-  { id: "shape",    key: "S", label: "Shape" },
-  { id: "thread",   key: "T", label: "Thread" },
 ];
-let lwThreadPending = null;    // the first agent picked while drawing a thread
+let lwThreadDir = "both";      // "both" (bidirectional) | "one" (unidirectional, tail→head)
 // The style variants a new person can wear; the final face blends the variant with
 // the agent's own identity, so two people who pick the same variant still differ.
 const LW_AV_VARIANTS = ["a", "b", "c", "d", "e", "f"];
@@ -5557,83 +5555,81 @@ function sdRenderRules(draft, host) {
   });
 }
 
-// ---- the Threads panel: each thread's rule table + hidden manager ----------
+// ---- the Rulebook panel: one free-text rulebook per graph + its hidden manager ----
 async function sdOpenThreads(focusId) {
   const host = $("#sdRosterHost"); if (!host || !lwWorldId) return;
   host.hidden = false;
   host.innerHTML = `<div class="sd-roster-card"><p class="dim">reading the graph…</p></div>`;
   let room;
   try { room = (await api(`/api/lw/${lwWorldId}/room/${lwRoomId}`)).room; }
-  catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="dim">Could not read threads: ${escapeHtml(e.message)}</p></div>`; return; }
-  const threads = room.threads || [];
-  const nameOf = (id) => { const a = (room.agents || []).find((x) => x.id === id); return a ? a.name : `#${id}`; };
+  catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="dim">Could not read graphs: ${escapeHtml(e.message)}</p></div>`; return; }
+  const nameOf = (id) => { const a = (room.agents || []).find((x) => x.id === id) || (room.props || []).find((x) => x.id === id); return a ? a.name : `#${id}`; };
   const models = LW_MODELS.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join("");
+  let threads = (room.threads || []).slice();
+  if (focusId != null) threads.sort((a, b) => (a.id === focusId ? -1 : b.id === focusId ? 1 : 0));   // focused graph first
   const card = (t) => `<div class="sd-thread" data-tid="${t.id}">
-      <div class="sd-thread-head"><input class="sd-thread-name" value="${escapeHtml(t.name || ("thread " + t.id))}">
-        <button class="sd-thread-del" title="Delete thread">✕</button></div>
-      <div class="sd-thread-members">${escapeHtml((t.edges || []).length ? [...new Set(t.edges.flatMap((e) => [e[0], e[1]]))].map(nameOf).join(" · ") : "no members")}</div>
-      <div class="sc-label">Rules</div><div class="sd-thread-rules"></div>
-      <button class="sd-rule-add sd-thread-addrule">+ add rule</button>
-      <div class="sc-label">Hidden manager <span class="dim">surveys the thread, enforces the rules (root sees it)</span></div>
+      <div class="sd-thread-head"><input class="sd-thread-name" value="${escapeHtml(t.name || ("graph " + t.id))}">
+        <span class="sd-thread-dir">${t.edges && t.edges.some((e) => e[2] !== "both") ? "→" : "⇄"}</span>
+        <button class="sd-thread-del" title="Break this graph apart">✕</button></div>
+      <div class="sd-thread-members">${escapeHtml([...new Set((t.edges || []).flatMap((e) => [e[0], e[1]]))].map(nameOf).join(" · ") || "no members")}</div>
+      <div class="sc-label">Rulebook <span class="dim">what the manager makes happen in this graph</span></div>
+      <textarea class="sc-input sd-thread-book" rows="4" placeholder="e.g. anyone can start — I want a debate on the most sustainable route from A to B.">${escapeHtml(t.rulebook || "")}</textarea>
+      <div class="sd-book-actions"><button class="sd-book-refine">✨ Refine with AI</button></div>
+      <div class="sc-label">Hidden manager <span class="dim">orchestrates it · a black box unless you're root</span></div>
       <div class="sd-thread-mgr">
         <label>Model <select class="sd-mgr-model">${models}</select></label>
         <label>Budget <input class="sd-mgr-budget" type="number" min="0" max="4" value="${(t.manager && t.manager.budget) ?? 2}"></label>
-        <input class="sd-mgr-note" placeholder="what the host cares about…" value="${escapeHtml((t.manager && t.manager.note) || "")}">
       </div>
-      <div class="sc-actions"><button class="sc-ctl primary sd-thread-save">Save thread</button></div>
+      <div class="sc-actions"><button class="sc-ctl primary sd-thread-save">Save</button></div>
     </div>`;
   host.innerHTML = `<div class="sd-roster-card sd-threads-card">
-    <div class="sd-roster-head"><h3>Threads</h3><span class="dim">${threads.length} · draw more with the Thread tool</span>
+    <div class="sd-roster-head"><h3>Graphs</h3><span class="dim">${threads.length} · connect nodes with the handles on a selected token</span>
       <button class="sd-close" id="sdThreadsClose">✕</button></div>
-    <div class="sd-threads-list">${threads.length ? threads.map(card).join("") : `<p class="dim">No threads yet. Pick the Thread tool and click two agents to connect them.</p>`}</div>
+    <div class="sd-threads-list">${threads.length ? threads.map(card).join("") : `<p class="dim">No graphs yet. Select a token, then drag one of its four handles onto another token to connect them.</p>`}</div>
   </div>`;
   $("#sdThreadsClose").addEventListener("click", () => { host.hidden = true; });
   threads.forEach((t) => {
     const el = host.querySelector(`.sd-thread[data-tid="${t.id}"]`); if (!el) return;
-    const draft = JSON.parse(JSON.stringify(t.rules_rows || []));
-    sdRenderRules(draft, el.querySelector(".sd-thread-rules"));
-    el.querySelector(".sd-thread-addrule").addEventListener("click", () => { draft.push({ effect: "annotate", when: {}, note: "" }); sdRenderRules(draft, el.querySelector(".sd-thread-rules")); });
     const mm = el.querySelector(".sd-mgr-model"); if (mm) mm.value = (t.manager && t.manager.model) || "";
+    const book = el.querySelector(".sd-thread-book");
+    el.querySelector(".sd-book-refine").addEventListener("click", async (ev) => {
+      const btn = ev.currentTarget; btn.disabled = true; btn.textContent = "refining…";
+      try { const r = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${t.id}/refine`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: book.value }) }); if (r.text) book.value = r.text; }
+      catch (e) { toast(`Could not refine: ${e.message}`); }
+      btn.disabled = false; btn.textContent = "✨ Refine with AI";
+    });
     el.querySelector(".sd-thread-del").addEventListener("click", async () => {
-      if (!confirm(`Delete ${t.name || "this thread"}? The agents stay; only the connection goes.`)) return;
+      if (!confirm(`Break "${t.name || "this graph"}" apart? The tokens stay; only the connections go.`)) return;
       try { await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${t.id}`, { method: "DELETE" }); sdFlash(); await lwReloadRoom(); sdOpenThreads(); }
       catch (e) { toast(`Could not delete: ${e.message}`); }
     });
     el.querySelector(".sd-thread-save").addEventListener("click", async () => {
-      const body = { name: el.querySelector(".sd-thread-name").value, rules_rows: draft,
-        manager: { model: mm ? mm.value : "", budget: Number(el.querySelector(".sd-mgr-budget").value) || 0,
-                   note: el.querySelector(".sd-mgr-note").value || "" } };
+      const body = { name: el.querySelector(".sd-thread-name").value, rulebook: book.value,
+        manager: { model: mm ? mm.value : "", budget: Number(el.querySelector(".sd-mgr-budget").value) || 0 } };
       sdFlash();
-      try { await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${t.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); toast("thread saved"); await lwReloadRoom(); }
+      try { await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${t.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); toast("rulebook saved"); await lwReloadRoom(); }
       catch (e) { toast(`Could not save: ${e.message}`); }
     });
   });
-  if (focusId) { const el = host.querySelector(`.sd-thread[data-tid="${focusId}"]`); if (el) el.scrollIntoView({ block: "nearest" }); }
 }
 
 function sdToggleRules() {
   const pop = $("#sdRulesPop"); if (!pop) return;
   if (!pop.hidden) { pop.hidden = true; return; }
-  const draft = JSON.parse(JSON.stringify((lwRoom && lwRoom.rules_rows) || []));
-  pop.innerHTML = `<div class="sd-rules-head">Scene rules <span class="dim">ordered · top-to-bottom, like ingress rules</span></div>
-    <div class="sd-rules-rows" id="sdRulesRows"></div>
-    <button class="sd-rule-add" id="sdRuleAdd">+ add rule</button>
-    <div class="sc-label">Free note <span class="dim">folded into the model prompt</span></div>
-    <textarea class="sc-input" id="sdRulesText" rows="2" placeholder="anything extra the agents should keep in mind…"></textarea>
+  pop.innerHTML = `<div class="sd-rules-head">Scene rules <span class="dim">the whole room · a graph has its own rulebook</span></div>
+    <textarea class="sc-input" id="sdRulesText" rows="4" placeholder="e.g. everyone stays in character; keep it civil; no one reveals their card."></textarea>
     <div class="sc-actions"><button class="sc-ctl primary" id="sdRulesSave">Save</button>
       <button class="sc-ctl" id="sdRulesClose">Close</button></div>`;
   pop.hidden = false;
-  $("#sdRulesText").value = (lwRoom && lwRoom.rules) || "";
-  sdRenderRules(draft);
-  $("#sdRuleAdd").addEventListener("click", () => { draft.push({ effect: "annotate", when: {}, note: "" }); sdRenderRules(draft); });
+  const ta = $("#sdRulesText"); if (ta) { ta.value = (lwRoom && lwRoom.rules) || ""; ta.focus(); }
   $("#sdRulesClose").addEventListener("click", () => { pop.hidden = true; });
   $("#sdRulesSave").addEventListener("click", async () => {
+    const val = $("#sdRulesText").value || "";
     sdFlash();
     try {
-      const d = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/scene`, { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rules: $("#sdRulesText").value || "", rules_rows: draft }) });
-      if (lwRoom) { lwRoom.rules_rows = (d.room && d.room.rules_rows) || draft; lwRoom.rules = $("#sdRulesText").value || ""; }
+      await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/scene`, { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rules: val }) });
+      if (lwRoom) lwRoom.rules = val;
       pop.hidden = true;
     } catch (e) { toast(`Could not save rules: ${e.message}`); }
   });
@@ -6429,18 +6425,27 @@ function lwToolIco(id) {
   return `<svg viewBox="0 0 24 24" width="20" height="20">${g[id] || g.select}</svg>`;
 }
 function lwDockHtml() {
-  return LW_TOOLS.map((t) =>
+  const tools = LW_TOOLS.map((t) =>
     `<button class="lw-tool${t.id === lwTool ? " on" : ""}" data-tool="${escapeHtml(t.id)}" title="${escapeHtml(t.label)} (${escapeHtml(t.key)})">
       <span class="lw-tool-ico">${lwToolIco(t.id)}</span><span class="lw-tool-lb">${escapeHtml(t.label)}</span>
       <span class="lw-tool-key">${escapeHtml(t.key)}</span>
     </button>`).join("");
+  // the thread-direction toggle — how a connection you draw flows
+  const dir = `<button class="lw-dir" id="lwDirToggle" title="How a thread you draw flows: both ways, or tail→head">
+      ${lwThreadDir === "one" ? "→ one-way" : "⇄ both"}</button>`;
+  return tools + `<span class="lw-dock-sep"></span>` + dir;
 }
 function lwWireDock() {
   const dock = $("#lwDock"); if (!dock) return;
   dock.querySelectorAll("[data-tool]").forEach((b) =>
     b.addEventListener("click", () => lwSetTool(b.dataset.tool)));
+  const dir = $("#lwDirToggle");
+  if (dir) dir.addEventListener("click", () => {
+    lwThreadDir = lwThreadDir === "one" ? "both" : "one";
+    dir.textContent = lwThreadDir === "one" ? "→ one-way" : "⇄ both";
+  });
 }
-function lwToolCursor(t) { return t === "select" ? "default" : t === "thread" ? "crosshair" : "cell"; }
+function lwToolCursor(t) { return t === "select" ? "default" : "cell"; }
 function lwSetCursor(c) {
   if (!(lwKonva && lwKonva.host)) return;
   if (lwLogOn && lwKonva.host.style.cursor !== c) lwLog("cursor", "cursor → " + c, null, "debug");
@@ -6450,6 +6455,7 @@ function lwSetTool(t) {
   lwTool = t;
   const dock = $("#lwDock");
   if (dock) dock.querySelectorAll("[data-tool]").forEach((b) => b.classList.toggle("on", b.dataset.tool === t));
+  lwUpdateHandles();                             // handles belong to select mode only
   if (lwKonva && lwKonva.stage) {
     lwKonva.panning = false;                    // a stale pan flag would keep the cursor/marquee dead
     lwKonva.stage.draggable(false);            // pan is space-drag; tokens always drag, empty marquees
@@ -6536,6 +6542,7 @@ function lwSelBounds() {
 }
 function lwUpdateSelFrame() {
   if (!lwKonva) return;
+  lwUpdateHandles();                                  // a single selection wears 4 connection handles
   const old = lwKonva.worldLayer.findOne(".selframe"); if (old) old.destroy();
   lwKonva.selframe = null;
   if (lwSelList().length < 2) return;                 // single selection drags its own token
@@ -6575,9 +6582,15 @@ function lwUpdateSelFrame() {
 function lwSelect(kind, entry) { lwSelSet(kind, entry); }   // legacy single-focus callers
 function lwDeselect() { lwSelClear(); }
 
-// Arrows/flows were retired; this hook now keeps the thread graph's lines glued to their
-// agents as they drag, so the whole graph moves as one. Called from every drag-move.
-function lwUpdateArrows() { lwUpdateThreadLines(); }
+// Arrows/flows were retired; this hook now keeps the thread graph's lines and a node's
+// connection handles glued to their tokens as they drag. Called from every drag-move.
+function lwUpdateArrows() { lwUpdateThreadLines(); lwUpdateHandlePositions(); }
+function lwUpdateHandlePositions() {
+  if (!lwKonva || !lwKonva.handles || !lwKonva.handles.length || lwKonva.connecting) return;
+  const list = lwSelList(); if (list.length !== 1) return;
+  const base = list[0].entry.node.position(), reach = 42, off = [[0, -reach], [reach, 0], [0, reach], [-reach, 0]];
+  lwKonva.handles.forEach((h, i) => h.position({ x: base.x + off[i][0], y: base.y + off[i][1] }));
+}
 
 // ---- keyboard: the canvas listens while a room is open ---------------------
 let lwNudgeTimer = null;
@@ -6622,8 +6635,8 @@ function lwKeyHandler(e) {
   }
   const k = e.key.toLowerCase();
   if ((e.metaKey || e.ctrlKey) && k === "a") { lwSelAll(); e.preventDefault(); return; }
-  const toolKey = { v: "select", a: "agent", o: "artifact", s: "shape",
-                    "1": "select", "2": "agent", "3": "artifact", "4": "shape" }[k];
+  const toolKey = { v: "select", a: "agent", o: "artifact",
+                    "1": "select", "2": "agent", "3": "artifact" }[k];
   if (toolKey && !e.metaKey && !e.ctrlKey) { lwSetTool(toolKey); e.preventDefault(); return; }
   if (k === "f") { lwFitView(); lwSaveView(); e.preventDefault(); return; }
   const list = lwSelList(); if (!list.length) return;
@@ -6727,7 +6740,6 @@ function lwMountCanvas(room, agents, props) {
   };
   // A click toggles into the selection (shift-click) or focuses just this token.
   const pick = (kind, entry, e) => {
-    if (lwTool === "thread") { if (kind === "agent") lwThreadClick(entry); return; }
     if (lwTool !== "select") return;
     if (e.evt && e.evt.shiftKey) lwSelToggle(kind, entry); else lwSelSet(kind, entry);
   };
@@ -6744,7 +6756,7 @@ function lwMountCanvas(room, agents, props) {
     hover(node);
     node.on("contextmenu", (e) => { e.evt.preventDefault(); e.cancelBubble = true; lwPropMenu(e.evt, p); });
     node.on("click tap", (e) => { e.cancelBubble = true; pick("prop", entry, e); });
-    node.on("dblclick dbltap", (e) => { e.cancelBubble = true; lwOpenArtifactPeek(p.id); });
+    node.on("dblclick dbltap", (e) => { e.cancelBubble = true; if (!lwGraphSelect(p.id)) lwOpenArtifactPeek(p.id); });
   });
 
   // A full ring reads as one entity — a soft, tight glow behind the table, and only
@@ -6776,7 +6788,7 @@ function lwMountCanvas(room, agents, props) {
     hover(node);
     node.on("contextmenu", (e) => { e.evt.preventDefault(); e.cancelBubble = true; lwAgentMenu(e.evt, a); });
     node.on("click tap", (e) => { e.cancelBubble = true; pick("agent", entry, e); });
-    node.on("dblclick dbltap", (e) => { e.cancelBubble = true; openPersonDrawer(a.id, a.name); });
+    node.on("dblclick dbltap", (e) => { e.cancelBubble = true; if (!lwGraphSelect(a.id)) openPersonDrawer(a.id, a.name); });
     if (seat) lwSetSteadyGlow(node, true);
   });
 
@@ -7276,23 +7288,73 @@ function lwVicinityGlow(node, color) {
 }
 function lwSetSteadyGlow(node, on) { lwSetGlow(node, on, "hsl(150 60% 45%)", 14, 0.55); }
 
-// ---- threads: the agent graph drawn on the canvas -------------------------
-async function lwThreadClick(entry) {
-  const id = entry.data.id;
-  if (lwThreadPending == null) {                       // first pick: mark it, wait for the second
-    lwThreadPending = id; lwSetSteadyGlow(entry.node, true);
-    lwKonva.worldLayer.batchDraw(); toast("pick another agent to thread them together");
-    return;
-  }
-  const first = lwKonva.agents.get(String(lwThreadPending));
-  if (first && !first.seat) lwSetSteadyGlow(first.node, false);
-  if (lwThreadPending === id) { lwThreadPending = null; lwKonva.worldLayer.batchDraw(); return; }
-  const a = lwThreadPending; lwThreadPending = null;
-  try {
-    await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/connect`, { method: "POST",
-      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ a, b: id, dir: "both" }) });
-    sdFlash(); await lwReloadRoom();
-  } catch (e) { toast(`Could not thread them: ${e.message}`); }
+// ---- threads: the agent/object graph, drawn + wired on the canvas ----------
+// A node in a graph. Its 4 handles let you drag a connection to another node (MS-Paint style).
+function lwNodeById(id) { return lwKonva.agents.get(String(id)) || lwKonva.props.get(String(id)); }
+function lwNodeKind(id) { return lwKonva.agents.has(String(id)) ? "agent" : "prop"; }
+
+let lwConnRubber = null;
+function lwClearHandles() {
+  if (lwKonva && lwKonva.handles) { lwKonva.handles.forEach((h) => h.destroy()); lwKonva.handles = []; }
+}
+function lwUpdateHandles() {
+  if (!lwKonva) return;
+  lwClearHandles();
+  const list = lwSelList();
+  if (list.length !== 1 || lwTool !== "select") { lwKonva.worldLayer.batchDraw(); return; }
+  const entry = list[0].entry, base = entry.node.position(), reach = 42;
+  lwKonva.handles = [];
+  [[0, -reach], [reach, 0], [0, reach], [-reach, 0]].forEach(([dx, dy]) => {
+    const dot = new Konva.Circle({ x: base.x + dx, y: base.y + dy, radius: 5, fill: "#fff",
+      stroke: "hsl(160 62% 42%)", strokeWidth: 2, draggable: true, name: "handle" });
+    dot.on("mouseenter", () => lwSetCursor("crosshair"));
+    dot.on("dragstart", () => {
+      lwKonva.connecting = { from: entry.data.id };
+      const p = entry.node.position();
+      lwConnRubber = new Konva.Arrow({ points: [p.x, p.y, p.x, p.y], stroke: "hsl(160 62% 42%)",
+        fill: "hsl(160 62% 42%)", strokeWidth: 2, dash: [6, 4], listening: false,
+        pointerLength: lwThreadDir === "one" ? 9 : 0, pointerWidth: 9 });
+      lwKonva.worldLayer.add(lwConnRubber);
+    });
+    dot.on("dragmove", () => {
+      if (!lwConnRubber || !lwKonva.connecting) return;
+      const from = lwNodeById(lwKonva.connecting.from), w = lwPointerWorld();
+      if (from && w) { const p = from.node.position(); lwConnRubber.points([p.x, p.y, w.x, w.y]); lwKonva.worldLayer.batchDraw(); }
+    });
+    dot.on("dragend", async () => {
+      const conn = lwKonva.connecting; lwKonva.connecting = null;
+      if (lwConnRubber) { lwConnRubber.destroy(); lwConnRubber = null; }
+      dot.position({ x: base.x + dx, y: base.y + dy });      // snap the handle back — it never really moves
+      // geometric hit (the handle sits on top of getIntersection, so scan token centres instead)
+      const w = lwPointerWorld(); let targetId = null;
+      if (w) [lwKonva.agents, lwKonva.props].forEach((map) => map.forEach((en) => {
+        const p = en.node.position();
+        if (en.data.id !== (conn && conn.from) && Math.hypot(p.x - w.x, p.y - w.y) < 42) targetId = en.data.id;
+      }));
+      lwKonva.worldLayer.batchDraw();
+      if (!conn || !targetId || targetId === conn.from) return;
+      try {
+        await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/connect`, { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ a: conn.from, b: targetId, dir: lwThreadDir === "one" ? "a2b" : "both" }) });
+        sdFlash(); await lwReloadRoom();
+      } catch (e) { toast(`Could not connect: ${e.message}`); }
+    });
+    lwKonva.worldLayer.add(dot); dot.moveToTop();
+    lwKonva.handles.push(dot);
+  });
+  lwKonva.worldLayer.batchDraw();
+}
+// Double-click a node → select its whole graph and open the rulebook. Returns false if it's ungrouped.
+function lwGraphSelect(id) {
+  const t = ((lwRoom && lwRoom.threads) || []).find((th) => (th.edges || []).some((e) => e[0] === id || e[1] === id));
+  if (!t) return false;
+  lwSelClear();
+  [...new Set(t.edges.flatMap((e) => [e[0], e[1]]))].forEach((nid) => {
+    const en = lwNodeById(nid); if (en) lwSelAdd(lwNodeKind(nid), en);
+  });
+  sdOpenThreads(t.id);
+  return true;
 }
 function lwRenderThreads(threads) {
   if (!lwKonva) return;

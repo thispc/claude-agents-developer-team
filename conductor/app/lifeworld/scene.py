@@ -87,21 +87,21 @@ class Scene:
         return None
 
     def connect(self, a: int, b: int, dir: str = "both", closed: bool = False) -> dict:
-        """Thread two agents together — extending an existing thread, merging two, or starting one."""
-        from .threads import edge_eq, default_manager
+        """Thread two nodes together — extending an existing graph, merging two, or starting one."""
+        from .threads import edge_eq, new_thread
         dir = dir if dir in ("both", "a2b", "b2a") else "both"
         ta, tb = self._thread_of(a), self._thread_of(b)
-        if ta and tb and ta is not tb:                       # bridging two threads → merge b's into a's
+        if ta and tb and ta is not tb:                       # bridging two graphs → merge b's into a's
             ta["edges"] += tb["edges"]
-            ta["rules_rows"] += tb.get("rules_rows", [])
+            ta["rulebook"] = (ta.get("rulebook", "") + "\n" + tb.get("rulebook", "")).strip()
             self.threads.remove(tb)
             t = ta
         elif ta or tb:
             t = ta or tb
         else:
             self.thread_seq += 1
-            t = {"id": self.thread_seq, "name": f"thread {self.thread_seq}", "edges": [],
-                 "closed": bool(closed), "rules_rows": [], "manager": default_manager()}
+            t = new_thread(self.thread_seq)
+            t["closed"] = bool(closed)
             self.threads.append(t)
         if not any(edge_eq(e, a, b) for e in t["edges"]):
             t["edges"].append([a, b, dir])
@@ -118,7 +118,7 @@ class Scene:
     def _normalize_threads(self) -> None:
         """After an edit, split any thread that has fallen into several connected components; the
         first keeps the thread's id/rules/manager, the rest become fresh threads. Empty ones drop."""
-        from .threads import components, default_manager
+        from .threads import components, new_thread
         out: list[dict] = []
         for t in self.threads:
             orig = list(t["edges"])                          # capture before mutating t in place
@@ -134,8 +134,9 @@ class Scene:
                     out.append(t)
                 else:
                     self.thread_seq += 1
-                    out.append({"id": self.thread_seq, "name": f"thread {self.thread_seq}", "edges": edges,
-                                "closed": False, "rules_rows": [], "manager": default_manager()})
+                    nt = new_thread(self.thread_seq)
+                    nt["edges"] = edges
+                    out.append(nt)
         self.threads = out
 
     def thread(self, tid: int) -> dict | None:
@@ -215,33 +216,27 @@ class Scene:
         ring = [h for h in (self.world.get(i) for i in members_of(thread)) if isinstance(h, Human)]
         if not ring:
             return
-        saved = self.rules_rows
-        self.rules_rows = (saved or []) + (thread.get("rules_rows") or [])   # thread rules bite on its beats
-        try:
-            await self._host_manage(thread, ring)
-            await self._play_ring(ring)
-        finally:
-            self.rules_rows = saved
+        await self._host_manage(thread, ring)     # the manager reads the graph's rulebook and enforces
+        await self._play_ring(ring)               # the members act
 
     async def _host_manage(self, thread: dict, ring: list[Human]) -> None:
-        """The hidden manager. It surveys the thread and issues up to `budget` rule-enforcement lines
-        to specific agents. Logged as 'manage' beats — a black box to normal users, visible to root.
-        Free and deterministic by default; in Live mode it composes the lines with ONE bounded call."""
+        """The hidden manager. It reads the graph's RULEBOOK and issues up to `budget` enforcement
+        lines to specific agents. Logged as 'manage' beats — a black box to normal users, visible to
+        root. Free and deterministic by default; in Live mode it composes the lines with ONE bounded
+        call. (Turn-by-turn orchestration lands in Part 2; here it surveys + nudges.)"""
         cfg = thread.get("manager", {}) or {}
         budget = max(0, min(int(cfg.get("budget", 2) or 0), 4))            # cost guard: never runaway
-        rows = thread.get("rules_rows", []) or []
-        self._record("manage", None, f"host surveys thread {thread['id']} — {len(ring)} agents, {len(rows)} rules")
-        notes = [r.get("note", "").strip() for r in rows if (r.get("note") or "").strip()]
-        if (cfg.get("note") or "").strip():
-            notes.insert(0, cfg["note"].strip())
-        if not notes or budget == 0:
+        rulebook = (thread.get("rulebook") or thread.get("manager", {}).get("note", "") or "").strip()
+        self._record("manage", None, f"host surveys thread {thread['id']} — {len(ring)} agents, {'a rulebook' if rulebook else 'no rulebook'}")
+        if not rulebook or budget == 0:
             return
+        lines = [ln.strip() for ln in rulebook.splitlines() if ln.strip()][:budget] or [rulebook[:140]]
         composed = None
         if self.world.is_live() and cfg.get("model"):
-            composed = await self.world.host_enforce(cfg, ring, notes[:budget])   # the manager's one spend
-        for i in range(min(budget, len(notes))):
+            composed = await self.world.host_enforce(cfg, ring, lines)     # the manager's one spend
+        for i, ln in enumerate(lines):
             target = ring[i % len(ring)]
-            line = (composed[i] if composed and i < len(composed) else notes[i])[:140]
+            line = (composed[i] if composed and i < len(composed) else ln)[:140]
             self._record("manage", target.id, f"host → {target.name}: {line}", frm=None)
 
     async def _play_ring(self, ring: list[Human]) -> None:

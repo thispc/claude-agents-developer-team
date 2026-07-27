@@ -1714,6 +1714,19 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .sd-thread-mgr label { font-size: 11.5px; color: var(--dim); display: inline-flex; align-items: center; gap: 5px; }
 .sd-mgr-budget { width: 52px; }
 .sd-mgr-note { flex: 1; min-width: 120px; }
+.sd-thread-dir { font-size: 13px; color: var(--accent); }
+.sd-thread-book { margin-bottom: 6px; }
+.sd-book-actions { display: flex; justify-content: flex-end; }
+.sd-book-refine { font-size: 11.5px; font-weight: 550; color: var(--accent); background: var(--accent-soft);
+  border: 1px solid var(--accent); border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+.sd-book-refine:hover { background: var(--accent); color: #fff; }
+.sd-book-refine:disabled { opacity: .6; cursor: default; }
+
+/* the thread-direction toggle in the dock */
+.lw-dock-sep { width: 1px; align-self: stretch; background: var(--line); margin: 2px; }
+.lw-dir { font-size: 11.5px; font-weight: 600; color: var(--dim); background: var(--card-2);
+  border: 1px solid var(--line); border-radius: 9px; padding: 6px 10px; cursor: pointer; white-space: nowrap; }
+.lw-dir:hover { border-color: var(--accent); color: var(--accent); }
 
 /* the conversation flow graph */
 .sd-flow { padding: 8px 10px 12px; }

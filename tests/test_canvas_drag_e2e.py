@@ -581,33 +581,54 @@ def test_agent_create_has_a_mind_picker_and_dna_that_persist(server, page):
     assert ada["traits"]["composure"] > 0.8, "the DNA answer did not reach the trait"
 
 
-def test_rules_editor_adds_a_row_that_persists(server, page):
+def test_scene_rules_text_box_saves(server, page):
     c = server["client"]; wid, rid = _mk(c, "Rules")
     _open_scene(page, wid, rid); page.wait_for_timeout(150)
     page.evaluate("() => sdToggleRules()"); page.wait_for_timeout(80)
-    page.evaluate("() => document.querySelector('#sdRuleAdd').click()"); page.wait_for_timeout(60)
-    page.evaluate("""() => { const s = document.querySelector('.sd-rule-eff'); s.value = 'deny'; s.dispatchEvent(new Event('change')); }""")
+    page.evaluate("() => { document.querySelector('#sdRulesText').value = 'keep it civil'; }")
     page.evaluate("() => document.querySelector('#sdRulesSave').click()"); page.wait_for_timeout(350)
-    rows = c.get(f"/api/lw/{wid}/room/{rid}").json()["room"]["rules_rows"]
-    assert rows and rows[0]["effect"] == "deny", f"rule not saved: {rows}"
+    assert c.get(f"/api/lw/{wid}/room/{rid}").json()["room"]["rules"] == "keep it civil"
 
 
-def test_thread_tool_connects_two_agents_and_draws_a_line(server, page):
+def test_connection_handles_thread_two_nodes(server, page):
+    """Selecting a node shows 4 handles; dragging one onto another node connects them (MS-Paint style)."""
     c = server["client"]; wid, rid = _mk(c, "Thr")
     a = c.post(f"/api/lw/{wid}/human", json={"name": "A"}).json()["human"]["id"]
     b = c.post(f"/api/lw/{wid}/human", json={"name": "B"}).json()["human"]["id"]
     for h in (a, b):
         c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
-    c.post(f"/api/lw/{wid}/pos", json={"id": a, "x": 260, "y": 250})
-    c.post(f"/api/lw/{wid}/pos", json={"id": b, "x": 500, "y": 300})
+    c.post(f"/api/lw/{wid}/pos", json={"id": a, "x": 280, "y": 260})
+    c.post(f"/api/lw/{wid}/pos", json={"id": b, "x": 520, "y": 260})
     _open_scene(page, wid, rid); page.wait_for_timeout(250)
-    page.evaluate("() => lwSetTool('thread')")
-    sa, sb = _agent_screen(page, a), _agent_screen(page, b)
-    page.mouse.click(sa["x"], sa["y"]); page.wait_for_timeout(120)
-    page.mouse.click(sb["x"], sb["y"]); page.wait_for_timeout(500)
+    sa = _agent_screen(page, a)
+    page.mouse.click(sa["x"], sa["y"]); page.wait_for_timeout(150)
+    assert page.evaluate("() => (lwKonva.handles||[]).length") == 4, "no connection handles on a selected node"
+    h = page.evaluate("""() => { const d = lwKonva.handles[1]; const p = d.getAbsolutePosition();
+        const box = lwKonva.stage.container().getBoundingClientRect(); return { x: box.left + p.x, y: box.top + p.y }; }""")
+    sb = _agent_screen(page, b)
+    page.mouse.move(h["x"], h["y"]); page.mouse.down()
+    page.mouse.move(sb["x"], sb["y"], steps=14); page.mouse.up()
+    page.wait_for_timeout(500)
     threads = c.get(f"/api/lw/{wid}/room/{rid}").json()["room"]["threads"]
-    assert threads and len(threads[0]["edges"]) == 1, f"thread not created: {threads}"
+    assert threads and len(threads[0]["edges"]) == 1, f"handle drag did not connect: {threads}"
     assert page.evaluate("() => lwKonva.worldLayer.find('.thread').length") >= 1, "no thread line drawn"
+
+
+def test_double_click_selects_the_whole_graph_and_opens_the_rulebook(server, page):
+    c = server["client"]; wid, rid = _mk(c, "Graph")
+    a = c.post(f"/api/lw/{wid}/human", json={"name": "A"}).json()["human"]["id"]
+    b = c.post(f"/api/lw/{wid}/human", json={"name": "B"}).json()["human"]["id"]
+    for h in (a, b):
+        c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/pos", json={"id": a, "x": 300, "y": 260})
+    c.post(f"/api/lw/{wid}/pos", json={"id": b, "x": 520, "y": 260})
+    c.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b})   # already a graph
+    _open_scene(page, wid, rid); page.wait_for_timeout(250)
+    sa = _agent_screen(page, a)
+    page.mouse.dblclick(sa["x"], sa["y"]); page.wait_for_timeout(350)
+    assert page.evaluate("() => lwKonva.sel.size") == 2, "double-click did not select the whole graph"
+    assert page.evaluate("() => !document.querySelector('#sdRosterHost').hidden"), "rulebook panel did not open"
+    assert page.evaluate("() => !!document.querySelector('.sd-thread-book')"), "no rulebook text box"
 
 
 def test_flow_tab_and_threads_panel_render(server, page):

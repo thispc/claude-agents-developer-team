@@ -54,7 +54,13 @@ def components(edges: list) -> list[list[int]]:
 
 
 def default_manager() -> dict:
-    return {"model": "", "budget": 2, "note": ""}
+    return {"model": "", "budget": 2}
+
+
+def new_thread(tid: int) -> dict:
+    """A fresh graph: an edge list, a single free-text RULEBOOK the manager obeys, and a manager."""
+    return {"id": tid, "name": f"thread {tid}", "edges": [], "closed": False,
+            "rulebook": "", "manager": default_manager()}
 
 
 def edge_eq(e: list, a: int, b: int) -> bool:

@@ -748,48 +748,42 @@ def test_threads_merge_on_connect_and_split_on_disconnect():
     assert len(s.threads) == 1 and sorted(members_of(s.threads[0])) == [b.id, c.id]
 
 
-def test_a_threads_manager_surveys_and_enforces_free_and_bounded():
+def test_a_threads_manager_reads_the_rulebook_free_and_bounded():
     w, s, people = _threaded_room()
     t = s.threads[0]
-    t["rules_rows"] = [{"effect": "annotate", "note": "no bluffing"}]
-    t["manager"] = {"model": "", "budget": 2, "note": "keep it civil"}
+    t["rulebook"] = "no bluffing\nkeep it civil"
+    t["manager"] = {"model": "", "budget": 2}
     asyncio.run(s.run_thread(t))
     manage = [row for row in s.log if row["kind"] == "manage"]
-    assert manage and "surveys" in manage[0]["text"]                       # the Host is present…
-    assert any("host →" in row["text"] for row in manage)                   # …and addresses agents
-    assert len(manage) <= 1 + 2                                            # survey + at most `budget` nudges
+    assert manage and "surveys" in manage[0]["text"]                       # the manager is present…
+    assert any("host →" in row["text"] for row in manage)                   # …and addresses agents from the rulebook
+    assert len(manage) <= 1 + 2                                            # survey + at most `budget` lines
     assert all(row["billed"] is False for row in s.log)                    # deterministic mode: entirely free
 
 
-def test_a_thread_rule_gates_its_own_round():
-    spy = Spy()
-    w = World(name="live", complete=spy.complete, settings={})
-    a, b = w.spawn_human("A"), w.spawn_human("B")
-    s = w.new_room("room", "freeplay"); s.seat(a); s.seat(b)
-    s.connect(a.id, b.id)
-    s.threads[0]["rules_rows"] = [{"effect": "deny", "when": {"kind": "greet"}}]
+def test_a_thread_with_no_rulebook_just_surveys():
+    w, s, people = _threaded_room()
     asyncio.run(s.run_thread(s.threads[0]))
-    assert spy.calls == 0                                                  # every greet blocked → nothing spent
-    assert any(row["kind"] == "blocked" for row in s.log)
+    manage = [row for row in s.log if row["kind"] == "manage"]
+    assert len(manage) == 1 and "no rulebook" in manage[0]["text"]         # a survey, no enforcement lines
 
 
-def test_the_host_spends_at_most_one_call_per_thread_round():
+def test_the_host_composes_its_lines_in_one_bounded_call():
     seen = []
     async def complete(provider, model, system, prompt, settings, max_tokens=2000):
-        seen.append(model)
+        seen.append(system)
         return '["stay sharp","play fair"]' if "HOST" in system else '{"understood":"ok","action":{"kind":"say","text":"ok"}}'
     w = World(name="live", complete=complete, settings={})
     a, b = w.spawn_human("A"), w.spawn_human("B")
     s = w.new_room("room", "freeplay"); s.seat(a); s.seat(b); s.connect(a.id, b.id)
-    s.threads[0]["rules_rows"] = [{"effect": "annotate", "note": "r1"}, {"effect": "annotate", "note": "r2"}]
-    s.threads[0]["manager"] = {"model": "claude-haiku-4-5", "budget": 4, "note": ""}
+    s.threads[0]["rulebook"] = "r1\nr2"
+    s.threads[0]["manager"] = {"model": "claude-haiku-4-5", "budget": 4}
     asyncio.run(s.run_thread(s.threads[0]))
-    host_calls = [m for m in seen if True]  # every call the host made returned the array; count host system calls
-    # the host composes ALL its lines in ONE call regardless of budget:
+    assert sum(1 for x in seen if "HOST" in x) == 1                        # the host made exactly ONE call, whatever the budget
     assert sum(1 for row in s.log if row["kind"] == "manage" and "host →" in row["text"]) >= 1
 
 
-def test_a_round_over_threads_plays_and_round_trips(client):
+def test_a_round_over_threads_plays_and_the_rulebook_round_trips(client):
     from conftest import login
     login(client, "root", "testpass")
     wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
@@ -799,8 +793,20 @@ def test_a_round_over_threads_plays_and_round_trips(client):
     for h in (a, b):
         client.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
     th = client.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b}).json()["thread"]
-    client.post(f"/api/lw/{wid}/room/{rid}/thread/{th['id']}", json={
-        "rules_rows": [{"effect": "annotate", "note": "be brief"}], "manager": {"budget": 1, "note": "host here"}})
+    client.post(f"/api/lw/{wid}/room/{rid}/thread/{th['id']}", json={"rulebook": "be brief", "manager": {"budget": 1}})
     room = client.post(f"/api/lw/{wid}/room/{rid}/round").json()["room"]
-    assert any(row["kind"] == "manage" for row in room["log"])            # the Host ran
-    assert len(room["threads"]) == 1 and room["threads"][0]["manager"]["note"] == "host here"
+    assert any(row["kind"] == "manage" for row in room["log"])            # the manager ran
+    assert room["threads"][0]["rulebook"] == "be brief"
+
+
+def test_refine_offline_returns_the_text_unchanged(client):
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    rid = client.post(f"/api/lw/{wid}/room", json={"name": "r", "type": "freeplay"}).json()["room"]["id"]
+    a = client.post(f"/api/lw/{wid}/human", json={"name": "A"}).json()["human"]["id"]
+    b = client.post(f"/api/lw/{wid}/human", json={"name": "B"}).json()["human"]["id"]
+    for h in (a, b): client.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    th = client.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b}).json()["thread"]
+    out = client.post(f"/api/lw/{wid}/room/{rid}/thread/{th['id']}/refine", json={"text": "let them debate"}).json()
+    assert out["text"] == "let them debate"                                # no creds → no spend, unchanged

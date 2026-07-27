@@ -81,8 +81,12 @@ class ThreadEdge(BaseModel):
 
 class ThreadUpdate(BaseModel):
     name: str | None = None
-    rules_rows: list | None = None          # the thread's own rule table
-    manager: dict | None = None             # {model, budget, note} — the hidden Host
+    rulebook: str | None = None             # the graph's single free-text rulebook (obeyed by its manager)
+    manager: dict | None = None             # {model, budget} — the hidden manager
+
+
+class RefineBody(BaseModel):
+    text: str = ""
 
 
 class NewRoom(BaseModel):
@@ -440,17 +444,35 @@ def thread_update(world_id: int, room_id: int, tid: int, body: ThreadUpdate, req
         raise HTTPException(404, "no such thread")
     if body.name is not None:
         t["name"] = body.name.strip()[:60]
-    if body.rules_rows is not None:
-        from app.lifeworld.scene_rules import validate_rows
-        t["rules_rows"] = validate_rows(body.rules_rows)
+    if body.rulebook is not None:
+        t["rulebook"] = body.rulebook[:2000]
     if body.manager is not None:
         from app.lifeworld.world import MODEL_WHITELIST
         m = body.manager or {}
         t["manager"] = {"model": (m.get("model") if m.get("model") in MODEL_WHITELIST else ""),
-                        "budget": max(0, min(int(m.get("budget", 2) or 0), 4)),
-                        "note": str(m.get("note", ""))[:200]}
+                        "budget": max(0, min(int(m.get("budget", 2) or 0), 4))}
     store.save(w)
     return {"thread": t}
+
+
+@router.post("/{world_id}/room/{room_id}/thread/{tid}/refine")
+async def thread_refine(world_id: int, room_id: int, tid: int, body: RefineBody, request: Request) -> dict:
+    """Polish a graph's rulebook with the LLM (offline → a light deterministic tidy). Never applied
+    until the owner saves it — this only proposes."""
+    _, u = _load(request, world_id)
+    complete, settings = _author_creds(u)
+    text = (body.text or "").strip()
+    if not text:
+        return {"text": ""}
+    if complete is None:
+        return {"text": text}                      # offline: unchanged (no spend)
+    sys = ("Rewrite these table rules into a short, clear, unambiguous rulebook a silent host can enforce. "
+           "Keep the intent; number the rules; no preamble.")
+    try:
+        raw = await complete("anthropic", tuning.get("scene_default_model"), sys, text, settings, max_tokens=300)
+        return {"text": (raw or text).strip()[:2000]}
+    except Exception:
+        return {"text": text}
 
 
 @router.delete("/{world_id}/room/{room_id}/thread/{tid}")
