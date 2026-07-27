@@ -5101,7 +5101,9 @@ const LW_TOOLS = [
   { id: "agent",    key: "A", label: "Agent" },
   { id: "artifact", key: "O", label: "Object" },
   { id: "shape",    key: "S", label: "Shape" },
+  { id: "thread",   key: "T", label: "Thread" },
 ];
+let lwThreadPending = null;    // the first agent picked while drawing a thread
 // The style variants a new person can wear; the final face blends the variant with
 // the agent's own identity, so two people who pick the same variant still differ.
 const LW_AV_VARIANTS = ["a", "b", "c", "d", "e", "f"];
@@ -5322,17 +5324,44 @@ function sdPulse() { const f = $("#sdProgFill"); if (!f || reduceMotion()) retur
 
 // --- activity: a categorised log of what each beat did ---------------------
 let sdActOpen = false, sdActTab = "beats";
+// A directed graph of who acted on whom this scene, built from the log's frm→who edges.
+// Self-hosted SVG; manager ("manage") beats only fold in for root — a black box otherwise.
+function sdFlowHtml() {
+  const root = lwCanRootDebug();
+  const agents = (lwRoom && lwRoom.agents) || [];
+  if (!agents.length) return `<p class="sd-act-empty">No agents in this scene yet.</p>`;
+  const log = ((lwRoom && lwRoom.log) || []).filter((l) => root || l.kind !== "manage");
+  const edges = {};
+  log.forEach((l) => {
+    if (l.frm == null || l.who == null || l.frm === l.who) return;
+    const k = l.frm + ">" + l.who; edges[k] = edges[k] || { c: 0, manage: false };
+    edges[k].c++; if (l.kind === "manage") edges[k].manage = true;
+  });
+  const N = agents.length, R = N > 1 ? 96 : 0, cx = 130, cy = 118, pos = {};
+  agents.forEach((a, i) => { const ang = -Math.PI / 2 + i * 2 * Math.PI / N; pos[a.id] = { x: cx + R * Math.cos(ang), y: cy + R * Math.sin(ang), name: a.name || "" }; });
+  const maxC = Math.max(1, ...Object.values(edges).map((e) => e.c));
+  const arcs = Object.entries(edges).map(([k, e]) => {
+    const [f, t] = k.split(">").map(Number), A = pos[f], B = pos[t]; if (!A || !B) return "";
+    const dx = B.x - A.x, dy = B.y - A.y, len = Math.hypot(dx, dy) || 1, ox = -dy / len * 16, oy = dx / len * 16;
+    const w = (1 + 3 * (e.c / maxC)).toFixed(1), col = e.manage ? "#d64545" : "var(--accent)";
+    return `<path d="M${A.x.toFixed(0)} ${A.y.toFixed(0)} Q${(A.x + dx / 2 + ox).toFixed(0)} ${(A.y + dy / 2 + oy).toFixed(0)} ${B.x.toFixed(0)} ${B.y.toFixed(0)}" stroke="${col}" stroke-width="${w}" fill="none" opacity="0.55" marker-end="url(#flowArrow)"/>`;
+  }).join("");
+  const nodes = agents.map((a) => { const p = pos[a.id]; return `<g><circle cx="${p.x.toFixed(0)}" cy="${p.y.toFixed(0)}" r="15" fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="1.5"/><text x="${p.x.toFixed(0)}" y="${(p.y + 27).toFixed(0)}" text-anchor="middle" font-size="9" fill="var(--text)">${escapeHtml(p.name.slice(0, 9))}</text></g>`; }).join("");
+  const hasManage = Object.values(edges).some((e) => e.manage);
+  return `<div class="sd-flow"><svg viewBox="0 0 260 250" width="100%" role="img" aria-label="conversation flow">
+    <defs><marker id="flowArrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0L8 4L0 8z" fill="var(--accent)"/></marker></defs>
+    ${arcs}${nodes}</svg>
+    <p class="sd-flow-cap">who acted on whom · line weight = how much${hasManage ? ` · <span style="color:#d64545">red = host</span>` : ""}</p></div>`;
+}
+
 function sdActivityHtml(log) {
   const root = lwCanRootDebug();
-  const tabs = root
-    ? `<div class="sd-act-tabs">
-        <button class="sd-act-tab${sdActTab === "beats" ? " on" : ""}" data-acttab="beats">Beats</button>
-        <button class="sd-act-tab${sdActTab === "canvas" ? " on" : ""}" data-acttab="canvas">Canvas${lwLogOn ? ` <span class="sd-log-live" title="capturing"></span>` : ""}</button>
-      </div>`
-    : `<span class="sd-act-title">Activity</span>`;
+  const tab = (id, label) => `<button class="sd-act-tab${sdActTab === id ? " on" : ""}" data-acttab="${id}">${label}</button>`;
+  const tabs = `<div class="sd-act-tabs">${tab("beats", "Beats")}${tab("flow", "Flow")}${root ? tab("canvas", `Canvas${lwLogOn ? ` <span class="sd-log-live" title="capturing"></span>` : ""}`) : ""}</div>`;
   const head = `<div class="sd-act-head">${tabs}<button class="sd-act-x" id="sdActX" aria-label="Close">✕</button></div>`;
   if (root && sdActTab === "canvas") return head + lwLogPanelHtml();
-  log = log || [];
+  if (sdActTab === "flow") return head + sdFlowHtml();
+  log = (log || []).filter((l) => root || l.kind !== "manage");   // the manager's beats are a black box unless root
   if (!log.length) return head + `<p class="sd-act-empty">Nothing yet. Run a beat to see what happens.</p>`;
   const rows = log.slice(-100).reverse().map((l) => {
     const thought = l.tier === 2 || l.billed, who = l.who != null ? lwNameOf(l.who) : "";
@@ -5350,7 +5379,7 @@ function sdShowActivity(open) {
   panel.hidden = !open;
   const btn = $("#sdActBtn"); if (btn) btn.classList.toggle("on", open);
   if (!open) return;
-  panel.classList.toggle("wide", lwCanRootDebug() && sdActTab === "canvas");
+  panel.classList.toggle("wide", sdActTab === "flow" || (lwCanRootDebug() && sdActTab === "canvas"));
   panel.innerHTML = sdActivityHtml(lwRoom && lwRoom.log);
   const x = $("#sdActX"); if (x) x.addEventListener("click", () => sdShowActivity(false));
   panel.querySelectorAll(".sd-act-tab").forEach((b) => b.addEventListener("click", () => { sdActTab = b.dataset.acttab; sdShowActivity(true); }));
@@ -5489,24 +5518,123 @@ function lwNearestToken(w) {
 }
 
 // --- scene rules: a small popover; saved to the scene, obeyed each run ------
+// Scene rules as ordered "ingress rows": each row is a typed effect (gate or shaper) with an
+// optional when-match, evaluated top-to-bottom. Reused for a thread's own rule table too.
+const LW_RULE_EFFECTS = ["deny", "allow", "clamp", "bias", "annotate"];
+const LW_RULE_KINDS = ["", "greet", "say", "scold", "praise", "deal", "see"];
+const LW_RULE_FIELDS = ["mood.stress", "mood.confidence", "mood.hope", "mood.focus", "vitals.energy", "drives.social", "drives.esteem", "drives.curiosity"];
+
+function sdRuleRowHtml(r, i) {
+  const eff = r.effect || "annotate", isShape = eff === "clamp" || eff === "bias";
+  const kind = (r.when && r.when.kind) || "";
+  const opt = (list, cur, lbl) => list.map((v) => `<option value="${escapeHtml(String(v))}"${String(v) === String(cur) ? " selected" : ""}>${escapeHtml(lbl ? lbl(v) : v)}</option>`).join("");
+  return `<div class="sd-rule" data-i="${i}">
+    <select class="sd-rule-eff" data-k="effect">${opt(LW_RULE_EFFECTS, eff)}</select>
+    <span class="sd-rule-when">when <select data-k="kind">${opt(LW_RULE_KINDS, kind, (k) => k || "any")}</select></span>
+    ${isShape ? `<select class="sd-rule-field" data-k="field">${opt(LW_RULE_FIELDS, r.field || LW_RULE_FIELDS[0])}</select>
+      <input class="sd-rule-val" data-k="value" type="number" step="0.05" value="${r.value ?? 0}">` : ""}
+    <input class="sd-rule-note" data-k="note" placeholder="${eff === "annotate" ? "text the model reads" : "note (optional)"}" value="${escapeHtml(r.note || "")}">
+    <button class="sd-rule-del" title="Delete rule" aria-label="Delete rule">✕</button>
+  </div>`;
+}
+
+function sdRenderRules(draft, host) {
+  host = host || $("#sdRulesRows"); if (!host) return;
+  host.innerHTML = draft.length ? draft.map(sdRuleRowHtml).join("")
+    : `<p class="sd-rules-empty">No rules — like an empty security group. Add one below.</p>`;
+  host.querySelectorAll(".sd-rule").forEach((row) => {
+    const i = Number(row.dataset.i);
+    row.querySelectorAll("[data-k]").forEach((el) => {
+      el.addEventListener(el.tagName === "SELECT" ? "change" : "input", () => {
+        const k = el.dataset.k, r = draft[i];
+        if (k === "kind") { r.when = r.when || {}; if (el.value) r.when.kind = el.value; else delete r.when.kind; }
+        else if (k === "value") r.value = Number(el.value);
+        else r[k] = el.value;
+        if (k === "effect") sdRenderRules(draft, host);   // reveal/hide the field+value for shaper effects
+      });
+    });
+    row.querySelector(".sd-rule-del").addEventListener("click", () => { draft.splice(i, 1); sdRenderRules(draft, host); });
+  });
+}
+
+// ---- the Threads panel: each thread's rule table + hidden manager ----------
+async function sdOpenThreads(focusId) {
+  const host = $("#sdRosterHost"); if (!host || !lwWorldId) return;
+  host.hidden = false;
+  host.innerHTML = `<div class="sd-roster-card"><p class="dim">reading the graph…</p></div>`;
+  let room;
+  try { room = (await api(`/api/lw/${lwWorldId}/room/${lwRoomId}`)).room; }
+  catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="dim">Could not read threads: ${escapeHtml(e.message)}</p></div>`; return; }
+  const threads = room.threads || [];
+  const nameOf = (id) => { const a = (room.agents || []).find((x) => x.id === id); return a ? a.name : `#${id}`; };
+  const models = LW_MODELS.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join("");
+  const card = (t) => `<div class="sd-thread" data-tid="${t.id}">
+      <div class="sd-thread-head"><input class="sd-thread-name" value="${escapeHtml(t.name || ("thread " + t.id))}">
+        <button class="sd-thread-del" title="Delete thread">✕</button></div>
+      <div class="sd-thread-members">${escapeHtml((t.edges || []).length ? [...new Set(t.edges.flatMap((e) => [e[0], e[1]]))].map(nameOf).join(" · ") : "no members")}</div>
+      <div class="sc-label">Rules</div><div class="sd-thread-rules"></div>
+      <button class="sd-rule-add sd-thread-addrule">+ add rule</button>
+      <div class="sc-label">Hidden manager <span class="dim">surveys the thread, enforces the rules (root sees it)</span></div>
+      <div class="sd-thread-mgr">
+        <label>Model <select class="sd-mgr-model">${models}</select></label>
+        <label>Budget <input class="sd-mgr-budget" type="number" min="0" max="4" value="${(t.manager && t.manager.budget) ?? 2}"></label>
+        <input class="sd-mgr-note" placeholder="what the host cares about…" value="${escapeHtml((t.manager && t.manager.note) || "")}">
+      </div>
+      <div class="sc-actions"><button class="sc-ctl primary sd-thread-save">Save thread</button></div>
+    </div>`;
+  host.innerHTML = `<div class="sd-roster-card sd-threads-card">
+    <div class="sd-roster-head"><h3>Threads</h3><span class="dim">${threads.length} · draw more with the Thread tool</span>
+      <button class="sd-close" id="sdThreadsClose">✕</button></div>
+    <div class="sd-threads-list">${threads.length ? threads.map(card).join("") : `<p class="dim">No threads yet. Pick the Thread tool and click two agents to connect them.</p>`}</div>
+  </div>`;
+  $("#sdThreadsClose").addEventListener("click", () => { host.hidden = true; });
+  threads.forEach((t) => {
+    const el = host.querySelector(`.sd-thread[data-tid="${t.id}"]`); if (!el) return;
+    const draft = JSON.parse(JSON.stringify(t.rules_rows || []));
+    sdRenderRules(draft, el.querySelector(".sd-thread-rules"));
+    el.querySelector(".sd-thread-addrule").addEventListener("click", () => { draft.push({ effect: "annotate", when: {}, note: "" }); sdRenderRules(draft, el.querySelector(".sd-thread-rules")); });
+    const mm = el.querySelector(".sd-mgr-model"); if (mm) mm.value = (t.manager && t.manager.model) || "";
+    el.querySelector(".sd-thread-del").addEventListener("click", async () => {
+      if (!confirm(`Delete ${t.name || "this thread"}? The agents stay; only the connection goes.`)) return;
+      try { await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${t.id}`, { method: "DELETE" }); sdFlash(); await lwReloadRoom(); sdOpenThreads(); }
+      catch (e) { toast(`Could not delete: ${e.message}`); }
+    });
+    el.querySelector(".sd-thread-save").addEventListener("click", async () => {
+      const body = { name: el.querySelector(".sd-thread-name").value, rules_rows: draft,
+        manager: { model: mm ? mm.value : "", budget: Number(el.querySelector(".sd-mgr-budget").value) || 0,
+                   note: el.querySelector(".sd-mgr-note").value || "" } };
+      sdFlash();
+      try { await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${t.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); toast("thread saved"); await lwReloadRoom(); }
+      catch (e) { toast(`Could not save: ${e.message}`); }
+    });
+  });
+  if (focusId) { const el = host.querySelector(`.sd-thread[data-tid="${focusId}"]`); if (el) el.scrollIntoView({ block: "nearest" }); }
+}
+
 function sdToggleRules() {
   const pop = $("#sdRulesPop"); if (!pop) return;
   if (!pop.hidden) { pop.hidden = true; return; }
-  const rules = (lwRoom && lwRoom.rules) || "";
-  pop.innerHTML = `<div class="sd-rules-head">Scene rules <span class="dim">obeyed on every run</span></div>
-    <textarea class="sc-input" id="sdRulesText" rows="4" placeholder="e.g. Everyone stays in character. Keep it civil. No one reveals their card."></textarea>
-    <div class="sc-actions"><button class="sc-ctl primary" id="sdRulesSave">Save rules</button>
+  const draft = JSON.parse(JSON.stringify((lwRoom && lwRoom.rules_rows) || []));
+  pop.innerHTML = `<div class="sd-rules-head">Scene rules <span class="dim">ordered · top-to-bottom, like ingress rules</span></div>
+    <div class="sd-rules-rows" id="sdRulesRows"></div>
+    <button class="sd-rule-add" id="sdRuleAdd">+ add rule</button>
+    <div class="sc-label">Free note <span class="dim">folded into the model prompt</span></div>
+    <textarea class="sc-input" id="sdRulesText" rows="2" placeholder="anything extra the agents should keep in mind…"></textarea>
+    <div class="sc-actions"><button class="sc-ctl primary" id="sdRulesSave">Save</button>
       <button class="sc-ctl" id="sdRulesClose">Close</button></div>`;
   pop.hidden = false;
-  const ta = $("#sdRulesText"); if (ta) { ta.value = rules; ta.focus(); }
+  $("#sdRulesText").value = (lwRoom && lwRoom.rules) || "";
+  sdRenderRules(draft);
+  $("#sdRuleAdd").addEventListener("click", () => { draft.push({ effect: "annotate", when: {}, note: "" }); sdRenderRules(draft); });
   $("#sdRulesClose").addEventListener("click", () => { pop.hidden = true; });
   $("#sdRulesSave").addEventListener("click", async () => {
-    const val = ($("#sdRulesText").value || "");
     sdFlash();
     try {
-      await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/scene`, { method: "POST",
-        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ rules: val }) });
-      if (lwRoom) lwRoom.rules = val; pop.hidden = true;
+      const d = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/scene`, { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rules: $("#sdRulesText").value || "", rules_rows: draft }) });
+      if (lwRoom) { lwRoom.rules_rows = (d.room && d.room.rules_rows) || draft; lwRoom.rules = $("#sdRulesText").value || ""; }
+      pop.hidden = true;
     } catch (e) { toast(`Could not save rules: ${e.message}`); }
   });
 }
@@ -6312,7 +6440,7 @@ function lwWireDock() {
   dock.querySelectorAll("[data-tool]").forEach((b) =>
     b.addEventListener("click", () => lwSetTool(b.dataset.tool)));
 }
-function lwToolCursor(t) { return t === "select" ? "default" : "cell"; }
+function lwToolCursor(t) { return t === "select" ? "default" : t === "thread" ? "crosshair" : "cell"; }
 function lwSetCursor(c) {
   if (!(lwKonva && lwKonva.host)) return;
   if (lwLogOn && lwKonva.host.style.cursor !== c) lwLog("cursor", "cursor → " + c, null, "debug");
@@ -6447,9 +6575,9 @@ function lwUpdateSelFrame() {
 function lwSelect(kind, entry) { lwSelSet(kind, entry); }   // legacy single-focus callers
 function lwDeselect() { lwSelClear(); }
 
-// Arrows/flows were retired in the simplification — time is driven by the transport,
-// not by drawn edges. This stays a no-op so the drag handlers need no special-casing.
-function lwUpdateArrows() {}
+// Arrows/flows were retired; this hook now keeps the thread graph's lines glued to their
+// agents as they drag, so the whole graph moves as one. Called from every drag-move.
+function lwUpdateArrows() { lwUpdateThreadLines(); }
 
 // ---- keyboard: the canvas listens while a room is open ---------------------
 let lwNudgeTimer = null;
@@ -6599,6 +6727,7 @@ function lwMountCanvas(room, agents, props) {
   };
   // A click toggles into the selection (shift-click) or focuses just this token.
   const pick = (kind, entry, e) => {
+    if (lwTool === "thread") { if (kind === "agent") lwThreadClick(entry); return; }
     if (lwTool !== "select") return;
     if (e.evt && e.evt.shiftKey) lwSelToggle(kind, entry); else lwSelSet(kind, entry);
   };
@@ -6650,6 +6779,8 @@ function lwMountCanvas(room, agents, props) {
     node.on("dblclick dbltap", (e) => { e.cancelBubble = true; openPersonDrawer(a.id, a.name); });
     if (seat) lwSetSteadyGlow(node, true);
   });
+
+  lwRenderThreads(room.threads || []);          // draw the agent graph beneath the tokens
 
   // Restore the cached viewport, or frame everything once. `framed` stays false if the
   // host wasn't measured yet, so lwSettleSize/the ResizeObserver re-frames precisely once
@@ -7144,6 +7275,50 @@ function lwVicinityGlow(node, color) {
   lwKonva.glowing.add(node);
 }
 function lwSetSteadyGlow(node, on) { lwSetGlow(node, on, "hsl(150 60% 45%)", 14, 0.55); }
+
+// ---- threads: the agent graph drawn on the canvas -------------------------
+async function lwThreadClick(entry) {
+  const id = entry.data.id;
+  if (lwThreadPending == null) {                       // first pick: mark it, wait for the second
+    lwThreadPending = id; lwSetSteadyGlow(entry.node, true);
+    lwKonva.worldLayer.batchDraw(); toast("pick another agent to thread them together");
+    return;
+  }
+  const first = lwKonva.agents.get(String(lwThreadPending));
+  if (first && !first.seat) lwSetSteadyGlow(first.node, false);
+  if (lwThreadPending === id) { lwThreadPending = null; lwKonva.worldLayer.batchDraw(); return; }
+  const a = lwThreadPending; lwThreadPending = null;
+  try {
+    await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/connect`, { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ a, b: id, dir: "both" }) });
+    sdFlash(); await lwReloadRoom();
+  } catch (e) { toast(`Could not thread them: ${e.message}`); }
+}
+function lwRenderThreads(threads) {
+  if (!lwKonva) return;
+  lwKonva.worldLayer.find(".thread").forEach((n) => n.destroy());
+  lwKonva.threadLines = [];
+  (threads || []).forEach((t) => (t.edges || []).forEach((e) => {
+    const A = lwKonva.agents.get(String(e[0])), B = lwKonva.agents.get(String(e[1]));
+    if (!A || !B) return;
+    const pa = A.node.position(), pb = B.node.position(), dir = e[2] || "both";
+    const line = new Konva.Arrow({ points: [pa.x, pa.y, pb.x, pb.y], stroke: "hsl(160 45% 42%)",
+      fill: "hsl(160 45% 42%)", strokeWidth: 2, opacity: 0.6, dash: t.closed ? [] : [8, 5], name: "thread",
+      pointerLength: dir === "both" ? 0 : 9, pointerWidth: dir === "both" ? 0 : 9,
+      pointerAtBeginning: dir === "b2a", hitStrokeWidth: 14, listening: true });
+    line.on("click tap", (ev) => { ev.cancelBubble = true; sdOpenThreads(t.id); });
+    lwKonva.worldLayer.add(line); line.moveToBottom();
+    lwKonva.threadLines.push({ line, a: e[0], b: e[1] });
+  }));
+  lwKonva.worldLayer.batchDraw();
+}
+function lwUpdateThreadLines() {
+  if (!lwKonva || !lwKonva.threadLines) return;
+  lwKonva.threadLines.forEach((tl) => {
+    const A = lwKonva.agents.get(String(tl.a)), B = lwKonva.agents.get(String(tl.b));
+    if (A && B) { const pa = A.node.position(), pb = B.node.position(); tl.line.points([pa.x, pa.y, pb.x, pb.y]); }
+  });
+}
 function lwClearGlows() {
   if (!lwKonva) return;
   lwKonva.glowing.forEach((n) => lwSetGlow(n, false));
@@ -7376,6 +7551,7 @@ function lwStartCreate(tool, world) {
   const figure = kind === "artifact" ? "ic:" + LW_OBJ_ICONS[0] : "av:" + LW_AV_VARIANTS[0];
   lwCreateFlow = { tool, kind, isShape, world, shimmer, anim, figure, seats: isShape ? 3 : 0,
                    name: "", brief: "", shape: "circle", path: [], pathPts: [], drawing: false,
+                   model: "", dials: {}, drive: "", libType: "", spec: null,
                    mode: "new", pop: null, preview: null, busy: false, dragged: false };
   lwOpenCreatePopover();
 }
@@ -7451,6 +7627,90 @@ function lwMakeDraggable(pop, handle, flow) {
   handle.addEventListener("pointercancel", stop);
 }
 
+// The mind an agent possesses, and the clean base-DNA questions that set its psyche.
+const LW_MODELS = [
+  { id: "", name: "Auto", sub: "world default" },
+  { id: "claude-opus-4-8", name: "Opus 4.8", sub: "deepest" },
+  { id: "claude-sonnet-5", name: "Sonnet 5", sub: "balanced" },
+  { id: "claude-haiku-4-5-20251001", name: "Haiku 4.5", sub: "fast · cheap" },
+  { id: "claude-fable-5", name: "Fable 5", sub: "creative" },
+];
+const LW_DNA = [
+  { trait: "composure", q: "Under pressure", opts: [["cracks", 20], ["steady", 50], ["ice-cold", 85]] },
+  { trait: "risk_appetite", q: "With risk", opts: [["cautious", 20], ["balanced", 50], ["bold", 85]] },
+  { trait: "sociability", q: "Around people", opts: [["reserved", 20], ["easy", 50], ["magnetic", 85]] },
+  { trait: "empathy", q: "Toward others", opts: [["cool", 20], ["fair", 50], ["warm", 85]] },
+  { trait: "willpower", q: "Chasing a goal", opts: [["drifts", 20], ["steady", 55], ["relentless", 85]] },
+];
+const LW_MOTIVES = [["belonging", "social"], ["winning", "esteem"], ["knowing", "curiosity"], ["meaning", "purpose"]];
+
+function lwDnaHtml(flow) {
+  const models = LW_MODELS.map((m) =>
+    `<button class="lw-mind${(flow.model || "") === m.id ? " on" : ""}" data-mind="${escapeHtml(m.id)}" title="${escapeHtml(m.sub)}">
+       <b>${escapeHtml(m.name)}</b><span>${escapeHtml(m.sub)}</span></button>`).join("");
+  const qs = LW_DNA.map((d) => {
+    const cur = flow.dials[d.trait];
+    const segs = d.opts.map(([label, val]) =>
+      `<button class="lw-seg${cur === val ? " on" : ""}" data-trait="${d.trait}" data-val="${val}">${escapeHtml(label)}</button>`).join("");
+    return `<div class="lw-dna-q"><span class="lw-dna-lbl">${escapeHtml(d.q)}</span><div class="lw-seg-row">${segs}</div></div>`;
+  }).join("");
+  const motives = LW_MOTIVES.map(([label, drive]) =>
+    `<button class="lw-seg${flow.drive === drive ? " on" : ""}" data-drive="${drive}">${escapeHtml(label)}</button>`).join("");
+  return `<div class="sc-label">Mind <span class="dim">the model it thinks with</span></div>
+    <div class="lw-mind-row" id="lwCMind">${models}</div>
+    <div class="sc-label">Base DNA <span class="dim">a few strokes; the rest is authored from the brief</span></div>
+    <div class="lw-dna" id="lwCDna">${qs}
+      <div class="lw-dna-q"><span class="lw-dna-lbl">Driven by</span><div class="lw-seg-row" id="lwCMotive">${motives}</div></div>
+    </div>`;
+}
+
+// The generic artifact builder: recombine vetted components into a spec (no code, no exec).
+const LW_COMPONENTS = [
+  { kind: "multiset", label: "Deck / multiset", param: "builder" },
+  { kind: "sealable", label: "Sealed value · holder-only" },
+  { kind: "flippable", label: "Flippable" },
+  { kind: "rollable", label: "Rollable · dice", param: "faces" },
+  { kind: "countable", label: "Counter / pot" },
+  { kind: "slotted", label: "Seats agents", param: "slots" },
+];
+function lwBuildHtml(flow) {
+  const b = flow.build;
+  const rows = LW_COMPONENTS.map((c) => {
+    const cur = b.comps[c.kind], on = !!cur;
+    let param = "";
+    if (c.param === "builder") param = `<select data-param="${c.kind}:builder" class="lw-bparam"${on ? "" : " disabled"}>
+      <option value="standard52"${cur && cur.builder === "standard52" ? " selected" : ""}>52 cards</option>
+      <option value="dice6"${cur && cur.builder === "dice6" ? " selected" : ""}>6 dice faces</option></select>`;
+    if (c.param === "faces") param = `<input data-param="${c.kind}:faces" class="lw-bparam" type="number" min="2" max="20" value="${(cur && cur.faces) || 6}"${on ? "" : " disabled"}>`;
+    if (c.param === "slots") param = `<input data-param="${c.kind}:slots" class="lw-bparam" type="number" min="1" max="8" value="${(cur && cur.slots) || 4}"${on ? "" : " disabled"}>`;
+    return `<label class="lw-bcomp"><input type="checkbox" data-comp="${c.kind}"${on ? " checked" : ""}> <span>${escapeHtml(c.label)}</span> ${param}</label>`;
+  }).join("");
+  return `<input class="sc-name" id="lwBType" placeholder="type name (e.g. coin)" value="${escapeHtml(b.type || "")}">
+    <div class="sc-label">Components <span class="dim">recombine vetted parts — never code</span></div>
+    <div class="lw-bcomps">${rows}</div>
+    <label class="lw-bsave"><input type="checkbox" id="lwBSaveOn"${b.saveAs ? " checked" : ""}> save to Custom as
+      <input class="sc-name lw-bsavename" id="lwBSaveName" placeholder="name" value="${escapeHtml(b.saveAs || "")}"></label>`;
+}
+function lwBuildSpec(flow) {
+  const comps = [];
+  Object.entries(flow.build.comps).forEach(([kind, p]) => { if (p) comps.push(Object.assign({ kind }, p)); });
+  return comps.length ? { type: (flow.build.type || "object").trim() || "object", components: comps } : null;
+}
+async function lwLoadLib(flow) {
+  const host = $("#lwLibList"); if (!host) return;
+  let lib;
+  try { lib = await api(`/api/lw/${lwWorldId}/artifact-lib`); }
+  catch (e) { host.innerHTML = `<p class="dim">Could not load the library.</p>`; return; }
+  const entries = [...Object.keys(lib.shipped || {}).map((k) => [k, true]), ...Object.keys(lib.custom || {}).map((k) => [k, false])];
+  host.innerHTML = entries.map(([k, shipped]) =>
+    `<button class="lw-lib-item${flow.libType === k ? " on" : ""}" data-lib="${escapeHtml(k)}">${escapeHtml(k)}${shipped ? "" : ` <span class="dim">· yours</span>`}</button>`).join("")
+    || `<p class="dim">Nothing saved yet — build one and save it.</p>`;
+  host.querySelectorAll("[data-lib]").forEach((b) => b.addEventListener("click", () => {
+    flow.libType = b.dataset.lib;
+    host.querySelectorAll("[data-lib]").forEach((x) => x.classList.toggle("on", x === b));
+  }));
+}
+
 function lwOpenCreatePopover() {
   const flow = lwCreateFlow, overlay = $("#lwOverlay");
   if (!flow || !overlay) return;
@@ -7473,15 +7733,30 @@ function lwOpenCreatePopover() {
         <textarea class="sc-input" id="lwCBrief" rows="2" placeholder="a cautious accountant who loves poker…"></textarea>
         <div class="sc-label">Face</div>
         <div class="lw-figpalette" id="lwCFig">${lwFigPaletteHtml(flow)}</div>
+        ${lwDnaHtml(flow)}
       </div>
       <div id="lwCCast" hidden><div class="lw-cast-list" id="lwCCastList"><p class="dim">loading cast…</p></div></div>`;
   } else if (isObj) {
+    if (!flow.build) flow.build = { type: "", comps: {}, saveAs: "" };
+    if (!flow.omode) flow.omode = "describe";
     body = `
-      <input class="sc-name" id="lwCName" placeholder="Name (optional)" autocomplete="off">
-      <div class="sc-label">What is it?</div>
-      <textarea class="sc-input" id="lwCBrief" rows="2" placeholder="a deck of cards; a key; a note…"></textarea>
-      <div class="sc-label">Icon <span class="dim">how it looks on the canvas</span></div>
-      <div class="lw-figpalette" id="lwCFig">${lwFigPaletteHtml(flow)}</div>`;
+      <div class="lw-mode" id="lwOMode">
+        <button class="lw-mode-tab${flow.omode === "describe" ? " on" : ""}" data-omode="describe">Describe</button>
+        <button class="lw-mode-tab${flow.omode === "custom" ? " on" : ""}" data-omode="custom">Custom</button>
+        <button class="lw-mode-tab${flow.omode === "build" ? " on" : ""}" data-omode="build">Build</button>
+      </div>
+      <div id="lwODescribe"${flow.omode === "describe" ? "" : " hidden"}>
+        <input class="sc-name" id="lwCName" placeholder="Name (optional)" autocomplete="off">
+        <div class="sc-label">What is it?</div>
+        <textarea class="sc-input" id="lwCBrief" rows="2" placeholder="a deck of cards; a key; a note…"></textarea>
+        <div class="sc-label">Icon <span class="dim">how it looks on the canvas</span></div>
+        <div class="lw-figpalette" id="lwCFig">${lwFigPaletteHtml(flow)}</div>
+      </div>
+      <div id="lwOCustom"${flow.omode === "custom" ? "" : " hidden"}>
+        <div class="sc-label">Pick a type <span class="dim">shipped + your saved ones</span></div>
+        <div class="lw-lib" id="lwLibList"><p class="dim">loading library…</p></div>
+      </div>
+      <div id="lwOBuild"${flow.omode === "build" ? "" : " hidden"}>${lwBuildHtml(flow)}</div>`;
   } else {   // shape — a collating sticker; always has slots, never a glyph
     body = `
       <input class="sc-name" id="lwCName" placeholder="Name (optional)" autocomplete="off">
@@ -7533,6 +7808,21 @@ function lwOpenCreatePopover() {
   const briefEl = pop.querySelector("#lwCBrief");
   if (briefEl) briefEl.addEventListener("input", (e) => { flow.brief = e.target.value; });
 
+  // agent: the mind it possesses + the base-DNA questions
+  pop.querySelectorAll("#lwCMind [data-mind]").forEach((b) => b.addEventListener("click", () => {
+    flow.model = b.dataset.mind;
+    pop.querySelectorAll("#lwCMind [data-mind]").forEach((x) => x.classList.toggle("on", x === b));
+  }));
+  pop.querySelectorAll("#lwCDna [data-trait]").forEach((b) => b.addEventListener("click", () => {
+    const tr = b.dataset.trait;
+    flow.dials[tr] = Number(b.dataset.val);
+    pop.querySelectorAll(`#lwCDna [data-trait="${tr}"]`).forEach((x) => x.classList.toggle("on", x === b));
+  }));
+  pop.querySelectorAll("#lwCMotive [data-drive]").forEach((b) => b.addEventListener("click", () => {
+    flow.drive = flow.drive === b.dataset.drive ? "" : b.dataset.drive;      // one motive, toggleable
+    pop.querySelectorAll("#lwCMotive [data-drive]").forEach((x) => x.classList.toggle("on", x.dataset.drive === flow.drive));
+  }));
+
   // shape: slots slider + shape chooser
   const slots = pop.querySelector("#lwCSlots");
   if (slots) slots.addEventListener("input", (e) => { flow.seats = Number(e.target.value); const n = pop.querySelector("#lwCSlotsN"); if (n) n.textContent = flow.seats; });
@@ -7553,6 +7843,37 @@ function lwOpenCreatePopover() {
     pop.querySelector("#lwCGo").style.display = mode === "cast" ? "none" : "";
     if (mode === "cast") lwFillCast(pop);
   }));
+
+  // object create: Describe / Custom / Build tabs + the generic builder
+  pop.querySelectorAll("#lwOMode [data-omode]").forEach((b) => b.addEventListener("click", () => {
+    flow.omode = b.dataset.omode;
+    pop.querySelectorAll("#lwOMode [data-omode]").forEach((x) => x.classList.toggle("on", x === b));
+    for (const [id, m] of [["lwODescribe", "describe"], ["lwOCustom", "custom"], ["lwOBuild", "build"]]) {
+      const el = pop.querySelector("#" + id); if (el) el.hidden = flow.omode !== m;
+    }
+    if (flow.omode === "custom") lwLoadLib(flow);
+  }));
+  pop.querySelectorAll("#lwOBuild [data-comp]").forEach((cb) => cb.addEventListener("change", () => {
+    const kind = cb.dataset.comp;
+    if (cb.checked) flow.build.comps[kind] = flow.build.comps[kind] || {};
+    else delete flow.build.comps[kind];
+    const param = pop.querySelector(`#lwOBuild [data-param^="${kind}:"]`);
+    if (param) {
+      param.disabled = !cb.checked;
+      if (cb.checked) { const [k, key] = param.dataset.param.split(":"); flow.build.comps[k][key] = param.type === "number" ? Number(param.value) : param.value; }
+    }
+  }));
+  pop.querySelectorAll("#lwOBuild [data-param]").forEach((el) => el.addEventListener("input", () => {
+    const [kind, key] = el.dataset.param.split(":");
+    if (flow.build.comps[kind]) flow.build.comps[kind][key] = el.type === "number" ? Number(el.value) : el.value;
+  }));
+  const bType = pop.querySelector("#lwBType");
+  if (bType) bType.addEventListener("input", (e) => { flow.build.type = e.target.value; });
+  const bSaveName = pop.querySelector("#lwBSaveName"), bSaveOn = pop.querySelector("#lwBSaveOn");
+  const syncSave = () => { flow.build.saveAs = (bSaveOn && bSaveOn.checked) ? (bSaveName ? bSaveName.value : "") : ""; };
+  if (bSaveOn) bSaveOn.addEventListener("change", syncSave);
+  if (bSaveName) bSaveName.addEventListener("input", syncSave);
+  if (flow.omode === "custom") lwLoadLib(flow);       // preload if reopened on the Custom tab
 
   pop.querySelector("#lwCX").addEventListener("click", lwCancelCreate);
   pop.querySelector("#lwCCancel").addEventListener("click", lwCancelCreate);
@@ -7681,16 +8002,30 @@ async function lwDoCreate(pop) {
   try {
     let newId = null;
     if (flow.kind === "agent") {
+      const drives = flow.drive ? { [flow.drive]: 0.9 } : {};
       const r = await api(`/api/lw/${lwWorldId}/human`, { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: (flow.name || "").trim(), brief: (flow.brief || "").trim(), figure: flow.figure }) });
+        body: JSON.stringify({ name: (flow.name || "").trim(), brief: (flow.brief || "").trim(), figure: flow.figure,
+          model: flow.model || "", dials: flow.dials || {}, drives }) });
       newId = lwCreatedId(r, ["human", "person", "agent"]);
       if (newId != null)
         await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/seat?human_id=${encodeURIComponent(newId)}`, { method: "POST" });
     } else {
       const shape = (flow.path && flow.path.length >= 3) ? "path" : (flow.shape === "rect" ? "rect" : "circle");
+      const name = (flow.name || "").trim();
+      let payload;
+      if (!flow.isShape && flow.omode === "custom") {
+        if (!flow.libType) throw new Error("pick a type");
+        payload = { type: flow.libType, name, figure: flow.figure };
+      } else if (!flow.isShape && flow.omode === "build") {
+        const spec = lwBuildSpec(flow);
+        if (!spec) throw new Error("pick at least one component");
+        payload = { spec, save_as: flow.build.saveAs || "", name: name || spec.type, figure: flow.figure };
+      } else {
+        payload = { name, brief: (flow.brief || "").trim(), figure: flow.figure,
+          slots: flow.seats || 0, shape, path: shape === "path" ? flow.path : [] };
+      }
       const r = await api(`/api/lw/${lwWorldId}/artifact`, { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: (flow.name || "").trim(), brief: (flow.brief || "").trim(), figure: flow.figure,
-          slots: flow.seats || 0, shape, path: shape === "path" ? flow.path : [] }) });
+        body: JSON.stringify(payload) });
       newId = lwCreatedId(r, ["artifact", "prop", "object"]);
       if (newId != null)
         await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/place?artifact_id=${encodeURIComponent(newId)}`, { method: "POST" });
@@ -8035,6 +8370,7 @@ document.querySelectorAll(".lw-tab").forEach((b) =>
   $("#sdScenesBtn") && $("#sdScenesBtn").addEventListener("click", (e) => { e.stopPropagation(); sdToggleScenes(); });
   $("#sdSceneDel") && $("#sdSceneDel").addEventListener("click", (e) => { e.stopPropagation(); sdDeleteCurrentScene(); });
   $("#sdActBtn") && $("#sdActBtn").addEventListener("click", sdToggleActivity);
+  $("#sdThreadsBtn") && $("#sdThreadsBtn").addEventListener("click", () => sdOpenThreads());
   $("#sdRoster") && $("#sdRoster").addEventListener("click", sdOpenRoster);
   document.addEventListener("click", (e) => {          // click-away closes the scenes menu
     const menu = $("#sdScenesMenu");

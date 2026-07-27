@@ -558,3 +558,66 @@ def test_dragging_a_token_to_the_right_portal_deletes_it(server, page):
         page.wait_for_timeout(150)
     agents = c.get(f"/api/lw/{wid}").json()["agents"]
     assert all(a["id"] != hid for a in agents), "the token was not deleted by the portal"
+
+
+def test_agent_create_has_a_mind_picker_and_dna_that_persist(server, page):
+    """The agent popover offers a model to possess + base-DNA questions, and both reach the agent."""
+    c = server["client"]; wid, rid = _mk(c, "DNA")
+    _open_scene(page, wid, rid); page.wait_for_timeout(150)
+    page.evaluate("() => { lwSetTool('agent'); lwStartCreate('agent', {x: 320, y: 260}); }")
+    page.wait_for_timeout(150)
+    assert page.evaluate("() => !!document.querySelector('#lwCMind [data-mind]')"), "no mind picker"
+    assert page.evaluate("() => document.querySelectorAll('#lwCDna [data-trait]').length") >= 6, "no DNA questions"
+    page.evaluate("""() => {
+        document.querySelector('[data-mind="claude-opus-4-8"]').click();
+        document.querySelector('[data-trait="composure"][data-val="85"]').click();
+        document.querySelector('#lwCMotive [data-drive="esteem"]').click();
+        lwCreateFlow.name = 'Ada';
+        return lwDoCreate(lwCreateFlow.pop);
+    }""")
+    page.wait_for_timeout(600)
+    ada = next((a for a in c.get(f"/api/lw/{wid}").json()["agents"] if a["name"] == "Ada"), None)
+    assert ada and ada["model"] == "claude-opus-4-8", f"model not possessed: {ada}"
+    assert ada["traits"]["composure"] > 0.8, "the DNA answer did not reach the trait"
+
+
+def test_rules_editor_adds_a_row_that_persists(server, page):
+    c = server["client"]; wid, rid = _mk(c, "Rules")
+    _open_scene(page, wid, rid); page.wait_for_timeout(150)
+    page.evaluate("() => sdToggleRules()"); page.wait_for_timeout(80)
+    page.evaluate("() => document.querySelector('#sdRuleAdd').click()"); page.wait_for_timeout(60)
+    page.evaluate("""() => { const s = document.querySelector('.sd-rule-eff'); s.value = 'deny'; s.dispatchEvent(new Event('change')); }""")
+    page.evaluate("() => document.querySelector('#sdRulesSave').click()"); page.wait_for_timeout(350)
+    rows = c.get(f"/api/lw/{wid}/room/{rid}").json()["room"]["rules_rows"]
+    assert rows and rows[0]["effect"] == "deny", f"rule not saved: {rows}"
+
+
+def test_thread_tool_connects_two_agents_and_draws_a_line(server, page):
+    c = server["client"]; wid, rid = _mk(c, "Thr")
+    a = c.post(f"/api/lw/{wid}/human", json={"name": "A"}).json()["human"]["id"]
+    b = c.post(f"/api/lw/{wid}/human", json={"name": "B"}).json()["human"]["id"]
+    for h in (a, b):
+        c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/pos", json={"id": a, "x": 260, "y": 250})
+    c.post(f"/api/lw/{wid}/pos", json={"id": b, "x": 500, "y": 300})
+    _open_scene(page, wid, rid); page.wait_for_timeout(250)
+    page.evaluate("() => lwSetTool('thread')")
+    sa, sb = _agent_screen(page, a), _agent_screen(page, b)
+    page.mouse.click(sa["x"], sa["y"]); page.wait_for_timeout(120)
+    page.mouse.click(sb["x"], sb["y"]); page.wait_for_timeout(500)
+    threads = c.get(f"/api/lw/{wid}/room/{rid}").json()["room"]["threads"]
+    assert threads and len(threads[0]["edges"]) == 1, f"thread not created: {threads}"
+    assert page.evaluate("() => lwKonva.worldLayer.find('.thread').length") >= 1, "no thread line drawn"
+
+
+def test_flow_tab_and_threads_panel_render(server, page):
+    c = server["client"]; wid, rid = _mk(c, "Flow")
+    for n in ("A", "B"):
+        h = c.post(f"/api/lw/{wid}/human", json={"name": n}).json()["human"]["id"]
+        c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/room/{rid}/round")
+    _open_scene(page, wid, rid); page.wait_for_timeout(200)
+    page.evaluate("() => { sdActTab = 'flow'; sdShowActivity(true); }"); page.wait_for_timeout(150)
+    assert page.evaluate("() => !!document.querySelector('.sd-flow svg')"), "flow graph not rendered"
+    page.evaluate("() => sdOpenThreads()"); page.wait_for_timeout(250)
+    assert page.evaluate("() => !!document.querySelector('.sd-threads-card')"), "threads panel not rendered"
