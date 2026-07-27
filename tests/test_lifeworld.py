@@ -523,3 +523,52 @@ def test_an_entity_can_be_deleted_and_leaves_every_scene_and_table(client):
     assert all(a["id"] != hid for a in room["agents"])            # gone from the scene
     assert hid not in room["props"][0]["seated"]                  # unseated from the table
     assert all(a["id"] != hid for a in client.get(f"/api/lw/{wid}").json()["agents"])   # gone from the world
+
+
+# --------------------------------------------------------------------------
+# 9. per-agent model (Stage 1) + directed log rows (Stage 0)
+# --------------------------------------------------------------------------
+
+def test_an_agent_possesses_its_own_whitelisted_model_at_the_appraisal():
+    """The one bounded Tier-2 call uses THIS agent's model when it named a whitelisted one,
+    and falls back to the world default otherwise — the model name is never trusted raw."""
+    seen = []
+    async def complete(provider, model, system, prompt, settings, max_tokens=2000):
+        seen.append(model)
+        return '{"understood":"noted","mood":{"stress":0.1},"action":{"kind":"say","text":"ok"}}'
+    w = World(name="live", complete=complete, settings={}, model_name="claude-haiku-4-5")
+    a, b = w.spawn_human("A"), w.spawn_human("B")
+    b.model = "claude-opus-4-8"                        # b possesses Opus (whitelisted)
+    sc = Scene(w, id=1, name="s", domain="talk"); sc.seat(a); sc.seat(b)
+    asyncio.run(sc.say(a, b, "something genuinely novel and weighty", intensity=0.9, stakes=0.9))
+    assert seen == ["claude-opus-4-8"], seen           # the receiver appraised with its own model
+    assert w.model_for(a) == "claude-haiku-4-5"        # unset → world default
+    b.model = "gpt-4o-not-allowed"
+    assert w.model_for(b) == "claude-haiku-4-5"        # non-whitelisted → world default, never passed through
+
+
+def test_an_agents_model_round_trips_through_the_world_json():
+    import json
+    w = free_world()
+    h = w.spawn_human("Ada"); h.model = "claude-sonnet-5"
+    w2 = World.from_dict(json.loads(json.dumps(w.to_dict())))
+    assert next(x for x in w2.humans() if x.name == "Ada").model == "claude-sonnet-5"
+
+
+def test_a_beat_stamps_every_log_row_with_a_sender_and_a_round(client):
+    """Every beat records who caused it (frm) and which round it belongs to, so the flow view
+    can draw a directed sender→receiver edge per beat."""
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    rid = client.post(f"/api/lw/{wid}/room", json={"name": "r", "type": "freeplay"}).json()["room"]["id"]
+    a = client.post(f"/api/lw/{wid}/human", json={"name": "Ada"}).json()["human"]["id"]
+    b = client.post(f"/api/lw/{wid}/human", json={"name": "Bo"}).json()["human"]["id"]
+    for h in (a, b):
+        client.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    log = client.post(f"/api/lw/{wid}/room/{rid}/round").json()["room"]["log"]
+    assert log, "a beat produced no log rows"
+    assert all("frm" in row and "round" in row for row in log), "log rows missing frm/round"
+    assert all(row["round"] >= 1 for row in log)
+    directed = [row for row in log if row["kind"] == "act" and row["frm"] is not None]
+    assert directed and any(row["frm"] != row["who"] for row in directed), "no directed sender→receiver beat"

@@ -387,6 +387,7 @@ async def play_round(world_id: int, room_id: int, request: Request, live: int = 
     s = w.scene(room_id)
     if not s:
         raise HTTPException(404, "no such room")
+    s.round_no += 1                      # one beat = one round; every log row it emits is stamped with it
     deck = next((a for a in s.props_here() if a.kind == "deck"), None)
 
     async def play(ring):

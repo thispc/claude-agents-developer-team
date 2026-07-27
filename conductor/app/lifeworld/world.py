@@ -18,6 +18,14 @@ from .human import Human
 from .artifact import Artifact
 from .types import Packet, Signal
 
+# The only models an agent may possess. A per-agent choice is honoured ONLY if it is on this
+# list; anything else falls back to the world default — the model name is never trusted from
+# client data straight into a provider call.
+MODEL_WHITELIST = frozenset({
+    "claude-opus-4-8", "claude-sonnet-5", "claude-fable-5",
+    "claude-haiku-4-5-20251001", "claude-haiku-4-5",
+})
+
 
 class World:
     def __init__(self, id: int = 0, name: str = "world", flags: Flags | None = None,
@@ -86,11 +94,16 @@ class World:
 
     # --- the one spend ------------------------------------------------------
 
+    def model_for(self, human: Human) -> str:
+        """The model this agent possesses if it named a whitelisted one, else the world default."""
+        m = getattr(human, "model", "") or ""
+        return m if m in MODEL_WHITELIST else self._model_name
+
     async def appraise(self, human: Human, signal: Signal, ctx: dict) -> Packet:
         from . import appraise as appr
         if self._complete is not None and self.flags_for(human).on("emotions"):
             return await appr.model(human, signal, ctx, settings=self._settings,
-                                     complete=self._complete, model_name=self._model_name,
+                                     complete=self._complete, model_name=self.model_for(human),
                                      max_tokens=self._utter_tokens, rules=self._scene_rules)
         return appr.deterministic(human, signal, ctx)
 

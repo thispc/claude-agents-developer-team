@@ -59,6 +59,7 @@ class Scene:
         self.rules: str = ""                  # free-text scene rules, obeyed on every run
         self.log: list[dict] = []
         self.turn = 0
+        self.round_no = 0                     # bumped once per beat, stamped on each log row (for the flow view)
 
     # --- setup --------------------------------------------------------------
 
@@ -73,8 +74,13 @@ class Scene:
     def players(self) -> list[Human]:
         return [self.world.get(i) for i in self.seats if isinstance(self.world.get(i), Human)]
 
-    def _record(self, kind: str, who: int | None, text: str, packet: Packet | None = None) -> None:
-        self.log.append({"n": len(self.log), "kind": kind, "who": who, "text": text[:240],
+    def _record(self, kind: str, who: int | None, text: str, packet: Packet | None = None,
+                frm: int | None = None) -> None:
+        # who = the subject the beat lands on (receiver agent, or the artifact); frm = the sender
+        # that caused it (the acting agent), or None. Both, plus the round, let the flow view draw
+        # a directed sender→receiver edge per beat.
+        self.log.append({"n": len(self.log), "kind": kind, "who": who, "frm": frm,
+                         "round": self.round_no, "text": text[:240],
                          "billed": bool(packet and packet.spent), "tier": packet.tier if packet else -1,
                          "ts": time.time()})
 
@@ -88,7 +94,7 @@ class Scene:
         packet = await to.perceive(signal, self.world)
         self.world.tau += 1
         say = (packet.action or {}).get("text") or packet.understood
-        self._record("act", to.id, f"{to.name}: {say}", packet)
+        self._record("act", to.id, f"{to.name}: {say}", packet, frm=signal.from_id)
         return packet
 
     async def interact(self, human: Human, artifact_id: int, verb: str) -> Packet:
@@ -98,7 +104,7 @@ class Scene:
         if art is None:
             return Packet(understood="(no such thing)")
         signal = art.interact(verb, human, self.world)
-        self._record("effect", artifact_id, f"{art.name}: {signal.text()}")
+        self._record("effect", artifact_id, f"{art.name}: {signal.text()}", frm=human.id)
         return await self.deliver(signal, human)
 
     async def greet(self, a: Human, b: Human) -> Packet:
@@ -127,7 +133,7 @@ class Scene:
         return {"id": self.id, "name": self.name, "type": self.type, "theme": self.theme,
                 "domain": self.domain, "flag_overrides": self.flag_overrides,
                 "seats": list(self.seats), "props": list(self.props),
-                "rules": self.rules, "log": self.log[-200:], "turn": self.turn}
+                "rules": self.rules, "log": self.log[-200:], "turn": self.turn, "round_no": self.round_no}
 
     @classmethod
     def from_state(cls, world, d: dict[str, Any]) -> "Scene":
@@ -139,6 +145,7 @@ class Scene:
         s.rules = d.get("rules", "")
         s.log = list(d.get("log", []))
         s.turn = int(d.get("turn", 0))
+        s.round_no = int(d.get("round_no", 0))
         return s
 
     def props_here(self):

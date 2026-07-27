@@ -36,9 +36,11 @@ class Human(Being):
     kind = "human"
 
     def __init__(self, id: int, name: str = "", pos: tuple = (0.0, 0.0), tau: int = 0,
-                 psyche: Psyche | None = None, narrative: str = "", figure: str = ""):
+                 psyche: Psyche | None = None, narrative: str = "", figure: str = "",
+                 model: str = ""):
         super().__init__(id, name, pos, tau)
         self.figure = figure                         # the chosen figurine/icon (how they look)
+        self.model = model                           # the LLM this agent possesses ("" = inherit the world default)
         self.psyche = psyche or Psyche()
         self.senses = Senses()
         self.memory = Memory()
@@ -52,8 +54,8 @@ class Human(Being):
 
     @classmethod
     def newborn(cls, id: int, name: str, *, dials: dict | None = None,
-                senses: list | None = None, figure: str = "") -> "Human":
-        h = cls(id, name, psyche=Psyche.newborn(dials), figure=figure)
+                senses: list | None = None, figure: str = "", model: str = "") -> "Human":
+        h = cls(id, name, psyche=Psyche.newborn(dials), figure=figure, model=model)
         if senses:
             h.senses.active = list(senses)
         return h
@@ -147,7 +149,7 @@ class Human(Being):
     def profile(self) -> dict[str, Any]:
         """The résumé card — identity, dominant drive, top skills, verified ledger."""
         return {"id": self.id, "name": self.name, "tau": self.tau, "figure": self.figure,
-                "pos": list(self.pos),
+                "pos": list(self.pos), "model": self.model,
                 "narrative": self.narrative, "mood": self.psyche.mood,
                 "traits": self.psyche.traits, "wants": self.drives.dominant_goal(),
                 "skills": self.skills.resume(), "resume": self.ledger.resume_stats(),
@@ -158,7 +160,7 @@ class Human(Being):
     def to_dict(self) -> dict[str, Any]:
         d = super().to_dict()
         d.update(narrative=self.narrative, last_action=self.last_action, figure=self.figure,
-                 flag_overrides=self.flag_overrides,
+                 model=self.model, flag_overrides=self.flag_overrides,
                  psyche=self.psyche.to_dict(), senses=self.senses.to_dict(),
                  memory=self.memory.to_dict(), skills=self.skills.to_dict(),
                  drives=self.drives.to_dict(), rules=self.rules.to_dict(),
@@ -178,5 +180,6 @@ class Human(Being):
         h.social = Social.from_dict(d.get("social"))
         h.ledger = Ledger.from_dict(d.get("ledger"))
         h.last_action = d.get("last_action", {})
+        h.model = d.get("model", "")
         h.flag_overrides = d.get("flag_overrides", {})
         return h
