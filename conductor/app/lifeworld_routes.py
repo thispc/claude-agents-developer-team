@@ -94,6 +94,27 @@ class ChatBody(BaseModel):
     text: str = ""
 
 
+class ManifestAgent(BaseModel):
+    name: str
+    model: str = ""                         # from MODEL_WHITELIST, or "" to inherit
+    dials: dict = Field(default_factory=dict)    # trait -> 0-100 (or 0-1); unknown traits ignored
+    drives: dict = Field(default_factory=dict)   # drive -> 0-1 setpoints
+    brief: str = ""                         # one-line narrative, used verbatim (no authoring spend)
+    figure: str = ""
+
+
+class ManifestBody(BaseModel):
+    """A whole team as ONE declarative spec — the substrate's manifest. Applying it materialises
+    a real scene (agents, wiring, rules, manager) that the canvas shows like any other; optionally
+    runs a deliberation immediately. Deterministic and free to APPLY; a run spends only with ?live=1."""
+    name: str = ""                          # the scene's name
+    agents: list[ManifestAgent]
+    edges: list = Field(default_factory=list)    # [nameA, nameB, dir?] — names from `agents`; dir: both|a2b|b2a
+    rules: str = ""                         # the graph's rulebook (what the manager makes happen)
+    manager: dict = Field(default_factory=dict)  # {model, budget}
+    run: dict = Field(default_factory=dict)      # {rounds: 1-4} → deliberate now and return the memo
+
+
 class NewRoom(BaseModel):
     name: str = "a room"
     type: str = "freeplay"                  # home | school | college | office | casino | freeplay
@@ -530,6 +551,99 @@ async def thread_chat(world_id: int, room_id: int, tid: int, body: ChatBody, req
     res = await s.chat(t, body.to, body.text)
     store.save(w)
     return res
+
+
+@router.post("/{world_id}/room/{room_id}/thread/{tid}/run")
+async def thread_run(world_id: int, room_id: int, tid: int, request: Request,
+                     rounds: int = 2, live: int = 0) -> dict:
+    """The reconciliation loop: deliberate `rounds` rounds (cap 4) over this graph, then the
+    manager synthesizes the DECISION MEMO — versioned on the thread, returned here. Free by
+    default; ?live=1 spends at most rounds+1 bounded calls."""
+    w, _ = _load(request, world_id, live=bool(live))
+    s = w.scene(room_id)
+    if not s:
+        raise HTTPException(404, "no such room")
+    t = s.thread(tid)
+    if not t:
+        raise HTTPException(404, "no such thread")
+    memo = await s.run_deliberation(t, rounds)
+    store.save(w)
+    return {"result": memo, "room": s.view()}
+
+
+@router.get("/{world_id}/room/{room_id}/thread/{tid}/results")
+def thread_results(world_id: int, room_id: int, tid: int, request: Request) -> dict:
+    """Every kept decision memo for this graph, oldest→newest (v1, v2, …) — compare re-runs."""
+    _own(request, world_id)
+    w = store.load(world_id)
+    s = w.scene(room_id)
+    if not s:
+        raise HTTPException(404, "no such room")
+    t = s.thread(tid)
+    if not t:
+        raise HTTPException(404, "no such thread")
+    return {"results": t.get("results", [])}
+
+
+@router.post("/{world_id}/manifest")
+async def apply_manifest(world_id: int, body: ManifestBody, request: Request, live: int = 0) -> dict:
+    """Declare a whole team as one spec and materialise it: a new scene with the agents (built
+    deterministically from their dials — applying never spends), wired per `edges`, rules + manager
+    installed. The canvas shows it like any hand-built scene — the Studio is one client of this API.
+    If run.rounds is set, deliberates immediately and returns the decision memo."""
+    import math
+    from app.lifeworld.psyche import TRAITS
+    from app.lifeworld.drives import SPEC as DRIVE_SPEC
+    from app.lifeworld.world import MODEL_WHITELIST
+    from app.lifeworld.util import clamp01
+    w, _ = _load(request, world_id, live=bool(live))
+    if not body.agents or len(body.agents) > 12:
+        raise HTTPException(422, "a manifest needs 1-12 agents")
+    names = [a.name.strip()[:60] for a in body.agents]
+    if len(set(names)) != len(names) or not all(names):
+        raise HTTPException(422, "agent names must be present and unique (edges address by name)")
+    s = w.new_room((body.name or "manifest").strip()[:60], "freeplay")
+    by_name: dict[str, int] = {}
+    n = len(body.agents)
+    for i, spec in enumerate(body.agents):
+        dials = {}
+        for k, v in (spec.dials or {}).items():
+            if k in TRAITS:
+                dials[k] = round(clamp01(float(v) / 100.0 if float(v) > 1 else float(v)) * 100)
+        h = w.spawn_human(names[i], dials=dials or None, figure=spec.figure)
+        h.model = spec.model if spec.model in MODEL_WHITELIST else ""
+        for k, v in (spec.drives or {}).items():
+            if k in DRIVE_SPEC:
+                h.drives.level[k] = clamp01(float(v))
+        if spec.brief.strip():
+            h.narrative = spec.brief.strip()[:280]
+        s.seat(h)
+        ang = -math.pi / 2 + (i / max(1, n)) * math.tau        # a ring, top-first — reads instantly on the canvas
+        h.pos = (420 + math.cos(ang) * (90 + 24 * n), 300 + math.sin(ang) * (70 + 18 * n))
+        by_name[names[i]] = h.id
+    for e in body.edges:
+        if not (isinstance(e, (list, tuple)) and len(e) >= 2):
+            raise HTTPException(422, f"bad edge {e!r} — use [nameA, nameB, dir?]")
+        a, b = by_name.get(str(e[0])), by_name.get(str(e[1]))
+        if a is None or b is None or a == b:
+            raise HTTPException(422, f"edge {e!r} names an unknown (or same) agent")
+        d = str(e[2]) if len(e) > 2 else "both"
+        if d not in ("both", "a2b", "b2a"):
+            raise HTTPException(422, f"edge dir must be both|a2b|b2a, got {d!r}")
+        s.connect(a, b, dir=d)
+    for t in s.threads:                                        # the graph's brief + its manager
+        if body.rules:
+            t["rulebook"] = body.rules[:2000]
+        m = body.manager or {}
+        t["manager"] = {"model": (m.get("model") if m.get("model") in MODEL_WHITELIST else ""),
+                        "budget": max(0, min(int(m.get("budget", 2) or 0), 4))}
+    result = None
+    rounds = int((body.run or {}).get("rounds", 0) or 0)
+    if rounds and s.threads:
+        result = await s.run_deliberation(s.threads[0], rounds)
+    store.save(w)
+    return {"room": s.view(), "agents": by_name,
+            "thread_ids": [t["id"] for t in s.threads], "result": result}
 
 
 @router.post("/{world_id}/touch")

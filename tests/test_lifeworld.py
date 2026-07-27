@@ -800,6 +800,76 @@ def test_a_round_over_threads_plays_and_the_rulebook_round_trips(client):
     assert room["threads"][0]["rulebook"] == "be brief"
 
 
+def test_a_manifest_materialises_a_whole_team_and_deliberates(client):
+    """The substrate's declarative surface: POST one JSON spec → a real scene with the agents
+    (deterministic, no authoring spend), wired by NAME, rules + manager installed — and with
+    run.rounds set it deliberates immediately and returns the versioned DECISION MEMO."""
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    man = {"name": "route-debate",
+           "agents": [{"name": "Harvey", "dials": {"assertive": 90}, "drives": {"esteem": 0.9}, "brief": "a closer"},
+                      {"name": "Mike", "dials": {"curious": 85}}],
+           "edges": [["Harvey", "Mike", "both"]],
+           "rules": "debate the most sustainable route from A to B",
+           "manager": {"budget": 2},
+           "run": {"rounds": 2}}
+    r = client.post(f"/api/lw/{wid}/manifest", json=man).json()
+    assert r["room"]["name"] == "route-debate" and len(r["room"]["agents"]) == 2
+    assert set(r["agents"]) == {"Harvey", "Mike"} and len(r["thread_ids"]) == 1
+    assert r["room"]["threads"][0]["rulebook"].startswith("debate")
+    memo = r["result"]
+    assert memo["v"] == 1 and memo["rounds"] == 2
+    assert {p["who"] for p in memo["positions"]} == set(r["agents"].values())   # a final position per agent
+    assert memo["question"].startswith("debate") and memo["recommendation"]
+    # the memo is durable + versioned: a re-run appends v2
+    rid, tid = r["room"]["id"], r["thread_ids"][0]
+    r2 = client.post(f"/api/lw/{wid}/room/{rid}/thread/{tid}/run", params={"rounds": 1}).json()
+    assert r2["result"]["v"] == 2
+    hist = client.get(f"/api/lw/{wid}/room/{rid}/thread/{tid}/results").json()["results"]
+    assert [m["v"] for m in hist] == [1, 2]
+    # the scene is a REAL scene — the canvas view shows the say beats of the deliberation
+    assert any(row["kind"] == "say" for row in r["room"]["log"])
+
+
+def test_a_bad_manifest_is_rejected_not_half_applied(client):
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    dup = {"agents": [{"name": "A"}, {"name": "A"}], "edges": []}
+    assert client.post(f"/api/lw/{wid}/manifest", json=dup).status_code == 422
+    ghost = {"agents": [{"name": "A"}], "edges": [["A", "Nobody"]]}
+    assert client.post(f"/api/lw/{wid}/manifest", json=ghost).status_code == 422
+
+
+def test_the_memo_synthesis_is_one_bounded_call():
+    """Live: a 2-round deliberation makes exactly rounds+1 HOST calls (per-round plans + the
+    closing memo) — the 'fine result' never opens an unbounded spend path."""
+    seen = []
+    ids = {}
+    async def complete(provider, model, system, prompt, settings, max_tokens=2000):
+        seen.append(system)
+        if "closing" in system:
+            return ('{"question":"route A to B","positions":[{"who":%d,"position":"rail"},'
+                    '{"who":%d,"position":"bus"}],"dissent":"cost","recommendation":"take the rail"}'
+                    % (ids["a"], ids["b"]))
+        if "HOST" in system:
+            return ('{"enforce":["civil"],"round":[{"who":%d,"text":"rail wins"},{"who":%d,"text":"bus is cheaper"}]}'
+                    % (ids["a"], ids["b"]))
+        return '{"understood":"ok"}'
+    w = World(name="live", complete=complete, settings={})
+    a, b = w.spawn_human("A"), w.spawn_human("B")
+    ids["a"], ids["b"] = a.id, b.id
+    s = w.new_room("room", "freeplay"); s.seat(a); s.seat(b); s.connect(a.id, b.id)
+    s.threads[0]["rulebook"] = "route A to B"
+    s.threads[0]["manager"] = {"model": "claude-haiku-4-5", "budget": 2}
+    memo = asyncio.run(s.run_deliberation(s.threads[0], rounds=2))
+    host_calls = sum(1 for x in seen if "HOST" in x or "closing" in x)
+    assert host_calls == 3                                                  # 2 round-plans + 1 memo
+    assert memo["recommendation"] == "take the rail" and memo["dissent"] == "cost"
+    assert memo["names"][str(a.id)] == "A"                                  # names travel with the memo
+
+
 def test_the_graph_chat_talks_to_agents_and_the_manager(client):
     """The user can chat with any agent in the graph, or with the pinned manager; replies are
     generated (deterministic offline) and the whole conversation persists per peer."""

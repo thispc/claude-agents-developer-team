@@ -165,6 +165,43 @@ class World:
         except Exception:
             return None
 
+    async def host_memo(self, cfg: dict, ring, rulebook: str, transcript: str) -> dict | None:
+        """The manager's closing synthesis — ONE bounded call that turns a finished deliberation
+        into the DECISION MEMO: each agent's final position, the live dissent, a recommendation.
+        None → the free deterministic memo (last stances verbatim). This is the 'fine result' a
+        run produces; a run of N rounds therefore costs at most N+1 bounded calls, ever."""
+        if self._complete is None or not ring:
+            return None
+        import json
+        model = cfg.get("model") if cfg.get("model") in MODEL_WHITELIST else self._model_name
+        roster = [{"id": h.id, "name": h.name} for h in ring]
+        sys = ("You are the HOST closing a finished deliberation. From the TRANSCRIPT, write the decision "
+               "memo as ONE JSON object: {\"question\": <what was deliberated, one line>, \"positions\": "
+               "[{\"who\": <agent id int>, \"position\": <that agent's FINAL stance, one line>}], "
+               "\"dissent\": <the sharpest unresolved disagreement, one line, or \"\">, "
+               "\"recommendation\": <your call as mediator, 1-2 lines, concrete>}. Return ONLY the JSON.")
+        prompt = (f"AGENTS: {json.dumps(roster)}\nDELIBERATED UNDER: {json.dumps(rulebook or '(no rules set)')}\n"
+                  f"TRANSCRIPT:\n{transcript[:2400] or '(nothing was said)'}\nReturn only the JSON object.")
+        try:
+            raw = await self._complete("anthropic", model, sys, prompt, self._settings, max_tokens=90 * max(1, len(ring)) + 160)
+            obj = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+            ids = {h.id for h in ring}
+            positions = []
+            for x in (obj.get("positions") or []):
+                try:
+                    who = int(x.get("who"))
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                if who in ids and str(x.get("position", "")).strip():
+                    positions.append({"who": who, "position": str(x["position"])[:280]})
+            if not positions:
+                return None
+            return {"question": str(obj.get("question", ""))[:200], "positions": positions,
+                    "dissent": str(obj.get("dissent", ""))[:280],
+                    "recommendation": str(obj.get("recommendation", ""))[:400]}
+        except Exception:
+            return None
+
     async def host_reply(self, cfg: dict, ring, rulebook: str, convo: list, transcript: str = "") -> str | None:
         """The manager answering the USER in the graph's chat — one bounded call per user message.
         It speaks as the mediator: it can explain what the agents ALREADY discussed (the DISCUSSION

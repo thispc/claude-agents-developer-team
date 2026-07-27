@@ -210,6 +210,24 @@ def test_v2_shows_a_mediated_conversation(server, page):
     assert all("route" in t.lower() for t in bubbles), f"bubbles not grounded in the topic: {bubbles}"
 
 
+def test_v2_run_produces_a_decision_memo_card(server, page):
+    """The product loop on the canvas: double-click a graph → ▶ Run → the manager deliberates
+    (free offline) and the DECISION MEMO card appears with a position per agent."""
+    c = server["client"]; wid, rid = _mk(c, "Memo")
+    a, b = _two_connected(c, wid, rid)
+    th = c.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b}).json()["thread"]
+    c.post(f"/api/lw/{wid}/room/{rid}/thread/{th['id']}",
+           json={"rulebook": "debate the most sustainable route from A to B", "manager": {"budget": 2}})
+    _open(page, wid, rid)
+    p = _tpos(page, a); s = _scr(page, p["x"], p["y"])
+    page.mouse.dblclick(s["x"], s["y"]); page.wait_for_timeout(300)
+    assert page.evaluate("() => [...document.querySelectorAll('.lw-act-btn')].some(b => b.textContent.includes('Run'))"), "no ▶ Run in the graph action bar"
+    page.evaluate("() => [...document.querySelectorAll('.lw-act-btn')].find(b => b.textContent.includes('Run')).click()")
+    page.wait_for_selector(".sd-memo-card", timeout=10000)
+    assert page.evaluate("() => document.querySelectorAll('.sd-memo-pos').length") == 2, "expected a final position per agent"
+    assert page.evaluate("() => document.querySelector('.sd-memo-rec').textContent.length > 20"), "no recommendation in the memo"
+
+
 def test_v2_drag_moves_and_persists(server, page):
     wid, rid = _mk(server["client"])
     a, _ = _two_connected(server["client"], wid, rid)

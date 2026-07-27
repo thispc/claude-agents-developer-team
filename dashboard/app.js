@@ -5607,6 +5607,36 @@ async function sdOpenThreads(focusId) {
   });
 }
 
+// ---- run a deliberation: N rounds, then the manager's DECISION MEMO (the kept result) ----
+async function sdRunGraph(tid) {
+  const host = $("#sdRosterHost"); if (!host || !lwWorldId) return;
+  host.hidden = false;
+  host.innerHTML = `<div class="sd-roster-card"><p class="dim">deliberating${lwLive ? " (live)" : ""}… the manager runs the rounds, then writes the memo</p></div>`;
+  try {
+    const r = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${tid}/run${lwLiveQ()}${lwLive ? "&" : "?"}rounds=2`, { method: "POST" });
+    sdFlash(); await lwReloadRoom();               // the debate's bubbles land on the canvas
+    sdShowMemo(r.result, tid);
+  } catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="dim">Run failed: ${escapeHtml(e.message)}</p></div>`; }
+}
+function sdShowMemo(memo, tid) {
+  const host = $("#sdRosterHost"); if (!host || !memo) return;
+  host.hidden = false;
+  const who = (id) => escapeHtml((memo.names || {})[String(id)] || `#${id}`);
+  host.innerHTML = `<div class="sd-roster-card sd-memo-card">
+    <div class="sd-roster-head"><h3>Decision memo <span class="sd-memo-v">v${memo.v || 1}</span></h3>
+      <span class="dim">${memo.rounds || 1} round${(memo.rounds || 1) > 1 ? "s" : ""}</span>
+      <button class="sd-close" id="sdMemoClose">✕</button></div>
+    <div class="sd-memo-q">${escapeHtml(memo.question || "")}</div>
+    <div class="sd-memo-positions">${(memo.positions || []).map((p) =>
+      `<div class="sd-memo-pos"><b>${who(p.who)}</b><span>${escapeHtml(p.position || "")}</span></div>`).join("")}</div>
+    ${memo.dissent ? `<div class="sd-memo-dissent"><b>dissent</b><span>${escapeHtml(memo.dissent)}</span></div>` : ""}
+    <div class="sd-memo-rec"><b>recommendation</b><span>${escapeHtml(memo.recommendation || "")}</span></div>
+    <div class="sc-actions"><button class="sc-ctl" id="sdMemoAgain">▶ Run again</button></div>
+  </div>`;
+  $("#sdMemoClose").addEventListener("click", () => { host.hidden = true; });
+  const again = $("#sdMemoAgain"); if (again && tid != null) again.addEventListener("click", () => sdRunGraph(tid));
+}
+
 // ---- the graph chat: talk to any agent, or to the pinned manager (the main use case) ----
 let sdChatState = null;
 async function sdOpenChat(tid, peer) {
@@ -7666,6 +7696,7 @@ function lwGraphSelect(id) {
     const en = lwNodeById(nid); if (en) lwSelAdd(lwNodeKind(nid), en);
   });
   lwShowActions("graph", [
+    { label: "▶ Run", onClick: () => sdRunGraph(t.id) },
     { label: "💬 Chat", onClick: () => sdOpenChat(t.id) },
     { label: "⚙ Rules", onClick: () => sdOpenThreads(t.id) },
     { label: "✕ Delete graph", danger: true, onClick: async () => {

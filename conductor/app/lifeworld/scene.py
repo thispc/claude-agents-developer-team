@@ -297,6 +297,44 @@ class Scene:
                 if listener.id != speaker.id and self._hears(thread, speaker.id, listener.id):
                     await self._hear(speaker, listener, text)
 
+    # --- the deliberation run: N rounds of perspectives, then ONE kept result --------------
+    async def run_deliberation(self, thread: dict, rounds: int = 2) -> dict:
+        """The product loop: repeat the mediated round `rounds` times (different perspectives ×
+        repetition), then the manager synthesizes a DECISION MEMO — the durable 'fine result'.
+        Cost is bounded by construction: at most rounds+1 model calls, free offline. The memo is
+        VERSIONED on the thread (results[]) so re-runs can be compared."""
+        from .threads import members_of
+        rounds = max(1, min(int(rounds or 1), 4))
+        for _ in range(rounds):
+            self.round_no += 1                       # same convention as play_round: bump, then play
+            await self.run_thread(thread)
+        self.rest()                                  # free consolidation, as after any beat
+        ring = [h for h in (self.world.get(i) for i in members_of(thread)) if isinstance(h, Human)]
+        rulebook = (thread.get("rulebook") or "").strip()
+        cfg = thread.get("manager", {}) or {}
+        memo = None
+        if self.world.is_live() and cfg.get("model"):
+            memo = await self.world.host_memo(cfg, ring, rulebook, self._thread_transcript(ring))
+        if not memo:
+            memo = self._free_memo(ring, rulebook)
+        memo.update(v=len(thread.get("results") or []) + 1, rounds=rounds, ts=time.time(),
+                    names={str(h.id): h.name for h in ring})
+        thread.setdefault("results", []).append(memo)
+        thread["results"] = thread["results"][-10:]          # keep the last ten versions
+        self._record("result", None, f"memo v{memo['v']}: {memo.get('recommendation', '')[:150]}")
+        return memo
+
+    def _free_memo(self, ring: list[Human], rulebook: str) -> dict:
+        """Offline synthesis: each agent's last utterance IS its final position — honest, free."""
+        last: dict[int, str] = {}
+        ids = {h.id for h in ring}
+        for r in self.log:
+            if r.get("kind") == "say" and r.get("frm") in ids:
+                last[r["frm"]] = str(r["text"]).split(":", 1)[-1].strip()
+        positions = [{"who": h.id, "position": last.get(h.id, "(said nothing)")[:280]} for h in ring]
+        return {"question": (rulebook or "the matter at hand")[:200], "positions": positions,
+                "dissent": "", "recommendation": "No mediator model was spent; the final positions stand as recorded."}
+
     # --- direct chat: the user talks to any agent, or to the graph's manager (pinned) ----
     async def chat(self, thread: dict, to: str, text: str) -> dict:
         text = (text or "").strip()[:500]

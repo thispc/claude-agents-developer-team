@@ -203,6 +203,7 @@ function graphSelect(inst, id) {
   [...new Set(t.edges.flatMap((e) => [String(e[0]), String(e[1])]))].forEach((nid) => addSel(inst, nid));
   try {
     W.lwShowActions && W.lwShowActions("graph", [
+      { label: "▶ Run", onClick: () => W.sdRunGraph && W.sdRunGraph(t.id) },
       { label: "💬 Chat", onClick: () => W.sdOpenChat && W.sdOpenChat(t.id) },
       { label: "⚙ Rules", onClick: () => W.sdOpenThreads && W.sdOpenThreads(t.id) },
       { label: "✕ Delete graph", danger: true, onClick: async () => {
