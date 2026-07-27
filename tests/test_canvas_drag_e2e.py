@@ -384,3 +384,28 @@ def test_drag_empty_marquees_and_moves_the_group_space_drag_pans(server, page):
     sx2 = page.evaluate("() => lwKonva.stage.x()")
     page.mouse.move(120, 170); page.mouse.down(); page.mouse.move(260, 300, steps=8); page.mouse.up(); page.wait_for_timeout(120)
     assert abs(page.evaluate("() => lwKonva.stage.x()") - sx2) < 5, "a plain empty drag should not pan"
+
+
+def test_a_multi_selection_drags_as_a_group_from_any_gap(server, page):
+    """After marquee-selecting several tokens, a draggable frame lets you move the whole
+    group by pressing ANYWHERE inside it — including the gaps between tokens — so a group
+    is easy to move, not fiddly."""
+    c = server["client"]; wid, rid = _mk(c, "Frame")
+    ids = []
+    for n, x in (("A", 300), ("B", 480), ("C", 660)):
+        h = c.post(f"/api/lw/{wid}/human", json={"name": n}).json()["human"]["id"]
+        c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+        c.post(f"/api/lw/{wid}/pos", json={"id": h, "x": x, "y": 320}); ids.append(h)
+    _open_scene(page, wid, rid); page.wait_for_timeout(200)
+    pts = [_agent_screen(page, h) for h in ids]
+    page.mouse.move(min(p["x"] for p in pts) - 50, min(p["y"] for p in pts) - 50)
+    page.mouse.down(); page.mouse.move(max(p["x"] for p in pts) + 50, max(p["y"] for p in pts) + 50, steps=14); page.mouse.up()
+    page.wait_for_timeout(250)
+    assert page.evaluate("() => !!lwKonva.worldLayer.findOne('.selframe')"), "no selection frame for a multi-selection"
+    gapx = (pts[0]["x"] + pts[1]["x"]) / 2; gapy = pts[0]["y"]
+    hit = page.evaluate("([x,y])=>{const b=lwKonva.stage.container().getBoundingClientRect(); const sh=lwKonva.stage.getIntersection({x:x-b.left,y:y-b.top}); return sh?sh.name():'';}", [gapx, gapy])
+    assert hit == "selframe", f"the gap between selected tokens is not grabbable (hit={hit})"
+    before = [page.evaluate("(id)=>lwKonva.agents.get(String(id)).node.x()", h) for h in ids]
+    _drag(page, {"x": gapx, "y": gapy}, {"x": gapx - 140, "y": gapy + 90})
+    after = [page.evaluate("(id)=>lwKonva.agents.get(String(id)).node.x()", h) for h in ids]
+    assert all(abs(after[i] - before[i]) > 40 for i in range(3)), "dragging the frame from a gap did not move the group"

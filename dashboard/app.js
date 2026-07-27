@@ -6188,12 +6188,14 @@ function lwSelClear() {
   if (!lwKonva) return;
   lwKonva.sel.forEach((s) => { const a = s.entry.node.findOne(".seladorn"); if (a) a.destroy(); });
   lwKonva.sel.clear();
+  lwUpdateSelFrame();
   lwKonva.worldLayer.batchDraw();
 }
 function lwSelAdd(kind, entry) {
   if (!lwKonva || lwSelHas(entry)) return;
   lwKonva.sel.set(lwSelKey(kind, entry), { kind, entry });
   lwAdorn(entry);
+  lwUpdateSelFrame();
   lwKonva.worldLayer.batchDraw();
 }
 function lwSelRemove(entry) {
@@ -6202,6 +6204,7 @@ function lwSelRemove(entry) {
     const a = s.entry.node.findOne(".seladorn"); if (a) a.destroy();
     lwKonva.sel.delete(k);
   }
+  lwUpdateSelFrame();
   lwKonva.worldLayer.batchDraw();
 }
 function lwSelSet(kind, entry) { lwSelClear(); lwSelAdd(kind, entry); }
@@ -6211,6 +6214,50 @@ function lwSelAll() {
   lwSelClear();
   lwKonva.props.forEach((e) => lwSelAdd("prop", e));
   lwKonva.agents.forEach((e) => lwSelAdd("agent", e));
+}
+// A draggable frame around a MULTI-selection: press anywhere inside it — token or gap —
+// to move the whole group as one. A single selection needs none (its token drags directly).
+function lwSelBounds() {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  lwSelList().forEach((s) => {
+    const p = s.entry.node.position();
+    const r = s.kind === "agent" ? 38 : lwPropRadius(s.entry.data) + 18;
+    minX = Math.min(minX, p.x - r); minY = Math.min(minY, p.y - r);
+    maxX = Math.max(maxX, p.x + r); maxY = Math.max(maxY, p.y + r);
+  });
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+function lwUpdateSelFrame() {
+  if (!lwKonva) return;
+  const old = lwKonva.worldLayer.findOne(".selframe"); if (old) old.destroy();
+  lwKonva.selframe = null;
+  if (lwSelList().length < 2) return;                 // single selection drags its own token
+  const b = lwSelBounds();
+  const frame = new Konva.Rect({ x: b.x, y: b.y, width: b.w, height: b.h, cornerRadius: 12,
+    fill: "rgba(46,110,91,0.05)", stroke: "#2E6E5B", strokeWidth: 1.5, dash: [7, 5], name: "selframe", draggable: true });
+  lwKonva.worldLayer.add(frame); frame.moveToTop();
+  lwKonva.selframe = frame;
+  frame.on("dragstart", () => {
+    lwSetCursor("grabbing");
+    frame.members = lwSelList().map((s) => ({ kind: s.kind, entry: s.entry, node: s.entry.node, x0: s.entry.node.x(), y0: s.entry.node.y() }));
+    frame.fx0 = frame.x(); frame.fy0 = frame.y();
+    lwShowGrid();
+  });
+  frame.on("dragmove", () => {
+    const dx = frame.x() - frame.fx0, dy = frame.y() - frame.fy0;
+    (frame.members || []).forEach((m) => { m.node.position({ x: m.x0 + dx, y: m.y0 + dy }); if (m.kind === "prop") lwFollowProp(m.entry); });
+    lwShowGrid(); lwKonva.worldLayer.batchDraw();
+  });
+  frame.on("dragend", async () => {
+    lwHideGrid(); lwSetCursor(lwToolCursor(lwTool));
+    await Promise.all((frame.members || []).map((m) => {
+      const p = m.node.position();
+      return api(`/api/lw/${lwWorldId}/pos`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: m.entry.data.id, x: p.x, y: p.y }) }).catch(() => {});
+    }));
+    lwSaveView();
+    lwUpdateSelFrame();                                // re-fit the frame to the new positions
+  });
 }
 function lwSelect(kind, entry) { lwSelSet(kind, entry); }   // legacy single-focus callers
 function lwDeselect() { lwSelClear(); }
@@ -6330,10 +6377,7 @@ function lwMountCanvas(room, agents, props) {
       p.seated.forEach((aid, i) => { if (aid != null) seatedMap[String(aid)] = { propId: String(p.id), slot: i }; });
   });
 
-  const hover = (node) => {
-    node.on("mouseenter", () => { if (!lwKonva || lwKonva.panning) return; lwSetCursor(node.isDragging() ? "grabbing" : "move"); });
-    node.on("mouseleave", () => { if (!lwKonva || lwKonva.panning) return; lwSetCursor(lwToolCursor(lwTool)); });
-  };
+  const hover = () => {};   // cursor is driven by one authoritative stage-level mousemove (below)
   // A click toggles into the selection (shift-click) or focuses just this token.
   const pick = (kind, entry, e) => {
     if (lwTool !== "select") return;
@@ -6450,12 +6494,21 @@ function lwMountCanvas(room, agents, props) {
     window.addEventListener("pointercancel", endMarquee, true);
   });
   stage.on("mousemove touchmove", () => {
-    if (!lwKonva.marquee) return;
-    const w = lwPointerWorld(); if (!w) return;
-    const m = lwKonva.marquee;
-    m.rect.position({ x: Math.min(w.x, m.x0), y: Math.min(w.y, m.y0) });
-    m.rect.size({ width: Math.abs(w.x - m.x0), height: Math.abs(w.y - m.y0) });
-    worldLayer.batchDraw();
+    if (lwKonva.marquee) {
+      const w = lwPointerWorld(); if (!w) return;
+      const m = lwKonva.marquee;
+      m.rect.position({ x: Math.min(w.x, m.x0), y: Math.min(w.y, m.y0) });
+      m.rect.size({ width: Math.abs(w.x - m.x0), height: Math.abs(w.y - m.y0) });
+      worldLayer.batchDraw();
+      return;
+    }
+    // Otherwise drive the cursor from what's actually under the pointer, continuously —
+    // 'move' over any grabbable token or the selection frame, the tool default elsewhere.
+    if (lwKonva.panning || lwKonva.drag) return;
+    const pos = stage.getPointerPosition(); if (!pos) return;
+    const sh = stage.getIntersection(pos);
+    const grab = !!(sh && sh.findAncestor && (sh.findAncestor(".token", true) || sh.findAncestor(".selframe", true)));
+    lwSetCursor(grab ? "move" : lwToolCursor(lwTool));
   });
 
   // Click on empty floor: while drawing a path, drop a point; an open dialog dismisses
