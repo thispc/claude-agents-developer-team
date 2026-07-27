@@ -210,20 +210,90 @@ class Scene:
     # --- the round, played over a thread by its hidden manager (the Host) ----
 
     async def run_thread(self, thread: dict) -> None:
-        """Play one thread: its Host surveys the graph and enforces the thread's rules (a hidden,
-        bounded, root-visible black box), then the members act under those rules."""
+        """Play one thread: its hidden Host surveys the graph and enforces the thread's rules (a
+        bounded, root-visible black box), then MEDIATES one round of conversation — it decides who
+        says what, in what order, and each utterance is broadcast to whoever the arrows let hear it."""
         from .threads import members_of
         ring = [h for h in (self.world.get(i) for i in members_of(thread)) if isinstance(h, Human)]
         if not ring:
             return
-        await self._host_manage(thread, ring)     # the manager reads the graph's rulebook and enforces
-        await self._play_ring(ring)               # the members act
+        cfg = thread.get("manager", {}) or {}
+        rulebook = (thread.get("rulebook") or thread.get("manager", {}).get("note", "") or "").strip()
+        # The manager's ONE bounded spend (Live only): a single call that both enforces and mediates.
+        plan = None
+        if self.world.is_live() and cfg.get("model"):
+            plan = await self.world.host_plan(cfg, ring, rulebook, self._thread_transcript(ring))
+        await self._host_manage(thread, ring, plan)   # survey + enforce (from the one plan, or free rulebook)
+        await self._converse(thread, ring, plan)      # mediate one round; the members talk (or free round)
 
-    async def _host_manage(self, thread: dict, ring: list[Human]) -> None:
-        """The hidden manager. It reads the graph's RULEBOOK and issues up to `budget` enforcement
-        lines to specific agents. Logged as 'manage' beats — a black box to normal users, visible to
-        root. Free and deterministic by default; in Live mode it composes the lines with ONE bounded
-        call. (Turn-by-turn orchestration lands in Part 2; here it surveys + nudges.)"""
+    # --- the mediated conversation: the manager is the master, agents the slaves ----
+    def _hears(self, thread: dict, speaker: int, listener: int) -> bool:
+        """Does the speaker's utterance reach this listener? Straight from the ARROWS — a
+        bidirectional edge lets both hear; a one-way edge only lets the tail reach the head."""
+        for e in thread.get("edges", []):
+            a, b = e[0], e[1]
+            d = e[2] if len(e) > 2 else "both"
+            if {a, b} != {speaker, listener}:
+                continue
+            if d == "both":
+                return True
+            if d == "a2b":
+                return a == speaker
+            if d == "b2a":
+                return b == speaker
+        return False
+
+    def _thread_transcript(self, ring: list[Human]) -> str:
+        ids = {h.id for h in ring}
+        says = [r for r in self.log if r.get("kind") == "say" and r.get("frm") in ids][-8:]
+        return "\n".join(r["text"] for r in says)
+
+    def _free_line(self, h: Human, topic: str) -> str:
+        """A deterministic, persona-flavoured stance — free, so the whole round costs nothing
+        when the world is offline (and is what the tests exercise)."""
+        goal, _ = h.drives.dominant_goal()
+        angle = {"social": "we should find common ground", "esteem": "the bold move is the right one",
+                 "curiosity": "let's look at the evidence first", "purpose": "what best serves the goal",
+                 "safety": "let's not rush this", "order": "let's keep it structured"}.get(goal, "let's weigh it carefully")
+        return f"On {topic[:70]} — {angle}."
+
+    def _free_round(self, ring: list[Human], topic: str) -> list[dict]:
+        return [{"who": h.id, "text": self._free_line(h, topic)} for h in ring]
+
+    async def _hear(self, speaker: Human, listener: Human, text: str) -> None:
+        """A listener ABSORBS an utterance — a free Tier-0 state nudge, never the model, so a round
+        never spends beyond the manager's single mediation call."""
+        sig = Signal(kind="say", from_id=speaker.id, sense="hearing", intensity=0.3, stakes=0.2,
+                     payload={"text": text, "tone": "neutral"}, domain=self.domain)
+        await listener.perceive(sig, self.world, free=True)
+        self.world.tau += 1
+
+    async def _converse(self, thread: dict, ring: list[Human], plan: dict | None = None) -> None:
+        cfg = thread.get("manager", {}) or {}
+        budget = max(0, min(int(cfg.get("budget", 2) or 0), 4))
+        if budget == 0 or not ring:
+            return
+        topic = (thread.get("rulebook") or "").strip() or "the matter at hand"
+        # The round comes from the manager's single plan (Live); free & deterministic otherwise.
+        lines = (plan or {}).get("round") or self._free_round(ring, topic)
+        # The code disposes: each agent SAYS its line (a beat), broadcast free to whoever can hear it.
+        for item in lines:
+            speaker = self.world.get(item.get("who"))
+            if not isinstance(speaker, Human):
+                continue
+            text = str(item.get("text", ""))[:200]
+            if not text:
+                continue
+            self._record("say", speaker.id, f"{speaker.name}: {text}", frm=speaker.id)
+            for listener in ring:
+                if listener.id != speaker.id and self._hears(thread, speaker.id, listener.id):
+                    await self._hear(speaker, listener, text)
+
+    async def _host_manage(self, thread: dict, ring: list[Human], plan: dict | None = None) -> None:
+        """The hidden manager surveys the graph and issues up to `budget` rule-enforcement lines to
+        specific agents. Logged as 'manage' beats — a black box to normal users, visible to root.
+        The Live composition comes from the single `plan` (run_thread's one spend); free fallback is
+        the rulebook lines verbatim. No spend of its own — the whole deliberation is one call."""
         cfg = thread.get("manager", {}) or {}
         budget = max(0, min(int(cfg.get("budget", 2) or 0), 4))            # cost guard: never runaway
         rulebook = (thread.get("rulebook") or thread.get("manager", {}).get("note", "") or "").strip()
@@ -231,21 +301,11 @@ class Scene:
         if not rulebook or budget == 0:
             return
         lines = [ln.strip() for ln in rulebook.splitlines() if ln.strip()][:budget] or [rulebook[:140]]
-        composed = None
-        if self.world.is_live() and cfg.get("model"):
-            composed = await self.world.host_enforce(cfg, ring, lines)     # the manager's one spend
+        composed = (plan or {}).get("enforce")
         for i, ln in enumerate(lines):
             target = ring[i % len(ring)]
             line = (composed[i] if composed and i < len(composed) else ln)[:140]
             self._record("manage", target.id, f"host → {target.name}: {line}", frm=None)
-
-    async def _play_ring(self, ring: list[Human]) -> None:
-        deck = self._deck_here()
-        for i, h in enumerate(ring):
-            if deck:
-                await self.interact(h, deck.id, "draw")
-            if len(ring) > 1:
-                await self.greet(h, ring[(i + 1) % len(ring)])
 
     # --- persistence (the world serialises its scenes through these) --------
 

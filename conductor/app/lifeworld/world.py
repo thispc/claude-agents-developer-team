@@ -111,27 +111,50 @@ class World:
     def is_live(self) -> bool:
         return self._complete is not None
 
-    async def host_enforce(self, cfg: dict, ring, notes: list[str]) -> list[str] | None:
-        """A thread manager's ONE bounded spend: compose short rule-enforcement lines. Uses the same
-        injected provider seam, capped at a single call, only in Live mode. None → fall back to the
-        rule notes verbatim (free). The manager never spends per-agent — one call, whatever the budget."""
-        if self._complete is None or not notes:
+    async def host_plan(self, cfg: dict, ring, rulebook: str, transcript: str) -> dict | None:
+        """The thread manager's ONE bounded spend per deliberation. In a SINGLE call it BOTH enforces
+        the rulebook AND mediates the round, returning {"enforce": [line per rule], "round": [{"who":
+        id, "text": line} per agent]} or None (Live only; free fallback is deterministic). One call
+        whatever the ring size or budget — the code then disposes (records + free broadcast), so a whole
+        deliberation costs at most this single call. Keeps the O(turns)/one-spend invariant + DO credit."""
+        if self._complete is None or not ring:
             return None
         import json
         model = cfg.get("model") if cfg.get("model") in MODEL_WHITELIST else self._model_name
-        sys = ("You are the silent HOST enforcing a table's rules. For each rule, write ONE short, firm "
-               "line addressed to the table. Return a JSON array of strings, same length and order as the rules.")
-        prompt = f"AGENTS: {json.dumps([h.name for h in ring])}\nRULES: {json.dumps(notes)}\nReturn only the JSON array."
+        roster = [{"id": h.id, "name": h.name} for h in ring]
+        rules = [ln.strip() for ln in (rulebook or "").splitlines() if ln.strip()]
+        topic = (rulebook or "the matter at hand").strip()
+        sys = ("You are the silent HOST mediating a table of agents. Do TWO things and return ONE JSON "
+               "object {\"enforce\": [...], \"round\": [...]}: (1) enforce — for each RULE, one short firm "
+               "line to the table, same order; (2) round — compose ONE short in-character line (that "
+               "agent's own voice, 1-2 sentences) for EACH agent to say this round, in an order you choose "
+               "that advances the TOPIC. round is an array of {\"who\": <agent id int>, \"text\": <line>}. "
+               "Return ONLY that JSON object.")
+        prompt = (f"AGENTS: {json.dumps(roster)}\nTOPIC: {json.dumps(topic)}\nRULES: {json.dumps(rules)}\n"
+                  f"TRANSCRIPT SO FAR:\n{transcript[:1000] or '(nothing yet)'}\nReturn only the JSON object.")
         try:
-            raw = await self._complete("anthropic", model, sys, prompt, self._settings, max_tokens=220)
-            arr = json.loads(raw[raw.index("["):raw.rindex("]") + 1])
-            return [str(x)[:140] for x in arr][:len(notes)]
+            raw = await self._complete("anthropic", model, sys, prompt, self._settings, max_tokens=110 * max(1, len(ring)) + 140)
+            obj = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
+            enforce = [str(x)[:140] for x in (obj.get("enforce") or []) if str(x).strip()] or None
+            ids = {h.id for h in ring}
+            rnd = []
+            for x in (obj.get("round") or []):
+                try:
+                    who = int(x.get("who"))
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                text = str(x.get("text", "")).strip()
+                if who in ids and text:
+                    rnd.append({"who": who, "text": text[:200]})
+            return {"enforce": enforce, "round": rnd or None}
         except Exception:
             return None
 
-    async def appraise(self, human: Human, signal: Signal, ctx: dict) -> Packet:
+    async def appraise(self, human: Human, signal: Signal, ctx: dict, free: bool = False) -> Packet:
         from . import appraise as appr
-        if self._complete is not None and self.flags_for(human).on("emotions"):
+        # `free` forces Tier 0 even in Live mode — used for the conversation BROADCAST (a listener
+        # absorbing an utterance) so a round never spends beyond the manager's single mediation call.
+        if (not free) and self._complete is not None and self.flags_for(human).on("emotions"):
             packet = await appr.model(human, signal, ctx, settings=self._settings,
                                       complete=self._complete, model_name=self.model_for(human),
                                       max_tokens=self._utter_tokens, rules=self._scene_rules)

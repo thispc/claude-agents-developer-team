@@ -36,6 +36,26 @@
 /* marquee */
 .lw2-marquee { fill: rgba(46, 110, 91, 0.08); stroke: #2e6e5b; stroke-width: 1; stroke-dasharray: 4 4; pointer-events: none; }
 
+/* speech bubbles — the agents talking, one per speaker for the latest round */
+.lw2-bubble-fo { overflow: visible; }
+.lw2-bubble-wrap { display: flex; justify-content: center; align-items: flex-end; height: 96px; }
+.lw2-bubble {
+  max-width: 186px; padding: 7px 10px; border-radius: 12px;
+  background: #fff; color: #1b2021; font: 12px/1.35 system-ui, sans-serif;
+  box-shadow: 0 3px 10px rgba(20, 40, 33, 0.18); border: 1px solid rgba(46, 110, 91, 0.22);
+  position: relative; text-align: left;
+  animation: lw2-pop 0.18s ease-out;
+}
+.lw2-bubble::after {   /* the little tail pointing down at the token */
+  content: ""; position: absolute; left: 50%; bottom: -6px; transform: translateX(-50%);
+  border: 6px solid transparent; border-top-color: #fff; border-bottom: 0;
+}
+@keyframes lw2-pop { from { transform: translateY(4px) scale(0.96); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-color-scheme: dark) {
+  .lw2-bubble { background: #26302c; color: #e7ece9; border-color: rgba(120, 200, 175, 0.28); }
+  .lw2-bubble::after { border-top-color: #26302c; }
+}
+
 /* gesture cursors win over element cursors while a gesture owns the pointer */
 .lw2-host.lw2-panning, .lw2-host.lw2-panning * { cursor: grabbing !important; }
 .lw2-host.lw2-dragging, .lw2-host.lw2-dragging * { cursor: grabbing !important; }

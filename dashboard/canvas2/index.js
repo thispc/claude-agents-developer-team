@@ -7,7 +7,7 @@
 //   getTool:()=>string, getDir:()=>string }. Downstream openers/menus/log use window.* directly.
 
 import { createWorld, svgEl } from "./world.js";
-import { node as buildNode, wireNode, setWireEnds, setPos, SIZES } from "./render.js";
+import { node as buildNode, wireNode, setWireEnds, setPos, speechBubble, SIZES } from "./render.js";
 
 const W = window;
 const DRAG_THRESH = 4;              // px of screen travel before a press becomes a drag
@@ -85,7 +85,23 @@ function refresh(inst, room, agents, props) {
   (props || []).forEach((p) => addToken(inst, "prop", p, pos.get("prop:" + p.id)));
   (agents || []).forEach((a) => addToken(inst, "agent", a, pos.get("agent:" + a.id)));
   (room.threads || []).forEach((t) => (t.edges || []).forEach((e) => addEdge(inst, t, e)));
+  showSpeech(inst, room);
   reselect(inst);
+}
+
+// Speech bubbles for the MOST RECENT round's utterances — so a step visibly shows the agents
+// talking. One bubble per speaker; rebuilt on every refresh (the next round replaces them).
+function showSpeech(inst, room) {
+  const says = (room.log || []).filter((r) => r.kind === "say" && r.frm != null);
+  if (!says.length) return;
+  const maxRound = Math.max(...says.map((r) => r.round || 0));
+  const latest = new Map();
+  says.forEach((r) => { if ((r.round || 0) === maxRound) latest.set(String(r.frm), r.text); });
+  latest.forEach((text, id) => {
+    const t = inst.tokens.get(id); if (!t) return;
+    const say = String(text).replace(/^[^:]+:\s*/, "");   // drop the "Name: " prefix the beat carries
+    t.g.appendChild(speechBubble(say));
+  });
 }
 
 function addToken(inst, kind, data, p) {

@@ -796,7 +796,62 @@ def test_a_round_over_threads_plays_and_the_rulebook_round_trips(client):
     client.post(f"/api/lw/{wid}/room/{rid}/thread/{th['id']}", json={"rulebook": "be brief", "manager": {"budget": 1}})
     room = client.post(f"/api/lw/{wid}/room/{rid}/round").json()["room"]
     assert any(row["kind"] == "manage" for row in room["log"])            # the manager ran
+    assert any(row["kind"] == "say" for row in room["log"])               # …and the agents talked
     assert room["threads"][0]["rulebook"] == "be brief"
+
+
+def test_a_thread_mediates_a_conversation_round_free():
+    """Connected agents TALK: the manager composes a line for each (free & deterministic offline),
+    each is its own 'say' beat grounded in the topic, and the whole round stays free."""
+    w, s, (harvey, mike) = _threaded_room(("Harvey", "Mike"))
+    t = s.threads[0]
+    t["rulebook"] = "debate the most sustainable route from A to B"
+    t["manager"] = {"model": "", "budget": 2}
+    asyncio.run(s.run_thread(t))
+    says = [r for r in s.log if r["kind"] == "say"]
+    assert {r["frm"] for r in says} == {harvey.id, mike.id}               # each agent spoke exactly once
+    assert all("route" in r["text"].lower() for r in says)               # grounded in the rulebook topic
+    assert all(r["billed"] is False for r in s.log)                       # entirely free — no spend
+
+
+def test_a_one_way_arrow_restricts_who_hears():
+    """Info flow is straight from the arrows: a one-way edge only lets the tail reach the head."""
+    w = free_world()
+    a, b = w.spawn_human("A"), w.spawn_human("B")
+    s = w.new_room("room", "freeplay"); s.seat(a); s.seat(b)
+    s.connect(a.id, b.id, dir="a2b")
+    t = s.threads[0]
+    assert s._hears(t, a.id, b.id) is True                               # tail → head flows
+    assert s._hears(t, b.id, a.id) is False                              # head → tail is blocked
+    s.disconnect(a.id, b.id); s.connect(a.id, b.id, dir="both")
+    t = s.threads[0]
+    assert s._hears(t, a.id, b.id) and s._hears(t, b.id, a.id)           # bidirectional: both hear
+
+
+def test_the_manager_mediates_the_whole_round_in_one_call():
+    """Live: a SINGLE manager call both enforces the rulebook AND composes each agent's line —
+    one spend for the whole deliberation, then the code disposes (say beats + free broadcast)."""
+    seen = []
+    ids = {}
+    async def complete(provider, model, system, prompt, settings, max_tokens=2000):
+        seen.append(system)
+        if "HOST" in system:
+            return ('{"enforce":["keep it civil"],"round":['
+                    '{"who":%d,"text":"Rail is the greenest route."},'
+                    '{"who":%d,"text":"A river barge beats rail on carbon."}]}' % (ids["a"], ids["b"]))
+        return '{"understood":"ok","action":{"kind":"say","text":"ok"}}'
+    w = World(name="live", complete=complete, settings={})
+    harvey, mike = w.spawn_human("Harvey"), w.spawn_human("Mike")
+    ids["a"], ids["b"] = harvey.id, mike.id
+    s = w.new_room("room", "freeplay"); s.seat(harvey); s.seat(mike); s.connect(harvey.id, mike.id)
+    s.threads[0]["rulebook"] = "debate the most sustainable route A to B"
+    s.threads[0]["manager"] = {"model": "claude-haiku-4-5", "budget": 2}
+    asyncio.run(s.run_thread(s.threads[0]))
+    assert sum(1 for x in seen if "HOST" in x) == 1                       # ONE manager call, whole deliberation
+    says = [r for r in s.log if r["kind"] == "say"]
+    assert {r["frm"] for r in says} == {harvey.id, mike.id}
+    assert any("rail" in r["text"].lower() for r in says) and any("barge" in r["text"].lower() for r in says)
+    assert any("host →" in r["text"] for r in s.log if r["kind"] == "manage")   # enforcement from the same plan
 
 
 def test_refine_offline_returns_the_text_unchanged(client):

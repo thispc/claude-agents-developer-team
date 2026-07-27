@@ -193,6 +193,23 @@ def test_v2_double_click_graph_and_wire_and_collapse(server, page):
     assert _sel(page) == 1, "clicking a member did not collapse to just it"
 
 
+def test_v2_shows_a_mediated_conversation(server, page):
+    """Step a round on a connected thread → the hidden manager mediates and each agent's line
+    appears as a speech bubble on the canvas. The whole round is free/deterministic offline."""
+    c = server["client"]; wid, rid = _mk(c, "Talk")
+    a, b = _two_connected(c, wid, rid)
+    th = c.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b}).json()["thread"]
+    c.post(f"/api/lw/{wid}/room/{rid}/thread/{th['id']}",
+           json={"rulebook": "debate the most sustainable route from A to B", "manager": {"budget": 2}})
+    _open(page, wid, rid)
+    # step a round the same way the time-bar does, then let v2 re-render from the new room
+    page.evaluate("([wid,rid]) => fetch(`/api/lw/${wid}/room/${rid}/round`, {method:'POST'}).then(r=>r.json()).then(j=>lwRenderRoom(j.room))", [wid, rid])
+    page.wait_for_function("() => window.LWCanvas2._inst && document.querySelectorAll('.lw2-bubble').length >= 2", timeout=8000)
+    bubbles = page.evaluate("() => [...document.querySelectorAll('.lw2-bubble')].map(b => b.textContent)")
+    assert len(bubbles) >= 2, f"expected a speech bubble per speaker, got {bubbles}"
+    assert all("route" in t.lower() for t in bubbles), f"bubbles not grounded in the topic: {bubbles}"
+
+
 def test_v2_drag_moves_and_persists(server, page):
     wid, rid = _mk(server["client"])
     a, _ = _two_connected(server["client"], wid, rid)

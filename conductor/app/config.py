@@ -12,9 +12,9 @@ def _flag(name: str, default: bool = False) -> bool:
     return _env(name, "1" if default else "").strip().lower() in ("1", "true", "yes", "on")
 
 
-# Studio canvas engine: v2 is the SVG/DOM native-hit-testing rebuild (no Konva hit graph).
-# Toggle without a rebuild: CANVAS_V2=1 serves v2; unset/0 keeps the Konva v1 engine.
-CANVAS_V2 = _flag("CANVAS_V2")
+# Studio canvas engine: v2 (SVG/DOM native hit-testing) is now the DEFAULT. The Konva v1
+# engine remains as a fallback: set CANVAS_V2=0 (or false/no/off) to serve it.
+CANVAS_V2 = _flag("CANVAS_V2", default=True)
 
 ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY")
 # Subscription auth (Claude Pro/Max): long-lived OAuth token from `claude setup-token`.

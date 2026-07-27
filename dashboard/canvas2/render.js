@@ -111,6 +111,20 @@ export function propNode(p) {
 
 export function node(kind, data) { return kind === "agent" ? agentNode(data) : propNode(data); }
 
+// A speech bubble above a token (foreignObject → an HTML div so text wraps). Non-interactive;
+// it rides the token's own transform, so it moves when the token moves. Rebuilt each round.
+export function speechBubble(text) {
+  const fo = svgEl("foreignObject", { class: "lw2-bubble-fo", x: -95, y: -118, width: 190, height: 96, "pointer-events": "none", overflow: "visible" });
+  const wrap = document.createElement("div");
+  wrap.className = "lw2-bubble-wrap";
+  const div = document.createElement("div");
+  div.className = "lw2-bubble";
+  div.textContent = String(text || "").slice(0, 180);
+  wrap.appendChild(div);
+  fo.appendChild(wrap);
+  return fo;
+}
+
 // A wire between two world points, honouring direction (both | a2b | b2a). A fat transparent
 // hit-line sits under the thin visible one so it's easy to click (native hit-testing on the stroke).
 export function wireNode(edge) {

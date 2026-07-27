@@ -62,7 +62,7 @@ class Human(Being):
 
     # --- the reflex arc -----------------------------------------------------
 
-    async def perceive(self, signal: Signal, world) -> Packet:
+    async def perceive(self, signal: Signal, world, free: bool = False) -> Packet:
         flags = world.flags_for(self)
         s = self.senses.receive(signal)
         if s is None:
@@ -77,7 +77,7 @@ class Human(Being):
         ctx = self._ctx(s)
         packet = self.rules.reflex(s, ctx) if flags.on("rule_compiler") else None
         if packet is None:
-            packet = await world.appraise(self, s, ctx)  # Tier 0 (free) or Tier 2 (spend)
+            packet = await world.appraise(self, s, ctx, free=free)  # Tier 0 (free) or Tier 2 (spend)
             # Learn from any real deliberation, not only the paid one: a habit compiled
             # from Tier 0 is still a genuine reflex, and in production (Tier 2) it is what
             # stops re-paying the model for a reaction the agent has already settled.
