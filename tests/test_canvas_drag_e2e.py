@@ -447,6 +447,24 @@ def test_the_hit_graph_resolves_a_token_at_its_centre(server, page):
     assert who == str(h), f"the hit graph does not resolve the token at its own centre (got {who!r})"
 
 
+def test_a_recovered_click_selects_without_moving_the_token(server, page):
+    """When the hit graph misses and the geometric recovery fires, a plain CLICK must SELECT the
+    token, not drag it — a drag only begins if the pointer actually moves. (Fixes selection
+    inconsistency where recovery always started a drag.)"""
+    c = server["client"]; wid, rid = _mk(c, "Click")
+    h = c.post(f"/api/lw/{wid}/human", json={"name": "A"}).json()["human"]["id"]
+    c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/pos", json={"id": h, "x": 300, "y": 240})
+    _open_scene(page, wid, rid); page.wait_for_timeout(300)
+    page.evaluate("(id) => { lwKonva.agents.get(String(id)).node.listening(false); lwKonva.worldLayer.drawHit(); }", h)  # force the miss
+    s = _agent_screen(page, h)
+    before = page.evaluate("(id) => lwKonva.agents.get(String(id)).node.x()", h)
+    page.mouse.click(s["x"], s["y"]); page.wait_for_timeout(220)     # a pure click — no movement
+    assert page.evaluate("() => lwKonva.sel.size") == 1, "a recovered click did not select the token"
+    after = page.evaluate("(id) => lwKonva.agents.get(String(id)).node.x()", h)
+    assert abs(after - before) < 3, f"a recovered click MOVED the token (should only select): {before} -> {after}"
+
+
 def test_a_missed_press_on_a_token_still_grabs_it(server, page):
     """Root-cause-agnostic safety net: if the hit graph goes stale/offset so a press on a token
     lands on 'empty floor', a press geometrically on the token's disc still recovers into a grab —

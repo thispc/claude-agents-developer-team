@@ -6874,25 +6874,28 @@ function lwMountCanvas(room, agents, props) {
       lwLog("pointer", "down on " + lwHitDesc(e.target), data, "info");
     }
     if (lwTool !== "select" || e.target !== stage || lwKonva.panning) return;   // space held → let it pan
-    // Recovery: the press hit "empty floor", but if a token is geometrically on its disc the hit
-    // graph is stale/offset (proven by getClientRect, which doesn't use the hit canvas). Refresh
-    // the hit graph and grab that token instead of starting a marquee — so a click on a person can
-    // never silently miss, whatever the underlying Konva hit glitch. Only fires on a genuine miss.
-    const wr = lwPointerWorld();
-    const near = wr && lwNearestToken(wr);
-    if (near && near.dist < 36) {                 // within a disc radius of a token's centre
+    const w = lwPointerWorld(); if (!w) return;
+    // Recovery: the press hit "empty floor", but if a token is geometrically on its disc the hit graph
+    // is stale/offset (getClientRect proves it; the hit canvas doesn't). Select that token and ARM a
+    // drag that only starts if the pointer actually MOVES — so a click stays a clean select, never a
+    // stray move. A full redraw refreshes the stale hit graph for subsequent hovers/clicks.
+    const near = lwNearestToken(w);
+    if (near && near.dist < 34) {
       const entry = (near.type === "agent" ? lwKonva.agents : lwKonva.props).get(String(near.id));
       if (entry) {
-        lwLogOn && lwLog("hit", `recovered a missed press → ${near.type}#${near.id} (hit graph was offset)`, { dist: Math.round(near.dist) }, "warn");
-        lwKonva.worldLayer.drawHit();             // also refresh so subsequent hovers/clicks resolve
-        lwSelSet(near.type, entry);
-        lwKonva.suppressClick = true;             // don't let the trailing stage-click clear the recovered selection
+        lwLogOn && lwLog("hit", `recovered a missed press → ${near.type}#${near.id}`, { dist: Math.round(near.dist) }, "warn");
+        lwKonva.worldLayer.draw();                // FULL draw (not drawHit) — this is what actually refreshes it
+        lwClearGraphUI();
+        if (e.evt && e.evt.shiftKey) lwSelToggle(near.type, entry); else lwSelSet(near.type, entry);
+        lwKonva.suppressClick = true;
         setTimeout(() => { if (lwKonva) lwKonva.suppressClick = false; }, 0);
-        try { entry.node.startDrag(); } catch (er) { /* a plain click still selected it */ }
+        lwArmGrab(entry.node, e.evt);              // drag only on movement; otherwise it was a click
         return;
       }
     }
-    const w = lwPointerWorld(); if (!w) return;
+    // Near a connection line? Select that edge (the arrow's own Konva hit-routing is flaky too).
+    const edge = lwGeomHitEdge(w);
+    if (edge) { lwSelectEdge(edge.line, edge.tid, edge.a, edge.b); return; }
     const rect = new Konva.Rect({ x: w.x, y: w.y, width: 0, height: 0, fill: "rgba(46,110,91,.08)",
       stroke: "#2E6E5B", strokeWidth: 1, dash: [4, 4], listening: false, name: "marquee" });
     worldLayer.add(rect); rect.moveToTop();
@@ -7293,6 +7296,46 @@ function lwSetSteadyGlow(node, on) { lwSetGlow(node, on, "hsl(150 60% 45%)", 14,
 // A node in a graph. Its 4 handles let you drag a connection to another node (MS-Paint style).
 function lwNodeById(id) { return lwKonva.agents.get(String(id)) || lwKonva.props.get(String(id)); }
 function lwNodeKind(id) { return lwKonva.agents.has(String(id)) ? "agent" : "prop"; }
+
+// Arm a drag on a token that was recovered geometrically: only START dragging once the pointer
+// actually moves past a threshold, so a recovered CLICK stays a select (never a stray move). Uses
+// raw client coords (the stage pointer position can be stale during a capture-phase listener).
+function lwArmGrab(node, downEvt) {
+  const cx = (ev) => ev.clientX != null ? ev.clientX : (ev.touches && ev.touches[0] ? ev.touches[0].clientX : null);
+  const cy = (ev) => ev.clientY != null ? ev.clientY : (ev.touches && ev.touches[0] ? ev.touches[0].clientY : null);
+  const sx = downEvt && cx(downEvt), sy = downEvt && cy(downEvt);
+  if (sx == null || sy == null) return;
+  let done = false;
+  const cleanup = () => { if (done) return; done = true; window.removeEventListener("mousemove", onMove, true); window.removeEventListener("mouseup", onUp, true); window.removeEventListener("touchmove", onMove, true); window.removeEventListener("touchend", onUp, true); };
+  const onMove = (ev) => {
+    const x = cx(ev), y = cy(ev); if (x == null) return;
+    if (Math.hypot(x - sx, y - sy) > 4) { cleanup(); try { node.startDrag(); } catch (e) { /* */ } }
+  };
+  const onUp = () => cleanup();                    // released without moving → it was a click, already selected
+  window.addEventListener("mousemove", onMove, true);
+  window.addEventListener("mouseup", onUp, true);
+  window.addEventListener("touchmove", onMove, true);
+  window.addEventListener("touchend", onUp, true);
+}
+// Geometric edge pick: which thread line (if any) the world point is on — the arrows' own hit
+// routing misses under the same DPR glitch, so a press near a line selects the edge deterministically.
+function lwPointToSeg(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+  if (l2 === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2; t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+function lwGeomHitEdge(w) {
+  if (!lwKonva || !lwKonva.threadLines || !w) return null;
+  for (const tl of lwKonva.threadLines) {
+    const A = lwNodeById(tl.a), B = lwNodeById(tl.b); if (!A || !B) continue;
+    if (lwPointToSeg(w, A.node.position(), B.node.position()) < 12) {
+      const t = ((lwRoom && lwRoom.threads) || []).find((th) => (th.edges || []).some((e) => (e[0] === tl.a && e[1] === tl.b) || (e[0] === tl.b && e[1] === tl.a)));
+      if (t) return { line: tl.line, tid: t.id, a: tl.a, b: tl.b };
+    }
+  }
+  return null;
+}
 
 let lwConnRubber = null;
 function lwClearHandles() {
