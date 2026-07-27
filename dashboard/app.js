@@ -5305,6 +5305,9 @@ function sdArm() {
   clearTimeout(sdTimer);
   const tick = async () => {
     if (!sdPlaying || !lwKonva) { sdPause(); return; }
+    if (lwKonva.drag || (typeof Konva !== "undefined" && Konva.isDragging())) {   // don't rebuild the stage
+      sdTimer = setTimeout(tick, 400); return;                                    // mid-drag — wait for the drop
+    }
     sdPulse();
     await lwPlayRound();
     if (!lwKonva) { sdPause(); return; }
@@ -6024,6 +6027,7 @@ async function lwReloadRoom() {
 // transport, and a rules button — nothing else on top of the floor. Free strings reach
 // innerHTML through escapeHtml; on-canvas labels are Konva text (drawn to canvas).
 function lwRenderRoom(room) {
+  if (lwKonva && lwKonva.drag) lwForceIdle();   // a rebuild while a token is held would orphan the drag
   lwDestroyCanvas();
   lwRoom = room;
   const stage = $("#lwStage");
@@ -6172,6 +6176,7 @@ function lwSetTool(t) {
   const dock = $("#lwDock");
   if (dock) dock.querySelectorAll("[data-tool]").forEach((b) => b.classList.toggle("on", b.dataset.tool === t));
   if (lwKonva && lwKonva.stage) {
+    lwKonva.panning = false;                    // a stale pan flag would keep the cursor/marquee dead
     lwKonva.stage.draggable(false);            // pan is space-drag; tokens always drag, empty marquees
     lwSetCursor(lwToolCursor(t));
   }
@@ -6262,6 +6267,8 @@ function lwUpdateSelFrame() {
     fill: "rgba(46,110,91,0.05)", stroke: "#2E6E5B", strokeWidth: 1.5, dash: [7, 5], name: "selframe", draggable: true });
   lwKonva.worldLayer.add(frame); frame.moveToTop();
   lwKonva.selframe = frame;
+  frame.on("mouseenter", () => { if (!lwKonva.panning && !lwKonva.drag) lwSetCursor("move"); });
+  frame.on("mouseleave", () => { if (!lwKonva.panning && !lwKonva.drag) lwSetCursor(lwToolCursor(lwTool)); });
   frame.on("dragstart", () => {
     lwSetCursor("grabbing");
     frame.members = lwSelList().map((s) => ({ kind: s.kind, entry: s.entry, node: s.entry.node, x0: s.entry.node.x(), y0: s.entry.node.y() }));
@@ -6274,9 +6281,10 @@ function lwUpdateSelFrame() {
     lwShowGrid(); lwPortalOver(); lwKonva.worldLayer.batchDraw();
   });
   frame.on("dragend", async () => {
-    lwHideGrid(); lwSetCursor(lwToolCursor(lwTool));
+    lwHideGrid();
     const members = frame.members || [];
     if (lwKonva.overPortal) { frame.destroy(); lwKonva.selframe = null; await lwPortalSink(members); return; }
+    lwSetCursor("move");                          // still over the selection frame
     lwPortalShow(false);
     await Promise.all(members.map((m) => {
       const p = m.node.position();
@@ -6361,12 +6369,36 @@ function lwKeyUp(e) {   // releasing Space ends the pan and restores the select 
   }
 }
 
+// Panic reset: whenever the window loses focus / is hidden / a gesture is cancelled, drop
+// every transient interaction state. Otherwise Space held through an alt-tab, or a mouseup
+// released outside the window, strands panning/drag ON — after which a grab pans the floor
+// (or dies) and the cursor never recovers. This is the "after a while it stops working"
+// class the fresh-boot tests can never see, because they never blur the window.
+function lwForceIdle() {
+  if (!lwKonva) return;
+  lwKonva.panning = false;
+  try { lwKonva.stage && lwKonva.stage.draggable(false); } catch (e) { /* stage gone */ }
+  if (lwKonva.drag) {
+    try { lwKonva.drag.leadNode && lwKonva.drag.leadNode.stopDrag(); } catch (e) { /* */ }
+    lwKonva.drag = null;
+  }
+  try { lwKonva.selframe && lwKonva.selframe.isDragging() && lwKonva.selframe.stopDrag(); } catch (e) { /* */ }
+  if (lwKonva.marquee && lwKonva.endMarquee) { try { lwKonva.endMarquee(); } catch (e) { /* */ } }
+  lwPortalShow(false);
+  lwHideGrid();
+  lwSetCursor(lwToolCursor(lwTool));
+}
+function lwOnVisChange() { if (document.hidden) lwForceIdle(); }
+
 // ---- Stage + layers: pan, zoom-to-cursor, drag-only grid -----------------
 function lwDestroyCanvas() {
   if (lwCreateFlow) lwCleanupCreate();
   if (lwKonva) {
     if (lwKonva.keyHandler) document.removeEventListener("keydown", lwKonva.keyHandler);
     if (lwKonva.keyUpHandler) document.removeEventListener("keyup", lwKonva.keyUpHandler);
+    window.removeEventListener("blur", lwForceIdle);
+    window.removeEventListener("pointercancel", lwForceIdle, true);
+    document.removeEventListener("visibilitychange", lwOnVisChange);
     if (lwKonva.endMarquee) {   // detach any window listeners a mid-gesture marquee left
       window.removeEventListener("mouseup", lwKonva.endMarquee, true);
       window.removeEventListener("touchend", lwKonva.endMarquee, true);
@@ -6405,7 +6437,14 @@ function lwMountCanvas(room, agents, props) {
       p.seated.forEach((aid, i) => { if (aid != null) seatedMap[String(aid)] = { propId: String(p.id), slot: i }; });
   });
 
-  const hover = () => {};   // cursor is driven by one authoritative stage-level mousemove (below)
+  // Cursor is event-driven: Konva fires mouseenter/mouseleave once per token subtree (moving
+  // between a token's own parts never re-fires), so the cursor changes only on a real crossing
+  // of the token's edge — it can't flicker the way re-polling the hit graph every mousemove did,
+  // and it isn't hostage to a stale panning/drag flag beyond the one guard below.
+  const hover = (node) => {
+    node.on("mouseenter", () => { if (!lwKonva.panning && !lwKonva.drag) lwSetCursor("move"); });
+    node.on("mouseleave", () => { if (!lwKonva.panning && !lwKonva.drag) lwSetCursor(lwToolCursor(lwTool)); });
+  };
   // A click toggles into the selection (shift-click) or focuses just this token.
   const pick = (kind, entry, e) => {
     if (lwTool !== "select") return;
@@ -6522,22 +6561,16 @@ function lwMountCanvas(room, agents, props) {
     window.addEventListener("pointercancel", endMarquee, true);
   });
   stage.on("mousemove touchmove", () => {
-    if (lwKonva.marquee) {
-      const w = lwPointerWorld(); if (!w) return;
-      const m = lwKonva.marquee;
-      m.rect.position({ x: Math.min(w.x, m.x0), y: Math.min(w.y, m.y0) });
-      m.rect.size({ width: Math.abs(w.x - m.x0), height: Math.abs(w.y - m.y0) });
-      worldLayer.batchDraw();
-      return;
-    }
-    // Otherwise drive the cursor from what's actually under the pointer, continuously —
-    // 'move' over any grabbable token or the selection frame, the tool default elsewhere.
-    if (lwKonva.panning || lwKonva.drag) return;
-    const pos = stage.getPointerPosition(); if (!pos) return;
-    const sh = stage.getIntersection(pos);
-    const grab = !!(sh && sh.findAncestor && (sh.findAncestor(".token", true) || sh.findAncestor(".selframe", true)));
-    lwSetCursor(grab ? "move" : lwToolCursor(lwTool));
+    if (!lwKonva.marquee) return;              // the cursor is driven by per-token enter/leave now
+    const w = lwPointerWorld(); if (!w) return;
+    const m = lwKonva.marquee;
+    m.rect.position({ x: Math.min(w.x, m.x0), y: Math.min(w.y, m.y0) });
+    m.rect.size({ width: Math.abs(w.x - m.x0), height: Math.abs(w.y - m.y0) });
+    worldLayer.batchDraw();
   });
+  // Pointer left the whole canvas (onto the top bar, a dock button, another window): settle the
+  // cursor to the tool default so it never gets stranded on 'move' or 'grab'.
+  stage.on("mouseleave", () => { if (!lwKonva.panning && !lwKonva.drag && !lwKonva.marquee) lwSetCursor(lwToolCursor(lwTool)); });
 
   // Click on empty floor: while drawing a path, drop a point; an open dialog dismisses
   // (and Select returns); the arrow tool clears a pending link; Select clears the focus;
@@ -6576,6 +6609,9 @@ function lwMountCanvas(room, agents, props) {
   lwKonva.keyUpHandler = lwKeyUp;
   document.addEventListener("keydown", lwKeyHandler);
   document.addEventListener("keyup", lwKeyUp);
+  window.addEventListener("blur", lwForceIdle);                 // alt-tab / another app while dragging or panning
+  window.addEventListener("pointercancel", lwForceIdle, true);  // a gesture the OS took away
+  document.addEventListener("visibilitychange", lwOnVisChange); // switched tabs / Mission Control
 
   gridLayer.hide();
   worldLayer.draw();
@@ -6704,7 +6740,14 @@ function lwAgentNode(a, x, y, opts) {
   const g = new Konva.Group({ x, y, draggable: true, name: "token" });
   g.setAttr("lwType", "agent"); g.setAttr("lwId", String(a.id));
   const R = 30, seed = lwAvatarSeed(a);
-  lwAddHit(g, -R - 6, -R - 6, (R + 6) * 2, (R + 6) * 2 + 34);   // grab the whole person: disc + name + mood
+  // The grab area HUGS the visible person: the disc itself (the rim/body circles below are
+  // the hit) plus a band exactly under the name+mood, sized to the name. A big rectangle here
+  // used to overhang far past the disc and, in a lived-in scene where agents sit close (a table
+  // ring, or hand-clustered), its invisible corners blanketed the neighbour's grab area — so you
+  // grabbed the wrong token or nothing. This band overlaps the disc bottom (no gap => no cursor
+  // flicker) and widens for long names so their label never has ungrabbable wings.
+  const nameW = Math.max(64, Math.min(150, (a.name || "someone").length * 7.2));
+  lwAddHit(g, -nameW / 2, R - 4, nameW, 40);   // grab by the disc OR the name band under it
   const rim = opts.manager ? "#2C6A63" : lwAvatarColor(seed);
   g.add(new Konva.Circle({ radius: R + 3, fill: rim, listening: true }));   // colored edge + hitbox
   // the "body" disc is the glow/selection target and the fallback fill until the
@@ -6988,6 +7031,7 @@ async function lwPortalSink(members) {
   if (el) el.classList.remove("ingest");
   toast(ok === ids.length ? `Deleted ${ok} ${ok === 1 ? "thing" : "things"}` : `Deleted ${ok} of ${ids.length} — the rest rolled back`);
   sdFlash(); lwSelClear();
+  if (lwKonva) lwSetCursor(lwToolCursor(lwTool));   // the token is gone; the pointer is over floor now
   await lwReloadRoom();      // server truth: deleted ones are gone, any that failed reappear
 }
 
@@ -7020,9 +7064,9 @@ function lwWireAgentDrag(node, a) {
     lwKonva.worldLayer.batchDraw();
   });
   node.on("dragend", async () => {
-    lwSetCursor(lwToolCursor(lwTool));
     const dg = lwKonva.drag; lwKonva.drag = null;
     if (lwKonva.overPortal) { lwHideGrid(); await lwPortalSink(dg && dg.group ? dg.members : [{ kind: "agent", entry: getEntry() }]); return; }
+    lwSetCursor("move");                          // the pointer is still on the token you just dropped
     lwPortalShow(false);
     if (dg && dg.group) { await lwDragGroupPersist(dg.members); lwHideGrid(); return; }
     await lwOnAgentDrop(node, a);
@@ -7048,9 +7092,10 @@ function lwWirePropDrag(node, p, entry) {
     lwShowGrid(); lwFollowProp(entry); lwUpdateArrows(); lwPortalOver(); lwKonva.worldLayer.batchDraw();
   });
   node.on("dragend", async () => {
-    lwHideGrid(); lwSetCursor(lwToolCursor(lwTool));
+    lwHideGrid();
     const dg = lwKonva.drag; lwKonva.drag = null;
     if (lwKonva.overPortal) { await lwPortalSink(dg && dg.group ? dg.members : [{ kind: "prop", entry }]); return; }
+    lwSetCursor("move");                          // still hovering the object you just dropped
     lwPortalShow(false);
     if (dg && dg.group) { await lwDragGroupPersist(dg.members); return; }
     lwFollowProp(entry);

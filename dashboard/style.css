@@ -2266,7 +2266,10 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .lw-bubble { position: absolute; transform: translate(-50%, calc(-100% - 34px)); max-width: 210px;
   background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 8px 11px;
   font-size: 12.5px; line-height: 1.4; color: var(--text); box-shadow: var(--shadow-lg);
-  opacity: 0; transition: opacity .3s ease; z-index: 14; }
+  opacity: 0; transition: opacity .3s ease; z-index: 14; pointer-events: none; }
+  /* pointer-events:none is load-bearing, not cosmetic: a speech bubble is decorative and, while
+     agents act, bubbles pop in and out over the floor — hit-testable EVEN at opacity 0 unless this
+     is set, leaving roving invisible dead zones exactly where a token can't then be grabbed. */
 .lw-bubble::after { content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
   border: 7px solid transparent; border-top-color: var(--card); }
 .lw-bubble.in { opacity: 1; }
@@ -2384,6 +2387,13 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
   box-shadow: var(--shadow); pointer-events: none; }
 .sd-hint b { color: var(--text); font-family: var(--mono); }
 .sd-dock { left: 16px; transform: none; }
+
+/* The floating transport + dock must NOT steal the pointer from the canvas through their
+   transparent bounding boxes and inter-control gaps — a token sitting under (or beside) a
+   bar has to stay grabbable. Only the real controls are interactive; everything else in the
+   bar passes the pointer straight through to the canvas. (Figma/Miro toolbar behaviour.) */
+.sd-time, .lw-dock { pointer-events: none; }
+.sd-time > *, .lw-dock > * { pointer-events: auto; }
 
 /* the video-style time transport, floating bottom-centre */
 .sd-time { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 10;

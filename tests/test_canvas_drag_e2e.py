@@ -430,6 +430,46 @@ def test_the_title_trash_deletes_the_scene_and_opens_another(server, page):
     assert doomed not in rooms and keep in rooms, f"scene not deleted server-side: {rooms}"
 
 
+def test_a_blur_while_space_panning_does_not_strand_the_pan(server, page):
+    """Holding Space to pan, then losing window focus (alt-tab / OS prompt) while it's still
+    'held', must not leave panning stuck ON — otherwise every later grab pans the floor and
+    the cursor never recovers. This is the 'after a while it stops working' report."""
+    c = server["client"]; wid, rid = _mk(c, "Blur")
+    h = c.post(f"/api/lw/{wid}/human", json={"name": "Ada"}).json()["human"]["id"]
+    c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/pos", json={"id": h, "x": 400, "y": 300})
+    _open_scene(page, wid, rid); page.wait_for_timeout(150)
+    page.evaluate("() => { lwKonva.panning = true; lwKonva.stage.draggable(true); }")   # Space-pan engaged
+    page.evaluate("() => window.dispatchEvent(new Event('blur'))")                       # focus lost mid-pan
+    page.wait_for_timeout(60)
+    st = page.evaluate("() => ({panning: !!lwKonva.panning, draggable: lwKonva.stage.draggable()})")
+    assert st == {"panning": False, "draggable": False}, f"pan stranded after blur: {st}"
+    s = _agent_screen(page, h)                                                            # and a token still drags
+    _drag(page, s, {"x": s["x"] - 100, "y": s["y"] - 60})
+    after = page.evaluate("(id)=>lwKonva.agents.get(String(id)).node.x()", h)
+    assert abs(after - 400) > 30, "token was not draggable after a blur-recovered pan"
+
+
+def test_a_close_neighbour_no_longer_blankets_a_tokens_grab(server, page):
+    """The grab region hugs each token's visible disc+name instead of a big rectangle, so a
+    neighbour's invisible hit box no longer shadows a token sitting close (the clustered/seated
+    'old agents don't grab' bug). The under-drawn agent in a close pair stays grabbable."""
+    c = server["client"]; wid, rid = _mk(c, "Neighbour")
+    under = c.post(f"/api/lw/{wid}/human", json={"name": "Under"}).json()["human"]["id"]
+    over = c.post(f"/api/lw/{wid}/human", json={"name": "Over"}).json()["human"]["id"]
+    for h in (under, over): c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/pos", json={"id": under, "x": 400, "y": 260})
+    c.post(f"/api/lw/{wid}/pos", json={"id": over, "x": 415, "y": 272})   # ~15px apart — hit boxes used to overlap hard
+    _open_scene(page, wid, rid); page.wait_for_timeout(150)
+    sc = page.evaluate("() => lwKonva.stage.scaleX()")
+    s = _agent_screen(page, under)
+    before = page.evaluate("(id)=>lwKonva.agents.get(String(id)).node.x()", under)
+    # grab 'under' on its exposed lower-left, away from the neighbour that overlaps its top-right
+    _drag(page, {"x": s["x"] - 22 * sc, "y": s["y"] + 20 * sc}, {"x": s["x"] - 130, "y": s["y"] + 90})
+    after = page.evaluate("(id)=>lwKonva.agents.get(String(id)).node.x()", under)
+    assert abs(after - before) > 25, "the under-drawn agent could not be grabbed past its neighbour"
+
+
 def test_dragging_a_token_to_the_right_portal_deletes_it(server, page):
     """Drag a token into the far-right sink and it is removed from the world — the
     portal's whole purpose."""

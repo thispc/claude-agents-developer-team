@@ -515,6 +515,38 @@ def test_the_studio_respects_reduced_motion():
 
 
 @pytest.mark.hostonly
+def test_floating_chrome_never_steals_the_pointer_from_the_canvas():
+    """A speech bubble is hit-testable even at opacity:0, and the transport/dock bars have
+    wide transparent boxes — any of them over a token would silently kill the grab there
+    (an invisible dead zone). Bubbles must never take the pointer; the bars only on their
+    actual controls, not their gaps."""
+    css = _dash("style.css")
+    import re
+    def body(sel):
+        m = re.search(re.escape(sel) + r"\s*\{([^}]*)\}", css)
+        return m.group(1) if m else ""
+    assert "pointer-events: none" in body(".lw-bubble"), "speech bubbles still eat the pointer"
+    # the bars themselves pass through; only their children are interactive
+    assert "pointer-events: none" in body(".sd-time, .lw-dock")
+    assert "pointer-events: auto" in body(".sd-time > *, .lw-dock > *")
+
+
+@pytest.mark.hostonly
+def test_interaction_state_cannot_get_stranded_on():
+    """The 'after a while it stops working' class: Space held through an alt-tab, or a
+    mouseup released outside the window, must not leave panning/drag ON. A panic reset is
+    wired to window blur / pointercancel / visibilitychange, and re-selecting a tool clears
+    the pan flag."""
+    js = _dash("app.js")
+    assert "function lwForceIdle" in js
+    for hook in ('addEventListener("blur", lwForceIdle', "pointercancel", "visibilitychange"):
+        assert hook in js, f"panic reset not wired to {hook}"
+    assert "lwKonva.panning = false" in js.split("function lwSetTool")[1][:400], "lwSetTool must clear the pan flag"
+    # the cursor is event-driven (enter/leave), not a per-mousemove hit-graph poll
+    assert 'node.on("mouseenter"' in js and "getIntersection" not in js.split("The Studio —")[1].split("async function boot")[0]
+
+
+@pytest.mark.hostonly
 def test_a_drag_persists_rather_than_being_cosmetic():
     """A reposition must survive a reload, or the room forgets your arrangement."""
     js = _dash("app.js")
