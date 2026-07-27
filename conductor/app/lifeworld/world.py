@@ -27,6 +27,19 @@ MODEL_WHITELIST = frozenset({
 })
 
 
+def _persona(h) -> dict:
+    """A compact persona so the manager can voice each agent IN CHARACTER — its most defining
+    traits (furthest from neutral) and what it wants. Keeps the prompt small but makes the
+    author's configuration actually shape the debate (not interchangeable name-only agents)."""
+    traits = getattr(getattr(h, "psyche", None), "traits", {}) or {}
+    top = sorted(traits.items(), key=lambda kv: -abs(float(kv[1]) - 0.5))[:3]
+    try:
+        wants = h.drives.dominant_goal()[0]
+    except Exception:
+        wants = ""
+    return {"traits": {k: round(float(v), 2) for k, v in top}, "wants": wants}
+
+
 class World:
     def __init__(self, id: int = 0, name: str = "world", flags: Flags | None = None,
                  complete: Callable | None = None, settings: dict | None = None,
@@ -121,12 +134,14 @@ class World:
             return None
         import json
         model = cfg.get("model") if cfg.get("model") in MODEL_WHITELIST else self._model_name
-        roster = [{"id": h.id, "name": h.name} for h in ring]
+        roster = [{"id": h.id, "name": h.name, **_persona(h)} for h in ring]   # give the host each agent's real substance
         rules = [ln.strip() for ln in (rulebook or "").splitlines() if ln.strip()]
         topic = (rulebook or "the matter at hand").strip()
-        sys = ("You are the silent HOST mediating a table of agents. Do TWO things and return ONE JSON "
-               "object {\"enforce\": [...], \"round\": [...]}: (1) enforce — for each RULE, one short firm "
-               "line to the table, same order; (2) round — compose ONE short in-character line (that "
+        sys = ("You are the silent HOST mediating a table of agents. Each agent in AGENTS has a persona "
+               "(its traits and what it wants) — VOICE EACH ONE IN CHARACTER, let their personas actually "
+               "shape and DIVIDE their positions (don't make them agree by default). Do TWO things and "
+               "return ONE JSON object {\"enforce\": [...], \"round\": [...]}: (1) enforce — for each RULE, "
+               "one short firm line to the table, same order; (2) round — compose ONE short line (that "
                "agent's own voice, 1-2 sentences) for EACH agent to say this round, in an order you choose "
                "that advances the TOPIC. round is an array of {\"who\": <agent id int>, \"text\": <line>}. "
                "Return ONLY that JSON object.")
