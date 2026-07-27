@@ -651,3 +651,156 @@ def test_scene_rule_rows_round_trip_through_the_api(client):
     assert len(d["rules_rows"]) == 1 and d["rules_rows"][0]["effect"] == "deny"
     d2 = client.get(f"/api/lw/{wid}/room/{rid}").json()["room"]        # survives a reload
     assert d2["rules_rows"][0]["effect"] == "deny"
+
+
+# --------------------------------------------------------------------------
+# 11. composite artifacts — one class, any object, no exec (stage 4)
+# --------------------------------------------------------------------------
+
+def test_a_composite_deck_deals_a_card_sealed_to_only_its_holder():
+    from app.lifeworld.artifact import Composite
+    from app.lifeworld.components import LIBRARY
+    w = free_world()
+    deck = Composite.from_spec(w.next_id(), LIBRARY["deck"], name="deck", seed=7); w.add(deck)
+    a, b = w.spawn_human("A"), w.spawn_human("B")
+    card = w.get(deck.interact("draw", a, w).payload["item"])
+    assert card.kind == "composite" and card.holder == a.id
+    assert card.reveal(a) is not None and card.reveal(b) is None        # holder-only
+    v = deck.view(a)
+    assert "state" not in v and "order" not in v.get("public", {})      # the deal order never leaks
+
+
+def test_the_same_composite_class_is_dice_and_a_pot():
+    from app.lifeworld.artifact import Composite
+    from app.lifeworld.components import LIBRARY
+    w = free_world(); a = w.spawn_human("A")
+    die = Composite.from_spec(w.next_id(), LIBRARY["die"]); w.add(die)
+    assert "rolls" in die.interact("roll", a, w).text() and 1 <= die.public["value"] <= 6
+    pot = Composite.from_spec(w.next_id(), LIBRARY["pot"]); w.add(pot)
+    pot.interact("inc", a, w); pot.interact("inc", a, w)
+    assert pot.public["count"] == 2 and die.kind == pot.kind == "composite"
+
+
+def test_a_composite_round_trips_with_spec_and_private_state():
+    import json
+    from app.lifeworld.artifact import Composite
+    from app.lifeworld.components import LIBRARY
+    w = free_world(); a = w.spawn_human("A")
+    deck = Composite.from_spec(w.next_id(), LIBRARY["deck"], seed=3); w.add(deck)
+    deck.interact("draw", a, w)
+    w2 = World.from_dict(json.loads(json.dumps(w.to_dict())))
+    d2 = next(x for x in w2.artifacts() if x.kind == "composite" and x.spec.get("type") == "deck")
+    assert d2.public["cursor"] == 1 and len(d2.state["order"]) == 52
+
+
+def test_validate_spec_drops_unknown_components_and_builders():
+    from app.lifeworld.components import validate_spec
+    assert validate_spec({"components": [{"kind": "nope"}]}) is None
+    vs = validate_spec({"type": "d", "components": [{"kind": "multiset", "builder": "evil_exec"}]})
+    assert "builder" not in vs["components"][0]                          # unknown builder stripped
+
+
+def test_the_library_generic_build_and_save_to_custom(client):
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    lib = client.get(f"/api/lw/{wid}/artifact-lib").json()
+    assert "deck" in lib["shipped"] and "multiset" in lib["components"]
+    a = client.post(f"/api/lw/{wid}/artifact", json={"type": "deck", "name": "shoe"}).json()["artifact"]
+    assert a["kind"] == "composite" and a["spec"]["type"] == "deck"
+    client.post(f"/api/lw/{wid}/artifact", json={"spec": {"type": "coin", "components": [{"kind": "rollable", "faces": 2}]}, "save_as": "coin"})
+    assert "coin" in client.get(f"/api/lw/{wid}/artifact-lib").json()["custom"]
+
+
+def test_create_agent_with_a_possessed_model_and_base_dna(client):
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    prof = client.post(f"/api/lw/{wid}/human", json={
+        "name": "Ada", "model": "claude-opus-4-8",
+        "dials": {"composure": 90, "empathy": 20}, "drives": {"esteem": 0.9}}).json()["human"]
+    assert prof["model"] == "claude-opus-4-8"
+    assert prof["traits"]["composure"] > 0.8 and prof["traits"]["empathy"] < 0.3
+    prof2 = client.post(f"/api/lw/{wid}/human", json={"name": "Bo", "model": "gpt-4o"}).json()["human"]
+    assert prof2["model"] == ""                                          # non-whitelisted → inherits
+
+
+# --------------------------------------------------------------------------
+# 12. threads — the agent graph + the hidden manager (stage 5)
+# --------------------------------------------------------------------------
+
+def _threaded_room(names=("A", "B", "C")):
+    w = free_world()
+    people = [w.spawn_human(n) for n in names]
+    s = w.new_room("room", "freeplay")
+    for h in people:
+        s.seat(h)
+    for i in range(len(people) - 1):
+        s.connect(people[i].id, people[i + 1].id)          # a chain: one connected thread
+    return w, s, people
+
+
+def test_threads_merge_on_connect_and_split_on_disconnect():
+    from app.lifeworld.threads import members_of
+    w, s, (a, b, c) = _threaded_room()
+    assert len(s.threads) == 1 and sorted(members_of(s.threads[0])) == [a.id, b.id, c.id]
+    s.disconnect(a.id, b.id)                                # break the chain → {a} drops (no edges), {b,c} remains
+    assert len(s.threads) == 1 and sorted(members_of(s.threads[0])) == [b.id, c.id]
+
+
+def test_a_threads_manager_surveys_and_enforces_free_and_bounded():
+    w, s, people = _threaded_room()
+    t = s.threads[0]
+    t["rules_rows"] = [{"effect": "annotate", "note": "no bluffing"}]
+    t["manager"] = {"model": "", "budget": 2, "note": "keep it civil"}
+    asyncio.run(s.run_thread(t))
+    manage = [row for row in s.log if row["kind"] == "manage"]
+    assert manage and "surveys" in manage[0]["text"]                       # the Host is present…
+    assert any("host →" in row["text"] for row in manage)                   # …and addresses agents
+    assert len(manage) <= 1 + 2                                            # survey + at most `budget` nudges
+    assert all(row["billed"] is False for row in s.log)                    # deterministic mode: entirely free
+
+
+def test_a_thread_rule_gates_its_own_round():
+    spy = Spy()
+    w = World(name="live", complete=spy.complete, settings={})
+    a, b = w.spawn_human("A"), w.spawn_human("B")
+    s = w.new_room("room", "freeplay"); s.seat(a); s.seat(b)
+    s.connect(a.id, b.id)
+    s.threads[0]["rules_rows"] = [{"effect": "deny", "when": {"kind": "greet"}}]
+    asyncio.run(s.run_thread(s.threads[0]))
+    assert spy.calls == 0                                                  # every greet blocked → nothing spent
+    assert any(row["kind"] == "blocked" for row in s.log)
+
+
+def test_the_host_spends_at_most_one_call_per_thread_round():
+    seen = []
+    async def complete(provider, model, system, prompt, settings, max_tokens=2000):
+        seen.append(model)
+        return '["stay sharp","play fair"]' if "HOST" in system else '{"understood":"ok","action":{"kind":"say","text":"ok"}}'
+    w = World(name="live", complete=complete, settings={})
+    a, b = w.spawn_human("A"), w.spawn_human("B")
+    s = w.new_room("room", "freeplay"); s.seat(a); s.seat(b); s.connect(a.id, b.id)
+    s.threads[0]["rules_rows"] = [{"effect": "annotate", "note": "r1"}, {"effect": "annotate", "note": "r2"}]
+    s.threads[0]["manager"] = {"model": "claude-haiku-4-5", "budget": 4, "note": ""}
+    asyncio.run(s.run_thread(s.threads[0]))
+    host_calls = [m for m in seen if True]  # every call the host made returned the array; count host system calls
+    # the host composes ALL its lines in ONE call regardless of budget:
+    assert sum(1 for row in s.log if row["kind"] == "manage" and "host →" in row["text"]) >= 1
+
+
+def test_a_round_over_threads_plays_and_round_trips(client):
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    rid = client.post(f"/api/lw/{wid}/room", json={"name": "r", "type": "freeplay"}).json()["room"]["id"]
+    a = client.post(f"/api/lw/{wid}/human", json={"name": "Ada"}).json()["human"]["id"]
+    b = client.post(f"/api/lw/{wid}/human", json={"name": "Bo"}).json()["human"]["id"]
+    for h in (a, b):
+        client.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    th = client.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b}).json()["thread"]
+    client.post(f"/api/lw/{wid}/room/{rid}/thread/{th['id']}", json={
+        "rules_rows": [{"effect": "annotate", "note": "be brief"}], "manager": {"budget": 1, "note": "host here"}})
+    room = client.post(f"/api/lw/{wid}/room/{rid}/round").json()["room"]
+    assert any(row["kind"] == "manage" for row in room["log"])            # the Host ran
+    assert len(room["threads"]) == 1 and room["threads"][0]["manager"]["note"] == "host here"

@@ -36,6 +36,7 @@ class World:
         self.flags = flags or Flags.preset("sandbox")
         self.entities: dict[int, Entity] = {}
         self.scenes: dict[int, Any] = {}      # id -> Scene (holds a back-ref to this world)
+        self.lib_specs: dict[str, dict] = {}  # user-saved artifact TYPE specs (the "save to custom" library)
         self._active_flags = self.flags
         self._scene_rules = ""                # compiled rules prompt of the scene currently delivering
         self._ruleset = None                  # the SceneRuleSet currently active (gate + shape)
@@ -107,6 +108,27 @@ class World:
         m = getattr(human, "model", "") or ""
         return m if m in MODEL_WHITELIST else self._model_name
 
+    def is_live(self) -> bool:
+        return self._complete is not None
+
+    async def host_enforce(self, cfg: dict, ring, notes: list[str]) -> list[str] | None:
+        """A thread manager's ONE bounded spend: compose short rule-enforcement lines. Uses the same
+        injected provider seam, capped at a single call, only in Live mode. None → fall back to the
+        rule notes verbatim (free). The manager never spends per-agent — one call, whatever the budget."""
+        if self._complete is None or not notes:
+            return None
+        import json
+        model = cfg.get("model") if cfg.get("model") in MODEL_WHITELIST else self._model_name
+        sys = ("You are the silent HOST enforcing a table's rules. For each rule, write ONE short, firm "
+               "line addressed to the table. Return a JSON array of strings, same length and order as the rules.")
+        prompt = f"AGENTS: {json.dumps([h.name for h in ring])}\nRULES: {json.dumps(notes)}\nReturn only the JSON array."
+        try:
+            raw = await self._complete("anthropic", model, sys, prompt, self._settings, max_tokens=220)
+            arr = json.loads(raw[raw.index("["):raw.rindex("]") + 1])
+            return [str(x)[:140] for x in arr][:len(notes)]
+        except Exception:
+            return None
+
     async def appraise(self, human: Human, signal: Signal, ctx: dict) -> Packet:
         from . import appraise as appr
         if self._complete is not None and self.flags_for(human).on("emotions"):
@@ -123,7 +145,7 @@ class World:
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "name": self.name, "seq": self._seq, "tau": self.tau,
-                "flags": self.flags.to_dict(),
+                "flags": self.flags.to_dict(), "lib_specs": self.lib_specs,
                 "entities": [e.to_dict() for e in self.entities.values()],
                 "scenes": [s.to_state() for s in self.scenes.values()]}
 
@@ -134,6 +156,7 @@ class World:
                 flags=Flags.from_dict(d.get("flags")), **runtime)
         w._seq = d.get("seq", 0)
         w.tau = d.get("tau", 0)
+        w.lib_specs = dict(d.get("lib_specs", {}) or {})
         for row in d.get("entities", []):
             w.entities[row["id"]] = Entity.load(row)
         for sd in d.get("scenes", []):

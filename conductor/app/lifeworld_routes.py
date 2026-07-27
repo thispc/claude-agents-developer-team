@@ -33,6 +33,9 @@ class NewHuman(BaseModel):
     brief: str = ""                         # "a confident young lawyer, sharp but insecure"
     figure: str = ""                        # the chosen figurine/icon
     parents: list[int] = Field(default_factory=list)   # optional: breed from two agents
+    model: str = ""                         # the LLM this agent possesses ("" = inherit world default)
+    dials: dict = Field(default_factory=dict)   # explicit trait dials (0-100) from the base-DNA questions; override the authored ones
+    drives: dict = Field(default_factory=dict)  # optional drive setpoints (0-1) seeded from the motivation question
 
 
 class NewArtifact(BaseModel):
@@ -42,6 +45,14 @@ class NewArtifact(BaseModel):
     slots: int = 0                          # >0 = a collating artifact (a table for N)
     shape: str = "circle"                   # circle | rect | path — the collating outline
     path: list[list[float]] = Field(default_factory=list)   # hand-drawn polygon (local coords)
+    type: str = ""                          # a library key (a Custom option) → instantiate that spec
+    spec: dict | None = None                # a generic-builder spec → validate + instantiate a Composite
+    save_as: str = ""                       # with `spec`: also save the spec to this world's custom library
+
+
+class LibSave(BaseModel):
+    name: str = ""
+    spec: dict = Field(default_factory=dict)
 
 
 class Pos(BaseModel):
@@ -59,6 +70,19 @@ class SceneUpdate(BaseModel):
     name: str | None = None                 # rename the scene (its editable title)
     rules: str | None = None                # the free-text note, folded into the rules prompt
     rules_rows: list | None = None          # ordered typed rule rows (AWS-ingress style)
+
+
+class ThreadEdge(BaseModel):
+    a: int
+    b: int
+    dir: str = "both"                       # both | a2b | b2a
+    closed: bool = False
+
+
+class ThreadUpdate(BaseModel):
+    name: str | None = None
+    rules_rows: list | None = None          # the thread's own rule table
+    manager: dict | None = None             # {model, budget, note} — the hidden Host
 
 
 class NewRoom(BaseModel):
@@ -155,12 +179,20 @@ def agents(world_id: int, request: Request) -> dict:
 
 @router.post("/{world_id}/human")
 async def add_human(world_id: int, body: NewHuman, request: Request) -> dict:
+    from app.lifeworld.psyche import TRAITS
+    from app.lifeworld.drives import SPEC as DRIVE_SPEC
+    from app.lifeworld.world import MODEL_WHITELIST
+    from app.lifeworld.util import clamp01
     _, u = _load(request, world_id)
     w = store.load(world_id)
     complete, settings = _author_creds(u)
+    # If the owner answered every base-DNA trait, we don't need a model to author the genome —
+    # skip that call entirely (spends less); authoring still fills senses/skills deterministically.
+    dna = {k: float(v) for k, v in (body.dials or {}).items() if k in TRAITS}
+    auth_complete = None if len(dna) >= len(TRAITS) else complete
     spec = await authoring.author_human(
         body.name or f"Person {len(w.humans())+1}", body.brief,
-        complete=complete, settings=settings, model=tuning.get("scene_default_model"))
+        complete=auth_complete, settings=settings, model=tuning.get("scene_default_model"))
     # breeding: blend two parents' genomes over the authored dials (nature), and carry a
     # slice of their distilled memory (nurture).
     parents = [w.get(p) for p in body.parents if w.get(p)]
@@ -169,8 +201,15 @@ async def add_human(world_id: int, body: NewHuman, request: Request) -> dict:
             vals = [p.psyche.traits.get(t, 0.5) * 100 for p in parents]
             spec["dials"][t] = round(sum(vals) / len(vals))
         spec["narrative"] = f"{body.name or 'A child'}, of {' & '.join(p.name for p in parents)}."[:280]
+    # The owner's explicit base-DNA answers win over whatever was authored/bred (nature by choice).
+    for k, v in dna.items():
+        spec["dials"][k] = round(clamp01(v / 100.0 if v > 1 else v) * 100)
     h = w.spawn_human(body.name or f"Person {len(w.humans())+1}", dials=spec["dials"],
                       senses=spec.get("senses") or None, figure=body.figure)
+    h.model = body.model if body.model in MODEL_WHITELIST else ""   # possesses its own mind (or inherits)
+    for k, v in (body.drives or {}).items():                       # seed the motivation setpoint(s)
+        if k in DRIVE_SPEC:
+            h.drives.level[k] = clamp01(float(v))
     h.narrative = spec.get("narrative", h.narrative)[:280]
     for sk in spec.get("skills", []):
         if isinstance(sk, dict) and sk.get("path"):
@@ -193,10 +232,58 @@ def artifacts(world_id: int, request: Request) -> dict:
                            "sealed": bool(a.secret), "public": a.public} for a in w.artifacts()]}
 
 
+def _artifact_view(a) -> dict:
+    return {"id": a.id, "name": a.name, "kind": a.kind, "figure": a.figure,
+            "slots": a.slots, "seated": a.seated,
+            "shape": getattr(a, "shape", "circle"), "path": getattr(a, "path", []),
+            "sealed": bool(a.secret), "public": a.public, "spec": getattr(a, "spec", {})}
+
+
+@router.get("/{world_id}/artifact-lib")
+def artifact_lib(world_id: int, request: Request) -> dict:
+    """The palette: shipped custom types, this world's saved types, and the vocabulary a generic
+    build may use (component kinds + value-table builders)."""
+    _own(request, world_id)
+    w = store.load(world_id)
+    from app.lifeworld.components import LIBRARY, _COMPONENTS, _BUILDERS
+    return {"shipped": LIBRARY, "custom": w.lib_specs,
+            "components": sorted(_COMPONENTS), "builders": sorted(_BUILDERS)}
+
+
+@router.post("/{world_id}/artifact-lib")
+def artifact_lib_save(world_id: int, body: LibSave, request: Request) -> dict:
+    """Save a generic-built spec to this world's custom library for reuse (the save-to-custom loop)."""
+    _own(request, world_id)
+    w = store.load(world_id)
+    from app.lifeworld.components import validate_spec
+    vs = validate_spec(body.spec)
+    if not vs:
+        raise HTTPException(400, "the spec has no valid components")
+    w.lib_specs[(body.name.strip()[:40] or vs["type"])] = vs
+    store.save(w)
+    return {"custom": w.lib_specs}
+
+
 @router.post("/{world_id}/artifact")
 async def add_artifact(world_id: int, body: NewArtifact, request: Request, seed: int = 0) -> dict:
     _, u = _load(request, world_id)
     w = store.load(world_id)
+    # Composite path: a Custom library type, or a Generic-built spec. One class, any object, no exec.
+    if body.type or body.spec:
+        from app.lifeworld.components import LIBRARY, validate_spec
+        from app.lifeworld.artifact import Composite
+        resolved = validate_spec(body.spec) if body.spec else (LIBRARY.get(body.type) or w.lib_specs.get(body.type))
+        if not resolved:
+            raise HTTPException(400, "unknown artifact type / empty spec")
+        a = Composite.from_spec(w.next_id(), resolved, name=body.name or resolved.get("type", "object"),
+                                figure=body.figure or resolved.get("figure", ""), seed=seed)
+        if int(body.slots) > 0 and not a.slots:          # allow dropping a composite onto a table footprint
+            a.slots = int(body.slots); a.seated = [None] * a.slots
+        a.shape = body.shape or "circle"; a.path = [list(p) for p in (body.path or [])]
+        if body.save_as and body.spec:
+            w.lib_specs[body.save_as[:40]] = resolved    # save-to-custom in one shot
+        w.add(a); store.save(w)
+        return {"artifact": _artifact_view(a)}
     complete, settings = _author_creds(u)
     spec = await authoring.author_artifact(body.name or "a thing", body.brief,
                                            complete=complete, settings=settings,
@@ -212,10 +299,7 @@ async def add_artifact(world_id: int, body: NewArtifact, request: Request, seed:
                  shape=(body.shape or "circle"), path=[list(p) for p in (body.path or [])])
     w.add(a)
     store.save(w)
-    return {"artifact": {"id": a.id, "name": a.name, "kind": a.kind, "figure": a.figure,
-                         "slots": a.slots, "seated": a.seated,
-                         "shape": getattr(a, "shape", "circle"), "path": getattr(a, "path", []),
-                         "sealed": bool(a.secret), "public": a.public}}
+    return {"artifact": _artifact_view(a)}
 
 
 @router.post("/{world_id}/pos")
@@ -318,6 +402,69 @@ def update_scene(world_id: int, room_id: int, body: SceneUpdate, request: Reques
     return {"room": s.view()}
 
 
+@router.post("/{world_id}/room/{room_id}/thread/connect")
+def thread_connect(world_id: int, room_id: int, body: ThreadEdge, request: Request) -> dict:
+    """Thread two agents together (drawn on the canvas) — creates, extends, or merges a thread."""
+    _own(request, world_id)
+    w = store.load(world_id)
+    s = w.scene(room_id)
+    if not s:
+        raise HTTPException(404, "no such room")
+    t = s.connect(body.a, body.b, dir=body.dir, closed=body.closed)
+    store.save(w)
+    return {"thread": t, "threads": s.threads}
+
+
+@router.post("/{world_id}/room/{room_id}/thread/disconnect")
+def thread_disconnect(world_id: int, room_id: int, body: ThreadEdge, request: Request) -> dict:
+    _own(request, world_id)
+    w = store.load(world_id)
+    s = w.scene(room_id)
+    if not s:
+        raise HTTPException(404, "no such room")
+    s.disconnect(body.a, body.b)
+    store.save(w)
+    return {"threads": s.threads}
+
+
+@router.post("/{world_id}/room/{room_id}/thread/{tid}")
+def thread_update(world_id: int, room_id: int, tid: int, body: ThreadUpdate, request: Request) -> dict:
+    """Set a thread's name, its own rule table, or its hidden manager (model / budget / note)."""
+    _own(request, world_id)
+    w = store.load(world_id)
+    s = w.scene(room_id)
+    if not s:
+        raise HTTPException(404, "no such room")
+    t = s.thread(tid)
+    if not t:
+        raise HTTPException(404, "no such thread")
+    if body.name is not None:
+        t["name"] = body.name.strip()[:60]
+    if body.rules_rows is not None:
+        from app.lifeworld.scene_rules import validate_rows
+        t["rules_rows"] = validate_rows(body.rules_rows)
+    if body.manager is not None:
+        from app.lifeworld.world import MODEL_WHITELIST
+        m = body.manager or {}
+        t["manager"] = {"model": (m.get("model") if m.get("model") in MODEL_WHITELIST else ""),
+                        "budget": max(0, min(int(m.get("budget", 2) or 0), 4)),
+                        "note": str(m.get("note", ""))[:200]}
+    store.save(w)
+    return {"thread": t}
+
+
+@router.delete("/{world_id}/room/{room_id}/thread/{tid}")
+def thread_delete(world_id: int, room_id: int, tid: int, request: Request) -> dict:
+    _own(request, world_id)
+    w = store.load(world_id)
+    s = w.scene(room_id)
+    if not s:
+        raise HTTPException(404, "no such room")
+    s.threads = [t for t in s.threads if t["id"] != tid]
+    store.save(w)
+    return {"threads": s.threads}
+
+
 @router.post("/{world_id}/touch")
 def touch(world_id: int, request: Request) -> dict:
     """An explicit save — re-persist the world so Cmd+S has something honest to confirm."""
@@ -392,7 +539,16 @@ async def play_round(world_id: int, room_id: int, request: Request, live: int = 
     if not s:
         raise HTTPException(404, "no such room")
     s.round_no += 1                      # one beat = one round; every log row it emits is stamped with it
-    deck = next((a for a in s.props_here() if a.kind == "deck"), None)
+    if s.threads:                        # threads present → each thread's Host plays its members per its rules
+        for t in list(s.threads):
+            await s.run_thread(t)
+        s.rest()
+        store.save(w)
+        return {"room": s.view(), "world_tau": w.tau}
+    from app.lifeworld.components import has_component
+    def _drawable(a):                    # the old Deck OR a Composite carrying a multiset (deals cards)
+        return a.kind == "deck" or (a.kind == "composite" and has_component(getattr(a, "spec", {}), "multiset"))
+    deck = next((a for a in s.props_here() if _drawable(a)), None)
 
     async def play(ring):
         for i, h in enumerate(ring):

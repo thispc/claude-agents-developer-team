@@ -121,6 +121,72 @@ class Prop(Artifact):
 
 
 @register
+class Composite(Artifact):
+    """An artifact whose behaviour is DATA: a spec of typed components (+ an optional nested `sub`
+    type), interpreted by a fixed evaluator. No hardcoded class per object — a deck of cards, dice,
+    a pot, a board all instantiate THIS one class; only the component list differs. The generic
+    artifact builder and the custom library both produce Composites."""
+    kind = "composite"
+
+    def __init__(self, id, name="", pos=(0.0, 0.0), tau=0, public=None, secret="", holder=None,
+                 figure="", slots=0, seated=None, shape="circle", path=None,
+                 spec=None, state=None):
+        super().__init__(id, name, pos, tau, public, secret, holder, figure, slots, seated, shape, path)
+        self.spec: dict = spec or {}
+        self.state: dict = state or {}          # component-private bag; persisted but NEVER in view()
+
+    @classmethod
+    def from_spec(cls, id: int, spec: dict, *, name: str = "", figure: str = "",
+                  pos: tuple = (0.0, 0.0), seed: int = 0) -> "Composite":
+        from .components import _COMPONENTS
+        art = cls(id, name or spec.get("type", "object"), pos=pos, figure=figure, spec=spec)
+        for cfg in spec.get("components", []):
+            comp = _COMPONENTS.get(cfg.get("kind"))
+            if comp:
+                comp.init_state(art, {**cfg, "seed": seed})
+        return art
+
+    def _components(self):
+        from .components import _COMPONENTS
+        for cfg in self.spec.get("components", []):
+            comp = _COMPONENTS.get(cfg.get("kind"))
+            if comp:
+                yield comp, cfg
+
+    def interact(self, verb: str, agent, world, args: dict | None = None) -> Signal:
+        args = args or {}
+        for comp, cfg in self._components():        # dispatch to the component that OWNS this verb
+            if verb in comp.verbs:
+                return comp.apply(self, verb, agent, world, {**cfg, **args})
+        return super().interact(verb, agent, world)
+
+    def _mint_sub(self, world, value, agent) -> "Composite":
+        """Deal one item as a fresh sub-artifact — sealed to the drawer iff the sub is sealable."""
+        from .components import has_component, Sealable
+        sub = self.spec.get("sub") or {}
+        item = Composite.from_spec(world.next_id(), sub, name=sub.get("type", "an item"))
+        if has_component(sub, "sealable"):
+            Sealable.seal_value(item, value, agent, world)     # value lands only in the drawer's scope
+        else:
+            item.public["value"] = value
+        world.add(item)
+        return item
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d["spec"] = self.spec
+        d["state"] = self.state             # persisted for reload; view() never exposes it
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "Composite":
+        art = super().from_dict(d)          # Artifact.from_dict builds a Composite (cls)
+        art.spec = d.get("spec", {})
+        art.state = d.get("state", {})
+        return art
+
+
+@register
 class Card(Artifact):
     kind = "card"
 
