@@ -5471,6 +5471,22 @@ function lwHitDesc(node) {
   return String(self);
 }
 function lwRoundPt(p) { return p ? { x: Math.round(p.x), y: Math.round(p.y) } : null; }
+// When a press lands on empty floor, find the token nearest the click and whether the click
+// was inside its box — so we can tell "a token is right there but the hit graph missed it"
+// from "nothing is actually there / it's displaced".
+function lwNearestToken(w) {
+  if (!lwKonva || !w) return null;
+  let best = null;
+  const scan = (map, type) => map.forEach((entry) => {
+    const p = entry.node.position();
+    const d = Math.hypot(p.x - w.x, p.y - w.y);
+    let insideBox = false;
+    try { const r = entry.node.getClientRect({ relativeTo: lwKonva.worldLayer }); insideBox = w.x >= r.x && w.x <= r.x + r.width && w.y >= r.y && w.y <= r.y + r.height; } catch (e) { /* */ }
+    if (!best || d < best.dist) best = { id: entry.data.id, type, dist: d, at: p, insideBox };
+  });
+  scan(lwKonva.agents, "agent"); scan(lwKonva.props, "prop");
+  return best;
+}
 
 // --- scene rules: a small popover; saved to the scene, obeyed each run ------
 function sdToggleRules() {
@@ -6687,8 +6703,20 @@ function lwMountCanvas(room, agents, props) {
   };
   lwKonva.endMarquee = endMarquee;         // so teardown can detach any pending listeners
   stage.on("mousedown touchstart", (e) => {
-    lwLogOn && lwLog("pointer", "down on " + lwHitDesc(e.target),
-      { tool: lwTool, panning: lwKonva.panning, stageDraggable: stage.draggable(), sel: lwKonva.sel.size, at: lwRoundPt(lwPointerWorld()) }, "info");
+    if (lwLogOn) {
+      const w = lwPointerWorld();
+      const data = { tool: lwTool, panning: lwKonva.panning, stageDraggable: stage.draggable(), sel: lwKonva.sel.size, at: lwRoundPt(w) };
+      if (e.target === stage && w) {                 // empty-floor press — is a token actually there but unhit?
+        data.tokens = `${lwKonva.agents.size}a/${lwKonva.props.size}p`;
+        const near = lwNearestToken(w);
+        data.nearest = near ? `${near.type}#${near.id}@(${Math.round(near.at.x)},${Math.round(near.at.y)})` : "none";
+        if (near) { data.dist = Math.round(near.dist); data.insideBox = near.insideBox; }
+        const scr = lwKonva.stage.getPointerPosition();
+        if (scr) data.screen = { x: Math.round(scr.x), y: Math.round(scr.y) };
+        data.view = { x: Math.round(lwKonva.stage.x()), y: Math.round(lwKonva.stage.y()), scale: +lwKonva.stage.scaleX().toFixed(3) };
+      }
+      lwLog("pointer", "down on " + lwHitDesc(e.target), data, "info");
+    }
     if (lwTool !== "select" || e.target !== stage || lwKonva.panning) return;   // space held → let it pan
     const w = lwPointerWorld(); if (!w) return;
     const rect = new Konva.Rect({ x: w.x, y: w.y, width: 0, height: 0, fill: "rgba(46,110,91,.08)",
