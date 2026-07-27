@@ -430,6 +430,39 @@ def test_the_title_trash_deletes_the_scene_and_opens_another(server, page):
     assert doomed not in rooms and keep in rooms, f"scene not deleted server-side: {rooms}"
 
 
+def test_root_only_canvas_logs_capture_and_filter_an_interaction(server, page):
+    """The Activity panel's Canvas tab (root only) captures a fine-grained, filterable log of
+    every interaction — so a real grab/drag can be diagnosed from the logs. Non-root never
+    sees the tab."""
+    c = server["client"]; wid, rid = _mk(c, "Logs")
+    h = c.post(f"/api/lw/{wid}/human", json={"name": "Ada"}).json()["human"]["id"]
+    c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+    c.post(f"/api/lw/{wid}/pos", json={"id": h, "x": 350, "y": 260})
+    _open_scene(page, wid, rid); page.wait_for_timeout(150)
+    assert page.evaluate("() => !!(me && me.is_root)"), "test user must be root"
+    page.evaluate("() => sdToggleActivity()"); page.wait_for_timeout(80)
+    assert page.evaluate("""() => !!document.querySelector('.sd-act-tab[data-acttab="canvas"]')"""), "root has no Canvas tab"
+    page.evaluate("""() => document.querySelector('.sd-act-tab[data-acttab="canvas"]').click()"""); page.wait_for_timeout(60)
+    assert page.evaluate("() => lwLogBuf.length") == 0, "nothing should be captured before Capture is on"
+    page.evaluate("() => document.querySelector('#lwLogCap').click()")   # capture on
+    assert page.evaluate("() => lwLogOn") is True
+    s = _agent_screen(page, h)
+    _drag(page, s, {"x": s["x"] + 120, "y": s["y"] + 70})
+    cats = page.evaluate("() => { const by={}; for (const e of lwLogBuf) by[e.cat]=(by[e.cat]||0)+1; return by; }")
+    assert cats.get("pointer") and cats.get("drag"), f"the drag was not logged: {cats}"
+    # the pointer-down line names what was hit and the pan state — the core grab diagnostic
+    down = page.evaluate("""() => (lwLogBuf.find(e => e.cat==='pointer') || {}).msg || ''""")
+    assert "agent#" in down, f"pointer-down did not name the token it hit: {down!r}"
+    # filtering by category drops those lines from the view
+    before = page.evaluate("() => lwLogVisible().length")
+    page.evaluate("""() => document.querySelector('.sd-log-chip[data-logcat="cursor"]').click()"""); page.wait_for_timeout(40)
+    assert page.evaluate("() => lwLogVisible().length") < before, "hiding a category did not filter the log"
+    # the gate: a non-root user never sees the Canvas tab
+    page.evaluate("() => { me.is_root = false; sdShowActivity(true); }"); page.wait_for_timeout(60)
+    assert not page.evaluate("""() => !!document.querySelector('.sd-act-tab[data-acttab="canvas"]')"""), "non-root sees the Canvas tab"
+    page.evaluate("() => { me.is_root = true; sdShowActivity(false); }")
+
+
 def test_a_blur_while_space_panning_does_not_strand_the_pan(server, page):
     """Holding Space to pan, then losing window focus (alt-tab / OS prompt) while it's still
     'held', must not leave panning stuck ON — otherwise every later grab pans the floor and

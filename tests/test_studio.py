@@ -532,6 +532,19 @@ def test_floating_chrome_never_steals_the_pointer_from_the_canvas():
 
 
 @pytest.mark.hostonly
+def test_canvas_debug_logs_are_root_gated_and_free_when_off():
+    """The canvas interaction log is a control-plane diagnostic: the Canvas tab is gated on
+    me.is_root, and logging costs nothing (returns immediately) when capture is off."""
+    js = _dash("app.js")
+    assert "function lwCanRootDebug" in js and "me.is_root" in js
+    # the canvas view of the activity panel is only reachable through the root check
+    assert 'root && sdActTab === "canvas"' in js, "the Canvas log view is not gated on the root check"
+    # lwLog is a no-op until capture is explicitly turned on
+    body = js.split("function lwLog(")[1].split("}")[0]
+    assert "if (!lwLogOn) return" in body, "lwLog must return immediately when capture is off"
+
+
+@pytest.mark.hostonly
 def test_interaction_state_cannot_get_stranded_on():
     """The 'after a while it stops working' class: Space held through an alt-tab, or a
     mouseup released outside the window, must not leave panning/drag ON. A panic reset is

@@ -5306,6 +5306,7 @@ function sdArm() {
   const tick = async () => {
     if (!sdPlaying || !lwKonva) { sdPause(); return; }
     if (lwKonva.drag || (typeof Konva !== "undefined" && Konva.isDragging())) {   // don't rebuild the stage
+      lwLogOn && lwLogThr("beatdefer", 500, "life", "beat deferred — a drag is in flight", null, "debug");
       sdTimer = setTimeout(tick, 400); return;                                    // mid-drag — wait for the drop
     }
     sdPulse();
@@ -5320,10 +5321,19 @@ function sdArm() {
 function sdPulse() { const f = $("#sdProgFill"); if (!f || reduceMotion()) return; f.classList.remove("beat"); void f.offsetWidth; f.classList.add("beat"); }
 
 // --- activity: a categorised log of what each beat did ---------------------
-let sdActOpen = false;
+let sdActOpen = false, sdActTab = "beats";
 function sdActivityHtml(log) {
+  const root = lwCanRootDebug();
+  const tabs = root
+    ? `<div class="sd-act-tabs">
+        <button class="sd-act-tab${sdActTab === "beats" ? " on" : ""}" data-acttab="beats">Beats</button>
+        <button class="sd-act-tab${sdActTab === "canvas" ? " on" : ""}" data-acttab="canvas">Canvas${lwLogOn ? ` <span class="sd-log-live" title="capturing"></span>` : ""}</button>
+      </div>`
+    : `<span class="sd-act-title">Activity</span>`;
+  const head = `<div class="sd-act-head">${tabs}<button class="sd-act-x" id="sdActX" aria-label="Close">✕</button></div>`;
+  if (root && sdActTab === "canvas") return head + lwLogPanelHtml();
   log = log || [];
-  if (!log.length) return `<div class="sd-act-head">Activity<button class="sd-act-x" id="sdActX" aria-label="Close">✕</button></div><p class="sd-act-empty">Nothing yet. Run a beat to see what happens.</p>`;
+  if (!log.length) return head + `<p class="sd-act-empty">Nothing yet. Run a beat to see what happens.</p>`;
   const rows = log.slice(-100).reverse().map((l) => {
     const thought = l.tier === 2 || l.billed, who = l.who != null ? lwNameOf(l.who) : "";
     return `<div class="sd-act-row${thought ? " thought" : ""}">
@@ -5332,19 +5342,135 @@ function sdActivityHtml(log) {
       ${thought ? `<span class="sd-act-badge" title="a model actually thought — billed">💭</span>` : ""}
     </div>`;
   }).join("");
-  return `<div class="sd-act-head">Activity <span class="dim">${log.length}</span><button class="sd-act-x" id="sdActX" aria-label="Close">✕</button></div><div class="sd-act-list">${rows}</div>`;
+  return head + `<div class="sd-act-list">${rows}</div>`;
 }
 function sdShowActivity(open) {
   sdActOpen = open;
   const panel = $("#sdActivity"); if (!panel) return;
   panel.hidden = !open;
   const btn = $("#sdActBtn"); if (btn) btn.classList.toggle("on", open);
-  if (open) {
-    panel.innerHTML = sdActivityHtml(lwRoom && lwRoom.log);
-    const x = $("#sdActX"); if (x) x.addEventListener("click", () => sdShowActivity(false));
-  }
+  if (!open) return;
+  panel.classList.toggle("wide", lwCanRootDebug() && sdActTab === "canvas");
+  panel.innerHTML = sdActivityHtml(lwRoom && lwRoom.log);
+  const x = $("#sdActX"); if (x) x.addEventListener("click", () => sdShowActivity(false));
+  panel.querySelectorAll(".sd-act-tab").forEach((b) => b.addEventListener("click", () => { sdActTab = b.dataset.acttab; sdShowActivity(true); }));
+  if (lwCanRootDebug() && sdActTab === "canvas") lwLogWireCanvasPanel();
 }
 function sdToggleActivity() { sdShowActivity(!sdActOpen); }
+
+// --- canvas debug logs (ROOT ONLY): a fine-grained, filterable ring buffer of every
+// interaction event, shown in the Activity panel's "Canvas" tab. Off by default, gated on
+// me.is_root — these are control-plane diagnostics, not user-facing, and cost nothing when
+// capture is off (lwLog returns on the first line). Turn Capture on, reproduce the issue on
+// the canvas, filter by category/level, then Copy the lines out.
+const LW_LOG_CATS = ["pointer", "hit", "cursor", "drag", "pan", "marquee", "select", "portal", "life", "net", "idle"];
+const LW_LOG_LEVELS = { debug: 0, info: 1, warn: 2 };
+const LW_LOG_MAX = 3000;
+let lwLogOn = false, lwLogBuf = [], lwLogFilter = new Set(LW_LOG_CATS), lwLogLevel = "debug";
+const lwLogThrTs = {};
+function lwCanRootDebug() { return !!(me && me.is_root); }
+function lwLog(cat, msg, data, level) {
+  if (!lwLogOn) return;
+  lwLogBuf.push({ wall: Date.now(), cat, level: level || "info", msg, data });
+  if (lwLogBuf.length > LW_LOG_MAX) lwLogBuf.shift();
+  lwLogSchedule();
+}
+function lwLogThr(key, ms, cat, msg, data, level) {   // throttle a hot event (drag/pointer move)
+  if (!lwLogOn) return;
+  const now = Date.now();
+  if (lwLogThrTs[key] && now - lwLogThrTs[key] < ms) return;
+  lwLogThrTs[key] = now; lwLog(cat, msg, data, level);
+}
+function lwLogTime(wall) {
+  const d = new Date(wall), p = (n, w) => String(n).padStart(w || 2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
+function lwLogFmt(data) {
+  if (data == null) return "";
+  try { return typeof data === "string" ? data : JSON.stringify(data); } catch (e) { return String(data); }
+}
+function lwLogVisible() {
+  const min = LW_LOG_LEVELS[lwLogLevel] ?? 0;
+  return lwLogBuf.filter((e) => lwLogFilter.has(e.cat) && (LW_LOG_LEVELS[e.level] ?? 1) >= min);
+}
+let lwLogRenderT = null;
+function lwLogSchedule() {                          // batch live re-renders so a firehose can't thrash the DOM
+  if (!(sdActOpen && sdActTab === "canvas") || lwLogRenderT) return;
+  lwLogRenderT = setTimeout(() => { lwLogRenderT = null; lwLogRender(); }, 140);
+}
+function lwLogRowHtml(e) {
+  const d = e.data != null ? ` <span class="sd-log-data">${escapeHtml(lwLogFmt(e.data))}</span>` : "";
+  return `<div class="sd-log-row lvl-${e.level}"><span class="sd-log-t">${lwLogTime(e.wall)}</span>`
+    + `<span class="sd-log-cat c-${e.cat}">${e.cat}</span><span class="sd-log-msg">${escapeHtml(e.msg)}${d}</span></div>`;
+}
+function lwLogRender() {
+  const list = $("#lwLogList"); if (!list) return;
+  const vis = lwLogVisible();
+  list.innerHTML = vis.length ? vis.slice(-500).reverse().map(lwLogRowHtml).join("")
+    : `<p class="sd-act-empty">${lwLogOn ? "No lines match the filter yet — interact with the canvas." : "Capture is off. Turn it on, then reproduce the issue."}</p>`;
+  const n = $("#lwLogN"); if (n) n.textContent = `${vis.length}/${lwLogBuf.length}`;
+}
+function lwLogPanelHtml() {
+  const chips = LW_LOG_CATS.map((c) => `<button class="sd-log-chip${lwLogFilter.has(c) ? " on" : ""}" data-logcat="${c}">${c}</button>`).join("");
+  const lvls = Object.keys(LW_LOG_LEVELS).map((l) => `<option value="${l}"${lwLogLevel === l ? " selected" : ""}>${l}+</option>`).join("");
+  return `<div class="sd-log-ctl">
+      <button class="sd-log-cap${lwLogOn ? " on" : ""}" id="lwLogCap">${lwLogOn ? "● Capturing" : "○ Capture"}</button>
+      <select class="sd-log-lvl" id="lwLogLvl" title="minimum level">${lvls}</select>
+      <button class="sd-log-btn" id="lwLogCopy" title="Copy the shown lines">Copy</button>
+      <button class="sd-log-btn" id="lwLogClear" title="Clear the buffer">Clear</button>
+      <span class="sd-log-n" id="lwLogN" title="shown / captured"></span>
+    </div>
+    <div class="sd-log-cats">${chips}</div>
+    <div class="sd-log-list" id="lwLogList"></div>
+    <p class="sd-log-hint">Control-plane diagnostics · root only. Capture on → reproduce on the canvas → Copy → paste back.</p>`;
+}
+function lwLogWireCanvasPanel() {
+  const cap = $("#lwLogCap");
+  if (cap) cap.addEventListener("click", () => {
+    lwLogOn = !lwLogOn;
+    if (lwLogOn) lwLogBuf.push({ wall: Date.now(), cat: "life", level: "info", msg: "capture started",
+      data: { dpr: window.devicePixelRatio, vw: window.innerWidth, vh: window.innerHeight, tool: lwTool,
+        scale: lwKonva ? +lwKonva.stage.scaleX().toFixed(3) : null, agents: lwKonva ? lwKonva.agents.size : 0, props: lwKonva ? lwKonva.props.size : 0 } });
+    cap.classList.toggle("on", lwLogOn); cap.textContent = lwLogOn ? "● Capturing" : "○ Capture";
+    lwLogRender();
+    const live = document.querySelector(".sd-act-tab .sd-log-live"), tab = document.querySelector('.sd-act-tab[data-acttab="canvas"]');
+    if (tab) { if (lwLogOn && !live) tab.insertAdjacentHTML("beforeend", ` <span class="sd-log-live"></span>`); else if (!lwLogOn && live) live.remove(); }
+  });
+  const lvl = $("#lwLogLvl"); if (lvl) lvl.addEventListener("change", (e) => { lwLogLevel = e.target.value; lwLogRender(); });
+  $("#lwLogCopy") && $("#lwLogCopy").addEventListener("click", lwLogCopy);
+  $("#lwLogClear") && $("#lwLogClear").addEventListener("click", () => { lwLogBuf = []; lwLogRender(); });
+  const panel = $("#sdActivity");
+  panel && panel.querySelectorAll(".sd-log-chip").forEach((b) => b.addEventListener("click", () => {
+    const c = b.dataset.logcat; lwLogFilter.has(c) ? lwLogFilter.delete(c) : lwLogFilter.add(c);
+    b.classList.toggle("on", lwLogFilter.has(c)); lwLogRender();
+  }));
+  lwLogRender();
+}
+function lwLogCopy() {
+  const vis = lwLogVisible();
+  const text = vis.map((e) => `${lwLogTime(e.wall)} [${e.cat}/${e.level}] ${e.msg}${e.data != null ? " " + lwLogFmt(e.data) : ""}`).join("\n");
+  const done = () => toast(`Copied ${vis.length} log lines`);
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done).catch(() => lwLogCopyFallback(text, done));
+  else lwLogCopyFallback(text, done);
+}
+function lwLogCopyFallback(text, done) {
+  const ta = document.createElement("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand("copy"); done(); } catch (e) { toast("Copy failed — select the text manually"); }
+  ta.remove();
+}
+// name what a press landed on, for the pointer log
+function lwTokenAncestor(node) { return node && node.findAncestor ? (node.findAncestor(".token", true) || node.findAncestor(".selframe", true)) : null; }
+function lwHitDesc(node) {
+  if (!node || !lwKonva) return "none";
+  if (node === lwKonva.stage) return "stage(empty floor)";
+  const tok = lwTokenAncestor(node);
+  const self = (node.name && node.name()) || node.className || "?";
+  if (tok && tok === lwKonva.selframe) return "selframe";
+  if (tok) return `${tok.getAttr("lwType")}#${tok.getAttr("lwId")} [${self}]`;
+  return String(self);
+}
+function lwRoundPt(p) { return p ? { x: Math.round(p.x), y: Math.round(p.y) } : null; }
 
 // --- scene rules: a small popover; saved to the scene, obeyed each run ------
 function sdToggleRules() {
@@ -6019,6 +6145,7 @@ async function renderRoomView() {
 // Re-fetch this room and repaint — used after a seat/unseat/create/round, where
 // the server is the source of truth. The per-room view cache keeps pan/zoom.
 async function lwReloadRoom() {
+  lwLogOn && lwLog("life", "reload room (refetch + full repaint)", null, "info");
   try { const d = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}`); lwRenderRoom(d.room || d); }
   catch (e) { toast(`Could not refresh the room: ${e.message}`); }
 }
@@ -6027,7 +6154,7 @@ async function lwReloadRoom() {
 // transport, and a rules button — nothing else on top of the floor. Free strings reach
 // innerHTML through escapeHtml; on-canvas labels are Konva text (drawn to canvas).
 function lwRenderRoom(room) {
-  if (lwKonva && lwKonva.drag) lwForceIdle();   // a rebuild while a token is held would orphan the drag
+  if (lwKonva && lwKonva.drag) { lwLog("life", "rebuild while dragging — aborting the drag first", null, "warn"); lwForceIdle(); }
   lwDestroyCanvas();
   lwRoom = room;
   const stage = $("#lwStage");
@@ -6170,7 +6297,11 @@ function lwWireDock() {
     b.addEventListener("click", () => lwSetTool(b.dataset.tool)));
 }
 function lwToolCursor(t) { return t === "select" ? "default" : "cell"; }
-function lwSetCursor(c) { if (lwKonva && lwKonva.host) lwKonva.host.style.cursor = c; }
+function lwSetCursor(c) {
+  if (!(lwKonva && lwKonva.host)) return;
+  if (lwLogOn && lwKonva.host.style.cursor !== c) lwLog("cursor", "cursor → " + c, null, "debug");
+  lwKonva.host.style.cursor = c;
+}
 function lwSetTool(t) {
   lwTool = t;
   const dock = $("#lwDock");
@@ -6216,6 +6347,7 @@ function lwAdorn(entry) {
 }
 function lwSelClear() {
   if (!lwKonva) return;
+  if (lwLogOn && lwKonva.sel.size) lwLog("select", "clear", { was: lwKonva.sel.size }, "debug");
   lwKonva.sel.forEach((s) => { const a = s.entry.node.findOne(".seladorn"); if (a) a.destroy(); });
   lwKonva.sel.clear();
   lwUpdateSelFrame();
@@ -6225,6 +6357,7 @@ function lwSelAdd(kind, entry) {
   if (!lwKonva || lwSelHas(entry)) return;
   lwKonva.sel.set(lwSelKey(kind, entry), { kind, entry });
   lwAdorn(entry);
+  lwLogOn && lwLog("select", `add ${kind}#${entry && entry.data && entry.data.id}`, { total: lwKonva.sel.size }, "debug");
   lwUpdateSelFrame();
   lwKonva.worldLayer.batchDraw();
 }
@@ -6340,7 +6473,7 @@ function lwKeyHandler(e) {
   }
   if (typing || lwCreateFlow) return;    // don't hijack keys while a dialog/field has focus
   if (e.key === " ") {                   // hold Space to pan the floor (a drag selects instead)
-    if (!lwKonva.panning) { lwKonva.panning = true; lwKonva.stage.draggable(true); lwSetCursor("grab"); }
+    if (!lwKonva.panning) { lwKonva.panning = true; lwKonva.stage.draggable(true); lwSetCursor("grab"); lwLog("pan", "space down → pan ON", null, "info"); }
     e.preventDefault(); return;
   }
   const k = e.key.toLowerCase();
@@ -6366,6 +6499,7 @@ function lwKeyUp(e) {   // releasing Space ends the pan and restores the select 
   if (e.key === " " && lwKonva.panning) {
     lwKonva.panning = false; lwKonva.stage.draggable(false);
     lwSetCursor(lwToolCursor(lwTool));
+    lwLog("pan", "space up → pan OFF", null, "info");
   }
 }
 
@@ -6376,6 +6510,8 @@ function lwKeyUp(e) {   // releasing Space ends the pan and restores the select 
 // class the fresh-boot tests can never see, because they never blur the window.
 function lwForceIdle() {
   if (!lwKonva) return;
+  lwLogOn && lwLog("idle", "force-idle (blur/hidden/cancel) — dropping transient state",
+    { wasPanning: lwKonva.panning, stageDraggable: lwKonva.stage && lwKonva.stage.draggable(), hadDrag: !!lwKonva.drag, marquee: !!lwKonva.marquee }, "warn");
   lwKonva.panning = false;
   try { lwKonva.stage && lwKonva.stage.draggable(false); } catch (e) { /* stage gone */ }
   if (lwKonva.drag) {
@@ -6442,8 +6578,8 @@ function lwMountCanvas(room, agents, props) {
   // of the token's edge — it can't flicker the way re-polling the hit graph every mousemove did,
   // and it isn't hostage to a stale panning/drag flag beyond the one guard below.
   const hover = (node) => {
-    node.on("mouseenter", () => { if (!lwKonva.panning && !lwKonva.drag) lwSetCursor("move"); });
-    node.on("mouseleave", () => { if (!lwKonva.panning && !lwKonva.drag) lwSetCursor(lwToolCursor(lwTool)); });
+    node.on("mouseenter", () => { lwLogOn && lwLog("cursor", `enter ${node.getAttr("lwType")}#${node.getAttr("lwId")}`, { blocked: !!(lwKonva.panning || lwKonva.drag) }, "debug"); if (!lwKonva.panning && !lwKonva.drag) lwSetCursor("move"); });
+    node.on("mouseleave", () => { lwLogOn && lwLog("cursor", `leave ${node.getAttr("lwType")}#${node.getAttr("lwId")}`, null, "debug"); if (!lwKonva.panning && !lwKonva.drag) lwSetCursor(lwToolCursor(lwTool)); });
   };
   // A click toggles into the selection (shift-click) or focuses just this token.
   const pick = (kind, entry, e) => {
@@ -6546,16 +6682,20 @@ function lwMountCanvas(room, agents, props) {
       lwKonva.suppressClick = true;   // swallow the trailing click Konva may fire after a drag
       setTimeout(() => { if (lwKonva) lwKonva.suppressClick = false; }, 0);
     }
+    lwLogOn && lwLog("marquee", "end", { box: { w: Math.round(bw), h: Math.round(bh) }, selected: lwKonva.sel.size }, "debug");
     worldLayer.batchDraw();
   };
   lwKonva.endMarquee = endMarquee;         // so teardown can detach any pending listeners
   stage.on("mousedown touchstart", (e) => {
+    lwLogOn && lwLog("pointer", "down on " + lwHitDesc(e.target),
+      { tool: lwTool, panning: lwKonva.panning, stageDraggable: stage.draggable(), sel: lwKonva.sel.size, at: lwRoundPt(lwPointerWorld()) }, "info");
     if (lwTool !== "select" || e.target !== stage || lwKonva.panning) return;   // space held → let it pan
     const w = lwPointerWorld(); if (!w) return;
     const rect = new Konva.Rect({ x: w.x, y: w.y, width: 0, height: 0, fill: "rgba(46,110,91,.08)",
       stroke: "#2E6E5B", strokeWidth: 1, dash: [4, 4], listening: false, name: "marquee" });
     worldLayer.add(rect); rect.moveToTop();
     lwKonva.marquee = { x0: w.x, y0: w.y, rect, add: !!(e.evt && e.evt.shiftKey) };
+    lwLogOn && lwLog("marquee", "start", { add: lwKonva.marquee.add, at: lwRoundPt(w) }, "debug");
     window.addEventListener("mouseup", endMarquee, true);
     window.addEventListener("touchend", endMarquee, true);
     window.addEventListener("pointercancel", endMarquee, true);
@@ -6615,6 +6755,8 @@ function lwMountCanvas(room, agents, props) {
 
   gridLayer.hide();
   worldLayer.draw();
+  lwLogOn && lwLog("life", "canvas mounted", { host: { w: host.clientWidth, h: host.clientHeight }, stage: { w: stage.width(), h: stage.height() },
+    scale: +stage.scaleX().toFixed(3), dpr: window.devicePixelRatio, agents: lwKonva.agents.size, props: lwKonva.props.size }, "info");
 }
 
 // Poll a few frames until the host has a real size, then match the stage to it and do the
@@ -6964,6 +7106,7 @@ function lwDragBegin(kind, entry, node) {
   if (!lwSelHas(entry)) lwSelSet(kind, entry);        // dragging an unselected token focuses just it
   const members = lwSelList().map((s) => ({ kind: s.kind, entry: s.entry, node: s.entry.node, x0: s.entry.node.x(), y0: s.entry.node.y() }));
   lwKonva.drag = { lead: entry, leadNode: node, leadX0: node.x(), leadY0: node.y(), members, group: members.length > 1 };
+  lwLog("drag", `begin ${kind}#${entry && entry.data && entry.data.id}`, { group: members.length > 1, members: members.length, at: lwRoundPt(node.position()) }, "info");
   lwShowGrid(); lwPortalShow(true);
 }
 function lwDragGroupMove() {
@@ -7008,11 +7151,13 @@ function lwPortalOver() {
   const el = $("#sdPortal"); if (!el) return;
   const pos = lwKonva.stage.getPointerPosition(); if (!pos) return;
   const over = pos.x >= (lwKonva.host.clientWidth || 900) - 130;   // the pull zone: right 130px
+  if (lwLogOn && over !== lwKonva.overPortal) lwLog("portal", over ? "entered delete zone" : "left delete zone", null, "debug");
   el.classList.toggle("hot", over);
   lwKonva.overPortal = over;
 }
 async function lwPortalSink(members) {
   if (!members || !members.length) { lwPortalShow(false); return; }
+  lwLog("portal", "sink → delete", { ids: members.map((m) => m.entry.data.id) }, "info");
   const el = lwPortalEl(); if (el) el.classList.add("ingest");
   lwPortalShow(false);
   const stage = lwKonva.stage;
@@ -7061,14 +7206,16 @@ function lwWireAgentDrag(node, a) {
     if (near) lwVicinityGlow(node);
     lwKonva.snap = best ? { propId: String(best.entry.data.id), slot: best.slot, x: best.x, y: best.y } : null;
     lwUpdateArrows(); lwPortalOver();
+    lwLogOn && lwLogThr("dm" + a.id, 120, "drag", `move agent#${a.id}`, { at: lwRoundPt(node.position()), snap: lwKonva.snap ? lwKonva.snap.propId : null, portal: lwKonva.overPortal }, "debug");
     lwKonva.worldLayer.batchDraw();
   });
   node.on("dragend", async () => {
     const dg = lwKonva.drag; lwKonva.drag = null;
-    if (lwKonva.overPortal) { lwHideGrid(); await lwPortalSink(dg && dg.group ? dg.members : [{ kind: "agent", entry: getEntry() }]); return; }
+    if (lwKonva.overPortal) { lwLog("drag", `end agent#${a.id} → PORTAL delete`, { n: dg && dg.group ? dg.members.length : 1 }, "info"); lwHideGrid(); await lwPortalSink(dg && dg.group ? dg.members : [{ kind: "agent", entry: getEntry() }]); return; }
     lwSetCursor("move");                          // the pointer is still on the token you just dropped
     lwPortalShow(false);
-    if (dg && dg.group) { await lwDragGroupPersist(dg.members); lwHideGrid(); return; }
+    if (dg && dg.group) { lwLog("drag", `end agent#${a.id} → group move`, { n: dg.members.length }, "info"); await lwDragGroupPersist(dg.members); lwHideGrid(); return; }
+    lwLog("drag", `end agent#${a.id} → drop`, { at: lwRoundPt(node.position()), snapSeat: lwKonva.snap ? lwKonva.snap.propId : null }, "info");
     await lwOnAgentDrop(node, a);
   });
 }
@@ -7089,22 +7236,25 @@ function lwWirePropDrag(node, p, entry) {
   node.on("dragstart", () => lwDragBegin("prop", entry, node));
   node.on("dragmove", () => {
     if (lwKonva.drag && lwKonva.drag.group) { lwDragGroupMove(); return; }
-    lwShowGrid(); lwFollowProp(entry); lwUpdateArrows(); lwPortalOver(); lwKonva.worldLayer.batchDraw();
+    lwShowGrid(); lwFollowProp(entry); lwUpdateArrows(); lwPortalOver();
+    lwLogOn && lwLogThr("dm" + p.id, 120, "drag", `move prop#${p.id}`, { at: lwRoundPt(node.position()), portal: lwKonva.overPortal }, "debug");
+    lwKonva.worldLayer.batchDraw();
   });
   node.on("dragend", async () => {
     lwHideGrid();
     const dg = lwKonva.drag; lwKonva.drag = null;
-    if (lwKonva.overPortal) { await lwPortalSink(dg && dg.group ? dg.members : [{ kind: "prop", entry }]); return; }
+    if (lwKonva.overPortal) { lwLog("drag", `end prop#${p.id} → PORTAL delete`, { n: dg && dg.group ? dg.members.length : 1 }, "info"); await lwPortalSink(dg && dg.group ? dg.members : [{ kind: "prop", entry }]); return; }
     lwSetCursor("move");                          // still hovering the object you just dropped
     lwPortalShow(false);
-    if (dg && dg.group) { await lwDragGroupPersist(dg.members); return; }
+    if (dg && dg.group) { lwLog("drag", `end prop#${p.id} → group move`, { n: dg.members.length }, "info"); await lwDragGroupPersist(dg.members); return; }
     lwFollowProp(entry);
     const gp = node.position();
+    lwLog("drag", `end prop#${p.id} → drop`, { at: lwRoundPt(gp) }, "info");
     try {
       await api(`/api/lw/${lwWorldId}/pos`, { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: p.id, x: gp.x, y: gp.y }) });
-      lwSaveView();
-    } catch (e) { toast(`Could not move it: ${e.message}`); await lwReloadRoom(); }
+      lwLogOn && lwLog("net", `pos prop#${p.id} saved`, null, "debug"); lwSaveView();
+    } catch (e) { lwLog("net", `pos prop#${p.id} FAILED`, { err: e.message }, "warn"); toast(`Could not move it: ${e.message}`); await lwReloadRoom(); }
   });
 }
 
@@ -7123,7 +7273,8 @@ async function lwOnAgentDrop(node, a) {
           headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slot: snap.slot, human_id: a.id }) });
         await api(`/api/lw/${lwWorldId}/pos`, { method: "POST",
           headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: a.id, x: snap.x, y: snap.y }) });
-      } catch (e) { toast(`Could not seat them: ${e.message}`); }
+        lwLogOn && lwLog("net", `seated agent#${a.id} at prop#${snap.propId} slot ${snap.slot}`, null, "info");
+      } catch (e) { lwLog("net", `seat agent#${a.id} FAILED`, { err: e.message }, "warn"); toast(`Could not seat them: ${e.message}`); }
       await lwReloadRoom();
     };
     if (reduceMotion()) { node.position({ x: snap.x, y: snap.y }); lwKonva.worldLayer.batchDraw(); seat(); }
@@ -7136,9 +7287,10 @@ async function lwOnAgentDrop(node, a) {
       await api(`/api/lw/${lwWorldId}/artifact/${wasSeated.propId}/unseat?human_id=${encodeURIComponent(a.id)}`, { method: "POST" });
     await api(`/api/lw/${lwWorldId}/pos`, { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: a.id, x: gp.x, y: gp.y }) });
+    lwLogOn && lwLog("net", `pos agent#${a.id} saved${wasSeated ? " (unseated)" : ""}`, { at: lwRoundPt(gp) }, "debug");
     if (wasSeated) await lwReloadRoom();   // cluster changed → repaint
     else { lwUpdateArrows(); lwSaveView(); }   // token is already where it was dropped
-  } catch (e) { toast(`Could not move them: ${e.message}`); await lwReloadRoom(); }
+  } catch (e) { lwLog("net", `pos agent#${a.id} FAILED`, { err: e.message }, "warn"); toast(`Could not move them: ${e.message}`); await lwReloadRoom(); }
 }
 
 // ---- creation: single-flight, a pending token + an inline figure popover ---
