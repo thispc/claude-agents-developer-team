@@ -70,6 +70,28 @@ def deterministic(human, signal: Signal, ctx: dict) -> Packet:
     return out
 
 
+def _sane(d: dict) -> dict:
+    """Trust boundary: coerce the model's JSON to the shapes the appliers expect. The model can
+    return any field as the wrong type (drives as a list, understood as a bool, action.text as a
+    number) and the downstream code calls .items()/.lower() on them — so normalise here, once."""
+    if not isinstance(d, dict):
+        return {}
+    for k in ("mood", "vitals", "drives", "social"):          # appliers iterate .items()
+        if not isinstance(d.get(k), dict):
+            d[k] = {}
+    for k in ("understood", "memory"):                        # memory does .lower().split()
+        if k in d and not isinstance(d[k], str):
+            d[k] = "" if d[k] is None else str(d[k])
+    act = d.get("action")
+    if not isinstance(act, dict):
+        d["action"] = {}
+    else:
+        for k in ("kind", "text"):
+            if k in act and not isinstance(act[k], str):
+                act[k] = "" if act[k] is None else str(act[k])
+    return d
+
+
 async def model(human, signal: Signal, ctx: dict, *, settings: dict,
                 complete, model_name: str, max_tokens: int, rules: str = "") -> Packet:
     """Tier 2 — one bounded call, over only what this agent may see. `complete` is the
@@ -89,14 +111,7 @@ async def model(human, signal: Signal, ctx: dict, *, settings: dict,
         p = deterministic(human, signal, ctx)
         p.understood = f"(model unavailable: {str(e)[:60]}) " + p.understood
         return p
-    d = _parse(raw)
-    # Trust boundary: the model sometimes returns mood/vitals/drives/social/action as a LIST or
-    # scalar instead of an object. The appliers call .items()/dict access, so coerce non-dicts to {}
-    # (a live agent chat crashed here — 'list' object has no attribute 'items').
-    for k in ("mood", "vitals", "drives", "social", "action"):
-        if k in d and not isinstance(d[k], dict):
-            d[k] = {}
-    p = Packet.from_dict(d)
+    p = Packet.from_dict(_sane(_parse(raw)))
     p.tier, p.spent = 2, 1
     if not p.memory:
         p.memory = p.understood or signal.text()
