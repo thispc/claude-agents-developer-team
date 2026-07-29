@@ -25,8 +25,9 @@ from pathlib import Path
 
 import pytest
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 DASH = Path(__file__).resolve().parent.parent / "dashboard"
-APP_JS = DASH / "app.js"
 
 MARK_START = "// >>> markdown renderer"
 MARK_END = "// <<< markdown renderer"
@@ -42,7 +43,7 @@ def _renderer_source() -> str:
     the pod cannot install. Cutting on the markers keeps the tested code and the
     shipped code the same bytes.
     """
-    src = APP_JS.read_text()
+    src = dashboard_js()
     body = src.split(MARK_START, 1)[1].split("\n", 1)[1].split(MARK_END, 1)[0]
     esc = re.search(r"function escapeHtml\(s\) \{.*?\n\}", src, re.S)
     assert esc, "escapeHtml is gone; the renderer has nothing to escape with"
@@ -243,14 +244,14 @@ def test_a_mermaid_block_says_it_is_not_drawn_instead_of_pretending():
 def test_only_markdown_files_reach_innerhtml_and_only_via_the_renderer():
     """The one place repository content becomes markup. If this ever grows a second
     innerHTML of file text, the escaping above stops being the whole story."""
-    block = APP_JS.read_text().split("async function openProjectFile(", 1)[1].split("\n}", 1)[0]
+    block = dashboard_js().split("async function openProjectFile(", 1)[1].split("\n}", 1)[0]
     for assignment in re.findall(r"innerHTML\s*=\s*(.+)", block):
         assert assignment.startswith("renderMarkdown("), assignment
     assert "textContent = d.text" in block, "non-markdown files must stay text"
 
 
 def test_the_renderer_escapes_and_the_markers_are_intact():
-    src = APP_JS.read_text()
+    src = dashboard_js()
     assert MARK_START in src and MARK_END in src, "the node tests extract on these"
     body = src.split(MARK_START, 1)[1].split(MARK_END, 1)[0]
     assert "escapeHtml(" in body
@@ -260,7 +261,7 @@ def test_the_renderer_escapes_and_the_markers_are_intact():
 def test_urls_are_allowlisted_not_blocklisted():
     """A blocklist of javascript:/vbscript:/data: is a list of the tricks we thought
     of. Anything that is not plainly a document link has to be refused instead."""
-    src = APP_JS.read_text()
+    src = dashboard_js()
     body = src.split(MARK_START, 1)[1].split(MARK_END, 1)[0]
     assert re.search(r"MD_SAFE_SCHEME\s*=\s*/\^\(\?:https\?:\|mailto:\)/i", body)
 
@@ -268,7 +269,7 @@ def test_urls_are_allowlisted_not_blocklisted():
 def test_code_files_are_not_run_through_the_markdown_renderer():
     """Reflowing a source file, or turning its '#' comments into headings, makes it
     unreadable — and would render its string literals as markup."""
-    src = APP_JS.read_text()
+    src = dashboard_js()
     assert re.search(r"MD_EXT\s*=\s*/\\\.\(md\|markdown\)\$/i", src)
     css = (DASH / "style.css").read_text()
     assert ".file-md" in css and "white-space: normal" in css

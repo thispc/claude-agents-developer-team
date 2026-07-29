@@ -19,6 +19,8 @@ pytestmark = pytest.mark.hostonly
 from conftest import make_project, make_task
 from app import config, db, demo, sandbox
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -299,14 +301,14 @@ def test_health_reports_when_the_page_is_newer_than_the_server(root_client, fres
 
 
 def test_the_dashboard_shows_a_banner_when_it_is_ahead():
-    js = (REPO / "dashboard" / "app.js").read_text()
+    js = dashboard_js()
     assert "stale_ui" in js and "showStaleBanner" in js
 
 
 def test_the_source_dropdown_degrades_instead_of_emptying():
     """It read d.sources against a server that still returned d.branches, so the
     dropdown was empty and the feature looked dead."""
-    js = (REPO / "dashboard" / "app.js").read_text()
+    js = dashboard_js()
     assert "d.sources || d.branches" in js
 
 

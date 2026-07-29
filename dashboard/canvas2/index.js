@@ -3,7 +3,7 @@
 // stranded (pointercancel/lostpointercapture fire natively on blur/alt-tab). Selection, drag,
 // connect and marquee all resolve via e.target — there is no hit graph to desync.
 //
-// mount(host, ctx) contract (ctx from app.js): { worldId, roomId, room, agents, props,
+// mount(host, ctx) contract (ctx from js/canvas1.js): { worldId, roomId, room, agents, props,
 //   getTool:()=>string, getDir:()=>string }. Downstream openers/menus/log use window.* directly.
 
 import { createWorld, svgEl } from "./world.js";
@@ -270,7 +270,7 @@ function pointerDown(inst, e) {
     beginMarquee(inst, e);
     return;
   }
-  // placement tools (agent/artifact): a click on empty floor asks app.js to start creation
+  // placement tools (agent/artifact): a click on empty floor asks the create flow (js/canvas1.js) to start creation
   if (e.target === svg || (e.target.closest && !e.target.closest(".lw2-token"))) {
     const w = inst.world.toWorld(e.clientX, e.clientY);
     inst.gesture = { type: "place", world: w };

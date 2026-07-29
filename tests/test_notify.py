@@ -12,6 +12,8 @@ import pytest
 from conftest import make_project, make_task
 from app import config, db, notify
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 
 @pytest.fixture(autouse=True)
 def _clean():
@@ -163,7 +165,7 @@ async def test_the_digest_flags_unverified_work(fresh_db, monkeypatch):
 
 def test_the_dashboard_reports_its_own_errors():
     from pathlib import Path
-    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    js = dashboard_js()
     assert "/api/client-error" in js
     assert "unhandledrejection" in js, "a rejected promise is the commonest silent failure"
     assert "_reported" in js, "it must not report the same error on every render"

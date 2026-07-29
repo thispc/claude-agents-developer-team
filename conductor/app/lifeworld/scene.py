@@ -94,6 +94,12 @@ class Scene:
         if ta and tb and ta is not tb:                       # bridging two graphs → merge b's into a's
             ta["edges"] += tb["edges"]
             ta["rulebook"] = (ta.get("rulebook", "") + "\n" + tb.get("rulebook", "")).strip()
+            # A configured deliberation protocol should survive the merge when the survivor has none —
+            # and a silent drop of the loser's config would be a confusing canvas gesture, so log it.
+            if not ta.get("protocol") and tb.get("protocol"):
+                ta["protocol"] = tb["protocol"]
+            elif tb.get("protocol") and tb.get("protocol") != ta.get("protocol"):
+                self._record("manage", None, f"graphs merged — thread {tb['id']}'s protocol was superseded by thread {ta['id']}'s")
             self.threads.remove(tb)
             t = ta
         elif ta or tb:
@@ -117,7 +123,8 @@ class Scene:
 
     def _normalize_threads(self) -> None:
         """After an edit, split any thread that has fallen into several connected components; the
-        first keeps the thread's id/rules/manager, the rest become fresh threads. Empty ones drop."""
+        first keeps the thread's id/rules/manager/protocol, the rest become fresh threads (classic
+        defaults). Empty ones drop."""
         from .threads import components, new_thread
         out: list[dict] = []
         for t in self.threads:
@@ -209,27 +216,42 @@ class Scene:
 
     # --- the round, played over a thread by its hidden manager (the Host) ----
 
-    async def run_thread(self, thread: dict) -> None:
-        """Play one thread: its hidden Host surveys the graph and enforces the thread's rules (a
-        bounded, root-visible black box), then MEDIATES one round of conversation — it decides who
-        says what, in what order, and each utterance is broadcast to whoever the arrows let hear it."""
-        from .threads import members_of
+    async def run_thread(self, thread: dict, *, first_round: bool = False,
+                         devils_advocate: bool = False) -> dict | None:
+        """Play one round over a thread, under its PROTOCOL (policy-as-data; see threads.py).
+        Classic: the hidden Host enforces the rules and MEDIATES the round in one bounded call.
+        Independent init (first round of a run): each agent states its position with its OWN
+        model, blind to this round's other speakers — the diverse-initialization the debate
+        literature shows ghost-writing loses. Returns the round's plan (carries `unanimous`)."""
+        from .threads import members_of, protocol_of
+        proto = protocol_of(thread)
         ring = [h for h in (self.world.get(i) for i in members_of(thread)) if isinstance(h, Human)]
         ring = [h for h in ring if not h.asleep()]     # agents that hit their model's session cap are resting
         if not ring:
-            return
+            return None
         cfg = thread.get("manager", {}) or {}
         budget = max(0, min(int(cfg.get("budget", 2) or 0), 4))
         rulebook = (thread.get("rulebook") or thread.get("manager", {}).get("note", "") or "").strip()
+        # Independent init still honours the mute: budget 0 means NO spend on this graph, period —
+        # it falls through to the classic path, which already spends and says nothing when muted.
+        # (An unset manager model does NOT mute it: the independent round uses each agent's OWN model.)
+        if first_round and proto["init"] == "independent" and budget > 0:
+            await self._host_manage(thread, ring, None)          # survey + free enforcement, no plan call
+            await self._independent_round(thread, ring, rulebook, proto)
+            return None
         # The manager's ONE bounded spend (Live only): a single call that both enforces and mediates.
         # Skip it entirely when the budget is 0 — a muted graph must never pay for a discarded call.
         plan = None
         if self.world.is_live() and cfg.get("model") and budget > 0:
-            plan = await self.world.host_plan(cfg, ring, rulebook, self._thread_transcript(ring))
+            plan = await self.world.host_plan(cfg, ring, rulebook,
+                                              self._thread_transcript(ring, anonymize=proto["anonymize"]),
+                                              devils_advocate=devils_advocate,
+                                              want_unanimous=proto["on_unanimity"] == "devils_advocate")
             if plan is None:                          # the model was expected but unreachable — say so, don't fake it
                 self._record("manage", None, f"host could not reach the model for thread {thread['id']} — free replies this round")
         await self._host_manage(thread, ring, plan)   # survey + enforce (from the one plan, or free rulebook)
         await self._converse(thread, ring, plan)      # mediate one round; the members talk (or free round)
+        return plan
 
     # --- the mediated conversation: the manager is the master, agents the slaves ----
     def _hears(self, thread: dict, speaker: int, listener: int) -> bool:
@@ -248,10 +270,24 @@ class Scene:
                 return b == speaker
         return False
 
-    def _thread_transcript(self, ring: list[Human]) -> str:
+    def _thread_transcript(self, ring: list[Human], anonymize: bool = False) -> str:
         ids = {h.id for h in ring}
         says = [r for r in self.log if r.get("kind") == "say" and r.get("frm") in ids][-8:]
-        return "\n".join(r["text"] for r in says)
+        if not anonymize:
+            return "\n".join(r["text"] for r in says)
+        # Anonymized: names → "Agent N" (identity sycophancy outweighs self-bias, so the manager
+        # weighs ARGUMENTS, not reputations). Beat text is "Name: line" — keep only the line, and
+        # ALSO scrub ring names inside the line itself (composed lines often address peers by name).
+        label = {h.id: f"Agent {i + 1}" for i, h in enumerate(ring)}
+        by_name = {h.name: label[h.id] for h in ring if h.name}
+        out = []
+        for r in says:
+            parts = str(r["text"]).split(":", 1)
+            body = parts[1].strip() if len(parts) > 1 else parts[0].strip()
+            for name, anon in by_name.items():
+                body = body.replace(name, anon)
+            out.append(f"{label.get(r.get('frm'), 'Agent ?')}: {body}")
+        return "\n".join(out)
 
     def _free_line(self, h: Human, topic: str) -> str:
         """A deterministic, persona-flavoured stance — free, so the whole round costs nothing
@@ -273,6 +309,24 @@ class Scene:
         await listener.perceive(sig, self.world, free=True)
         self.world.tau += 1
 
+    async def _deliver_lines(self, thread: dict, ring: list[Human], lines: list[dict], spend: bool = False) -> None:
+        """The dispose loop: each agent SAYS its line (a beat), broadcast free to whoever the
+        arrows let hear it. `spend` notes a session-use per speaker (for manager-composed rounds;
+        independent rounds already noted their own per-agent spends)."""
+        for item in lines:
+            speaker = self.world.get(item.get("who"))
+            if not isinstance(speaker, Human):
+                continue
+            text = str(item.get("text", ""))[:200]
+            if not text:
+                continue
+            if spend:
+                speaker.note_spend()          # participating in a model-backed round uses this agent's session
+            self._record("say", speaker.id, f"{speaker.name}: {text}", frm=speaker.id)
+            for listener in ring:
+                if listener.id != speaker.id and self._hears(thread, speaker.id, listener.id):
+                    await self._hear(speaker, listener, text)
+
     async def _converse(self, thread: dict, ring: list[Human], plan: dict | None = None) -> None:
         cfg = thread.get("manager", {}) or {}
         budget = max(0, min(int(cfg.get("budget", 2) or 0), 4))
@@ -282,32 +336,58 @@ class Scene:
         # The round comes from the manager's single plan (Live); free & deterministic otherwise.
         live_round = bool(plan and plan.get("round"))
         lines = (plan or {}).get("round") or self._free_round(ring, topic)
-        # The code disposes: each agent SAYS its line (a beat), broadcast free to whoever can hear it.
-        for item in lines:
-            speaker = self.world.get(item.get("who"))
-            if not isinstance(speaker, Human):
-                continue
-            text = str(item.get("text", ""))[:200]
-            if not text:
-                continue
-            if live_round:
-                speaker.note_spend()          # participating in a model-backed round uses this agent's session
-            self._record("say", speaker.id, f"{speaker.name}: {text}", frm=speaker.id)
-            for listener in ring:
-                if listener.id != speaker.id and self._hears(thread, speaker.id, listener.id):
-                    await self._hear(speaker, listener, text)
+        await self._deliver_lines(thread, ring, lines, spend=live_round)
+
+    async def _independent_round(self, thread: dict, ring: list[Human], rulebook: str, proto: dict) -> None:
+        """The evidence-backed opening round: EVERY agent states its position via ITS OWN model
+        (world.agent_position — one bounded call each, spend noted per agent), blind to what the
+        others say this round (the transcript snapshot is taken before anyone speaks). Free
+        deterministic stance lines offline. Cost: N calls, still bounded by construction."""
+        topic = (rulebook or "").strip() or "the matter at hand"
+        snapshot = self._thread_transcript(ring, anonymize=proto.get("anonymize", False))
+        lines = []
+        for h in ring:
+            text = None
+            if self.world.is_live():
+                text = await self.world.agent_position(h, topic, snapshot, self.rules)
+            lines.append({"who": h.id, "text": text or self._free_line(h, topic)})
+        await self._deliver_lines(thread, ring, lines, spend=False)
 
     # --- the deliberation run: N rounds of perspectives, then ONE kept result --------------
     async def run_deliberation(self, thread: dict, rounds: int = 2) -> dict:
         """The product loop: repeat the mediated round `rounds` times (different perspectives ×
         repetition), then the manager synthesizes a DECISION MEMO — the durable 'fine result'.
-        Cost is bounded by construction: at most rounds+1 model calls, free offline. The memo is
+        Cost is bounded BY CONSTRUCTION, free offline: at most max_rounds host plans + 1 memo,
+        plus one per-agent opening call when the protocol's init is independent — O(N + rounds),
+        never a loop that can run away. The memo is
         VERSIONED on the thread (results[]) so re-runs can be compared."""
-        from .threads import members_of
-        rounds = max(1, min(int(rounds or 1), 4))
-        for _ in range(rounds):
+        from .threads import members_of, protocol_of
+        proto = protocol_of(thread)
+        cap = int(proto["max_rounds"])
+        rounds = max(1, min(int(rounds or 1), cap))
+        # Under independent init the opening round can't judge unanimity (it makes no host_plan
+        # call) — so a devils_advocate policy needs at least one mediated round after the opener,
+        # or the policy would be silently inert at rounds=1.
+        if proto["init"] == "independent" and proto["on_unanimity"] == "devils_advocate":
+            rounds = max(rounds, min(2, cap))
+        devils = False
+        played = 0
+        for i in range(rounds):
             self.round_no += 1                       # same convention as play_round: bump, then play
-            await self.run_thread(thread)
+            plan = await self.run_thread(thread, first_round=(i == 0), devils_advocate=devils)
+            played += 1
+            # Premature-consensus rule: a unanimous round earns a dissenting round, not a redundant one.
+            devils = bool(proto["on_unanimity"] == "devils_advocate" and plan and plan.get("unanimous"))
+            if devils and (i + 1 < rounds or rounds < cap):
+                self._record("manage", None, "host: the panel is unanimous — appointing a devil's advocate next round")
+            elif devils:
+                self._record("manage", None, "host: the panel is unanimous — round cap reached, the consensus stands")
+        # If the FINAL round was the unanimous one, grant ONE extra dissent round — still inside
+        # the max_rounds cap, so the bound (≤ max_rounds host plans + N opening calls + 1 memo) holds.
+        if devils and rounds < cap:
+            self.round_no += 1
+            await self.run_thread(thread, devils_advocate=True)
+            played += 1
         self.rest()                                  # free consolidation, as after any beat
         ring = [h for h in (self.world.get(i) for i in members_of(thread)) if isinstance(h, Human)]
         rulebook = (thread.get("rulebook") or "").strip()
@@ -317,7 +397,7 @@ class Scene:
             memo = await self.world.host_memo(cfg, ring, rulebook, self._thread_transcript(ring))
         if not memo:
             memo = self._free_memo(ring, rulebook)
-        memo.update(v=len(thread.get("results") or []) + 1, rounds=rounds, ts=time.time(),
+        memo.update(v=len(thread.get("results") or []) + 1, rounds=played, ts=time.time(),
                     names={str(h.id): h.name for h in ring})
         thread.setdefault("results", []).append(memo)
         thread["results"] = thread["results"][-10:]          # keep the last ten versions

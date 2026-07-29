@@ -8,6 +8,8 @@ import pytest
 from conftest import make_project, make_task
 from app import db, interview, manager, process, tuning
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 
 def _tool(pid, name):
     manager.build_team_server(pid)
@@ -190,7 +192,7 @@ def test_the_route_passes_the_topic_to_the_dashboard(fresh_db):
     src = (Path(__file__).resolve().parent.parent
            / "conductor" / "app" / "routes.py").read_text()
     assert '"topic": q.get("topic", "decision")' in src
-    assert 'topic: q.topic || "decision"' in _dash("app.js")
+    assert 'topic: q.topic || "decision"' in dashboard_js()
 
 
 def test_the_interview_keeps_its_shape_on_screen():
@@ -203,14 +205,14 @@ def test_the_interview_keeps_its_shape_on_screen():
 
 
 def test_each_kind_of_ask_is_framed_as_what_it_is():
-    js = _dash("app.js")
+    js = dashboard_js()
     assert "Before your manager plans this" in js
     assert "Sprint finished" in js
     assert "Your manager needs a decision" in js
 
 
 def test_the_manager_model_can_be_changed_from_the_screen_it_is_shown_on():
-    js = _dash("app.js")
+    js = dashboard_js()
     assert 'id="mgrModelSel"' in js
     assert "/manager-model" in js
 
@@ -219,7 +221,7 @@ def test_the_model_picker_admits_it_does_not_apply_immediately():
     """A model is bound when a session starts, so a running manager keeps the old
     one. Reporting plain success would leave someone waiting for a change that
     cannot happen until they restart it."""
-    js = _dash("app.js")
+    js = dashboard_js()
     assert "restart_needed" in js
     assert "Restart manager" in js
 

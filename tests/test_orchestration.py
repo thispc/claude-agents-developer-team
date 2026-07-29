@@ -15,6 +15,8 @@ from pathlib import Path
 from conftest import make_project, make_task
 from app import bus, db, launcher, scheduler
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 
 # ---- per-project task numbers (seq) ---------------------------------------
 
@@ -777,7 +779,7 @@ async def test_a_clicked_answer_is_not_echoed_either(fresh_db, monkeypatch):
 
 def test_the_feed_hides_legacy_echo_events():
     """Rows already written before the fix must not keep double-printing."""
-    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    js = dashboard_js()
     body = js.split("function renderEvent(", 1)[1][:600]
     assert 'e.kind === "answer"' in body and "return" in body
 

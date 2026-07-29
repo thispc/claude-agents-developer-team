@@ -195,6 +195,8 @@ import asyncio
 
 from app import provider, rollout
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 
 def _cluster(monkeypatch, *, previous="", canary_ok=True, promote_ok=True):
     """A whole cluster made of monkeypatches. Nothing here may reach a real one."""
@@ -527,7 +529,7 @@ def test_a_static_project_gets_a_working_button_not_a_disabled_one(fresh_db):
     static preview instead" — which reads as broken and leaves you to find the
     preview yourself. There is nothing to build; it is a different button."""
     from pathlib import Path
-    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    js = dashboard_js()
     assert 'id="openStaticBtn"' in js
     assert "▶ Open it" in js
     # And it must actually reach the preview rather than just look like a button.
@@ -539,7 +541,7 @@ def test_an_undetectable_project_says_it_will_re_check_itself(fresh_db):
     """"Unknown" was permanent before, so telling someone it re-checks is only
     honest now that it does."""
     from pathlib import Path
-    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    js = dashboard_js()
     assert "re-checks itself" in js
 
 
@@ -572,7 +574,7 @@ def test_the_per_teammate_view_is_actually_reachable(fresh_db):
     it, so auditing a seventeen-task run meant reading PR titles and guessing."""
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent
-    js = (root / "dashboard" / "app.js").read_text()
+    js = dashboard_js()
     routes = (root / "conductor" / "app" / "routes.py").read_text()
     assert '/by-agent' in routes
     assert "renderByAgent" in js and "/by-agent" in js

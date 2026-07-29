@@ -26,6 +26,8 @@ import pytest
 from conftest import make_project, make_task
 from app import auth, db, evolution, home, memory, tuning
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 APP = Path(__file__).resolve().parent.parent / "conductor" / "app"
 
 
@@ -452,7 +454,7 @@ def _dash(name):
 
 @pytest.mark.hostonly
 def test_the_studio_screen_exists_and_has_a_way_in():
-    html, js = _dash("index.html"), _dash("app.js")
+    html, js = _dash("index.html"), dashboard_js()
     assert 'id="studio"' in html
     assert 'id="modeStudio"' in html
     assert "function openStudio" in js
@@ -462,7 +464,7 @@ def test_the_studio_screen_exists_and_has_a_way_in():
 @pytest.mark.hostonly
 def test_the_studio_has_its_own_route_and_is_hidden_by_other_screens():
     """A screen left visible under another is the classic single-page bug."""
-    js = _dash("app.js")
+    js = dashboard_js()
     # The Studio has its own hash route. Since the tabbed refactor the route is set
     # through studioTabHash() (which returns "#/studio") rather than a hardcoded
     # literal, and the hashchange router resolves "#/studio" — assert the route
@@ -478,7 +480,7 @@ def test_the_studio_has_its_own_route_and_is_hidden_by_other_screens():
 def test_no_agent_text_is_written_as_unescaped_innerhtml():
     """Persona, name and memory are free text (user- and model-written) — the new
     attack surface. Every one must go through escapeHtml before it reaches the DOM."""
-    js = _dash("app.js")
+    js = dashboard_js()
     studio = js.split("The Studio — where globally-persistent")[1].split("async function boot")[0]
     import re
     # Only interpolations that land in an innerHTML assignment are an injection
@@ -498,7 +500,7 @@ def test_no_agent_text_is_written_as_unescaped_innerhtml():
 def test_the_studio_drag_pulls_in_nothing_from_the_internet():
     """The 'stunning drag-and-drop' must be self-hosted; the pod has no guaranteed
     egress and a CDN drag library would be a blank box."""
-    js, css = _dash("app.js"), _dash("style.css")
+    js, css = dashboard_js(), _dash("style.css")
     studio_js = js.split("The Studio —")[1].split("async function boot")[0]
     for tag in ('src="http', "import(", "cdn."):
         assert tag not in studio_js
@@ -536,7 +538,7 @@ def test_a_transform_change_redraws_the_hit_graph():
     """Every path that changes the stage transform (fit, zoom, resize) must redraw the layer,
     so the invisible hit graph tracks the visible scene — otherwise a token sits where the
     click can't reach it. (Konva's autoDraw usually covers this, but we don't rely on it.)"""
-    js = _dash("app.js")
+    js = dashboard_js()
     fit = js.split("function lwFitView")[1].split("\nfunction ")[0]
     assert fit.count("batchDraw()") >= 2, "lwFitView must redraw on both the empty and fitted paths"
     ro = js.split("new ResizeObserver")[1].split("});")[0]
@@ -547,7 +549,7 @@ def test_a_transform_change_redraws_the_hit_graph():
 def test_canvas_debug_logs_are_root_gated_and_free_when_off():
     """The canvas interaction log is a control-plane diagnostic: the Canvas tab is gated on
     me.is_root, and logging costs nothing (returns immediately) when capture is off."""
-    js = _dash("app.js")
+    js = dashboard_js()
     assert "function lwCanRootDebug" in js and "me.is_root" in js
     # the canvas view of the activity panel is only reachable through the root check
     assert 'root && sdActTab === "canvas"' in js, "the Canvas log view is not gated on the root check"
@@ -562,7 +564,7 @@ def test_interaction_state_cannot_get_stranded_on():
     mouseup released outside the window, must not leave panning/drag ON. A panic reset is
     wired to window blur / pointercancel / visibilitychange, and re-selecting a tool clears
     the pan flag."""
-    js = _dash("app.js")
+    js = dashboard_js()
     assert "function lwForceIdle" in js
     for hook in ('addEventListener("blur", lwForceIdle', "pointercancel", "visibilitychange"):
         assert hook in js, f"panic reset not wired to {hook}"
@@ -578,7 +580,7 @@ def test_interaction_state_cannot_get_stranded_on():
 @pytest.mark.hostonly
 def test_a_drag_persists_rather_than_being_cosmetic():
     """A reposition must survive a reload, or the room forgets your arrangement."""
-    js = _dash("app.js")
+    js = dashboard_js()
     assert "saveStudioPos" in js and "localStorage" in js
 
 
@@ -597,7 +599,7 @@ def test_hiring_and_editing_use_no_browser_popups():
     """The owner asked for a controlled, sophisticated way to build a person — not
     a prompt() box, the same complaint that retired the autonomy tiles. The Studio
     must assemble a persona from parts in an inline drawer, and edit in place."""
-    js = _dash("app.js")
+    js = dashboard_js()
     studio = js.split("The Studio — where globally-persistent")[1]
     assert "prompt(" not in studio, "a browser popup is still used to hire/edit"
     assert "function openHirePanel" in studio and "function composePersona" in studio
@@ -608,7 +610,7 @@ def test_hiring_and_editing_use_no_browser_popups():
 def test_a_persona_is_assembled_from_controlled_parts():
     """Discipline, model tier, temperament traits, a reference and free text —
     composed live so you see who you are making, rather than one blind text box."""
-    js = _dash("app.js")
+    js = dashboard_js()
     assert "const TRAITS" in js and "const DISCIPLINES" in js and "const TIERS" in js
     comp = js.split("function composePersona")[1][:400]
     assert "traits" in comp and "reference" in comp
@@ -618,7 +620,7 @@ def test_a_persona_is_assembled_from_controlled_parts():
 def test_the_world_is_right_clickable():
     """A little world of agents: the canvas takes a right-click menu, and so does
     each person."""
-    js = _dash("app.js")
+    js = dashboard_js()
     assert "function studioFloorMenu" in js and "function studioAgentMenu" in js
     assert 'addEventListener("contextmenu"' in js
 
@@ -627,7 +629,7 @@ def test_the_world_is_right_clickable():
 def test_the_next_sprint_is_signposted_not_faked():
     """Scenes and manager-run-it are the next sprint; the menu shows them as
     coming rather than pretending they work."""
-    js = _dash("app.js")
+    js = dashboard_js()
     assert "Set a scene" in js and "soon: true" in js
 
 

@@ -13,6 +13,8 @@ import pytest
 from conftest import make_project, make_task
 from app import ambition, db, launcher, tuning
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 
 def _project(level):
     pid = make_project(name=f"amb-{level}")
@@ -129,7 +131,7 @@ def test_the_form_offers_the_choice_and_sends_it(fresh_db):
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent / "dashboard"
     html = (root / "index.html").read_text()
-    js = (root / "app.js").read_text()
+    js = dashboard_js()
     # A slider, not three tiles: the choice is a continuum in the reader's head,
     # and five tall blocks of prose made the step read as a form to survive.
     assert 'id="ambitionRange"' in html

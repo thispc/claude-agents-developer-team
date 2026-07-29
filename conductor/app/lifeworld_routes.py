@@ -83,6 +83,7 @@ class ThreadUpdate(BaseModel):
     name: str | None = None
     rulebook: str | None = None             # the graph's single free-text rulebook (obeyed by its manager)
     manager: dict | None = None             # {model, budget} — the hidden manager
+    protocol: dict | None = None            # deliberation policy-as-data (threads.clean_protocol)
 
 
 class RefineBody(BaseModel):
@@ -112,6 +113,7 @@ class ManifestBody(BaseModel):
     edges: list = Field(default_factory=list)    # [nameA, nameB, dir?] — names from `agents`; dir: both|a2b|b2a
     rules: str = ""                         # the graph's rulebook (what the manager makes happen)
     manager: dict = Field(default_factory=dict)  # {model, budget}
+    protocol: dict = Field(default_factory=dict) # deliberation policy (preset/init/anonymize/on_unanimity/max_rounds)
     run: dict = Field(default_factory=dict)      # {rounds: 1-4} → deliberate now and return the memo
 
 
@@ -141,6 +143,14 @@ def _load(request: Request, world_id: int, live: bool = False):
     u = _own(request, world_id)
     return store.load(world_id, live=live, settings=auth.get_settings(u) if live else None), u
 
+
+
+def _clean_budget(m: dict) -> int:
+    """Manager budget from untrusted JSON: junk (\"abc\", Infinity, lists) → the default 2, never a 500."""
+    try:
+        return max(0, min(int(m.get("budget", 2) or 0), 4))
+    except (TypeError, ValueError, OverflowError):
+        return 2
 
 def _author_creds(user: dict):
     """The model to author with — the owner's own — or (None, {}) to fall back to the free
@@ -476,7 +486,10 @@ def thread_update(world_id: int, room_id: int, tid: int, body: ThreadUpdate, req
         from app.lifeworld.world import MODEL_WHITELIST
         m = body.manager or {}
         t["manager"] = {"model": (m.get("model") if m.get("model") in MODEL_WHITELIST else ""),
-                        "budget": max(0, min(int(m.get("budget", 2) or 0), 4))}
+                        "budget": _clean_budget(m)}
+    if body.protocol is not None:
+        from app.lifeworld.threads import clean_protocol
+        t["protocol"] = clean_protocol(body.protocol)
     store.save(w)
     return {"thread": t}
 
@@ -556,9 +569,11 @@ async def thread_chat(world_id: int, room_id: int, tid: int, body: ChatBody, req
 @router.post("/{world_id}/room/{room_id}/thread/{tid}/run")
 async def thread_run(world_id: int, room_id: int, tid: int, request: Request,
                      rounds: int = 2, live: int = 0) -> dict:
-    """The reconciliation loop: deliberate `rounds` rounds (cap 4) over this graph, then the
-    manager synthesizes the DECISION MEMO — versioned on the thread, returned here. Free by
-    default; ?live=1 spends at most rounds+1 bounded calls."""
+    """The reconciliation loop: deliberate `rounds` rounds (protocol-capped) over this graph, then
+    the manager synthesizes the DECISION MEMO — versioned on the thread, returned here. Free by
+    default. ?live=1 spends BOUNDED calls: at most rounds+1 under the classic protocol; under
+    independent init add one call per agent for the opening round (N + rounds + 1), and a
+    unanimous final round may add one dissent round — always within the max_rounds cap, O(N+rounds)."""
     w, _ = _load(request, world_id, live=bool(live))
     s = w.scene(room_id)
     if not s:
@@ -631,12 +646,14 @@ async def apply_manifest(world_id: int, body: ManifestBody, request: Request, li
         if d not in ("both", "a2b", "b2a"):
             raise HTTPException(422, f"edge dir must be both|a2b|b2a, got {d!r}")
         s.connect(a, b, dir=d)
-    for t in s.threads:                                        # the graph's brief + its manager
+    from app.lifeworld.threads import clean_protocol
+    for t in s.threads:                                        # the graph's brief + its manager + protocol
         if body.rules:
             t["rulebook"] = body.rules[:2000]
         m = body.manager or {}
         t["manager"] = {"model": (m.get("model") if m.get("model") in MODEL_WHITELIST else ""),
-                        "budget": max(0, min(int(m.get("budget", 2) or 0), 4))}
+                        "budget": _clean_budget(m)}
+        t["protocol"] = clean_protocol(body.protocol)
     result = None
     rounds = int((body.run or {}).get("rounds", 0) or 0)
     if rounds and s.threads:

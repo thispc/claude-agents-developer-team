@@ -172,6 +172,8 @@ def test_autonomous_grace_is_short_enough_for_an_overnight_run():
 
 import re as _re
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 DASH = Path(config.__file__).resolve().parents[2] / "dashboard"
 
 
@@ -194,7 +196,7 @@ def test_every_backend_credential_has_an_input():
 
 
 def test_save_handler_submits_the_whole_form_not_a_hand_written_list():
-    js = (DASH / "app.js").read_text()
+    js = dashboard_js()
     handler = js.split('$("#settingsForm").addEventListener("submit"', 1)[1][:900]
     assert "f.entries()" in handler, "the handler enumerates fields by hand again"
     for dropped in ("openai_api_key", "gemini_api_key"):
@@ -237,7 +239,7 @@ def test_files_says_why_when_there_is_no_repo(root_client, fresh_db):
 def test_the_artifacts_page_groups_files_by_what_they_are():
     """"a README" and "a source file" are different kinds of thing to a reader,
     even though git treats them identically."""
-    js = (DASH / "app.js").read_text()
+    js = dashboard_js()
     assert "loadProjectFiles" in js and "FILE_ICON" in js
     block = js.split("async function loadProjectFiles(", 1)[1][:1200]
     for k in ("Documents", "Code", "Tests"):

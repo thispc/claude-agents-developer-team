@@ -124,7 +124,34 @@ class World:
     def is_live(self) -> bool:
         return self._complete is not None
 
-    async def host_plan(self, cfg: dict, ring, rulebook: str, transcript: str) -> dict | None:
+    async def agent_position(self, human: Human, topic: str, transcript: str, rules: str = "") -> str | None:
+        """ONE bounded call on the AGENT'S OWN model — its independent position, in its own voice.
+        This is the diverse-initialization round the debate literature demands: genuinely separate
+        samples from (possibly different-vendor) models, not one model ghost-writing a panel.
+        Spend is noted against the agent's session. None → the free deterministic stance line."""
+        if self._complete is None:
+            return None
+        import json
+        p = _persona(human)
+        sys = (f"You are {human.name}. Your defining traits: {json.dumps(p['traits'])}; what you most "
+               f"want: {p['wants'] or 'a good outcome'}. State YOUR OWN position on the TOPIC in 1-2 "
+               "sentences, in your own voice, committing to a concrete stance. Plain text only.")
+        if rules and rules.strip():
+            sys += " Standing rules: " + rules.strip()[:300]
+        prompt = (f"TOPIC: {topic}\nSAID IN EARLIER ROUNDS (may be empty):\n{transcript[:800] or '(nothing yet)'}\n"
+                  "Your position (1-2 sentences):")
+        try:
+            raw = await self._complete("anthropic", self.model_for(human), sys, prompt, self._settings, max_tokens=120)
+            text = (raw or "").strip()[:200]
+            if not text:
+                return None
+            human.note_spend()
+            return text
+        except Exception:
+            return None
+
+    async def host_plan(self, cfg: dict, ring, rulebook: str, transcript: str,
+                        devils_advocate: bool = False, want_unanimous: bool = False) -> dict | None:
         """The thread manager's ONE bounded spend per deliberation. In a SINGLE call it BOTH enforces
         the rulebook AND mediates the round, returning {"enforce": [line per rule], "round": [{"who":
         id, "text": line} per agent]} or None (Live only; free fallback is deterministic). One call
@@ -137,14 +164,24 @@ class World:
         roster = [{"id": h.id, "name": h.name, **_persona(h)} for h in ring]   # give the host each agent's real substance
         rules = [ln.strip() for ln in (rulebook or "").splitlines() if ln.strip()]
         topic = (rulebook or "the matter at hand").strip()
+        # The unanimity clause is only sent when the thread's protocol actually consumes it — so a
+        # classic thread's prompt stays exactly what it always was (prompt-level backward compat).
+        keys = '{"enforce": [...], "round": [...], "unanimous": <bool>}' if want_unanimous else '{"enforce": [...], "round": [...]}'
         sys = ("You are the silent HOST mediating a table of agents. Each agent in AGENTS has a persona "
                "(its traits and what it wants) — VOICE EACH ONE IN CHARACTER, let their personas actually "
                "shape and DIVIDE their positions (don't make them agree by default). Do TWO things and "
-               "return ONE JSON object {\"enforce\": [...], \"round\": [...]}: (1) enforce — for each RULE, "
-               "one short firm line to the table, same order; (2) round — compose ONE short line (that "
-               "agent's own voice, 1-2 sentences) for EACH agent to say this round, in an order you choose "
-               "that advances the TOPIC. round is an array of {\"who\": <agent id int>, \"text\": <line>}. "
-               "Return ONLY that JSON object.")
+               f"return ONE JSON object {keys}: "
+               "(1) enforce — for each RULE, one short firm line to the table, same order; (2) round — "
+               "compose ONE short line (that agent's own voice, 1-2 sentences) for EACH agent to say this "
+               "round, in an order you choose that advances the TOPIC. round is an array of {\"who\": "
+               "<agent id int>, \"text\": <line>}. "
+               + ("Set unanimous=true ONLY if, after this round, every agent effectively holds the same "
+                  "position. " if want_unanimous else "")
+               + "Return ONLY that JSON object.")
+        if devils_advocate:
+            sys += (" IMPORTANT: the panel was UNANIMOUS last round. This round, appoint exactly ONE agent "
+                    "to argue the strongest opposing case (in character), and let the others answer it — "
+                    "surface what the consensus might be missing.")
         prompt = (f"AGENTS: {json.dumps(roster)}\nTOPIC: {json.dumps(topic)}\nRULES: {json.dumps(rules)}\n"
                   f"TRANSCRIPT SO FAR:\n{transcript[:1000] or '(nothing yet)'}\nReturn only the JSON object.")
         try:
@@ -161,7 +198,11 @@ class World:
                 text = str(x.get("text", "")).strip()
                 if who in ids and text:
                     rnd.append({"who": who, "text": text[:200]})
-            return {"enforce": enforce, "round": rnd or None}
+            # Trust boundary: the model may return unanimous as the STRING "false"/"no" — bool() of
+            # any non-empty string is True, which would spend a spurious devil's-advocate round.
+            u = obj.get("unanimous") if want_unanimous else None
+            unanimous = u is True or (isinstance(u, str) and u.strip().lower() == "true")
+            return {"enforce": enforce, "round": rnd or None, "unanimous": unanimous}
         except Exception:
             return None
 
@@ -169,7 +210,8 @@ class World:
         """The manager's closing synthesis — ONE bounded call that turns a finished deliberation
         into the DECISION MEMO: each agent's final position, the live dissent, a recommendation.
         None → the free deterministic memo (last stances verbatim). This is the 'fine result' a
-        run produces; a run of N rounds therefore costs at most N+1 bounded calls, ever."""
+        run produces; the whole run stays bounded by construction (host plans per round, plus one
+        opening call per agent under independent init, plus this single closing call)."""
         if self._complete is None or not ring:
             return None
         import json

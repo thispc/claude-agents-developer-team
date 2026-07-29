@@ -21,6 +21,8 @@ pytestmark = pytest.mark.hostonly
 from conftest import make_project, make_task
 from app import config, envs, rollout
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 REPO = Path(__file__).resolve().parent.parent
 # The mechanics these tests pin — content tags, the build that yields no tag on
 # failure, a named promotion target, rollback — now live in rollout.py and are
@@ -421,7 +423,7 @@ def test_the_ui_offers_self_update_in_a_cluster_not_a_build_button():
     """In a pod there is no Docker daemon, so "Environments need Docker" would be
     both true and useless — the cloud equivalent is choosing when to take an image
     CI already built."""
-    js = (REPO / "dashboard" / "app.js").read_text()
+    js = dashboard_js()
     assert "renderCloudInstance" in js
     assert "/api/self/instance" in js and "/api/self/update" in js
     block = js.split("function renderCloudInstance(", 1)[1][:2000]

@@ -179,3 +179,15 @@ def make_task(project_id, role="backend", title="t", desc="d", status="planned",
     if status != "planned":
         db.update_task(tid, status=status)
     return tid
+
+
+def dashboard_js() -> str:
+    """All dashboard JS as one string, concatenated in index.html's load order — the
+    single source of truth since app.js was split into dashboard/js/*.js. Tests that
+    grep 'the dashboard code' read this instead of the old monolith."""
+    import re
+    dash = Path(__file__).resolve().parent.parent / "dashboard"
+    html = (dash / "index.html").read_text()
+    srcs = re.findall(r'<script src="(js/[^"]+)"></script>', html)
+    assert srcs, "index.html lists no dashboard/js scripts"
+    return "\n".join((dash / s).read_text() for s in srcs)

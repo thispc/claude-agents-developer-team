@@ -13,6 +13,8 @@ import pytest
 from conftest import make_project, make_task
 from app import db, blockers, launcher
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 
 # ---- blockers derivation ---------------------------------------------------
 
@@ -182,7 +184,7 @@ def test_the_two_tabs_ask_different_questions(fresh_db):
     nothing was running its tests. Worth telling someone; not a blocker — and
     putting it under that heading made every real blocker easier to ignore."""
     from pathlib import Path
-    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    js = dashboard_js()
     assert 'HOLDS_WORK_UP = new Set(["stopped", "pace", "waiting"])' in js
     assert "renderNoticeList" in js
     html = (Path(__file__).resolve().parent.parent / "dashboard" / "index.html").read_text()

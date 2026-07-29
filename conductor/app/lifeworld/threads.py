@@ -57,10 +57,73 @@ def default_manager() -> dict:
     return {"model": "", "budget": 2}
 
 
+# --- the deliberation PROTOCOL: policy as data, not code -----------------------------------
+# The platform provides mechanism (agents, bounded calls, routing, memos); HOW a graph
+# deliberates is a small declarative config — the axes the multi-agent-debate literature
+# actually measures. Defaults reproduce the platform's historical behaviour exactly, so every
+# saved thread keeps working; presets name evidence-backed configurations researchers can cite.
+DEFAULT_PROTOCOL: dict[str, Any] = {
+    "preset": "classic",
+    "init": "ghostwritten",        # round 1: "ghostwritten" (manager composes all) | "independent"
+                                   #   (each agent speaks with its OWN model, blind — the
+                                   #   diverse-initialization fix; CoMM 2024, +12-24pp)
+    "anonymize": False,            # strip names from the MEDIATION-round transcript the manager
+                                   #   reads (identity sycophancy >> self-bias; arXiv 2510.07517).
+                                   #   The closing memo and the user-facing chat keep names by
+                                   #   design — positions must be attributable to agents.
+    "on_unanimity": "accept",      # "accept" | "devils_advocate": if a round comes back
+                                   #   unanimous, the next round appoints a dissenter
+                                   #   (premature-consensus fix; Smit et al. ICML 2024)
+    "max_rounds": 4,               # hard cap on rounds per run (cost stays bounded)
+}
+PROTOCOL_PRESETS: dict[str, dict[str, Any]] = {
+    "classic": {},                                          # the original behaviour
+    "evidence-2026": {"init": "independent", "anonymize": True, "on_unanimity": "devils_advocate"},
+}
+_PROTO_VALUES = {"init": {"ghostwritten", "independent"},
+                 "on_unanimity": {"accept", "devils_advocate"}}
+
+
+def protocol_of(thread: dict) -> dict[str, Any]:
+    """The thread's resolved protocol: defaults ← preset ← the thread's own overrides.
+    Old threads with no protocol field resolve to exactly the historical behaviour."""
+    stored = thread.get("protocol") or {}
+    preset = stored.get("preset", "classic")
+    out = dict(DEFAULT_PROTOCOL)
+    out.update(PROTOCOL_PRESETS.get(preset, {}))
+    out.update({k: v for k, v in stored.items() if k in DEFAULT_PROTOCOL})
+    out["preset"] = preset if preset in PROTOCOL_PRESETS else "classic"
+    return out
+
+
+def clean_protocol(p: dict | None) -> dict[str, Any]:
+    """Validate a protocol PATCH from the API — unknown keys dropped, bad values rejected
+    to defaults, max_rounds clamped. Stored small; resolved through protocol_of at run time."""
+    p = p if isinstance(p, dict) else {}
+    out: dict[str, Any] = {}
+    # isinstance guards first: a JSON list/object value is unhashable, and `in` on a set/dict
+    # would raise TypeError → an HTTP 500 instead of the junk simply being dropped.
+    if isinstance(p.get("preset"), str) and p["preset"] in PROTOCOL_PRESETS:
+        out["preset"] = p["preset"]
+    for k, allowed in _PROTO_VALUES.items():
+        v = p.get(k)
+        if isinstance(v, str) and v in allowed:
+            out[k] = v
+    if "anonymize" in p:
+        out["anonymize"] = bool(p["anonymize"])
+    if "max_rounds" in p:
+        try:
+            out["max_rounds"] = max(1, min(int(p["max_rounds"]), 4))
+        except (TypeError, ValueError, OverflowError):   # OverflowError: JSON `Infinity` parses fine
+            pass
+    return out
+
+
 def new_thread(tid: int) -> dict:
-    """A fresh graph: an edge list, a single free-text RULEBOOK the manager obeys, and a manager."""
+    """A fresh graph: an edge list, a single free-text RULEBOOK the manager obeys, a manager,
+    and a deliberation protocol (policy-as-data; empty = classic defaults)."""
     return {"id": tid, "name": f"thread {tid}", "edges": [], "closed": False,
-            "rulebook": "", "manager": default_manager()}
+            "rulebook": "", "manager": default_manager(), "protocol": {}}
 
 
 def edge_eq(e: list, a: int, b: int) -> bool:

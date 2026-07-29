@@ -89,7 +89,7 @@ async def _preview_host(request, call_next):
 
 @app.middleware("http")
 async def _no_stale_dashboard(request, call_next):
-    """The dashboard is one hand-written app.js/style.css with no build hash, so an
+    """The dashboard is hand-written JS/CSS (dashboard/js/*.js + style.css) with no build hash, so an
     aggressive browser cache can keep serving yesterday's JS after a redeploy — which
     looks exactly like "the fix didn't ship" (e.g. dragging silently broken). Force a
     revalidation on the HTML/JS/CSS so a deploy is always picked up; StaticFiles still

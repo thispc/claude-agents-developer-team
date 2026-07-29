@@ -1658,9 +1658,9 @@ def health() -> dict:
     # a button that does nothing) rather than a conductor that needs restarting.
     stale_ui = False
     try:
-        js = config.DASHBOARD_DIR / "app.js"
         from .main import STARTED_AT
-        stale_ui = js.stat().st_mtime > STARTED_AT
+        parts = list((config.DASHBOARD_DIR / "js").glob("*.js")) + list(config.DASHBOARD_DIR.glob("canvas2/*.js"))
+        stale_ui = any(p.stat().st_mtime > STARTED_AT for p in parts)
     except Exception:
         pass
     # And whether this process can actually do its job, because an external

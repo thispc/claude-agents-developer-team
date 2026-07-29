@@ -816,7 +816,14 @@
 </dialog>
 
 <script src="vendor/konva.min.js"></script>
-<script src="app.js"></script>
+<!-- Classic scripts sharing one global scope; ORDER IS LOAD-BEARING (split from the old app.js
+     in original order). tests/conftest.dashboard_js() derives concatenation order from here. -->
+<script src="js/core.js"></script>
+<script src="js/projects.js"></script>
+<script src="js/studio-legacy.js"></script>
+<script src="js/studio.js"></script>
+<script src="js/canvas1.js"></script>
+<script src="js/boot.js"></script>
 <script type="module" src="canvas2/index.js"></script>
 </body>
 </html>

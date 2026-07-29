@@ -11,6 +11,8 @@ from conftest import make_project, make_task
 
 from app import db, triage
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 
 # ---- the floor is deterministic ------------------------------------------
 
@@ -145,7 +147,7 @@ def test_the_verdict_is_shown_while_writing_the_ticket():
     """Learning afterwards that the platform merged something you expected to
     review is the outcome this whole mechanism exists to prevent."""
     from pathlib import Path
-    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    js = dashboard_js()
     assert "/api/self/triage" in js
     assert 'addEventListener("input", previewTriage)' in js
 
@@ -242,7 +244,7 @@ def test_the_healing_feed_shows_rejected_builds_too():
     """The platform declining to ship something to itself is the most valuable
     line in that list, and the easiest to miss."""
     from pathlib import Path
-    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    js = dashboard_js()
     assert "renderHealing" in js and "/api/self/healing" in js
     assert "canary_failed" in js
 

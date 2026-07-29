@@ -62,6 +62,7 @@ def server():
         "WORKSPACES_DIR": str(Path(tmp) / "ws"), "PREVIEW_DIR": str(Path(tmp) / "pv"),
         "DEPLOY_DIR": str(Path(tmp) / "dp"), "ROOT_USERNAME": "root", "ROOT_PASSWORD": "rootpass",
         "WORKER_TOKEN": "wt", "LAUNCHER": "local", "PYTHONPATH": str(REPO / "conductor"),
+        "CANVAS_V2": "0",   # this suite tests the Konva v1 FALLBACK engine; v2 (the default) has its own suite
         "ANTHROPIC_API_KEY": "", "CLAUDE_CODE_OAUTH_TOKEN": "", "GITHUB_TOKEN": "",
     })
     log = open(Path(tmp) / "server.log", "w")
@@ -662,9 +663,9 @@ def test_double_click_selects_graph_and_a_manage_button_opens_the_rulebook(serve
     assert page.evaluate("() => lwKonva.sel.size") == 2, "double-click did not select the whole graph"
     assert page.evaluate("() => !document.querySelector('#lwActionBar').hidden"), "no action bar on graph select"
     assert page.evaluate("() => document.querySelector('#sdRosterHost').hidden") is not False or True  # rulebook does NOT auto-open
-    page.evaluate("""() => [...document.querySelectorAll('.lw-act-btn')].find(x => x.textContent.includes('Manage')).click()""")
+    page.evaluate("""() => [...document.querySelectorAll('.lw-act-btn')].find(x => x.textContent.includes('Rules')).click()""")
     page.wait_for_timeout(300)
-    assert page.evaluate("() => !!document.querySelector('.sd-thread-book')"), "Manage did not open the rulebook"
+    assert page.evaluate("() => !!document.querySelector('.sd-thread-book')"), "the Rules button did not open the rulebook"
 
 
 def test_a_single_click_selects_a_token_and_it_stays_selected(server, page):

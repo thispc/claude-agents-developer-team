@@ -15,6 +15,8 @@ import pytest
 from conftest import make_project, make_task
 from app import config, db, launcher, manager, scheduler
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 
 def _project(sprints=3, **kw):
     pid = db.create_project("p", "brief", "", 5.0, 3, max_runs=40,
@@ -293,7 +295,7 @@ def test_the_project_list_numbers_rows_not_database_ids():
     """The platform's own project takes row 1 and is hidden from the table, so
     the first project anyone created appeared as "2" and looked like a bug."""
     from pathlib import Path
-    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    js = dashboard_js()
     rows = js.split('body.innerHTML = "";', 1)[1][:1400]
     assert "${idx + 1}" in rows
     assert "<td>${p.id}</td>" not in rows
@@ -307,7 +309,7 @@ def test_the_autonomy_choice_says_when_to_pick_each():
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent / "dashboard"
     html = (root / "index.html").read_text()
-    js = (root / "app.js").read_text()
+    js = dashboard_js()
     assert 'id="autonomySays"' in html
     assert "AUTONOMY_SAYS" in js
     says = js.split("AUTONOMY_SAYS")[1][:700]
@@ -320,7 +322,7 @@ def test_the_autonomy_choice_says_when_to_pick_each():
 def test_the_sprint_count_explains_what_it_costs():
     """"6" says nothing about what six means. The consequence is runs and hours."""
     from pathlib import Path
-    js = (Path(__file__).resolve().parent.parent / "dashboard" / "app.js").read_text()
+    js = dashboard_js()
     assert "wireSprintChips" in js
     block = js.split("function wireSprintChips(", 1)[1][:1200]
     assert "agent runs" in block and "unattended" in block

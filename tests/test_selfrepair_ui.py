@@ -12,6 +12,8 @@ import pytest
 from conftest import make_project, make_task
 from app import config, db, selfops
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 DASH = Path(__file__).resolve().parent.parent / "dashboard"
 
 
@@ -54,7 +56,7 @@ def test_self_repair_is_a_page_not_a_tab_on_someone_elses_project():
     """As a tab it lingered after switching project, showing the platform's data
     under another project's name. It is now its own page off the landing tile."""
     html = (DASH / "index.html").read_text()
-    js = (DASH / "app.js").read_text()
+    js = dashboard_js()
     assert 'id="selfTab"' not in html, "the tab chip is back"
     assert 'data-v="self"' not in html
     assert 'id="selfPage"' in html
@@ -62,7 +64,7 @@ def test_self_repair_is_a_page_not_a_tab_on_someone_elses_project():
 
 
 def test_opening_a_project_hides_the_self_repair_page():
-    js = (DASH / "app.js").read_text()
+    js = dashboard_js()
     block = js.split("function openProject(", 1)[1][:300]
     assert '$("#selfPage")' in block and "hidden = true" in block
 
@@ -147,20 +149,20 @@ def test_a_single_sprint_issue_leaves_the_cap_alone(root_client, fresh_db, monke
 # ---- the draft step has to exist in the UI, not just the API --------------
 
 def test_the_self_panel_offers_a_draft_step():
-    js = (DASH / "app.js").read_text()
+    js = dashboard_js()
     assert 'id="roughIssue"' in js and 'id="refineBtn"' in js
     assert "/api/self/refine" in js
 
 
 def test_the_ui_admits_when_the_draft_is_just_your_own_words():
     """A silent fallback reads as 'the AI thought it was already perfect'."""
-    js = (DASH / "app.js").read_text()
+    js = dashboard_js()
     block = js.split('id="refineBtn"', 1)[1]
     assert "d.refined" in block
 
 
 def test_the_issue_form_collects_sprints():
-    js = (DASH / "app.js").read_text()
+    js = dashboard_js()
     assert 'name="sprints"' in js and "sprints: Number(f.get(\"sprints\"))" in js
 
 

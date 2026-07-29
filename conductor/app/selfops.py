@@ -117,7 +117,7 @@ REFINE_SYSTEM = (
     "self-hosted system where an AI manager plans a project and AI workers clone a "
     "GitHub repo, work on branches and open PRs. Its parts are a FastAPI conductor "
     "(app/routes.py, manager.py, scheduler.py, launcher.py, db.py — SQLite), a "
-    "vanilla-JS dashboard with no build step (dashboard/app.js), and a worker agent "
+    "vanilla-JS dashboard with no build step (dashboard/js/*.js + dashboard/canvas2/, loaded in index.html order), and a worker agent "
     "(worker/worker.py).\n\n"
     "Return ONLY valid JSON, no fences:\n"
     '{"title": "one line, specific, no ticket-speak",\n'

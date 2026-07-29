@@ -9,9 +9,11 @@ from pathlib import Path
 
 import pytest
 
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
 DASH = Path(__file__).resolve().parent.parent / "dashboard"
 HTML = (DASH / "index.html").read_text()
-JS = (DASH / "app.js").read_text()
+JS = dashboard_js()
 CSS = (DASH / "style.css").read_text()
 
 pytestmark = pytest.mark.hostonly   # reads the repo, not the running image

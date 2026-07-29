@@ -923,6 +923,139 @@ def test_a_one_way_arrow_restricts_who_hears():
     assert s._hears(t, a.id, b.id) and s._hears(t, b.id, a.id)           # bidirectional: both hear
 
 
+def test_protocol_defaults_are_backward_compatible_and_validated():
+    """Policy-as-data: an old thread with no protocol resolves to EXACTLY the historical
+    behaviour; presets overlay; junk from the API is rejected, not stored."""
+    from app.lifeworld.threads import protocol_of, clean_protocol, DEFAULT_PROTOCOL
+    assert protocol_of({}) == DEFAULT_PROTOCOL                              # old saved threads → classic
+    p = protocol_of({"protocol": {"preset": "evidence-2026"}})
+    assert p["init"] == "independent" and p["anonymize"] is True and p["on_unanimity"] == "devils_advocate"
+    p2 = protocol_of({"protocol": {"preset": "evidence-2026", "anonymize": False}})
+    assert p2["init"] == "independent" and p2["anonymize"] is False         # thread overrides beat the preset
+    cleaned = clean_protocol({"preset": "nope", "init": "telepathy", "max_rounds": 99, "anonymize": 1, "extra": "x"})
+    assert cleaned == {"anonymize": True, "max_rounds": 4}                  # junk dropped, values clamped
+
+
+def test_independent_init_gives_each_agent_its_own_model_call():
+    """The diverse-initialization fix: round 1 of a run is N separate calls — each on the
+    AGENT'S OWN model, blind — not one ghost-written panel. Later rounds and the memo stay
+    manager-composed; total calls ≤ N + (rounds-1) + 1, still bounded by construction."""
+    calls = []
+    async def complete(provider, model, system, prompt, settings, max_tokens=2000):
+        calls.append({"model": model, "system": system})
+        if "closing" in system:
+            return '{"question":"q","positions":[{"who":%d,"position":"p"}],"dissent":"","recommendation":"r"}' % ids["a"]
+        if "HOST" in system:
+            return '{"enforce":[],"round":[{"who":%d,"text":"reply a"},{"who":%d,"text":"reply b"}],"unanimous":false}' % (ids["a"], ids["b"])
+        return "My independent stance."
+    w = World(name="live", complete=complete, settings={})
+    a, b = w.spawn_human("Ada"), w.spawn_human("Bo")
+    a.model, b.model = "claude-haiku-4-5", "claude-sonnet-5"                # different minds per agent
+    ids = {"a": a.id, "b": b.id}
+    s = w.new_room("room", "freeplay"); s.seat(a); s.seat(b); s.connect(a.id, b.id)
+    s.threads[0]["rulebook"] = "q"
+    s.threads[0]["manager"] = {"model": "claude-haiku-4-5", "budget": 2}
+    s.threads[0]["protocol"] = {"init": "independent"}
+    asyncio.run(s.run_deliberation(s.threads[0], rounds=2))
+    agent_calls = [c for c in calls if "You are Ada" in c["system"] or "You are Bo" in c["system"]]
+    host_calls = [c for c in calls if "HOST" in c["system"] or "closing" in c["system"]]
+    assert len(agent_calls) == 2, "round 1 must be one independent call per agent"
+    assert {c["model"] for c in agent_calls} == {"claude-haiku-4-5", "claude-sonnet-5"}   # each agent's OWN model
+    assert len(host_calls) == 2                                            # round-2 plan + the memo — no round-1 host call
+    says = [r for r in s.log if r["kind"] == "say"]
+    assert sum(1 for r in says if "independent stance" in r["text"]) == 2  # both spoke their own words in round 1
+
+
+def test_a_muted_graph_never_pays_even_in_independent_mode():
+    """budget 0 is THE mute switch: with init=independent a muted graph must make zero model
+    calls, say nothing, and note no spends — the one-spend-choke-point invariant holds."""
+    calls = []
+    async def complete(provider, model, system, prompt, settings, max_tokens=2000):
+        calls.append(model)
+        return "x"
+    w = World(name="live", complete=complete, settings={})
+    a, b = w.spawn_human("A"), w.spawn_human("B")
+    s = w.new_room("room", "freeplay"); s.seat(a); s.seat(b); s.connect(a.id, b.id)
+    s.threads[0]["manager"] = {"model": "claude-haiku-4-5", "budget": 0}
+    s.threads[0]["protocol"] = {"init": "independent"}
+    asyncio.run(s.run_thread(s.threads[0], first_round=True))
+    assert calls == [] and not [r for r in s.log if r["kind"] == "say"]
+    assert a.usage()["used"] == 0 and b.usage()["used"] == 0
+
+
+def test_clean_protocol_survives_unhashable_junk():
+    """A JSON list/object where a string belongs must be DROPPED, not crash the endpoint."""
+    from app.lifeworld.threads import clean_protocol
+    assert clean_protocol({"init": ["ghostwritten"], "preset": {}, "on_unanimity": {}, "max_rounds": [4]}) == {}
+    assert clean_protocol("not-a-dict") == {}
+
+
+def test_unanimous_string_false_is_not_unanimous():
+    """Trust boundary: the model returning unanimous as the STRING 'false' must not trigger
+    a spurious devil's-advocate round (bool('false') is True — the exact bug class of ed8f05b)."""
+    async def complete(provider, model, system, prompt, settings, max_tokens=2000):
+        return '{"enforce":[],"round":[{"who":%d,"text":"t"}],"unanimous":"false"}' % aid
+    w = World(name="live", complete=complete, settings={})
+    a = w.spawn_human("A"); aid = a.id
+    plan = asyncio.run(w.host_plan({"model": "claude-haiku-4-5", "budget": 2}, [a], "q", "", want_unanimous=True))
+    assert plan["unanimous"] is False
+    async def complete2(provider, model, system, prompt, settings, max_tokens=2000):
+        return '{"enforce":[],"round":[{"who":%d,"text":"t"}],"unanimous":"true"}' % aid
+    w._complete = complete2
+    assert asyncio.run(w.host_plan({"model": "claude-haiku-4-5", "budget": 2}, [a], "q", "", want_unanimous=True))["unanimous"] is True
+
+
+def test_unanimity_triggers_a_devils_advocate_round():
+    """Premature-consensus rule: when the plan reports the panel unanimous, the NEXT round's
+    host is instructed to appoint a dissenter (and the appointment is logged)."""
+    systems = []
+    async def complete(provider, model, system, prompt, settings, max_tokens=2000):
+        systems.append(system)
+        if "closing" in system:
+            return '{"question":"q","positions":[{"who":%d,"position":"p"}],"dissent":"","recommendation":"r"}' % ids["a"]
+        if "HOST" in system:
+            return '{"enforce":[],"round":[{"who":%d,"text":"agree"},{"who":%d,"text":"agree"}],"unanimous":true}' % (ids["a"], ids["b"])
+        return "x"
+    w = World(name="live", complete=complete, settings={})
+    a, b = w.spawn_human("A"), w.spawn_human("B")
+    ids = {"a": a.id, "b": b.id}
+    s = w.new_room("room", "freeplay"); s.seat(a); s.seat(b); s.connect(a.id, b.id)
+    s.threads[0]["rulebook"] = "q"
+    s.threads[0]["manager"] = {"model": "claude-haiku-4-5", "budget": 2}
+    s.threads[0]["protocol"] = {"on_unanimity": "devils_advocate"}
+    asyncio.run(s.run_deliberation(s.threads[0], rounds=2))
+    host_systems = [x for x in systems if "HOST" in x and "closing" not in x]
+    assert "opposing case" not in host_systems[0] and "opposing case" in host_systems[1]
+    assert any("devil's advocate" in r["text"] for r in s.log if r["kind"] == "manage")
+
+
+def test_anonymized_transcript_strips_names_for_the_host():
+    """anonymize: the manager reads 'Agent 1/Agent 2', never names — arguments, not reputations."""
+    w = free_world()
+    a, b = w.spawn_human("Harvey"), w.spawn_human("Mike")
+    s = w.new_room("room", "freeplay"); s.seat(a); s.seat(b); s.connect(a.id, b.id)
+    s._record("say", a.id, f"{a.name}: rail is best", frm=a.id)
+    s._record("say", b.id, f"{b.name}: bus is best", frm=b.id)
+    t = s._thread_transcript([a, b], anonymize=True)
+    assert "Harvey" not in t and "Mike" not in t
+    assert "Agent 1: rail is best" in t and "Agent 2: bus is best" in t
+    assert "Harvey" in s._thread_transcript([a, b])                        # non-anonymized path unchanged
+
+
+def test_protocol_round_trips_through_thread_update_and_manifest(client):
+    from conftest import login
+    login(client, "root", "testpass")
+    wid = client.post("/api/lw", json={"name": "W"}).json()["world"]["id"]
+    man = {"name": "p", "agents": [{"name": "A"}, {"name": "B"}], "edges": [["A", "B"]],
+           "rules": "r", "protocol": {"preset": "evidence-2026"}}
+    r = client.post(f"/api/lw/{wid}/manifest", json=man).json()
+    rid, tid = r["room"]["id"], r["thread_ids"][0]
+    assert r["room"]["threads"][0]["protocol"] == {"preset": "evidence-2026"}
+    client.post(f"/api/lw/{wid}/room/{rid}/thread/{tid}", json={"protocol": {"preset": "classic", "max_rounds": 3}})
+    room = client.get(f"/api/lw/{wid}/room/{rid}").json()["room"]
+    assert room["threads"][0]["protocol"] == {"preset": "classic", "max_rounds": 3}
+
+
 def test_agent_model_session_usage_and_sleep():
     """An agent tracks model-uses in a rolling session window; at the cap it sleeps until the
     window passes — the meter/red state the canvas shows."""
