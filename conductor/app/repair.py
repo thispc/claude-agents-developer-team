@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -28,6 +29,13 @@ from . import bus, config, db, launcher, tuning
 from . import repair_builder as rb
 
 TICK_SECONDS = 20
+
+# Serializes read-modify-write cycles on the repair:state and repair:ledger kv keys.
+# tick() runs on the event loop, but toggle()/set_factors() are plain `def` FastAPI
+# handlers that FastAPI runs in a worker thread — a real cross-thread race, not just
+# interleaved coroutines — so this has to be a threading.Lock (like db.py's own _lock),
+# not an asyncio.Lock, which only serializes within a single event loop.
+_STATE_LOCK = threading.Lock()
 
 DEFAULT_FACTORS = [
     {"id": "correctness", "name": "Correctness", "enabled": True,
@@ -59,16 +67,22 @@ def enabled() -> bool:
     return bool(db.kv_get("repair:enabled"))
 
 
+def _default_state() -> dict:
+    return {"phase": "idle", "sprint_no": 0, "task_idx": 0,
+            "sleep_until": 0, "sleep_reason": "", "note": ""}
+
+
 def state() -> dict:
-    return db.kv_get("repair:state") or {"phase": "idle", "sprint_no": 0, "task_idx": 0,
-                                         "sleep_until": 0, "sleep_reason": "", "note": ""}
+    with _STATE_LOCK:
+        return db.kv_get("repair:state") or _default_state()
 
 
 def set_state(**patch) -> dict:
-    st = state()
-    st.update(patch, updated_at=time.time())
-    db.kv_set("repair:state", st)
-    return st
+    with _STATE_LOCK:                    # read-modify-write: inline the read, don't call
+        st = db.kv_get("repair:state") or _default_state()   # state() — it would re-lock
+        st.update(patch, updated_at=time.time())
+        db.kv_set("repair:state", st)
+        return st
 
 
 def factors() -> list[dict]:
@@ -103,9 +117,10 @@ def set_factors(patch: list[dict] | None = None, add: dict | None = None,
 
 
 def ledger_add(kind: str, model: str = "", usd: float = 0.0) -> None:
-    rows = db.kv_get("repair:ledger") or []
-    rows.append({"ts": time.time(), "kind": kind, "model": model, "usd": round(float(usd or 0), 4)})
-    db.kv_set("repair:ledger", rows[-500:])
+    with _STATE_LOCK:
+        rows = db.kv_get("repair:ledger") or []
+        rows.append({"ts": time.time(), "kind": kind, "model": model, "usd": round(float(usd or 0), 4)})
+        db.kv_set("repair:ledger", rows[-500:])
 
 
 def _sprint_key(n: int) -> str:
