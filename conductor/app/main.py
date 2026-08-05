@@ -68,6 +68,10 @@ async def lifespan(app: FastAPI):
     # accumulated enough work to be worth remembering, under a hard daily budget,
     # on each owner's OWN credentials (default_settings_for).
     loop.create_task(home.loop(home.default_settings_for))
+    # Self-repair v2 — the IT crew's sprint loop. A no-op every tick until the owner flips
+    # the button; resumes mid-sprint after any restart because its state lives in kv.
+    from . import repair
+    loop.create_task(repair.loop())
     yield
 
 
@@ -104,4 +108,6 @@ async def _no_stale_dashboard(request, call_next):
 app.include_router(router)
 from .lifeworld_routes import router as lifeworld_router   # the Lifeworld: its own router
 app.include_router(lifeworld_router)
+from .repair_routes import router as repair_router         # self-repair v2: its own router
+app.include_router(repair_router)
 app.mount("/", StaticFiles(directory=str(config.DASHBOARD_DIR), html=True), name="dashboard")

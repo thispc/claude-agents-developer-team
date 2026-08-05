@@ -235,6 +235,78 @@ KNOBS: dict[str, tuple[Any, type, str, str]] = {
         True, bool, "REBALANCE_IDLE",
         "Offer blocked-but-idle teammates work outside their role rather than "
         "leaving them parked while one critical path runs alone."),
+
+    # --- self-repair v2: the IT crew (repair.py) ---
+    "repair_tasks_per_sprint": (
+        2, int, "REPAIR_TASKS_PER_SPRINT",
+        "Improvements the crew may build per sprint. More parallelises badly "
+        "against the same session caps and multiplies full-suite verifies; one "
+        "makes sprints feel stalled."),
+    "repair_plan_rounds": (
+        2, int, "REPAIR_PLAN_ROUNDS",
+        "Deliberation rounds the crew spends picking the sprint's tasks — the "
+        "debate literature says consensus solidifies by round 2-3; the thread "
+        "protocol's max_rounds caps it regardless."),
+    "repair_supervised": (
+        False, bool, "REPAIR_SUPERVISED",
+        "True parks every green change in a review queue for a human click; "
+        "False lands it the moment the full suite is green. The button's promise "
+        "is autonomy, so the default is to land."),
+    "repair_auto_restart": (
+        True, bool, "REPAIR_AUTO_RESTART",
+        "Restart the conductor between sprints when landed changes touched "
+        "backend code, so improvements take effect immediately instead of "
+        "waiting for someone to remember."),
+    "repair_session_cap": (
+        6, int, "REPAIR_SESSION_CAP",
+        "Coding/scout sessions the crew may start per 5-hour rolling window — "
+        "mirrors Claude's subscription session ladder so self-repair never "
+        "starves the owner's own interactive use."),
+    "repair_weekly_cap": (
+        60, int, "REPAIR_WEEKLY_CAP",
+        "Sessions per rolling week — the subscription's second ceiling. The "
+        "manager sleeps the crew when it is close instead of hitting the wall "
+        "mid-build."),
+    "repair_headroom_min": (
+        2, int, "REPAIR_HEADROOM_MIN",
+        "Sessions of session-window headroom required to START a sprint; below "
+        "it the manager sleeps until the window rolls. Starting with less risks "
+        "dying between build and verify."),
+    "repair_builder_model": (
+        "claude-sonnet-5", str, "REPAIR_BUILDER_MODEL",
+        "The model that scouts and builds. Quality over price here: cheap-model "
+        "fixes get reverted more often than they save, and a revert costs a "
+        "whole sprint."),
+    "repair_max_turns": (
+        50, int, "REPAIR_MAX_TURNS",
+        "Turn cap on one build session. A fix that needs more turns than this "
+        "is a redesign wearing a fix's clothes — fail it and let the crew "
+        "re-scope next sprint."),
+    "repair_scout_max_turns": (
+        25, int, "REPAIR_SCOUT_MAX_TURNS",
+        "Turn cap on the read-only survey session. Scouting is browsing, not "
+        "building; a tighter cap keeps its cost a fraction of a build."),
+    "repair_fix_attempts": (
+        1, int, "REPAIR_FIX_ATTEMPTS",
+        "Red-suite retries per task (with the failure text as evidence) before "
+        "the branch is abandoned. More retries mostly re-buy the same failure."),
+    "repair_verify_timeout_s": (
+        900, int, "REPAIR_VERIFY_TIMEOUT_S",
+        "Ceiling on one full-suite verification run in a worktree. The suite "
+        "takes ~1-2 minutes on a laptop; far past that it is hung, not slow."),
+    "repair_sprint_pause_s": (
+        300, int, "REPAIR_SPRINT_PAUSE_S",
+        "Breath between sprints so the feed stays followable, the ledger "
+        "smooths, and a runaway improvement loop cannot melt a laptop."),
+    "agent_session_cap": (
+        30, int, "AGENT_SESSION_CAP",
+        "Model-uses one Studio agent may make inside its rolling session window "
+        "before it sleeps. Promoted from env-only so a running instance can "
+        "tune it like every other spend door."),
+    "agent_session_window_s": (
+        5 * 3600, int, "AGENT_SESSION_WINDOW_S",
+        "The rolling window (seconds) behind agent_session_cap — Claude's "
+        "subscription session is about five hours, so that is the default."),
 }
 
 

@@ -1,0 +1,135 @@
+"""HTTP surface for self-repair v2 — its own router (like the Lifeworld's), every endpoint
+behind the same _root gate the legacy self area uses: self-repair writes to the repo this
+server runs from, so it is an operator power, not a user feature."""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel, Field
+
+from . import db, repair
+from . import repair_builder as rb
+from .routes import _root
+
+router = APIRouter(prefix="/api/repair", tags=["repair"])
+
+
+class ToggleBody(BaseModel):
+    on: bool
+
+
+class FactorsBody(BaseModel):
+    set: list[dict] = Field(default_factory=list)     # [{id, enabled}]
+    add: dict | None = None                            # {name, brief}
+    remove: str | None = None
+
+
+class ChatText(BaseModel):
+    text: str = ""
+
+
+class BranchBody(BaseModel):
+    branch: str
+
+
+class ShaBody(BaseModel):
+    sha: str
+
+
+@router.get("/status")
+def repair_status(request: Request) -> dict:
+    _root(request)
+    return repair.status()
+
+
+@router.post("/toggle")
+def repair_toggle(body: ToggleBody, request: Request) -> dict:
+    _root(request)
+    return {"enabled": repair.toggle(body.on)}
+
+
+@router.post("/factors")
+def repair_factors(body: FactorsBody, request: Request) -> dict:
+    _root(request)
+    return {"factors": repair.set_factors(body.set, body.add, body.remove)}
+
+
+@router.get("/ledger")
+def repair_ledger(request: Request) -> dict:
+    _root(request)
+    return {"meters": repair.meters(), "entries": (db.kv_get("repair:ledger") or [])[-100:]}
+
+
+@router.get("/sprints")
+def repair_sprints(request: Request, limit: int = 20) -> dict:
+    _root(request)
+    rows = sorted(db.kv_prefix("repair:sprint:").values(), key=lambda r: r.get("no", 0))
+    return {"sprints": rows[-max(1, min(limit, 100)):]}
+
+
+@router.post("/chat")
+async def repair_chat(body: ChatText, request: Request) -> dict:
+    _root(request)
+    info = repair.ensure_team()
+    if not info:
+        raise HTTPException(409, "no crew yet — enable a factor first")
+    from .lifeworld import store
+    w = store.load(info["world_id"], live=repair._live(),
+                   settings=repair._root_settings() if repair._live() else None)
+    s = w.scene(info["room_id"])
+    t = s.thread(info["thread_id"]) if s else None
+    if t is None:
+        raise HTTPException(409, "the crew's table is missing — toggle repair off and on")
+    res = await s.chat(t, "manager", body.text)
+    store.save(w)
+    return res
+
+
+@router.post("/queue/approve")
+async def repair_approve(body: BranchBody, request: Request) -> dict:
+    _root(request)
+    q = db.kv_get("repair:queue") or []
+    item = next((x for x in q if x["branch"] == body.branch), None)
+    if not item:
+        raise HTTPException(404, "no such queued branch")
+    out = rb.land(item["branch"], item["title"])
+    if not out.get("ok"):
+        raise HTTPException(409, out.get("reason", "could not land"))
+    db.kv_set("repair:queue", [x for x in q if x["branch"] != body.branch])
+    rb.discard(item["branch"], item.get("worktree"))
+    rec = repair.sprint(item["sprint_no"])
+    if rec:
+        for t in rec["tasks"]:
+            if t.get("branch") == body.branch:
+                t["status"], t["landed_sha"] = "landed", out["sha"]
+        rec["landed"] += 1
+        rec["landed_files"] = sorted(set(rec.get("landed_files", []) + out.get("files", [])))
+        repair.save_sprint(rec)
+    return {"landed_sha": out["sha"]}
+
+
+@router.post("/queue/discard")
+def repair_discard(body: BranchBody, request: Request) -> dict:
+    _root(request)
+    q = db.kv_get("repair:queue") or []
+    item = next((x for x in q if x["branch"] == body.branch), None)
+    if not item:
+        raise HTTPException(404, "no such queued branch")
+    rb.discard(item["branch"], item.get("worktree"))
+    db.kv_set("repair:queue", [x for x in q if x["branch"] != body.branch])
+    return {"ok": True}
+
+
+@router.post("/revert")
+def repair_revert(body: ShaBody, request: Request) -> dict:
+    _root(request)
+    out = rb.revert(body.sha)
+    if not out.get("ok"):
+        raise HTTPException(409, out.get("reason", "could not revert"))
+    return out
+
+
+@router.post("/abort")
+async def repair_abort(request: Request) -> dict:
+    _root(request)
+    return {"ok": await repair.abort()}

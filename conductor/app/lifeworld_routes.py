@@ -600,18 +600,16 @@ def thread_results(world_id: int, room_id: int, tid: int, request: Request) -> d
     return {"results": t.get("results", [])}
 
 
-@router.post("/{world_id}/manifest")
-async def apply_manifest(world_id: int, body: ManifestBody, request: Request, live: int = 0) -> dict:
-    """Declare a whole team as one spec and materialise it: a new scene with the agents (built
-    deterministically from their dials — applying never spends), wired per `edges`, rules + manager
-    installed. The canvas shows it like any hand-built scene — the Studio is one client of this API.
-    If run.rounds is set, deliberates immediately and returns the decision memo."""
+def materialise_manifest(w, body: ManifestBody):
+    """The manifest's body as a plain function (no HTTP): spawn the agents deterministically
+    from their dials, wire the edges by name, install rules + manager + protocol. Returns the
+    new Scene. Shared by the route below and by background engines (self-repair's IT crew).
+    Raises HTTPException on a bad spec — callers with no request context catch it like any error."""
     import math
     from app.lifeworld.psyche import TRAITS
     from app.lifeworld.drives import SPEC as DRIVE_SPEC
     from app.lifeworld.world import MODEL_WHITELIST
     from app.lifeworld.util import clamp01
-    w, _ = _load(request, world_id, live=bool(live))
     if not body.agents or len(body.agents) > 12:
         raise HTTPException(422, "a manifest needs 1-12 agents")
     names = [a.name.strip()[:60] for a in body.agents]
@@ -654,6 +652,18 @@ async def apply_manifest(world_id: int, body: ManifestBody, request: Request, li
         t["manager"] = {"model": (m.get("model") if m.get("model") in MODEL_WHITELIST else ""),
                         "budget": _clean_budget(m)}
         t["protocol"] = clean_protocol(body.protocol)
+    return s
+
+
+@router.post("/{world_id}/manifest")
+async def apply_manifest(world_id: int, body: ManifestBody, request: Request, live: int = 0) -> dict:
+    """Declare a whole team as one spec and materialise it: a new scene with the agents (built
+    deterministically from their dials — applying never spends), wired per `edges`, rules + manager
+    installed. The canvas shows it like any hand-built scene — the Studio is one client of this API.
+    If run.rounds is set, deliberates immediately and returns the decision memo."""
+    w, _ = _load(request, world_id, live=bool(live))
+    s = materialise_manifest(w, body)
+    by_name = {(w.get(hid).name): hid for hid in s.seats}
     result = None
     rounds = int((body.run or {}).get("rounds", 0) or 0)
     if rounds and s.threads:

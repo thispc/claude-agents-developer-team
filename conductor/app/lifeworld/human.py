@@ -150,7 +150,13 @@ class Human(Being):
     # --- model session usage: an agent that burns its quota sleeps until the window passes ----
     @staticmethod
     def _session_params():
-        try:
+        try:                                    # runtime-tunable first (a spend door like any other)…
+            from .. import tuning
+            return (max(1, int(tuning.get("agent_session_cap"))),
+                    max(1, int(tuning.get("agent_session_window_s"))))
+        except Exception:
+            pass
+        try:                                    # …env-only config next, hard defaults last
             from ..config import AGENT_SESSION_CAP, AGENT_SESSION_WINDOW_S
             return max(1, AGENT_SESSION_CAP), max(1, AGENT_SESSION_WINDOW_S)
         except Exception:
