@@ -617,11 +617,29 @@ def _tell_crew(rec: dict) -> None:
 
 # --- the loop ----------------------------------------------------------------
 
+def _hold_lease() -> bool:
+    """ONE engine per database. The crew's own threading.Lock (landed by sprint 2) serializes
+    writers inside a process; this lease serializes across PROCESSES — a stray old server whose
+    loop still ticks against the same devteam.db caused two engines to run one sprint (double
+    plans, orphaned green branches). The lease is a kv row {pid, ts} heartbeaten every tick;
+    another live holder → we stand down this tick. A crashed holder expires in 3 ticks."""
+    import os
+    now = time.time()
+    lease = db.kv_get("repair:lease") or {}
+    if lease.get("pid") != os.getpid() and now - (lease.get("ts") or 0) < TICK_SECONDS * 3:
+        return False
+    db.kv_set("repair:lease", {"pid": os.getpid(), "ts": now})
+    return True
+
+
 async def loop() -> None:
     """The never-die background loop (upkeep.py's contract): errors are recorded and
     reported, never fatal — a self-repair engine that can crash itself is a joke."""
     while True:
         try:
+            if not _hold_lease():
+                await asyncio.sleep(TICK_SECONDS)
+                continue
             await tick()
         except Exception as e:
             db.kv_set("repair:last_error", {"ts": time.time(), "phase": state().get("phase", "?"),

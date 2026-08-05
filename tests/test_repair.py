@@ -68,6 +68,21 @@ def test_an_offline_sprint_completes_deterministically_with_zero_spend(fresh_db,
     assert db.kv_get("repair:seq") == 1
 
 
+def test_only_one_engine_process_may_drive_a_database(fresh_db, no_spend, monkeypatch):
+    """The sprint-2 lesson: a forgotten server from an old session kept ticking against the
+    same devteam.db, so TWO engines planned one sprint and orphaned a green branch. A kv lease
+    (pid + heartbeat) means the second process stands down; a dead holder's lease expires."""
+    import os
+    import time as _t
+    assert repair._hold_lease() is True                       # we take it
+    assert repair._hold_lease() is True                       # ours stays ours
+    db.kv_set("repair:lease", {"pid": os.getpid() + 99999, "ts": _t.time()})
+    assert repair._hold_lease() is False, "a live foreign holder must block us"
+    db.kv_set("repair:lease", {"pid": os.getpid() + 99999,    # holder died long ago
+                               "ts": _t.time() - repair.TICK_SECONDS * 4})
+    assert repair._hold_lease() is True, "a stale lease must expire"
+
+
 def test_a_stale_state_pointing_at_a_missing_sprint_resets(fresh_db, no_spend):
     repair.toggle(True)
     repair.set_state(phase="build", sprint_no=99, task_idx=0)
