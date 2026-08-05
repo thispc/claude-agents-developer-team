@@ -193,6 +193,37 @@ def test_v2_double_click_graph_and_wire_and_collapse(server, page):
     assert _sel(page) == 1, "clicking a member did not collapse to just it"
 
 
+def test_v2_grouped_selection_click_resolves_via_real_hit_test(server, page):
+    """Real-user probe (real mouse, DPR2 — this module's `page` fixture runs device_scale_factor=2):
+    with a graph grouped-selected, a click on one member must resolve to THAT token via the
+    browser's own compositor (document.elementFromPoint), not an occluding overlay shape (the
+    connection handles a single-selection would show sit in the same .lw2-overlay layer that
+    painted over tokens in v1's Konva hit graph). Guards the shared hit-test-utils.js helper
+    that both the press/select path and the context-menu path now call."""
+    wid, rid = _mk(server["client"])
+    a, b = _two_connected(server["client"], wid, rid)
+    server["client"].post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b})
+    _open(page, wid, rid)
+    pa = _tpos(page, a); pb = _tpos(page, b)
+    sa = _scr(page, pa["x"], pa["y"]); sb = _scr(page, pb["x"], pb["y"])
+    page.mouse.dblclick(sa["x"], sa["y"]); page.wait_for_timeout(300)   # double-click groups the whole graph
+    assert _sel(page) == 2, "double-click did not select the whole graph"
+    # the real-user probe: what does the browser itself resolve at B's screen point, right now?
+    hit = page.evaluate(
+        "([x, y]) => { const el = document.elementFromPoint(x, y); const t = el && el.closest && el.closest('.lw2-token'); return t ? t.getAttribute('data-id') : null; }",
+        [sb["x"], sb["y"]],
+    )
+    assert hit == str(b), f"elementFromPoint at B's token resolved to {hit!r}, not B — an overlay shape may be occluding it"
+    # a real mouse click at that same point must land on B too (same lookup the click handler
+    # uses) — the group stays grouped (a plain click on an already-selected member doesn't
+    # shrink it), but B must still resolve as hit and stay selected, not fall through to
+    # "empty floor" (which would clear the selection entirely).
+    page.mouse.click(sb["x"], sb["y"]); page.wait_for_timeout(250)
+    assert _sel(page) == 2, "the click on B was not recognized as a token press (selection changed unexpectedly)"
+    assert page.evaluate("(id) => document.querySelector(`.lw2-token[data-id=\"${id}\"]`).classList.contains('lw2-sel')", b), \
+        "the resolved token did not remain selected"
+
+
 def test_v2_shows_a_mediated_conversation(server, page):
     """Step a round on a connected thread → the hidden manager mediates and each agent's line
     appears as a speech bubble on the canvas. The whole round is free/deterministic offline."""

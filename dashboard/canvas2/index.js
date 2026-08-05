@@ -8,6 +8,7 @@
 
 import { createWorld, svgEl } from "./world.js";
 import { node as buildNode, wireNode, setWireEnds, setPos, speechBubble, SIZES } from "./render.js";
+import { hitTokenAt } from "./hit-test-utils.js";
 
 const W = window;
 const DRAG_THRESH = 4;              // px of screen travel before a press becomes a drag
@@ -261,7 +262,7 @@ function pointerDown(inst, e) {
   if (tool === "select") {
     const handleEl = e.target.closest && e.target.closest(".lw2-handle");
     if (handleEl) { beginConnect(inst, e, handleEl.getAttribute("data-id")); return; }
-    const tokEl = e.target.closest && e.target.closest(".lw2-token");
+    const tokEl = hitTokenAt(e.clientX, e.clientY);
     if (tokEl) { pressToken(inst, e, tokEl); return; }
     const wireEl = e.target.closest && e.target.closest(".lw2-wire");
     if (wireEl) { selectEdge(inst, wireEl); inst.gesture = { type: "tap" }; return; }
@@ -271,7 +272,7 @@ function pointerDown(inst, e) {
     return;
   }
   // placement tools (agent/artifact): a click on empty floor asks the create flow (js/canvas1.js) to start creation
-  if (e.target === svg || (e.target.closest && !e.target.closest(".lw2-token"))) {
+  if (e.target === svg || !hitTokenAt(e.clientX, e.clientY)) {
     const w = inst.world.toWorld(e.clientX, e.clientY);
     inst.gesture = { type: "place", world: w };
   }
@@ -466,7 +467,7 @@ function dblClick(inst, e) {
 }
 function contextMenu(inst, e) {
   e.preventDefault();
-  const tokEl = e.target.closest && e.target.closest(".lw2-token");
+  const tokEl = hitTokenAt(e.clientX, e.clientY);
   if (tokEl) {
     const t = inst.tokens.get(tokEl.getAttribute("data-id"));
     if (t.kind === "agent") W.lwAgentMenu && W.lwAgentMenu(e, t.data);
