@@ -135,6 +135,14 @@ def save_sprint(rec: dict) -> None:
     db.kv_set(_sprint_key(rec["no"]), rec)
 
 
+def _clear_error() -> None:
+    """A recorded failure must not outlive the phase that recovered from it — a stale banner
+    reads as "still broken" forever (sprint 1's dead scout error was still on screen at
+    sprint 3, long after the fix)."""
+    if db.kv_get("repair:last_error"):
+        db.kv_set("repair:last_error", None)
+
+
 # --- meters + the sleep decision -------------------------------------------
 
 SESSION_KINDS = ("scout", "build")
@@ -172,9 +180,11 @@ def headroom(now: float | None = None) -> tuple[bool, str, float]:
     return True, "", 0.0
 
 
-def _sleep(reason: str, until: float) -> None:
-    set_state(phase="sleeping", sleep_until=until, sleep_reason=reason)
-    bus.emit(0, None, "repair", "repair_sleeping", {"reason": reason, "until": until})
+def _sleep(reason: str, until: float, kind: str = "headroom") -> None:
+    """kind: 'headroom' (wakes early the moment the window rolls enough) | 'cooldown' (a real
+    provider wake time — wait it out) | 'pause' (the deliberate breath between sprints)."""
+    set_state(phase="sleeping", sleep_until=until, sleep_reason=reason, sleep_kind=kind)
+    bus.emit(0, None, "repair", "repair_sleeping", {"reason": reason, "until": until, "kind": kind})
 
 
 # --- the button --------------------------------------------------------------
@@ -290,9 +300,13 @@ async def tick() -> None:
         return
     st = state()
     if st["phase"] == "sleeping":
-        if time.time() < (st.get("sleep_until") or 0):
+        # A headroom sleep is a GUESS at when the window rolls — if the meters recover sooner
+        # (or a cooldown expires), wake now rather than sitting out a stale wake time. A pause
+        # between sprints is deliberate, so it waits out its clock.
+        early = st.get("sleep_kind", "headroom") != "pause" and headroom()[0]
+        if not early and time.time() < (st.get("sleep_until") or 0):
             return
-        st = set_state(phase="idle", sleep_until=0, sleep_reason="")
+        st = set_state(phase="idle", sleep_until=0, sleep_reason="", sleep_kind="")
     if st["phase"] == "restarting":                 # we came back up — the restart happened
         st = set_state(phase="idle")
     await advance(st)
@@ -334,7 +348,7 @@ def _rate_limited(err: str) -> bool:
     if launcher.looks_rate_limited(err):
         launcher.note_rate_limit(str(tuning.get("repair_builder_model")), err)
         ok, reason, wake = headroom()
-        _sleep(reason or "provider limit hit", wake or time.time() + 300)
+        _sleep(reason or "provider limit hit", wake or time.time() + 300, kind="cooldown")
         return True
     return False
 
@@ -355,6 +369,8 @@ async def _phase_scout(st: dict, rec: dict) -> None:
             db.kv_set("repair:last_error", {"ts": time.time(), "phase": "scout", "detail": str(e)[:400]})
             rec["scout"] = {"digest": f"(scout failed: {str(e)[:120]})", "candidates": []}
     save_sprint(rec)
+    if rec["scout"]["candidates"]:
+        _clear_error()
     set_state(phase="plan")
     bus.emit(0, None, "repair", "repair_scouted", {"sprint": rec["no"],
                                                    "candidates": len(rec["scout"]["candidates"])})
@@ -557,6 +573,7 @@ async def _phase_land(st: dict, rec: dict) -> None:
             rec["landed"] += 1
             rec["landed_files"] = sorted(set(rec.get("landed_files", []) + out.get("files", [])))
             rb.discard(t["branch"], t["worktree"])
+            _clear_error()                           # something landed — the last failure is history
             bus.emit(0, None, "repair", "repair_landed", {"task": t["title"], "sha": out["sha"]})
         else:                                        # dirty tree / moved main → queue, don't lose it
             q = db.kv_get("repair:queue") or []
@@ -592,7 +609,7 @@ async def _phase_retro(st: dict, rec: dict) -> None:
     ok, reason, wake = headroom()
     if not ok:
         return _sleep(reason, wake)
-    _sleep("resting between sprints", time.time() + int(tuning.get("repair_sprint_pause_s")))
+    _sleep("resting between sprints", time.time() + int(tuning.get("repair_sprint_pause_s")), kind="pause")
 
 
 def _tell_crew(rec: dict) -> None:

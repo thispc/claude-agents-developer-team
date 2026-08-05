@@ -14,6 +14,16 @@ from app import auth, config, db, launcher, repair, tuning
 from app import repair_builder as rb
 
 
+@pytest.fixture(autouse=True)
+def _clean_cooldowns():
+    """launcher.COOLDOWN is a module global that outlives fresh_db, and a test that expires a
+    cooldown's DB row does not evict the in-memory entry — which then makes the NEXT test's
+    headroom() read as 'cooling'. Clear it around every test in this file."""
+    launcher.COOLDOWN.clear()
+    yield
+    launcher.COOLDOWN.clear()
+
+
 @pytest.fixture()
 def no_spend(monkeypatch):
     async def boom(*a, **k):
@@ -133,6 +143,26 @@ def test_the_real_session_limit_string_puts_the_engine_to_sleep(fresh_db):
     assert launcher.cooldown_left(model) > 0
     db.set_cooldown(model, time.time() - 1, "over")
     launcher.load_cooldowns()
+
+
+def test_a_headroom_sleep_wakes_early_but_a_pause_waits_it_out(fresh_db, no_spend, monkeypatch):
+    """Sprint 3's lesson: the wake time is a GUESS. When the window rolls sooner than guessed,
+    sitting out a stale clock (while the meter reads 3/6) is both wrong and confusing — so a
+    headroom sleep re-checks. The deliberate between-sprints pause is not second-guessed."""
+    monkeypatch.setattr(config, "AUTH_CONFIGURED", False)
+    repair.toggle(True)
+    repair._sleep("session window nearly spent", time.time() + 9999, kind="headroom")
+    asyncio.run(repair.tick())                       # headroom is fine now → wakes despite the clock
+    assert repair.state()["phase"] != "sleeping"
+    repair._sleep("resting between sprints", time.time() + 9999, kind="pause")
+    asyncio.run(repair.tick())
+    assert repair.state()["phase"] == "sleeping", "a deliberate pause must wait out its clock"
+
+
+def test_a_recovered_phase_clears_the_stale_error_banner(fresh_db):
+    db.kv_set("repair:last_error", {"ts": 1, "phase": "scout", "detail": "old news"})
+    repair._clear_error()
+    assert not db.kv_get("repair:last_error")
 
 
 def test_headroom_min_blocks_a_sprint_start(fresh_db):
