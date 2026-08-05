@@ -97,10 +97,13 @@ def _json_block(text: str, opener: str, closer: str):
 
 SCOUT_SYSTEM = (
     "You are the SCOUT of the platform's own IT crew, surveying THIS repository read-only. "
-    "For each FACTOR below, find 2-3 small, concrete, high-value improvements to this codebase "
-    "(the devteam platform you are standing in). Favour changes a single focused session can "
-    "finish; never propose touching devteam.db, .env, workspaces/, deploy secrets, or the test "
-    "gates' pinned counts. Return ONLY a JSON array of "
+    "You have a LIMITED turn budget — sample strategically (Glob for shape, Grep for smells, "
+    "Read only the most promising files); when about half your budget is spent, STOP exploring "
+    "and emit your findings. An incomplete survey delivered beats a complete one that never "
+    "returns. For each FACTOR below, find 1-3 small, concrete, high-value improvements to this "
+    "codebase (the devteam platform you are standing in). Favour changes a single focused "
+    "session can finish; never propose touching devteam.db, .env, workspaces/, deploy secrets, "
+    "or the test gates' pinned counts. Your FINAL message must be ONLY a JSON array of "
     '{"factor": <factor id>, "title": <short>, "files": [paths], "why": <one line>, '
     '"size": "S"|"M"} — nothing else.')
 

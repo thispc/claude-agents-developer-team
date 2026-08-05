@@ -334,6 +334,7 @@ async def _phase_scout(st: dict, rec: dict) -> None:
             ledger_add("scout", out.get("model", ""), out.get("usd", 0))
             rec["scout"] = {"digest": out["digest"], "candidates": out["candidates"]}
         except Exception as e:
+            ledger_add("scout", str(tuning.get("repair_builder_model")), 0)   # a failed session still burned quota
             if _rate_limited(str(e)):
                 return
             db.kv_set("repair:last_error", {"ts": time.time(), "phase": "scout", "detail": str(e)[:400]})
@@ -469,6 +470,7 @@ async def _phase_build(st: dict, rec: dict) -> None:
         return                                      # abort() already rewrote the state
     except Exception as e:
         CURRENT_BUILD = None
+        ledger_add("build", str(tuning.get("repair_builder_model")), 0)       # a failed session still burned quota
         if _rate_limited(str(e)):
             t["status"] = "pending"                 # resume this same task after the sleep
             t["attempts"] -= 1

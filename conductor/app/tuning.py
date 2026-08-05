@@ -283,7 +283,7 @@ KNOBS: dict[str, tuple[Any, type, str, str]] = {
         "is a redesign wearing a fix's clothes — fail it and let the crew "
         "re-scope next sprint."),
     "repair_scout_max_turns": (
-        25, int, "REPAIR_SCOUT_MAX_TURNS",
+        40, int, "REPAIR_SCOUT_MAX_TURNS",
         "Turn cap on the read-only survey session. Scouting is browsing, not "
         "building; a tighter cap keeps its cost a fraction of a build."),
     "repair_fix_attempts": (
