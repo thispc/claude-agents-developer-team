@@ -1631,7 +1631,7 @@ async function lwLoadLib(flow) {
   const host = $("#lwLibList"); if (!host) return;
   let lib;
   try { lib = await api(`/api/lw/${lwWorldId}/artifact-lib`); }
-  catch (e) { host.innerHTML = `<p class="dim">Could not load the library.</p>`; return; }
+  catch (e) { host.innerHTML = `<p class="err">Could not load the library.</p>`; return; }
   const entries = [...Object.keys(lib.shipped || {}).map((k) => [k, true]), ...Object.keys(lib.custom || {}).map((k) => [k, false])];
   host.innerHTML = entries.map(([k, shipped]) =>
     `<button class="lw-lib-item${flow.libType === k ? " on" : ""}" data-lib="${escapeHtml(k)}">${escapeHtml(k)}${shipped ? "" : ` <span class="dim">· yours</span>`}</button>`).join("")
@@ -1819,7 +1819,7 @@ async function lwFillCast(pop) {
   const box = pop.querySelector("#lwCCastList"); if (!box) return;
   let agents = [];
   try { agents = (await api(`/api/lw/${lwWorldId}`)).agents || []; }
-  catch (e) { box.innerHTML = `<p class="dim">Could not load the cast.</p>`; return; }
+  catch (e) { box.innerHTML = `<p class="err">Could not load the cast.</p>`; return; }
   const here = new Set(((lwRoom && lwRoom.agents) || []).map((a) => String(a.id)));
   const avail = agents.filter((a) => !here.has(String(a.id)));
   if (!avail.length) { box.innerHTML = `<p class="dim">Everyone is already in this team.</p>`; return; }
