@@ -208,3 +208,37 @@ def test_the_agent_panel_shows_the_tree_the_cache_and_the_logs():
     # the causes are folded away until asked for: they matter when you ask why, and are
     # noise when you are scanning
     assert "data-dnode" in js and "lw-dwhy" in js
+
+
+# ---- the DAG is laid out, not listed --------------------------------------
+
+def test_the_tree_is_drawn_as_a_graph_with_edges():
+    """A chronological list answers "what happened"; a DAG answers "what led to what", which
+    is the only question a tree is for."""
+    from conftest import dashboard_js
+    js = dashboard_js()
+    assert "function lwLayoutDag" in js and "lw-dedge" in js
+    assert "<svg class=\"lw-dag\"" in js, "it has to actually draw a graph"
+    assert "Math.max(...ps.map" in js, "depth must come from the deepest parent"
+    # no library, no build step — the whole app loads nothing external
+    assert "cdn." not in js and "import(" not in js
+
+
+def test_the_layout_cannot_hang_on_corrupt_parentage():
+    """Depth is computed iteratively rather than recursively, so a cycle from a corrupted
+    world blob stops improving instead of blowing the stack."""
+    from conftest import dashboard_js
+    body = dashboard_js().split("function lwLayoutDag", 1)[1].split("\n}", 1)[0]
+    assert "for (let pass = 0; pass <" in body, "the depth pass must be bounded"
+
+
+def test_the_node_data_is_not_serialised_into_the_page():
+    """A <script type="application/json"> block is RAW TEXT: escaping it corrupts the JSON
+    and not escaping it is an injection. Neither is needed when the renderer and the click
+    handler are ten lines apart."""
+    from conftest import dashboard_js
+    js = dashboard_js()
+    tree = js.split("function lwTreeHtml", 1)[1].split("\nfunction ", 1)[0]
+    assert "<script" not in tree, "the renderer must not serialise nodes into the page"
+    assert "JSON.stringify" not in tree
+    assert "let lwDagRows" in js, "the click handler reads them from memory instead"

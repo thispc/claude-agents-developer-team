@@ -386,6 +386,24 @@ def ensure_team():
         w = store.load(info["world_id"])
     if w is None:
         w = store.create(u["id"], "devteam IT crew")
+    # What the crew has EARNED must survive a re-seat. Toggling one factor rebuilds the
+    # scene, and until now that quietly threw away the manager conversation, the deliberation
+    # memos, and — since agents learn — every association each specialist had proved. A
+    # factor toggle is a change of lineup, not amnesia. Carried by NAME, because ids are
+    # reassigned by the rebuild; the psyche is deliberately NOT carried, since re-seeding it
+    # from the dials is the point of the rebuild.
+    keep_agents, keep_thread = {}, {}
+    if w is not None:
+        old = w.scene(info["room_id"]) if (info and info.get("room_id")) else None
+        if old is not None:
+            for h in old.players():
+                keep_agents[h.name] = {"memory": h.memory.to_dict(),
+                                       "decisions": h.decisions.to_dict(),
+                                       "skills": h.skills.to_dict(), "tau": h.tau}
+            t0 = old.threads[0] if old.threads else None
+            if t0:
+                keep_thread = {"chats": t0.get("chats") or {},
+                               "results": t0.get("results") or []}
     names = [f["name"] for f in fs]
     body = ManifestBody(
         name=f"sprint table · {len(fs)} lenses",
@@ -395,6 +413,20 @@ def ensure_team():
         rules="", manager={"model": str(tuning.get("repair_builder_model")), "budget": 2},
         protocol={"preset": "evidence-2026"})
     s = materialise_manifest(w, body)
+    from .lifeworld.decisions import DecisionLog
+    from .lifeworld.memory import Memory
+    from .lifeworld.skills import Skills
+    for h in s.players():
+        prior = keep_agents.get(h.name)
+        if not prior:
+            continue
+        h.memory = Memory.from_dict(prior.get("memory"))
+        h.decisions = DecisionLog.from_dict(prior.get("decisions"))
+        h.skills = Skills.from_dict(prior.get("skills"))
+        h.tau = int(prior.get("tau") or 0)
+    if keep_thread and s.threads:
+        s.threads[0]["chats"] = keep_thread.get("chats") or {}
+        s.threads[0]["results"] = keep_thread.get("results") or []
     store.save(w)
     info = {"world_id": w.id, "room_id": s.id, "personas": TEAM_PERSONAS,
             "thread_id": s.threads[0]["id"] if s.threads else 0,
@@ -515,6 +547,12 @@ async def tick() -> None:
                        sleep_reason="", sleep_kind="", resume_phase="")
     if st["phase"] == "restarting":                 # we came back up — the restart happened
         st = set_state(phase="idle")
+    try:
+        from . import monitor
+        for did in await monitor.sweep():           # unattended approvals, if root asked for them
+            bus.emit(0, None, "repair", "repair_auto_approved", did)
+    except Exception as e:
+        logs.warn("lifecycle", "monitor_sweep_failed", str(e)[:200])
     await advance(st)
 
 

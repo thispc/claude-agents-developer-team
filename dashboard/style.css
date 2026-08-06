@@ -2923,3 +2923,31 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
   display: flex; flex-direction: column; gap: 2px; }
 .lw-dwhy b { color: var(--faint); font-weight: 600; margin-right: 4px; }
 .lw-alogs { max-height: 220px; overflow-y: auto; font-size: 12px; }
+
+/* ── the decision graph ──────────────────────────────────────────────────────
+   Layered by depth so every edge points downward and a lineage can be followed by eye.
+   Hand-rolled SVG: this app loads no CDN and has no build step, and a layered DAG is
+   arithmetic, not a reason to take a dependency. */
+.lw-dagwrap { overflow: auto; max-height: 340px; border: 1px solid var(--line);
+  border-radius: 10px; background: var(--card-2); padding: 4px; }
+.lw-dag { display: block; }
+.lw-dedge { fill: none; stroke: var(--line); stroke-width: 1.5; }
+.lw-dedge.stale { stroke-dasharray: 3 3; opacity: 0.5; }
+.lw-dg { cursor: pointer; }
+.lw-ddot { fill: var(--card); stroke: var(--dim); stroke-width: 2; }
+.lw-dg.o-good .lw-ddot { fill: var(--good); stroke: var(--good); }
+.lw-dg.o-bad .lw-ddot { fill: var(--bad); stroke: var(--bad); }
+.lw-dg.canon .lw-ddot { stroke: var(--accent); stroke-width: 3; }
+.lw-dg.stale { opacity: 0.45; }
+.lw-dg.sel .lw-ddot { stroke: var(--accent); stroke-width: 4; }
+.lw-dg:hover .lw-ddot { stroke: var(--accent); }
+.lw-dlabel { font-size: 10px; fill: var(--dim); font-family: var(--mono); }
+.lw-dg.canon .lw-dlabel { fill: var(--text); font-weight: 600; }
+.lw-dpanel { margin-top: 8px; padding: 9px 11px; border-radius: 9px; background: var(--card-2);
+  border: 1px solid var(--line); }
+.lw-dpanel[hidden] { display: none; }
+.rp-autorow { display: flex; gap: 9px; align-items: flex-start; padding: 10px 12px;
+  margin-bottom: 12px; border: 1px dashed var(--line); border-radius: 10px;
+  background: var(--card-2); font-size: 12.5px; cursor: pointer; }
+.rp-autorow input { margin-top: 2px; flex: none; }
+.rp-autorow .dim { display: block; margin-top: 3px; line-height: 1.5; max-width: 78ch; }

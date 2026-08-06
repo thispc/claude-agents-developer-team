@@ -149,6 +149,13 @@ function rpNoticesPanel(d) {
   <div class="rp-card">
     <div class="rp-card-h">Needs you <span class="dim">what the platform noticed about itself</span>
       <button class="rp-link" id="rpNoticesReload">refresh</button></div>
+    <label class="rp-autorow" id="rpAutoRow">
+      <input type="checkbox" id="rpAuto">
+      <span><b>Approve the additive ones for me</b>
+        <span class="dim" id="rpAutoWhat">filing bugs and nudging capped knobs happen without asking;
+          anything that STOPS work — pausing the crew, aborting a task — always waits for you,
+          because a rule misfiring at 3am must not be able to switch the crew off overnight</span></span>
+    </label>
     <div id="repairNotices"><p class="dim">…</p></div>
   </div>`;
 }
@@ -181,6 +188,8 @@ async function rpNotices() {
   const el = $("#repairNotices"); if (!el) return;
   try {
     const r = await api("/api/logs/notices");
+    const auto = $("#rpAuto");
+    if (auto) auto.checked = !!r.auto;
     el.innerHTML = (r.notices || []).map(rpNoticeHtml).join("")
       || `<p class="dim">Nothing needs you. The platform has been behaving.</p>`;
     el.querySelectorAll("[data-approve-fp]").forEach((b) => b.addEventListener("click", async () => {
@@ -590,6 +599,15 @@ function rpWire(d) {
   if (areload) areload.addEventListener("click", rpActivity);
   const nreload = $("#rpNoticesReload");
   if (nreload) nreload.addEventListener("click", rpNotices);
+  const auto = $("#rpAuto");
+  if (auto) auto.addEventListener("change", async () => {
+    try {
+      await api("/api/logs/notices/auto", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: auto.checked }) });
+      toast(auto.checked ? "Additive proposals will run without asking."
+                         : "Proposals will wait for you again.");
+    } catch (e) { auto.checked = !auto.checked; toast(reportCaught(e, "rpAuto")); }
+    rpNotices();
+  });
   el.querySelectorAll("[data-open-project]").forEach((b) => b.addEventListener("click", () =>
     openProject(Number(b.dataset.openProject), "board")));
   el.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => {

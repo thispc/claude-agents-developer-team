@@ -2266,11 +2266,7 @@ async function openPersonDrawer(hid, name) {
     ${lwTreeHtml(d.decisions, d.canon)}
     ${lwAgentLogsHtml(d.logs)}`;
   $("#lwDClose").addEventListener("click", () => { box.hidden = true; });
-  box.querySelectorAll("[data-dnode]").forEach((el) => el.addEventListener("click", () => {
-    const open = el.classList.toggle("open");
-    const why = el.querySelector(".lw-dwhy");
-    if (why) why.hidden = !open;
-  }));
+  lwWireDag(box);
 }
 
 /** What this agent has learned to expect — the part that makes it faster next time.
@@ -2290,33 +2286,116 @@ function lwAssocHtml(assoc) {
     </div>`).join("")}</div>`;
 }
 
-/** The decisions it made, newest last, with the causes folded away until you ask.
+/** The decision DAG, laid out.
  *
- * CANON is marked, not chosen: a decision is canon when enough later decisions descend from
- * it, which is what a pivot actually is. STALE means something it rested on was later shown
- * to be wrong — kept rather than deleted, because the mistake is the interesting part. */
+ * A chronological list answers "what happened"; this answers "what led to what", which is
+ * the question a tree is for. Layered by depth from the roots (a node sits one level below
+ * its deepest parent), so an edge always points downward and the eye can follow a lineage
+ * without untangling anything.
+ *
+ * Hand-rolled SVG, no library: the platform loads no CDN and takes no build step, and a
+ * layered DAG of a couple of hundred nodes is a morning's arithmetic rather than a reason to
+ * add a dependency to a self-hosted app.
+ *
+ * CANON is drawn bigger — it is a pivot because things turned on it. STALE is dimmed: it
+ * rested on something later shown to be wrong, and it is kept rather than deleted because
+ * the mistake is the interesting part. Outcome colours the fill: green held up, red did not,
+ * hollow is still open.
+ */
+function lwLayoutDag(nodes) {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const depth = new Map();
+  // Depth = one below the deepest parent. Iterative rather than recursive, so a cycle from
+  // corrupted data cannot blow the stack — it just stops improving.
+  for (let pass = 0; pass < 12; pass++) {
+    let moved = false;
+    for (const n of nodes) {
+      const ps = (n.parents || []).filter((p) => byId.has(p));
+      const d = ps.length ? Math.max(...ps.map((p) => (depth.get(p) ?? 0) + 1)) : 0;
+      if (d !== (depth.get(n.id) ?? -1)) { depth.set(n.id, d); moved = true; }
+    }
+    if (!moved) break;
+  }
+  const rows = new Map();
+  for (const n of nodes) {
+    const d = depth.get(n.id) ?? 0;
+    if (!rows.has(d)) rows.set(d, []);
+    rows.get(d).push(n);
+  }
+  const COL = 132, ROW = 66, PAD = 26;
+  const pos = new Map();
+  for (const [d, row] of [...rows.entries()].sort((a, b) => a[0] - b[0])) {
+    row.forEach((n, i) => pos.set(n.id, { x: PAD + i * COL, y: PAD + d * ROW }));
+  }
+  const width = PAD * 2 + Math.max(1, ...[...rows.values()].map((r) => r.length)) * COL - (COL - 90);
+  const height = PAD * 2 + rows.size * ROW;
+  return { pos, width, height, depth };
+}
+
+// The nodes the drawer is currently showing. Held in memory rather than serialised into the
+// page: a <script type="application/json"> block is RAW TEXT, so escaping it for safety
+// corrupts the JSON and not escaping it is an injection — and neither is necessary when the
+// renderer and the click handler are ten lines apart.
+let lwDagRows = [];
+
 function lwTreeHtml(nodes, canon) {
-  const rows = Array.isArray(nodes) ? nodes : [];
+  const rows = Array.isArray(nodes) ? nodes.slice(-60) : [];
+  lwDagRows = rows;
   if (!rows.length) return "";
-  const canonSet = new Set(canon || []);
-  return `<div class="sd-label">How it got here <span class="dim">${rows.length} decisions · ${canonSet.size} turned out to be pivots</span></div>
-    <div class="lw-tree">${rows.slice(-40).map((n) => {
-      const why = Object.entries(n.because || {}).filter(([, v]) => v !== "" && v !== null)
-        .map(([k, v]) => `<span class="rp-lf">${escapeHtml(k)}=${escapeHtml(String(v))}</span>`).join(" ");
-      return `<div class="lw-dnode${n.canon ? " canon" : ""}${n.stale ? " stale" : ""} o-${escapeHtml(n.outcome || "open")}" data-dnode="${n.id}">
-        <div class="lw-dhead">
-          <span class="lw-dmark">${n.canon ? "★" : n.stale ? "⚠" : "·"}</span>
-          <span class="lw-dchose">${escapeHtml(n.chose || n.understood || "(no action)")}</span>
-          ${n.sig ? `<code class="lw-as-sig">${escapeHtml(n.sig)}</code>` : ""}
-          <span class="lw-dout">${escapeHtml(n.outcome || "")}</span>
-        </div>
-        <div class="lw-dwhy" hidden>
-          <div><b>saw</b> ${escapeHtml(n.saw || "")}</div>
-          <div><b>made of it</b> ${escapeHtml(n.understood || "")}</div>
-          <div>${why}</div>
-          ${n.parents && n.parents.length ? `<div class="dim">after #${n.parents.join(", #")}</div>` : ""}
-        </div></div>`;
-    }).join("")}</div>`;
+  const canonN = rows.filter((n) => n.canon).length;
+  const { pos, width, height } = lwLayoutDag(rows);
+  const byId = new Map(rows.map((n) => [n.id, n]));
+  const edges = rows.flatMap((n) => (n.parents || []).filter((p) => byId.has(p)).map((p) => {
+    const a = pos.get(p), b = pos.get(n.id);
+    const mid = (a.y + b.y) / 2;
+    return `<path class="lw-dedge${byId.get(p).stale ? " stale" : ""}"
+      d="M${a.x} ${a.y + 9} C${a.x} ${mid}, ${b.x} ${mid}, ${b.x} ${b.y - 9}"/>`;
+  })).join("");
+  const dots = rows.map((n) => {
+    const q = pos.get(n.id);
+    const label = (n.chose || n.understood || "").replace(/^build:\s*/, "");
+    return `<g class="lw-dg o-${escapeHtml(n.outcome || "open")}${n.canon ? " canon" : ""}${n.stale ? " stale" : ""}"
+        data-dnode="${n.id}" transform="translate(${q.x},${q.y})">
+      <circle class="lw-ddot" r="${n.canon ? 9 : 6}"></circle>
+      <text class="lw-dlabel" x="13" y="4">${escapeHtml(trim(label, 16))}</text>
+    </g>`;
+  }).join("");
+  return `<div class="sd-label">How it got here
+      <span class="dim">${rows.length} decisions · ${canonN} turned out to be pivots — click one</span></div>
+    <div class="lw-dagwrap"><svg class="lw-dag" viewBox="0 0 ${width} ${height}"
+      width="${width}" height="${height}" role="img" aria-label="decision graph">
+      <g class="lw-dedges">${edges}</g>${dots}</svg></div>
+    <div class="lw-dpanel" id="lwDPanel" hidden></div>`;
+}
+
+/** Clicking a node explains it: what arrived, what it made of it, and the causes we recorded
+ * at that instant. Kept out of the graph itself — a DAG with paragraphs on it is unreadable,
+ * and the whole reason to lay it out is to be able to scan the shape first. */
+function lwWireDag(box) {
+  const panel = box.querySelector("#lwDPanel");
+  if (!panel) return;
+  const byId = new Map(lwDagRows.map((n) => [n.id, n]));
+  box.querySelectorAll("[data-dnode]").forEach((g) => g.addEventListener("click", () => {
+    const n = byId.get(Number(g.dataset.dnode));
+    if (!n) return;
+    box.querySelectorAll("[data-dnode]").forEach((x) => x.classList.remove("sel"));
+    g.classList.add("sel");
+    const why = Object.entries(n.because || {}).filter(([, v]) => v !== "" && v !== null)
+      .map(([k, v]) => `<span class="rp-lf">${escapeHtml(k)}=${escapeHtml(String(v))}</span>`).join(" ");
+    panel.hidden = false;
+    panel.innerHTML = `<div class="lw-dhead">
+        <span class="lw-dmark">${n.canon ? "★ pivot" : n.stale ? "⚠ rested on something wrong" : "·"}</span>
+        <span class="lw-dout">${escapeHtml(n.outcome || "still open")}</span>
+        ${n.sig ? `<code class="lw-as-sig">${escapeHtml(n.sig)}</code>` : ""}
+      </div>
+      <div class="lw-dwhy">
+        <div><b>saw</b> ${escapeHtml(n.saw || "")}</div>
+        <div><b>made of it</b> ${escapeHtml(n.understood || "")}</div>
+        <div><b>chose</b> ${escapeHtml(n.chose || "")}</div>
+        <div>${why}</div>
+        ${n.parents && n.parents.length ? `<div class="dim">after #${n.parents.join(", #")}</div>` : ""}
+      </div>`;
+  }));
 }
 
 /** The backend's own record of this agent. Root only — the server decides that, not this

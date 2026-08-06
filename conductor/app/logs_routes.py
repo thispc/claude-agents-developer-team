@@ -22,6 +22,10 @@ class NoticeBody(BaseModel):
     note: str = ""
 
 
+class AutoBody(BaseModel):
+    on: bool
+
+
 @router.get("")
 def list_logs(request: Request, level: str = "", cat: str = "", event: str = "",
               q: str = "", limit: int = 200) -> dict:
@@ -58,7 +62,8 @@ def list_notices(request: Request, window_s: int = 0, all: bool = False) -> dict
     _root(request)
     ns = monitor.scan(window_s or monitor.WINDOW_S, include_decided=bool(all))
     return {"notices": ns, "summary": monitor.summary(window_s or monitor.WINDOW_S),
-            "actions": sorted(monitor.ACTIONS)}
+            "actions": sorted(monitor.ACTIONS), "auto": monitor.auto_on(),
+            "auto_safe": list(monitor.AUTO_SAFE)}
 
 
 @router.post("/notices/approve")
@@ -66,6 +71,15 @@ async def approve_notice(body: NoticeBody, request: Request) -> dict:
     """Run one notice's proposal. Nothing here acts on its own — this is the human's half."""
     _root(request)
     return await monitor.approve(body.fp)
+
+
+@router.post("/notices/auto")
+def set_auto(body: AutoBody, request: Request) -> dict:
+    """Let the additive proposals run without asking. Stopping work — pausing the crew,
+    aborting a task — is deliberately never automated: a rule misfiring at 3am must not be
+    able to switch the crew off and leave you to find it that way in the morning."""
+    _root(request)
+    return {"auto": monitor.set_auto(body.on), "safe": list(monitor.AUTO_SAFE)}
 
 
 @router.post("/notices/dismiss")

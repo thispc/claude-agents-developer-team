@@ -1335,3 +1335,79 @@ def test_filing_the_same_defect_twice_does_not_duplicate_it(fresh_db, no_spend, 
     asyncio.run(monitor._act_file_task(n["params"]))
     slugs = [t["slug"] for t in repair.backlog()["tasks"]]
     assert len(slugs) == len(set(slugs)), f"duplicated: {slugs}"
+
+
+def test_toggling_a_factor_does_not_wipe_what_the_crew_has_earned(fresh_db, no_spend):
+    """A factor toggle is a change of lineup, not amnesia. Rebuilding the scene used to
+    throw away the manager conversation, the deliberation memos, and — since agents learn —
+    every association each specialist had proved."""
+    _root_user()
+    info = repair.ensure_team()
+    from app.lifeworld import store
+    w = store.load(info["world_id"])
+    s = w.scene(info["room_id"])
+    h = next(p for p in s.players() if p.name == "Correctness")
+    for i in range(2):
+        d = h.decisions.record(i, "505 from a host", "the env is wrong", "switch env")
+        h.decisions.resolve(d.id, "good", says="a 505 here is the staging env")
+    h.memory.semantic["work.tech"] = "the venv symlink matters"
+    s.threads[0].setdefault("chats", {})["manager"] = [
+        {"role": "user", "text": "what are you working on?", "ts": 1.0}]
+    s.threads[0]["results"] = [{"recommendation": "an earlier memo"}]
+    store.save(w)
+
+    repair.set_factors([{"id": "speed", "enabled": False}])       # the lineup changes
+    info2 = repair.ensure_team()
+    w2 = store.load(info2["world_id"])
+    s2 = w2.scene(info2["room_id"])
+    assert len(s2.players()) == 5, "the lineup really did change"
+    h2 = next(p for p in s2.players() if p.name == "Correctness")
+    assert h2.decisions.recall("http:505") is not None, "it forgot what it had proved"
+    assert h2.memory.semantic.get("work.tech"), "it forgot what it knew"
+    assert s2.threads[0]["chats"]["manager"][0]["text"] == "what are you working on?", \
+        "the conversation vanished"
+    assert s2.threads[0]["results"], "the deliberation history vanished"
+    # ...but the psyche IS re-seeded from the dials: that is the point of a rebuild
+    assert h2.psyche.traits["conscientiousness"] > 0.9
+
+
+def test_unattended_approval_only_runs_what_adds(fresh_db, no_spend, monkeypatch):
+    """Stopping work is never automated. A rule misfiring at 3am must not be able to switch
+    the crew off and leave you to find it that way in the morning."""
+    from app import logs, monitor
+    monkeypatch.setattr(logs, "ECHO", False)
+    assert set(monitor.AUTO_SAFE) == {"file_task", "set_knob"}
+    assert "pause_repair" not in monitor.AUTO_SAFE and "abort_task" not in monitor.AUTO_SAFE
+    repair.toggle(True)
+    monitor.set_auto(True)
+    logs.error("sandbox", "escape", "wrote outside", files="x.py")     # proposes pause_repair
+    logs.error("http", "dashboard_error", "x is not a function", page="#/improve")
+    done = asyncio.run(monitor.sweep())
+    assert repair.enabled() is True, "a stopping action must never run unattended"
+    assert any("queued for the next sprint" in d["did"] for d in done)
+
+
+def test_nothing_runs_unattended_until_root_asks(fresh_db, no_spend, monkeypatch):
+    from app import logs, monitor
+    monkeypatch.setattr(logs, "ECHO", False)
+    monitor.set_auto(False)
+    logs.error("http", "dashboard_error", "x is not a function")
+    assert asyncio.run(monitor.sweep()) == []
+    assert not repair.backlog().get("tasks")
+
+
+def test_an_unattended_approval_leaves_the_same_trace_as_a_pressed_one(fresh_db, no_spend, monkeypatch):
+    """"The platform did it while I was asleep" must never mean "and left no trace"."""
+    from app import logs, monitor
+    monkeypatch.setattr(logs, "ECHO", False)
+    monitor.set_auto(True)
+    logs.error("http", "dashboard_error", "boom", page="#/improve")
+    asyncio.run(monitor.sweep())
+    assert any(r["event"] == "monitor_action" for r in logs.rows()), "it must be on the record"
+    assert any(d.get("state") == "approved" for d in monitor.decisions().values())
+
+
+def test_the_switch_is_where_the_approving_happens():
+    js = dashboard_js()
+    assert 'id="rpAuto"' in js and "/api/logs/notices/auto" in js
+    assert "always waits for you" in js, "the limit has to be stated where the switch is"

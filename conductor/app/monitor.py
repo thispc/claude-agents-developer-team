@@ -30,6 +30,13 @@ from typing import Any, Callable
 from . import db, logs
 
 DECISIONS_KEY = "monitor:decisions"
+AUTO_KEY = "monitor:auto"
+
+# Which proposals may run unattended. NOT every action: `pause_repair` and `abort_task` stop
+# work that is running, and a rule misfiring at 3am should not be able to silently switch the
+# crew off — you would find it off in the morning with no memory of deciding that. What is
+# safe to automate is what only ADDS: filing a bug, and nudging a knob that is itself capped.
+AUTO_SAFE = ("file_task", "set_knob")
 SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
 
 # How far back a rule looks. Long enough to see a pattern, short enough that a problem fixed
@@ -351,6 +358,38 @@ ACTIONS: dict[str, Callable] = {
     "abort_task": _act_abort_task,
     "file_task": _act_file_task,
 }
+
+
+def auto_on() -> bool:
+    return bool(db.kv_get(AUTO_KEY))
+
+
+def set_auto(on: bool) -> bool:
+    db.kv_set(AUTO_KEY, bool(on))
+    logs.warn("lifecycle", "monitor_auto",
+              "unattended approval is ON — additive proposals will run without asking"
+              if on else "unattended approval is off — proposals wait for you")
+    return bool(on)
+
+
+async def sweep() -> list[dict]:
+    """Run the proposals that are safe to run unattended, if the owner has asked for that.
+
+    Called from the engine's own tick, so it happens whether or not anyone has the screen
+    open — which is the point of the setting. Every action still goes through `approve`, so
+    it is recorded, logged and visible in exactly the same place a hand-pressed one is:
+    "the platform did it while I was asleep" must never mean "and left no trace".
+    """
+    if not auto_on():
+        return []
+    done = []
+    for n in scan():
+        if n.get("action") not in AUTO_SAFE or n.get("decision", {}).get("state"):
+            continue
+        out = await approve(n["fp"])
+        if out.get("ok"):
+            done.append({"title": n["title"], "did": out.get("did", "")})
+    return done
 
 
 async def approve(fp: str) -> dict:
