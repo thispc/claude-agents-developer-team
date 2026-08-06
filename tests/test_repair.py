@@ -1008,3 +1008,10 @@ def test_a_repeated_warning_is_counted_not_repeated(fresh_db, monkeypatch):
     logs._LAST.clear()                       # a later window is news again
     logs.log("lifecycle", "lease_held_elsewhere", "standing down", level="warn", dedupe_s=600)
     assert len([r for r in logs.rows() if r["event"] == "lease_held_elsewhere"]) == 2
+
+
+def test_log_timestamps_do_not_wrap():
+    """"12:07:37 PM" did not fit the column and broke onto two lines, doubling the height of
+    every row in a view whose whole point is scanning a lot of them."""
+    js = dashboard_js()
+    assert 'hourCycle: "h23"' in js

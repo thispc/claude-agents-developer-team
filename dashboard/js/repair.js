@@ -623,7 +623,10 @@ function rpCollapse(events) {
 const RP_LOGCOL = { debug: "quiet", info: "", warn: "warnline", error: "errline" };
 
 function rpLogLine(r) {
-  const when = r.ts ? new Date(r.ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }) : "";
+  // 24-hour, because "12:07:37 PM" does not fit the column and wrapped onto two lines —
+  // and an operational log is one of the few places nobody wants am/pm anyway.
+  const when = r.ts ? new Date(r.ts * 1000).toLocaleTimeString([], {
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }) : "";
   const skip = { ts: 1, level: 1, cat: 1, event: 1, msg: 1, repeats: 1 };
   const fields = Object.entries(r).filter(([k, v]) => !skip[k] && v !== null && v !== "")
     .map(([k, v]) => `<span class="rp-lf">${escapeHtml(k)}=${escapeHtml(trim(String(v), 70))}</span>`).join(" ");
