@@ -8,21 +8,29 @@ let selfInfo = null;
 // renderSelf() moved to js/repair.js — self-repair v2 owns the whole #selfPage screen now.
 
 // The server replaces its own process, so poll until it answers again.
+// MAX_TRIES * POLL_MS bounds the wait (2 minutes); the paragraph counts it
+// down so a long restart still reads as progress, not a hang.
 function waitForRestart(msg) {
+  const POLL_MS = 2000, MAX_TRIES = 60;
   const el = $("#self");
   el.innerHTML = `<div class="self-restart"><div class="spinner"></div>
-    <h2>${escapeHtml(msg)}</h2><p>Waiting for the platform to come back up…</p></div>`;
+    <h2>${escapeHtml(msg)}</h2><p>Waiting for the platform to come back up… (up to ${MAX_TRIES * POLL_MS / 1000}s)</p></div>`;
+  const p = el.querySelector("p");
   let tries = 0;
   const t = setInterval(async () => {
     tries++;
     try {
       const r = await fetch("/api/me", { credentials: "same-origin" });
-      if (r.ok) { clearInterval(t); location.reload(); }
+      if (r.ok) { clearInterval(t); location.reload(); return; }
     } catch { /* still down */ }
-    if (tries > 60) { clearInterval(t);
-      el.querySelector("p").textContent =
-        "It hasn't come back. Check the server logs — the previous commit is recorded for rollback."; }
-  }, 2000);
+    if (tries >= MAX_TRIES) { clearInterval(t);
+      p.textContent =
+        "It hasn't come back. Check the server logs — the previous commit is recorded for rollback.";
+    } else {
+      const remaining = (MAX_TRIES - tries) * POLL_MS / 1000;
+      p.textContent = `Waiting for the platform to come back up… (${remaining}s remaining)`;
+    }
+  }, POLL_MS);
 }
 
 // Brief, non-blocking confirmation of something that already happened —
