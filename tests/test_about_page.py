@@ -115,11 +115,11 @@ def test_the_internal_door_really_has_three_requests_behind_it():
 
 
 def test_the_table_count_matches_the_schema():
-    from app import db, auth, findings
+    from app import db, auth, findings, knowledge
     declared = sum(mod.SCHEMA.count("CREATE TABLE IF NOT EXISTS")
-                   for mod in (db, auth, findings))
-    assert "Twenty-eight tables" in _handbook() and declared == 28, \
-        f"{declared} tables are declared; the handbook says twenty-eight"
+                   for mod in (db, auth, findings, knowledge))
+    assert "Twenty-nine tables" in _handbook() and declared == 29, \
+        f"{declared} tables are declared; the handbook says twenty-nine"
 
 
 def test_the_round_table_range_matches_the_limits():

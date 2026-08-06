@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, bus, config, db, findings, home, launcher, logs, manager, scheduler, upkeep
+from . import auth, bus, config, db, findings, home, knowledge, launcher, logs, manager, scheduler, upkeep
 from .routes import router, _manager_tasks
 
 
@@ -18,6 +18,7 @@ async def lifespan(app: FastAPI):
     logs.info("lifecycle", "starting", "conductor starting up")
     auth.init()       # seeds the root superuser from .env on first run
     findings.init()
+    knowledge.init()
     loop = asyncio.get_event_loop()
     bus.set_loop(loop)
     # Every never-die background loop, so shutdown can actually end them (see below).

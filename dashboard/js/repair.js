@@ -131,6 +131,7 @@ function rpUtilHtml(u) {
 
 const RP_TABS = [
   { id: "notices", label: "Notices" },
+  { id: "agents", label: "Agents" },
   { id: "crew", label: "Crew" },
   { id: "board", label: "Board" },
   { id: "activity", label: "Activity" },
@@ -209,6 +210,62 @@ async function rpNotices() {
       rpNotices();
     }));
   } catch (e) { el.innerHTML = `<p class="dim">${escapeHtml(reportCaught(e, "repair"))}</p>`; }
+}
+
+/** Who is actually working, from the register — the same question the projects Agents tab
+ * answers, asked of the crew. "Six specialists exist" is org chart; "two are building and one
+ * is asleep on its cap" is what you came to find out. */
+function rpAgentsPanel(d) {
+  return `
+  <div class="rp-card">
+    <div class="rp-card-h">Agents <span class="dim" id="rpAgentsNote">who is working right now</span>
+      <button class="rp-link" id="rpAgentsReload">refresh</button></div>
+    <div id="repairAgents"><p class="dim">…</p></div>
+  </div>`;
+}
+
+const RP_STATE_ICON = { idle: "○", thinking: "🧠", speaking: "💬", building: "🔨",
+                        verifying: "🧪", asleep: "😴" };
+
+async function rpAgents() {
+  const el = $("#repairAgents"); if (!el) return;
+  try {
+    const r = await api("/api/logs/agents");
+    const rows = r.agents || [];
+    const s = r.summary || {};
+    const note = $("#rpAgentsNote");
+    if (note) note.textContent = `${s.busy || 0} of ${s.total || 0} working`;
+    el.innerHTML = rows.length ? rows.map((a) => {
+      const mins = Math.round((a.for_s || 0) / 60);
+      return `<div class="rp-agent${a.busy ? " on" : ""}">
+        <span class="rp-agent-ico">${RP_STATE_ICON[a.state] || "○"}</span>
+        <span class="rp-agent-name">${escapeHtml(a.name || a.key)}</span>
+        <span class="rp-agent-state">${escapeHtml(a.state)}${a.busy && mins ? ` · ${mins}m` : ""}</span>
+        <span class="rp-agent-what dim">${escapeHtml(trim(a.what || a.means || "", 70))}</span>
+        <span class="dim">${escapeHtml(a.where || "")}</span>
+        <button class="rp-link" data-agentlogs="${escapeHtml(a.name || "")}">logs</button>
+      </div>`;
+    }).join("") : `<p class="dim">Nobody has done anything yet. Agents appear here the moment
+      they are asked to.</p>`;
+    el.querySelectorAll("[data-agentlogs]").forEach((b) => b.addEventListener("click", () =>
+      rpAgentLogs(b.dataset.agentlogs)));
+  } catch (e) { el.innerHTML = `<p class="dim">${escapeHtml(reportCaught(e, "rpAgents"))}</p>`; }
+}
+
+/** One agent's own rows out of the pipeline — the reason this tab is worth opening rather
+ * than reading the whole log and filtering by eye. */
+async function rpAgentLogs(name) {
+  const el = $("#repairAgents"); if (!el || !name) return;
+  try {
+    const r = await api(`/api/logs?q=${encodeURIComponent(name)}&limit=60`);
+    el.insertAdjacentHTML("afterbegin",
+      `<div class="rp-card rp-agentlogs"><div class="rp-card-h">${escapeHtml(name)}
+        <button class="rp-link" id="rpAgentLogsClose">close</button></div>
+        <div class="rp-act">${(r.logs || []).map(rpLogLine).join("")
+          || `<p class="dim">nothing recorded about them yet</p>`}</div></div>`);
+    const x = $("#rpAgentLogsClose");
+    if (x) x.addEventListener("click", () => x.closest(".rp-agentlogs").remove());
+  } catch (e) { toast(reportCaught(e, "rpAgentLogs")); }
 }
 
 function rpCrewPanel(d, m) {
@@ -432,7 +489,8 @@ function rpHtml(d) {
   // decide everything: what the crew is doing, and whether it is allowed to.
   const badge = u.budget_tok
     ? `<span class="rp-tabnote">${Math.round((u.frac || 0) * 100)}% of this window used</span>` : "";
-  const panels = { notices: rpNoticesPanel(d), crew: rpCrewPanel(d, m), board: rpBoardPanel(d),
+  const panels = { notices: rpNoticesPanel(d), agents: rpAgentsPanel(d),
+                   crew: rpCrewPanel(d, m), board: rpBoardPanel(d),
                    activity: rpActivityPanel(),
                    usage: rpUsagePanel(d, m), command: rpCommandPanel() };
 
@@ -599,6 +657,8 @@ function rpWire(d) {
   if (areload) areload.addEventListener("click", rpActivity);
   const nreload = $("#rpNoticesReload");
   if (nreload) nreload.addEventListener("click", rpNotices);
+  const areload2 = $("#rpAgentsReload");
+  if (areload2) areload2.addEventListener("click", rpAgents);
   const auto = $("#rpAuto");
   if (auto) auto.addEventListener("change", async () => {
     try {
@@ -649,6 +709,7 @@ function rpWire(d) {
   rpHistory();
   rpActivity();
   rpNotices();
+  rpAgents();
 }
 
 function rpRenderChat(chat) {

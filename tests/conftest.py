@@ -63,6 +63,9 @@ def fresh_db():
         dbfile.unlink()
     db.init()
     auth.init()
+    from app import findings, knowledge
+    findings.init()
+    knowledge.init()          # its own schema, like findings — the tests need it too
     from app import bus
     bus._loop = None          # don't inherit a closed loop from a prior TestClient
     yield db

@@ -318,11 +318,29 @@ function reportClientError(message, stack, url) {
  * notice, or a bug. Catching an error to render it nicely must not also hide it.
  */
 function reportCaught(e, where) {
+  const msg = errText(e);
   try {
-    reportClientError(`${(e && e.message) || e} [caught in ${where}]`,
+    reportClientError(`${msg} [caught in ${where}]`,
                       (e && e.stack) || "", location.hash || location.pathname);
   } catch { /* reporting must never be the thing that breaks */ }
-  return (e && e.message) || String(e);
+  return msg;
+}
+
+/** Something a person can read, out of whatever was thrown.
+ *
+ * `String(e)` on a plain object is "[object Object]", and that is precisely what the error
+ * pipeline recorded for a week: a critical notice whose entire content was the word Object.
+ * An error report that does not say what went wrong is a false sense of coverage. */
+function errText(e) {
+  if (!e) return "unknown error";
+  if (typeof e === "string") return e;
+  if (e.message) return String(e.message);
+  if (e.detail) return typeof e.detail === "string" ? e.detail : JSON.stringify(e.detail);
+  if (e.error) return String(e.error);
+  try {
+    const j = JSON.stringify(e);
+    return j && j !== "{}" ? j.slice(0, 300) : (e.constructor && e.constructor.name) || "unknown error";
+  } catch { return "unserialisable error"; }
 }
 
 window.addEventListener("error", (e) =>

@@ -84,6 +84,15 @@ async def _run_sdk(system_prompt: str, prompt: str, cwd: Path, tools: list[str],
         elif isinstance(message, ResultMessage):
             from . import usage
             usd = usage.note_result("repair", model, message)
+            # The SDK's own wrapper says "returned an error result: success", which is both
+            # alarming and empty. Everything useful is on the message — say that instead.
+            if getattr(message, "is_error", False):
+                detail = (str(getattr(message, "result", "") or "")[:300]
+                          or "; ".join(str(x)[:120] for x in (getattr(message, "errors", None) or []))
+                          or f"stop_reason={getattr(message, 'stop_reason', '?')}"
+                          f" api_status={getattr(message, 'api_error_status', '?')}")
+                raise RuntimeError(f"the session ended in error after "
+                                   f"{getattr(message, 'num_turns', '?')} turns: {detail}")
     if not text:
         raise RuntimeError("the session produced no output")
     return text, usd

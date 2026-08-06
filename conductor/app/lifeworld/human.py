@@ -92,7 +92,15 @@ class Human(Being):
         known = self.decisions.recall(sig)
         if known is not None:
             ctx["recalled"] = {"sig": known.sig, "says": known.says,
-                               "confidence": known.confidence, "seen": known.evidence}
+                               "confidence": known.confidence, "seen": known.evidence,
+                               "via": "exact"}
+        else:
+            # No exact key, but the situation may still be one it has met in another shape —
+            # a different exception with the same cause, a timeout that is really the same
+            # misconfiguration. That is the gap a coarse key cannot close.
+            hit = await self._recall_similar(s.text(), world)
+            if hit:
+                ctx["recalled"] = hit
         packet = self.rules.reflex(s, ctx) if flags.on("rule_compiler") else None
         if packet is None:
             packet = await world.appraise(self, s, ctx, free=free)  # Tier 0 (free) or Tier 2 (spend)
@@ -133,6 +141,26 @@ class Human(Being):
                 scope="private" if s.payload.get("secret") else "public")
         except Exception:
             pass                      # a diary must never be able to break the day
+
+    async def _recall_similar(self, text: str, world) -> dict | None:
+        """Ask the knowledge base for something LIKE this. Free on the local backend, and it
+        never raises: an agent that cannot think because a lookup failed is worse than one
+        that thinks without help."""
+        try:
+            from .. import knowledge
+            owner = world.agent_key(self) if hasattr(world, "agent_key") else ""
+            if not owner:
+                return None
+            hits = await knowledge.recall(owner, text, k=1,
+                                          settings=getattr(world, "_settings", {}) or {})
+            if not hits or hits[0]["score"] < 0.25:
+                return None
+            h = hits[0]
+            return {"sig": h["sig"], "says": h["says"], "confidence": h["confidence"],
+                    "seen": h["evidence"], "via": "similar", "because": h["why"]["matched"],
+                    "id": h["id"]}
+        except Exception:
+            return None
 
     def _ctx(self, s: Signal) -> dict:
         """What the tiers need beyond the raw signal — chiefly whether the sender is

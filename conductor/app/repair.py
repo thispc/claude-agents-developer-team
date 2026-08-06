@@ -534,7 +534,16 @@ def _release_activity(task: dict) -> None:
         reg.done(reg.key_for("lw", info["world_id"], hid))
 
 
-def note_outcome(task: dict, ok: bool, says: str = "") -> None:
+def reg_key_for(world_id: int, human_id: int) -> str:
+    from .agents import key_for
+    return key_for("lw", world_id, human_id)
+
+
+def info_world() -> int:
+    return int((team() or {}).get("world_id") or 0)
+
+
+async def note_outcome(task: dict, ok: bool, says: str = "") -> None:
     """Stamp how it turned out, which is the only thing that moves an association."""
     did = task.get("decision_id")
     factor = str(task.get("factor") or "")
@@ -547,6 +556,19 @@ def note_outcome(task: dict, ok: bool, says: str = "") -> None:
         h.decisions.resolve(int(did), "good" if ok else "bad", says=says[:200])
         from .lifeworld import store
         store.save(w)
+    except Exception:
+        pass
+    # ...and into the knowledge base, keyed on the SITUATION, so the next task that looks
+    # like this one finds it without needing the same exact signature.
+    try:
+        from . import knowledge
+        node = h.decisions.get(int(did))
+        if node and says:
+            await knowledge.remember(
+                reg_key_for(info_world(), h.id), cue=node.saw or task.get("title", ""),
+                says=says[:400], sig=node.sig, kind="belief",
+                payload={"task": task.get("title", ""), "factor": task.get("factor", "")},
+                good=1 if ok else 0, bad=0 if ok else 1, settings=_root_settings())
     except Exception:
         pass
 
@@ -1022,7 +1044,7 @@ async def _phase_verify(st: dict, rec: dict) -> None:
     # What the suite said is the outcome that teaches. A red headline is also the situation
     # this specialist will recognise next time it sees one like it.
     _release_activity(t)
-    note_outcome(t, bool(res.get("ok")),
+    await note_outcome(t, bool(res.get("ok")),
                  says=("the change held up" if res.get("ok")
                        else f"this kind of change breaks: {res.get('headline', '')}"))
     logs.log("verify", "suite_green" if res.get("ok") else "suite_red",

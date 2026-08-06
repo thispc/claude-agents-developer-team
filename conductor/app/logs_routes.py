@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
-from . import agents, logs, monitor
+from . import agents, knowledge, logs, monitor
 from .routes import _root
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
@@ -102,3 +102,33 @@ def list_agents(request: Request) -> dict:
     """
     _root(request)
     return {"agents": agents.roster(), "summary": agents.summary()}
+
+
+# --- the knowledge base -------------------------------------------------------------------
+
+class AskBody(BaseModel):
+    owner: str = ""
+    query: str
+    k: int = 5
+
+
+@router.post("/knowledge/search")
+async def knowledge_search(body: AskBody, request: Request) -> dict:
+    """What an agent already knows about a situation like this one.
+
+    Every hit says why it matched — a retrieval you cannot explain is one nobody trusts
+    twice, and on a blended score the reason is genuinely not obvious.
+    """
+    _root(request)
+    from . import home, auth
+    u = auth.get_user_by_name(auth.ROOT_USERNAME)
+    settings = home.default_settings_for(u["id"]) if u else {}
+    hits = await knowledge.recall(body.owner or "global", body.query, k=body.k, settings=settings)
+    return {"hits": hits, "backend": knowledge.LOCAL if not settings.get("openai_api_key")
+            else "openai:text-embedding-3-small"}
+
+
+@router.get("/knowledge/stats")
+def knowledge_stats(request: Request, owner: str = "") -> dict:
+    _root(request)
+    return knowledge.stats(owner)

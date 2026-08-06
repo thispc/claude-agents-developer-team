@@ -207,7 +207,7 @@ so nothing depends on you having been watching.
 
 ### What the database holds
 
-Twenty-eight tables in one file. The ones worth knowing: **projects** and **tasks**
+Twenty-nine tables. Twenty-eight live in one file; **knowledge** has its own (`knowledge.py`) because it carries embedding vectors and is the one table queried by similarity rather than by key. The ones worth knowing: **projects** and **tasks**
 (the work), **agents** (teammates and their memory), **runs** (one row per AI
 task — the source of all measurement), **events** (the permanent activity
 record), **findings** (what the platform believes is wrong with itself),
