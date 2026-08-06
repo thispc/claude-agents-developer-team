@@ -1526,9 +1526,13 @@ function noteActivity(e) {
 }
 
 // --- DAG view ---------------------------------------------------------------
+// Same status vocabulary as the .agent .st badges (see style.css) — outcome colors
+// reference the theme vars so a palette change propagates here too, instead of this
+// SVG drifting out of sync with a hardcoded copy. planned/queued/running keep their
+// own slate/teal tones: they're not part of the good/warn/bad vocabulary.
 const DAG_COLORS = {
   planned: "#7d8aa5", queued: "#5eead4", running: "#5eead4",
-  pushed: "#fbbf24", review: "#fbbf24", done: "#4ade80", failed: "#f87171",
+  pushed: "var(--warn)", review: "var(--warn)", done: "var(--good)", failed: "var(--bad)",
 };
 const NODE_W = 200, NODE_H = 66, GAP_X = 90, GAP_Y = 26, PAD = 30;
 
@@ -1571,7 +1575,7 @@ function renderDag(tasks) {
       const mid = (x1 + x2) / 2;
       const done = byId[d].status === "done";
       edges += `<path d="M${x1},${y1} C${mid},${y1} ${mid},${y2} ${x2},${y2}"
-        fill="none" stroke="${done ? "#4ade80" : "#2a3245"}" stroke-width="1.6"
+        fill="none" stroke="${done ? DAG_COLORS.done : "#2a3245"}" stroke-width="1.6"
         marker-end="url(#arrow)" ${done ? "" : 'stroke-dasharray="5 4"'}/>`;
     }
   }

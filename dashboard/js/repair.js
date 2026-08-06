@@ -80,7 +80,9 @@ function rpPhaseLine(d) {
 
 function rpBar(m) {
   const frac = Math.min(1, m.used / Math.max(1, m.cap));
-  const color = frac >= 1 ? "#b23b3b" : frac >= 0.85 ? "#c9721f" : frac >= 0.6 ? "#c9a11f" : "#3F7A3F";
+  // Same three-tier vocabulary as the model-health bars (healthy/strained/throttled) —
+  // reference the theme vars so a palette change propagates instead of drifting out of sync.
+  const color = frac >= 0.85 ? "var(--bad)" : frac >= 0.6 ? "var(--warn)" : "var(--good)";
   return `<span class="rp-bar"><span class="rp-bar-fill" style="width:${Math.round(frac * 100)}%;background:${color}"></span></span>`;
 }
 
