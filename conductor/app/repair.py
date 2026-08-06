@@ -116,11 +116,34 @@ def set_factors(patch: list[dict] | None = None, add: dict | None = None,
     return fs
 
 
-def ledger_add(kind: str, model: str = "", usd: float = 0.0) -> None:
+def ledger_add(kind: str, model: str = "", usd: float = 0.0, n: int = 1) -> None:
+    """`n` is how many MODEL CALLS this row stands for. A deliberation is one row but many
+    calls (independent init = one per agent, plus a host plan per later round, plus the closing
+    memo) — counting it as 1 was why the meter read 5/6 while ~14 calls had gone out."""
     with _STATE_LOCK:
         rows = db.kv_get("repair:ledger") or []
-        rows.append({"ts": time.time(), "kind": kind, "model": model, "usd": round(float(usd or 0), 4)})
+        rows.append({"ts": time.time(), "kind": kind, "model": model,
+                     "usd": round(float(usd or 0), 4), "n": max(1, int(n))})
         db.kv_set("repair:ledger", rows[-500:])
+
+
+def backlog() -> dict:
+    """The crew's ranked to-do list, refilled by ONE scout+deliberation and then drained over
+    several sprints. Scouting and deliberating every sprint spent ~4 model calls to produce one
+    build; draining a backlog spends ~1, so the same quota buys several times the improvements."""
+    return db.kv_get("repair:backlog") or {"ts": 0, "digest": "", "tasks": []}
+
+
+def save_backlog(b: dict) -> None:
+    db.kv_set("repair:backlog", b)
+
+
+def backlog_fresh(b: dict | None = None, now: float | None = None) -> bool:
+    b = b if b is not None else backlog()
+    now = now or time.time()
+    if not b.get("tasks"):
+        return False
+    return (now - (b.get("ts") or 0)) < max(1, int(tuning.get("repair_backlog_max_age_h"))) * 3600
 
 
 def _sprint_key(n: int) -> str:
@@ -145,23 +168,33 @@ def _clear_error() -> None:
 
 # --- meters + the sleep decision -------------------------------------------
 
-SESSION_KINDS = ("scout", "build")
+# EVERY model call counts against the window. Metering only the heavy scout/build sessions
+# undercounted reality — the plan deliberation and the extraction spend real tokens too, and a
+# meter that reads 5/6 while four other calls went out is not "limits visible at all times".
+SESSION_KINDS = ("scout", "build", "plan", "extract", "memo", "chat")
 
 
 def meters(now: float | None = None) -> dict:
     now = now or time.time()
     rows = db.kv_get("repair:ledger") or []
-    s5 = [r["ts"] for r in rows if r["kind"] in SESSION_KINDS and now - r["ts"] < 5 * 3600]
-    w7 = [r["ts"] for r in rows if r["kind"] in SESSION_KINDS and now - r["ts"] < 7 * 86400]
+    in5 = [r for r in rows if r["kind"] in SESSION_KINDS and now - r["ts"] < 5 * 3600]
+    in7 = [r for r in rows if r["kind"] in SESSION_KINDS and now - r["ts"] < 7 * 86400]
+    n5 = sum(int(r.get("n", 1)) for r in in5)
+    n7 = sum(int(r.get("n", 1)) for r in in7)
+    s5 = [r["ts"] for r in in5]
+    w7 = [r["ts"] for r in in7]
+    usd5 = round(sum(r.get("usd", 0) or 0 for r in rows if now - r["ts"] < 5 * 3600), 2)
+    usd7 = round(sum(r.get("usd", 0) or 0 for r in rows if now - r["ts"] < 7 * 86400), 2)
     cap5 = max(1, int(tuning.get("repair_session_cap")))
     cap7 = max(1, int(tuning.get("repair_weekly_cap")))
     model = str(tuning.get("repair_builder_model"))
     cools = {m: launcher.cooldown_left(m) for m in {model, config.ESCALATION_MODEL}
              if launcher.cooldown_left(m) > 0}
-    return {"s5h": {"used": len(s5), "cap": cap5,
-                    "wake": (min(s5) + 5 * 3600) if len(s5) >= cap5 and s5 else 0},
-            "w7d": {"used": len(w7), "cap": cap7,
-                    "wake": (min(w7) + 7 * 86400) if len(w7) >= cap7 and w7 else 0},
+    return {"s5h": {"used": n5, "cap": cap5, "usd": usd5,
+                    "wake": (min(s5) + 5 * 3600) if n5 >= cap5 and s5 else 0},
+            "w7d": {"used": n7, "cap": cap7, "usd": usd7,
+                    "wake": (min(w7) + 7 * 86400) if n7 >= cap7 and w7 else 0},
+            "backlog": len(backlog().get("tasks", [])),
             "cooldowns": cools, "model": model}
 
 
@@ -323,8 +356,20 @@ async def advance(st: dict) -> None:
         if not ok:
             return _sleep(reason, wake)
         n = int(db.kv_get("repair:seq") or 0) + 1
-        save_sprint({"no": n, "started_at": time.time(), "scout": {}, "memo": None,
-                     "tasks": [], "retro": "", "landed": 0, "failed": 0, "landed_files": []})
+        rec = {"no": n, "started_at": time.time(), "scout": {}, "memo": None,
+               "tasks": [], "retro": "", "landed": 0, "failed": 0, "landed_files": []}
+        b = backlog()
+        if backlog_fresh(b):                         # straight to work — no scout, no deliberation
+            take = max(1, int(tuning.get("repair_tasks_per_sprint")))
+            rec["tasks"], b["tasks"] = b["tasks"][:take], b["tasks"][take:]
+            rec["scout"] = {"digest": b.get("digest", ""), "candidates": [], "from_backlog": True}
+            save_backlog(b)
+            save_sprint(rec)
+            set_state(phase="build", sprint_no=n, task_idx=0, note="")
+            bus.emit(0, None, "repair", "repair_sprint_started",
+                     {"sprint": n, "from_backlog": True, "left": len(b["tasks"])})
+            return
+        save_sprint(rec)
         set_state(phase="scout", sprint_no=n, task_idx=0, note="")
         bus.emit(0, None, "repair", "repair_sprint_started", {"sprint": n})
         return
@@ -406,7 +451,7 @@ PLAN_EXTRACT_SYSTEM = (
 
 
 async def _phase_plan(st: dict, rec: dict) -> None:
-    n_tasks = max(1, int(tuning.get("repair_tasks_per_sprint")))
+    n_tasks = max(1, int(tuning.get("repair_backlog_size")))    # plan a BACKLOG, not one sprint
     memo = None
     try:
         info = ensure_team()
@@ -418,13 +463,21 @@ async def _phase_plan(st: dict, rec: dict) -> None:
             if thread is not None:
                 lenses = "\n".join(f"- {f['id']}: {f['brief']}" for f in enabled_factors())
                 thread["rulebook"] = (
-                    "You are the platform's own IT crew planning ONE sprint on the devteam codebase.\n"
+                    "You are the platform's own IT crew planning the NEXT FEW SPRINTS on the "
+                    "devteam codebase — one shared backlog you will work through in order.\n"
                     f"Lenses:\n{lenses}\nScout findings:\n{rec['scout']['digest'] or '(none)'}\n"
-                    f"Decide the top {n_tasks} improvements for this sprint; the recommendation "
-                    "must name each task's title, factor, target files and acceptance checks.")[:2000]
-                memo = await s.run_deliberation(thread, rounds=int(tuning.get("repair_plan_rounds")))
+                    f"Decide the top {n_tasks} improvements, best first; the recommendation must "
+                    "name each task's title, factor, target files and acceptance checks.")[:2000]
+                rounds = int(tuning.get("repair_plan_rounds"))
+                memo = await s.run_deliberation(thread, rounds=rounds)
                 store.save(w)
-                ledger_add("plan", str(tuning.get("repair_builder_model")), 0)
+                # independent init spends one call per agent for the opening round, a host plan
+                # per later round, and one closing memo — meter what actually went out.
+                from .lifeworld.threads import protocol_of
+                per_agent = len(ring_names) if (ring_names := [f for f in enabled_factors()]) and \
+                    protocol_of(thread).get("init") == "independent" else 1
+                ledger_add("plan", str(tuning.get("repair_builder_model")), 0,
+                           n=per_agent + max(0, rounds - 1) + 1)
     except Exception as e:
         db.kv_set("repair:last_error", {"ts": time.time(), "phase": "plan", "detail": str(e)[:400]})
     rec["memo"] = memo
@@ -457,7 +510,12 @@ async def _phase_plan(st: dict, rec: dict) -> None:
                 return
     if not tasks:
         tasks = _tasks_from_candidates(rec["scout"]["candidates"], n_tasks)
-    rec["tasks"] = tasks
+    # The plan fills the BACKLOG; this sprint takes only its share and leaves the rest for the
+    # next sprints to drain without paying for another scout+deliberation.
+    take = max(1, int(tuning.get("repair_tasks_per_sprint")))
+    rec["tasks"], rest = tasks[:take], tasks[take:]
+    save_backlog({"ts": time.time(), "digest": rec["scout"].get("digest", ""), "tasks": rest})
+    tasks = rec["tasks"]
     save_sprint(rec)
     if not tasks:
         rec["retro"] = "nothing worth doing surfaced this sprint"
@@ -517,6 +575,12 @@ async def _phase_build(st: dict, rec: dict) -> None:
             return
         t["status"] = "failed"
         t["error"] = str(e)[:400]
+        # A session that ran out of TURNS is too big, not unlucky — re-running the same prompt
+        # buys the same death (sprint 3 spent 128 minutes proving it). Mark it so verify's
+        # retry path can never pick it up, and tell the crew to re-scope it next time.
+        if "maximum number of turns" in str(e).lower():
+            t["too_big"] = True
+            t["error"] = "too big for one session — needs re-scoping into a smaller slice"
         rec["failed"] += 1
         if t.get("branch"):
             rb.discard(t["branch"], t.get("worktree"))
@@ -546,7 +610,7 @@ async def _phase_verify(st: dict, rec: dict) -> None:
         save_sprint(rec)
         set_state(phase="land")
         return
-    if t["attempts"] <= int(tuning.get("repair_fix_attempts")):
+    if not t.get("too_big") and t["attempts"] <= int(tuning.get("repair_fix_attempts")):
         t["evidence"] = "\n".join(res.get("failures") or [])[:1500] or res.get("headline", "")
         t["status"] = "pending"
         save_sprint(rec)
@@ -683,6 +747,7 @@ def status() -> dict:
     n = st.get("sprint_no") or int(db.kv_get("repair:seq") or 0)
     return {"enabled": enabled(), "state": st, "meters": {**meters(), "team": team_usage()},
             "factors": factors(), "sprint": sprint(n), "queue": db.kv_get("repair:queue") or [],
+            "backlog": backlog().get("tasks", []),
             "world": team(), "head": selfops.head(),
             "last_error": db.kv_get("repair:last_error"),
             "supervised": bool(tuning.get("repair_supervised"))}

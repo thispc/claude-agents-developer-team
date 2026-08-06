@@ -97,10 +97,11 @@ function rpHtml(d) {
   </div>
 
   <div class="rp-card">
-    <div class="rp-card-h">Usage <span class="dim">the manager sleeps the crew before these run dry</span></div>
-    <div class="rp-meterrow"><span class="rp-meter-lb">session (5h)</span>${rpBar(m.s5h)}<span class="rp-meter-n">${m.s5h.used}/${m.s5h.cap}</span></div>
-    <div class="rp-meterrow"><span class="rp-meter-lb">week</span>${rpBar(m.w7d)}<span class="rp-meter-n">${m.w7d.used}/${m.w7d.cap}</span></div>
+    <div class="rp-card-h">Usage <span class="dim">every model call, not just the big ones — the manager sleeps before these run dry</span></div>
+    <div class="rp-meterrow"><span class="rp-meter-lb">calls (5h)</span>${rpBar(m.s5h)}<span class="rp-meter-n">${m.s5h.used}/${m.s5h.cap}${m.s5h.usd ? ` · $${m.s5h.usd.toFixed(2)}` : ""}</span></div>
+    <div class="rp-meterrow"><span class="rp-meter-lb">week</span>${rpBar(m.w7d)}<span class="rp-meter-n">${m.w7d.used}/${m.w7d.cap}${m.w7d.usd ? ` · $${m.w7d.usd.toFixed(2)}` : ""}</span></div>
     ${cools ? `<div class="rp-coolrow">${cools}</div>` : ""}
+    ${(d.backlog || []).length ? `<div class="rp-coolrow"><span class="rp-cool rp-backlog">${(d.backlog || []).length} planned ahead — next sprints build without re-planning</span></div>` : ""}
   </div>
 
   <div class="rp-card">
@@ -148,6 +149,13 @@ function rpHtml(d) {
       <div id="triageBox" class="hint"></div>
       <div id="selfErr" class="form-error"></div>
     </form>
+  </div>
+
+  <div class="rp-card">
+    <div class="rp-card-h">Up next <span class="dim">the planned backlog — drained one sprint at a time</span></div>
+    <div id="repairBacklog">${(d.backlog || []).map((t) =>
+      `<div class="rp-task"><span class="rp-task-ico">·</span><span class="rp-task-t">[${escapeHtml(t.factor || "?")}] ${escapeHtml(t.title)}</span></div>`).join("")
+      || `<p class="dim">empty — the crew will scout and plan a fresh backlog next sprint</p>`}</div>
   </div>
 
   <div class="rp-card">

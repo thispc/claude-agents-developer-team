@@ -112,6 +112,78 @@ def test_restarting_phase_resumes_to_idle(fresh_db, no_spend, monkeypatch):
 # meters + sleep
 # --------------------------------------------------------------------------
 
+def test_a_fresh_backlog_skips_the_scout_and_plan_entirely(fresh_db, no_spend, monkeypatch):
+    """The economics fix: planning costs ~8 model calls, so it must be amortised. With a fresh
+    backlog a sprint goes STRAIGHT to build — no scout, no deliberation, no extraction."""
+    monkeypatch.setattr(config, "AUTH_CONFIGURED", False)
+    tuning.set("repair_tasks_per_sprint", 1)                      # one per sprint, so the split is visible
+    repair.save_backlog({"ts": time.time(), "digest": "d", "tasks": [
+        {"slug": "a", "title": "A", "factor": "speed", "brief": "", "acceptance": [],
+         "branch": "", "status": "pending", "worktree": None, "verification": None,
+         "landed_sha": None, "attempts": 0, "evidence": ""},
+        {"slug": "b", "title": "B", "factor": "speed", "brief": "", "acceptance": [],
+         "branch": "", "status": "pending", "worktree": None, "verification": None,
+         "landed_sha": None, "attempts": 0, "evidence": ""}]})
+    repair.toggle(True)
+    asyncio.run(repair.tick())                                   # idle → straight to build
+    st = repair.state()
+    assert st["phase"] == "build", f"a fresh backlog must skip scouting, got {st['phase']}"
+    rec = repair.sprint(st["sprint_no"])
+    assert [t["title"] for t in rec["tasks"]] == ["A"]            # took its share
+    assert [t["title"] for t in repair.backlog()["tasks"]] == ["B"]   # left the rest
+    assert rec["scout"]["from_backlog"] is True
+
+
+def test_a_stale_or_empty_backlog_scouts_again(fresh_db, no_spend, monkeypatch):
+    monkeypatch.setattr(config, "AUTH_CONFIGURED", False)
+    repair.toggle(True)
+    assert repair.backlog_fresh() is False                        # empty
+    old = time.time() - (int(tuning.get("repair_backlog_max_age_h")) + 1) * 3600
+    repair.save_backlog({"ts": old, "digest": "", "tasks": [{"title": "stale"}]})
+    assert repair.backlog_fresh() is False, "an old plan must not drive new sprints"
+    asyncio.run(repair.tick())
+    assert repair.state()["phase"] == "scout"
+
+
+def test_the_meter_counts_every_model_call_not_every_row(fresh_db):
+    """A deliberation is ONE ledger row but many calls; counting rows made the meter read
+    5/6 while ~14 calls had gone out."""
+    now = time.time()
+    db.kv_set("repair:ledger", [
+        {"ts": now - 60, "kind": "plan", "model": "m", "usd": 1.5, "n": 8},
+        {"ts": now - 30, "kind": "build", "model": "m", "usd": 0.5, "n": 1},
+    ])
+    m = repair.meters(now)
+    assert m["s5h"]["used"] == 9, "must sum call counts, not rows"
+    assert m["s5h"]["usd"] == 2.0
+    old = db.kv_get("repair:ledger")
+    old.append({"ts": now - 10, "kind": "scout", "model": "m", "usd": 0})   # legacy row, no n
+    db.kv_set("repair:ledger", old)
+    assert repair.meters(now)["s5h"]["used"] == 10, "rows without n count as one"
+
+
+def test_a_turn_death_is_not_retried(fresh_db, tmp_repo, monkeypatch):
+    """Sprint 3 burned 128 minutes re-running a session that died on turns. A turn-death means
+    the task is too big; only a TEST failure is evidence worth retrying on."""
+    async def out_of_turns(*a, **k):
+        raise RuntimeError("Claude Code returned an error result: Reached maximum number of turns (50)")
+    monkeypatch.setattr(rb, "_run_sdk", out_of_turns)
+    monkeypatch.setattr(config, "AUTH_CONFIGURED", True)
+    monkeypatch.setattr(repair, "_root_settings", lambda: {})
+    rec = {"no": 1, "started_at": time.time(), "scout": {}, "memo": None, "landed": 0, "failed": 0,
+           "landed_files": [], "retro": "", "tasks": [
+               {"slug": "huge", "title": "Huge", "factor": "x", "brief": "", "acceptance": [],
+                "branch": "", "status": "pending", "worktree": None, "verification": None,
+                "landed_sha": None, "attempts": 0, "evidence": ""}]}
+    repair.save_sprint(rec)
+    repair.set_state(phase="build", sprint_no=1, task_idx=0)
+    asyncio.run(repair.advance(repair.state()))
+    t = repair.sprint(1)["tasks"][0]
+    assert t["status"] == "failed" and t.get("too_big") is True
+    assert "re-scoping" in t["error"]
+    assert repair.state()["task_idx"] == 1, "must move on, not retry"
+
+
 def test_meters_window_math_is_exact(fresh_db):
     now = 1_000_000_000.0
     rows = ([{"ts": now - 4 * 3600, "kind": "build", "model": "m", "usd": 0}] * 3

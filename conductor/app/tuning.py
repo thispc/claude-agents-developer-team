@@ -258,17 +258,27 @@ KNOBS: dict[str, tuple[Any, type, str, str]] = {
         "backend code, so improvements take effect immediately instead of "
         "waiting for someone to remember."),
     "repair_session_cap": (
-        6, int, "REPAIR_SESSION_CAP",
-        "Coding/scout sessions the crew may start per 5-hour rolling window — "
-        "mirrors Claude's subscription session ladder so self-repair never "
-        "starves the owner's own interactive use."),
+        14, int, "REPAIR_SESSION_CAP",
+        "MODEL CALLS the crew may make per 5-hour rolling window — every call, not just the "
+        "heavy scout/build sessions: planning and extraction spend real tokens too, and a "
+        "meter that reads 5/6 while four other calls went out is not an honest limit. Mirrors "
+        "Claude's subscription session ladder so self-repair never starves the owner's own "
+        "interactive use. Raised from 6 when the meter started counting everything."),
+    "repair_backlog_size": (
+        6, int, "REPAIR_BACKLOG_SIZE",
+        "Improvements one scout+deliberation plans ahead. The backlog is what makes the loop "
+        "affordable: planning costs ~4 calls, so amortising it over 6 builds instead of 1 is "
+        "several times the improvements per unit of quota."),
+    "repair_backlog_max_age_h": (
+        12, int, "REPAIR_BACKLOG_MAX_AGE_H",
+        "How long a planned backlog stays trustworthy. The repo moves under it — every landing "
+        "is a change the plan did not know about — so it is re-scouted after this."),
     "repair_weekly_cap": (
-        60, int, "REPAIR_WEEKLY_CAP",
-        "Sessions per rolling week — the subscription's second ceiling. The "
-        "manager sleeps the crew when it is close instead of hitting the wall "
-        "mid-build."),
+        140, int, "REPAIR_WEEKLY_CAP",
+        "Model calls per rolling week — the subscription's second ceiling. The manager sleeps "
+        "the crew when it is close instead of hitting the wall mid-build."),
     "repair_headroom_min": (
-        2, int, "REPAIR_HEADROOM_MIN",
+        3, int, "REPAIR_HEADROOM_MIN",
         "Sessions of session-window headroom required to START a sprint; below "
         "it the manager sleeps until the window rolls. Starting with less risks "
         "dying between build and verify."),
