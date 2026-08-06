@@ -338,3 +338,45 @@ def stats(owner: str = "") -> dict:
 def init() -> None:
     db._conn.executescript(SCHEMA)
     db._conn.commit()
+
+
+async def backfill_from_sprints(settings: dict | None = None) -> int:
+    """Seed the store from sprints that already happened.
+
+    A knowledge base is useless on the day you build it and useful on the day it has been
+    running a month — which means the first month is the hard part. But this platform has
+    already run 30-odd sprints and recorded every one: what was attempted, what the suite
+    said, and whether it landed. That is exactly the material, sitting unused.
+
+    Only outcomes are imported, never intentions: a task nobody finished taught nothing, and
+    filling a store with hopes is how it starts confidently answering questions.
+    """
+    from . import db
+    if db.kv_get("knowledge:backfilled"):
+        return 0
+    n = 0
+    try:
+        for rec in sorted((db.kv_prefix("repair:sprint:") or {}).values(),
+                          key=lambda r: r.get("no", 0)):
+            for t in rec.get("tasks", []) or []:
+                title = str(t.get("title") or "").strip()
+                if not title:
+                    continue
+                v = t.get("verification") or {}
+                if t.get("status") == "landed":
+                    cue, says, good, bad = title, f"this worked: {title}", 1, 0
+                elif t.get("status") == "failed":
+                    why = str(t.get("error") or v.get("headline") or "").strip()
+                    if not why:
+                        continue
+                    cue, says, good, bad = f"{title} — {why}", f"this failed: {why}", 0, 1
+                else:
+                    continue                      # still open: it has taught nothing yet
+                await remember("global", cue=cue, says=says, kind="episode",
+                               payload={"sprint": rec.get("no"), "factor": t.get("factor", "")},
+                               good=good, bad=bad, settings=settings)
+                n += 1
+        db.kv_set("knowledge:backfilled", True)
+    except Exception:
+        pass
+    return n

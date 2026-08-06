@@ -355,3 +355,85 @@ def test_the_devteam_door_opens_the_team_not_the_console():
     # ...and the console is a button ON that canvas, with a way back
     assert "sdDevteamBar" in js and "Sprints, notices" in js
     assert 'id="rpOpenTeam"' in js, "the console must lead back to the team"
+
+
+# ---- the code disposes: direction enforced, not requested -------------------
+
+def test_a_line_put_in_an_agents_mouth_is_dropped(fresh_db):
+    """The manager sees the whole ring — that is what lets ONE call mediate a round — and it
+    also writes each agent's line, so content from C can be put in A's mouth and then
+    legitimately broadcast. Telling the model the adjacency helps and is not enforcement: a
+    prompt is a request. This is the check."""
+    w = World(name="w")
+    s = w.new_room("r", "freeplay")
+    a, b, c = w.spawn_human("A"), w.spawn_human("B"), w.spawn_human("C")
+    for h in (a, b, c):
+        s.seat(h)
+    s.connect(a.id, b.id, "both")
+    t = s.connect(b.id, c.id, "both")            # A—B—C: A never hears C
+    s._record("say", c.id, "C: the zephyrine protocol is the cause", frm=c.id)
+    out = s._audit_lines(t, [a, b, c], [
+        {"who": a.id, "text": "I agree the zephyrine protocol is to blame"},
+        {"who": b.id, "text": "the zephyrine protocol, yes"},
+    ])
+    assert "zephyrine" not in out[0]["text"], "A spoke a word it never heard"
+    assert "zephyrine" in out[1]["text"], "B legitimately heard C and was censored anyway"
+    # ...and it is never silent about it: a mediator quietly rewriting people is the failure
+    assert any("dropped a line put in" in r["text"] for r in s.log if r["kind"] == "manage")
+
+
+def test_the_audit_ignores_common_words_and_the_shared_rulebook(fresh_db):
+    """A subtle rule here would reject things nobody can predict, and the crew would learn to
+    write around it rather than writing honestly."""
+    w = World(name="w")
+    s = w.new_room("r", "freeplay")
+    a, b, c = w.spawn_human("A"), w.spawn_human("B"), w.spawn_human("C")
+    for h in (a, b, c):
+        s.seat(h)
+    s.connect(a.id, b.id, "both")
+    t = s.connect(b.id, c.id, "both")
+    t["rulebook"] = "decide the caching strategy"
+    s._record("say", c.id, "C: the caching strategy should be simple", frm=c.id)
+    out = s._audit_lines(t, [a, b, c], [{"who": a.id, "text": "the caching strategy matters"}])
+    assert "caching" in out[0]["text"], "a word from the shared rulebook is not a leak"
+
+
+# ---- a task that will die unfinished never gets a session -------------------
+
+def test_programme_sized_tasks_are_rejected_at_the_door(fresh_db):
+    """Ten of eighteen failures were sessions that ran out of turns. The planner is told to
+    take a slice and still proposes programmes, so the code checks rather than hoping."""
+    from app import repair
+    assert repair.too_ambitious({"title": "Extract first domain router from routes.py",
+                                 "brief": "move the projects endpoints out"})
+    assert repair.too_ambitious({"title": "Tidy up",
+                                 "brief": "delete a.py b.py c.py d.py e.py f.py"})
+    assert not repair.too_ambitious({"title": "Fix the check-then-bind race in port allocation",
+                                     "brief": "launcher.py binds after checking; hold the socket"})
+
+
+def test_dropping_an_over_scoped_task_is_said_out_loud(fresh_db):
+    """A silent filter would look like the crew planning LESS, rather than planning smaller."""
+    src = Path(__file__).resolve().parents[1].joinpath("conductor/app/repair.py").read_text()
+    assert "task_too_ambitious" in src
+    assert "before they could burn a" in src
+    assert "A silent filter would look" in src
+
+
+# ---- the store starts full, not empty --------------------------------------
+
+def test_the_knowledge_base_is_seeded_from_sprints_that_already_ran(fresh_db):
+    """A knowledge base is useless the day you build it and useful a month later — which makes
+    the first month the hard part. Thirty-odd sprints of outcomes were already recorded."""
+    import asyncio
+    from app import db, knowledge
+    db.kv_set("repair:sprint:1", {"no": 1, "tasks": [
+        {"title": "Extract the router from routes.py", "status": "failed",
+         "error": "too big for one session — needs re-scoping into a smaller slice"},
+        {"title": "Fix a port race", "status": "landed"},
+        {"title": "Something still open", "status": "building"}]})
+    n = asyncio.run(knowledge.backfill_from_sprints())
+    assert n == 2, "an unfinished task has taught nothing and must not be imported"
+    hits = asyncio.run(knowledge.recall("global", "extracting a router out of routes.py", k=1))
+    assert hits and "too big" in hits[0]["says"]
+    assert asyncio.run(knowledge.backfill_from_sprints()) == 0, "it must run once"

@@ -362,6 +362,48 @@ class Scene:
         await listener.perceive(sig, self.world, free=True)
         self.world.tau += 1
 
+    def _audit_lines(self, thread: dict, ring: list[Human], lines: list[dict]) -> list[dict]:
+        """Enforce the arrows on what the manager composed. THE CODE DISPOSES.
+
+        The manager sees the whole ring — that is what lets ONE bounded call mediate a round —
+        and it also writes each agent's line, so content from B can be put in A's mouth and
+        then legitimately broadcast. Telling the model the adjacency helps and is not
+        enforcement: a prompt is a request. This is the check.
+
+        It is deliberately shallow and mechanical, because a clever test here would be one
+        nobody can predict: a line is laundered if it uses a DISTINCTIVE word that appears
+        only in utterances that speaker could not hear. Common words prove nothing, and the
+        rulebook is shared, so both are excluded. A caught line is replaced with the agent's
+        own free stance — never dropped silently — and recorded, because a mediator quietly
+        rewriting people is exactly the failure this is here to make visible.
+        """
+        from ..knowledge import _tokens
+        says = [r for r in self.log if r.get("kind") == "say" and r.get("frm") is not None][-24:]
+        if not says:
+            return lines
+        shared = set(_tokens(thread.get("rulebook", "") + " " + str(thread.get("topic", ""))))
+        out = []
+        for item in lines:
+            sid = item.get("who")
+            text = str(item.get("text", ""))
+            heard, unheard = set(), set()
+            for r in says:
+                bag = heard if (r["frm"] == sid or self._hears(thread, r["frm"], sid)) else unheard
+                bag |= set(_tokens(str(r.get("text", ""))))
+            secret = unheard - heard - shared
+            leaked = sorted(set(_tokens(text)) & secret)
+            if leaked:
+                who = self.world.get(sid)
+                name = getattr(who, "name", str(sid))
+                self._record("manage", None,
+                             f"host: dropped a line put in {name}'s mouth — it used "
+                             f"{', '.join(leaked[:3])}, which {name} never heard")
+                item = {"who": sid,
+                        "text": self._free_line(who, thread.get("rulebook", ""),
+                                                _topic_of(thread)) if isinstance(who, Human) else ""}
+            out.append(item)
+        return out
+
     async def _deliver_lines(self, thread: dict, ring: list[Human], lines: list[dict], spend: bool = False) -> None:
         """The dispose loop: each agent SAYS its line (a beat), broadcast free to whoever the
         arrows let hear it. `spend` notes a session-use per speaker (for manager-composed rounds;
@@ -389,6 +431,8 @@ class Scene:
         # The round comes from the manager's single plan (Live); free & deterministic otherwise.
         live_round = bool(plan and plan.get("round"))
         lines = (plan or {}).get("round") or self._free_round(ring, topic, _topic_of(thread))
+        if live_round:
+            lines = self._audit_lines(thread, ring, lines)   # the model proposed; the code disposes
         await self._deliver_lines(thread, ring, lines, spend=live_round)
 
     async def _independent_round(self, thread: dict, ring: list[Human], rulebook: str, proto: dict) -> None:

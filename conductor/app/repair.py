@@ -777,6 +777,30 @@ PLAN_EXTRACT_SYSTEM = (
     "emit its first concrete slice instead.")
 
 
+# A task that names half a module is a programme. The planner is TOLD this and still
+# proposes them — ten of eighteen failures — so the code checks rather than hoping.
+_PROGRAMME = re.compile(
+    r"\b(extract|migrate|refactor|rewrite|redesign|consolidat\w*|split)\b.{0,60}"
+    r"\b(all|every|entire|whole|across|module|codebase|routes\.py|app\.js)\b", re.I)
+
+
+def too_ambitious(task: dict) -> str:
+    """Why this task will die unfinished, or "" if it looks like one session's work.
+
+    Two mechanical signals, both learned from the failures: it names more files than one
+    focused change touches, or it is phrased as a programme rather than an edit. Neither is
+    clever, and that is the point — a subtle rule here would reject things nobody can predict,
+    and the crew would learn to write around it instead of writing smaller.
+    """
+    text = f"{task.get('title', '')} {task.get('brief', '')}"
+    files = set(re.findall(r"\b[\w./-]+\.(?:py|js|css|html|md|sh|json|yml|yaml)\b", text))
+    if len(files) > 4:
+        return f"names {len(files)} files — one session changes a handful"
+    if _PROGRAMME.search(text):
+        return "phrased as a programme, not an edit"
+    return ""
+
+
 def classify(title: str, brief: str = "", factor: str = "") -> tuple[str, str]:
     """(type, priority) from the words, for when the model did not say.
 
@@ -893,6 +917,18 @@ async def _phase_plan(st: dict, rec: dict) -> None:
                 _root_settings(), max_tokens=800)
             ledger_add("extract", str(tuning.get("repair_builder_model")), 0)
             arr = rb._json_block(raw, "[", "]") or []
+            dropped = []
+            for t in list(arr):
+                why = too_ambitious(t) if isinstance(t, dict) else "not a task"
+                if why:
+                    dropped.append(f"{str(t.get('title', '?'))[:60]} ({why})")
+                    arr.remove(t)
+            if dropped:
+                # Said out loud, and fed back into the next plan. A silent filter would look
+                # like the crew planning less, rather than planning smaller.
+                logs.warn("sprint", "task_too_ambitious",
+                          f"dropped {len(dropped)} over-scoped task(s) before they could burn a "
+                          f"session: {'; '.join(dropped[:3])}", sprint=rec["no"])
             for t in arr[:n_tasks]:
                 if isinstance(t, dict) and str(t.get("title", "")).strip():
                     tasks.append(_typed({
@@ -1212,6 +1248,14 @@ async def loop() -> None:
     """The never-die background loop (upkeep.py's contract): errors are recorded and
     reported, never fatal — a self-repair engine that can crash itself is a joke."""
     usage.backfill_repair()          # one-shot: the crew's own history into the shared meter
+    try:
+        from . import knowledge
+        seeded = await knowledge.backfill_from_sprints(_root_settings())
+        if seeded:
+            logs.info("lifecycle", "knowledge_seeded",
+                      f"{seeded} lessons imported from sprints that already ran", n=seeded)
+    except Exception:
+        pass
     while True:
         try:
             if not _hold_lease():
