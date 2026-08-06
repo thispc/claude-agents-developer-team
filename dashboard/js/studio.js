@@ -92,7 +92,7 @@ function showLifeworld() {
 
 // ============================================================================
 // The Studio — one implicit world per user; scenes are canvases; the canvas is the
-// hero. openStudio() brings the section on and calls lwEnterStudio() to open a scene.
+// hero. openStudio() brings the section on and calls lwEnterStudio() to open a team.
 // ============================================================================
 let sdTau = 0;
 
@@ -112,7 +112,7 @@ async function lwEnterStudio() {
   let rid = rooms.length ? rooms[rooms.length - 1].id : null;
   if (rid == null) {
     try { rid = (await api(`/api/lw/${lwWorldId}/room`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "untitled", type: "freeplay" }) })).room.id; }
-    catch (e) { toast(`Could not create a scene: ${e.message}`); return; }
+    catch (e) { toast(`Could not create a team: ${e.message}`); return; }
   }
   await lwOpenScene(rid);
 }
@@ -122,7 +122,7 @@ async function lwOpenScene(rid) {
   lwRoomId = rid; lwSeenLog = new Set();
   let d;
   try { d = await api(`/api/lw/${lwWorldId}/room/${rid}`); }
-  catch (e) { $("#lwStage").innerHTML = `<p class="empty">Could not open the scene: ${escapeHtml(e.message || String(e))}</p>`; return; }
+  catch (e) { $("#lwStage").innerHTML = `<p class="empty">Could not open the team: ${escapeHtml(e.message || String(e))}</p>`; return; }
   lwRenderRoom(d.room || d);
 }
 
@@ -162,9 +162,9 @@ async function sdToggleScenes() {
         <span class="sd-menu-name">${escapeHtml(r.name || "untitled")}</span>
         <span class="sd-menu-sub">${(r.agents || []).length} cast · ${(r.props || []).length} props</span>
       </button>
-      <button class="sd-menu-del" data-del="${escapeHtml(String(r.id))}" data-name="${escapeHtml(r.name || "untitled")}" title="Delete scene" aria-label="Delete this scene">🗑</button>
+      <button class="sd-menu-del" data-del="${escapeHtml(String(r.id))}" data-name="${escapeHtml(r.name || "untitled")}" title="Delete scene" aria-label="Delete this team">🗑</button>
     </div>`).join("")
-    + `<button class="sd-menu-item sd-menu-new" id="sdNewScene">＋ New scene</button>`;
+    + `<button class="sd-menu-item sd-menu-new" id="sdNewScene">＋ New team</button>`;
   menu.hidden = false; if (btn) btn.setAttribute("aria-expanded", "true");
   menu.querySelectorAll("[data-scene]").forEach((b) => b.addEventListener("click", () => { menu.hidden = true; lwOpenScene(Number(b.dataset.scene)); }));
   menu.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", (ev) => {
@@ -173,30 +173,30 @@ async function sdToggleScenes() {
   $("#sdNewScene").addEventListener("click", async () => {
     menu.hidden = true;
     try { const r = await api(`/api/lw/${lwWorldId}/room`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "untitled", type: "freeplay" }) }); sdFlash(); lwOpenScene(r.room.id); }
-    catch (e) { toast(`Could not add a scene: ${e.message}`); }
+    catch (e) { toast(`Could not add a team: ${e.message}`); }
   });
 }
 
-// Delete a scene (from the dropdown or the title-bar trash). The cast is world-level, so
+// Delete a team (from the dropdown or the title-bar trash). The cast is world-level, so
 // agents/props survive; only this canvas goes. Afterwards we open another scene, or mint a
 // fresh untitled one so the Studio is never empty.
 async function sdDeleteScene(rid, name) {
   if (!lwWorldId || rid == null) return;
-  if (!confirm(`Delete the scene "${name || "untitled"}"?\n\nIts agents and props stay in your cast — only this canvas is removed.`)) return;
+  if (!confirm(`Delete the team "${name || "untitled"}"?\n\nIts agents and props stay in your cast — only this canvas is removed.`)) return;
   sdPause();
   try { await api(`/api/lw/${lwWorldId}/room/${rid}`, { method: "DELETE" }); }
-  catch (e) { toast(`Could not delete the scene: ${e.message}`); return; }
+  catch (e) { toast(`Could not delete the team: ${e.message}`); return; }
   sdFlash(); toast("Scene deleted");
   let rooms = [];
   try { rooms = (await api(`/api/lw/${lwWorldId}`)).rooms || []; } catch (e) { /* fall through to a fresh scene */ }
   const next = rooms.find((r) => r.id !== rid);
   if (next) { lwOpenScene(next.id); return; }
   try { const r = await api(`/api/lw/${lwWorldId}/room`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "untitled", type: "freeplay" }) }); lwOpenScene(r.room.id); }
-  catch (e) { toast(`Could not open a scene: ${e.message}`); }
+  catch (e) { toast(`Could not open a team: ${e.message}`); }
 }
 function sdDeleteCurrentScene() { if (lwRoomId != null) sdDeleteScene(lwRoomId, (lwRoom && lwRoom.name) || "untitled"); }
 
-// --- the Cast: every agent, grouped by the scene they are in ---------------
+// --- the Cast: every agent, grouped by the team they are in ---------------
 async function sdOpenRoster() {
   const host = $("#sdRosterHost"); if (!host || !lwWorldId) return;
   host.hidden = false;
@@ -206,7 +206,7 @@ async function sdOpenRoster() {
   catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="err">Could not read the cast: ${escapeHtml(e.message)}</p></div>`; return; }
   const rooms = d.rooms || [], agents = d.agents || [];
   const byRoom = {}; agents.forEach((a) => { const k = a.room == null ? "loose" : String(a.room); (byRoom[k] = byRoom[k] || []).push(a); });
-  const nameOf = (k) => k === "loose" ? "Not in a scene" : ((rooms.find((r) => String(r.id) === k) || {}).name || "untitled");
+  const nameOf = (k) => k === "loose" ? "Not on a team" : ((rooms.find((r) => String(r.id) === k) || {}).name || "untitled");
   const card = (a) => {
     const seed = lwAvatarSeed({ name: a.name, id: a.id, figure: a.figure });
     const want = (dominantWant(a.wants) || {}).name || "";
@@ -488,12 +488,12 @@ function sdPulse() { const f = $("#sdProgFill"); if (!f || reduceMotion()) retur
 
 // --- activity: a categorised log of what each beat did ---------------------
 let sdActOpen = false, sdActTab = "beats";
-// A directed graph of who acted on whom this scene, built from the log's frm→who edges.
+// A directed graph of who acted on whom this team, built from the log's frm→who edges.
 // Self-hosted SVG; manager ("manage") beats only fold in for root — a black box otherwise.
 function sdFlowHtml() {
   const root = lwCanRootDebug();
   const agents = (lwRoom && lwRoom.agents) || [];
-  if (!agents.length) return `<p class="sd-act-empty">No agents in this scene yet.</p>`;
+  if (!agents.length) return `<p class="sd-act-empty">No agents in this team yet.</p>`;
   const log = ((lwRoom && lwRoom.log) || []).filter((l) => root || l.kind !== "manage");
   const edges = {};
   log.forEach((l) => {
@@ -681,8 +681,8 @@ function lwNearestToken(w) {
   return best;
 }
 
-// --- scene rules: a small popover; saved to the scene, obeyed each run ------
-// Scene rules as ordered "ingress rows": each row is a typed effect (gate or shaper) with an
+// --- scene rules: a small popover; saved to the team, obeyed each run ------
+// Team rules as ordered "ingress rows": each row is a typed effect (gate or shaper) with an
 // optional when-match, evaluated top-to-bottom. Reused for a thread's own rule table too.
 const LW_RULE_EFFECTS = ["deny", "allow", "clamp", "bias", "annotate"];
 const LW_RULE_KINDS = ["", "greet", "say", "scold", "praise", "deal", "see"];
@@ -885,7 +885,7 @@ function sdRenderChat() {
 function sdToggleRules() {
   const pop = $("#sdRulesPop"); if (!pop) return;
   if (!pop.hidden) { pop.hidden = true; return; }
-  pop.innerHTML = `<div class="sd-rules-head">Scene rules <span class="dim">the whole room · a graph has its own rulebook</span></div>
+  pop.innerHTML = `<div class="sd-rules-head">Team rules <span class="dim">the whole room · a graph has its own rulebook</span></div>
     <textarea class="sc-input" id="sdRulesText" rows="4" placeholder="e.g. everyone stays in character; keep it civil; no one reveals their card."></textarea>
     <div class="sc-actions"><button class="sc-ctl primary" id="sdRulesSave">Save</button>
       <button class="sc-ctl" id="sdRulesClose">Close</button></div>`;
@@ -1562,7 +1562,7 @@ async function lwReloadRoom() {
   catch (e) { toast(`Could not refresh the room: ${e.message}`); }
 }
 
-// Paint the scene: a full-screen canvas with a floating toolbox, a video-style time
+// Paint the team: a full-screen canvas with a floating toolbox, a video-style time
 // transport, and a rules button — nothing else on top of the floor. Free strings reach
 // innerHTML through escapeHtml; on-canvas labels are Konva text (drawn to canvas).
 function lwRenderRoom(room) {
@@ -1572,7 +1572,7 @@ function lwRenderRoom(room) {
   const stage = $("#lwStage");
   const agents = room.agents || room.seats || [];
   const props = room.props || [];
-  // reflect this scene in the top bar (never clobber the title mid-edit)
+  // reflect this team in the top bar (never clobber the title mid-edit)
   const t = $("#sdTitle"); if (t && document.activeElement !== t) t.textContent = room.name || "untitled";
   paintLwLive();
 
@@ -1582,7 +1582,7 @@ function lwRenderRoom(room) {
       <div class="lw-overlay" id="lwOverlay"></div>
       <div class="sd-hint">drag a token to move it · drag empty to select · <b>space</b>-drag to pan · scroll to zoom · <b>F</b> fit</div>
       <div class="lw-dock sd-dock" id="lwDock">${lwDockHtml()}</div>
-      <button class="sd-rules-btn" id="sdRulesBtn" title="Scene rules — obeyed on every run">⚖ Rules</button>
+      <button class="sd-rules-btn" id="sdRulesBtn" title="Team rules — obeyed on every run">⚖ Rules</button>
       <div class="sd-rules-pop" id="sdRulesPop" hidden></div>
       <div class="sd-activity" id="sdActivity"${sdActOpen ? "" : " hidden"}></div>
     </div>

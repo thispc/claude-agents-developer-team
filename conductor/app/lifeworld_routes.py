@@ -168,9 +168,27 @@ def _profile_with_room(w, h) -> dict:
 
 # --- worlds & overview -----------------------------------------------------
 
+def _devteam_world() -> int:
+    """The self-repair crew's world, which the Studio deliberately does not list.
+
+    It is not a team you assembled; it is the one that works on this platform, and it has its
+    own door on the landing page with its own console attached. Mixing it into the same list
+    as the teams you built invites someone to reorganise the crew that is mid-sprint.
+    """
+    try:
+        from . import repair
+        return int((repair.team() or {}).get("world_id") or 0)
+    except Exception:
+        return 0
+
+
 @router.get("")
-def worlds(request: Request) -> dict:
-    return {"worlds": store.listing(current_user(request)["id"])}
+def worlds(request: Request, include_devteam: int = 0) -> dict:
+    rows = store.listing(current_user(request)["id"])
+    dev = _devteam_world()
+    if not include_devteam and dev:
+        rows = [w for w in rows if int(w.get("id")) != dev]
+    return {"worlds": rows, "devteam_world": dev}
 
 
 @router.post("")

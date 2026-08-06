@@ -782,6 +782,13 @@ async function refreshBoard() {
   }
   // Which delivery cycle we're in. Only shown when there's more than one, so a
   // one-shot project doesn't carry sprint vocabulary it never uses.
+  const tb = $("#teamLink");
+  if (tb) {
+    const has = p.team_world && p.team_room;
+    tb.hidden = !has;
+    if (has) tb.onclick = () => { location.hash = `#/studio`; setTimeout(() =>
+      (typeof lwOpenScene === "function") && (lwWorldId = p.team_world, lwOpenScene(p.team_room)), 350); };
+  }
   const sb = $("#sprintBadge");
   if (sb) {
     const total = p.sprints ?? 1;
@@ -2453,6 +2460,7 @@ const openDialog = () => {
   showStep(1);
   dialog.showModal();
   wireSprintChips();
+  fillTeamPick();
 };
 $("#projectSelect").addEventListener("change", (e) => selectProject(e.target.value));
 $("#homeLink").addEventListener("click", () => showHome());
@@ -2583,6 +2591,33 @@ $("#toRecruitBtn").addEventListener("click", async () => {
 });
 // The sprint count is the setting people most misjudge, because "6" says nothing
 // about what six means. Say the consequence in runs and rough wall-clock instead.
+/** Fill the staffing picker with the teams that exist. Called when the wizard opens. */
+async function fillTeamPick() {
+  const sel = document.querySelector("#teamPick"); if (!sel) return;
+  try {
+    const r = await api("/api/lw");
+    const worlds = r.worlds || [];
+    for (const w of worlds) {
+      const rooms = (await api(`/api/lw/${w.id}`)).world?.rooms || [];
+      for (const room of rooms) {
+        const o = document.createElement("option");
+        o.value = `${w.id}:${room.id}`;
+        o.textContent = `${w.name} · ${room.name || "untitled"}`;
+        sel.appendChild(o);
+      }
+    }
+  } catch { /* the picker still offers "hire per task" and "build one" */ }
+  const says = document.querySelector("#teamSays");
+  sel.addEventListener("change", () => {
+    if (!says) return;
+    says.textContent = sel.value === ""
+      ? "The manager reads the brief and hires whoever each task needs."
+      : sel.value === "new"
+        ? "A team is built from this idea and opened in the Studio — you can rewire it any time."
+        : "This project is staffed by that team, and links to it.";
+  });
+}
+
 function wireSprintChips() {
   const chips = document.querySelectorAll("#sprintChips .schip");
   const n = document.querySelector('#step3 [name=sprints]');
@@ -2645,6 +2680,9 @@ $("#newProjectForm").addEventListener("submit", async (ev) => {
         manager_model: f.get("manager_model") || "",
         manager_persona: f.get("manager_persona") || "",
         sprints: Number(f.get("sprints")) || 1,
+        // `team` above is the ROSTER of roles to hire. This is which Studio team staffs the
+        // project — a different question with an unfortunately similar name, so it says staff.
+        staff_team: String(f.get("team") || ""),
         // Whether time or quality is the constraint. Sent explicitly rather than
         // relying on the server default, so the form is the single source of what
         // was chosen.

@@ -799,12 +799,9 @@ function openAbout(skipHash) {
 }
 
 function showHome(skipHash) {
-  const st = $("#studio"); if (st) st.hidden = true;
-  const scn = $("#scenes"); if (scn) scn.hidden = true;
-  const lw = $("#lifeworld"); if (lw) lw.hidden = true;
-  const pl = $("#plan"); if (pl) pl.hidden = true;
-  const sp = $("#selfPage"); if (sp) sp.hidden = true;
-  const ab = $("#aboutPage"); if (ab) ab.hidden = true;
+  hideScreens("#home");
+  $("#home").hidden = false;
+  paintHomeStats();
   if (!skipHash) setHash("#/");
   currentProject = null;
   applyPermissions();
@@ -868,6 +865,34 @@ function switchView(view, skipHash) {
     setHash(`#/p/${currentProject}${view !== "command" ? "/" + view : ""}`);
 }
 
+/** Put the live state on the doors.
+ *
+ * "Teams: arrange your agents" is a brochure. "3 teams · 6 agents working" is a reason to
+ * click, and on a bad day it is the fastest way to notice something is wrong — which is what
+ * a landing page is actually for. */
+async function paintHomeStats() {
+  const set = (id, text) => { const e = $(id); if (e) e.textContent = text; };
+  try {
+    const ps = await api("/api/projects");
+    const live = ps.filter((p) => ["running", "planning"].includes(p.status)).length;
+    set("#statProjects", ps.length
+      ? `${ps.length} project${ps.length === 1 ? "" : "s"}${live ? ` · ${live} running` : ""}`
+      : "none yet");
+  } catch { set("#statProjects", ""); }
+  try {
+    const w = await api("/api/lw");
+    const n = (w.worlds || []).length;
+    set("#statTeams", n ? `${n} team${n === 1 ? "" : "s"}` : "none yet — make one");
+  } catch { set("#statTeams", ""); }
+  try {
+    const d = await api("/api/repair/status");
+    const busy = (d.meters && d.meters.team || []).length;
+    const phase = d.enabled ? ((d.state || {}).phase || "idle") : "off";
+    set("#statDevteam", `${phase}${busy ? ` · ${busy} on the crew` : ""}`
+      + (d.notices && d.notices.total ? ` · ${d.notices.total} need you` : ""));
+  } catch { set("#statDevteam", ""); }
+}
+
 function route() {
   if (suppressHash) return;
   // Any route that is not the agent page must first put it away. Screens are siblings that
@@ -887,6 +912,7 @@ function route() {
     return;
   }
   if (location.hash.startsWith("#/studio")) { openStudio(true); return; }
+  if (location.hash.startsWith("#/teams")) { openStudio(true); return; }   // its name now
   {
     const sc = location.hash.match(/^#\/scenes(?:\/([\w-]+))?/);
     if (sc) { openScenes(true, sc[1] || null); return; }

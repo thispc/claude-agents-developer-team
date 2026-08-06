@@ -42,6 +42,7 @@
   <select id="projectSelect" title="Switch project"></select>
   <div id="statusBadge" class="badge" hidden>—</div>
   <div id="sprintBadge" class="badge" hidden title="Delivery cycle">—</div>
+  <button class="rp-mini" id="teamLink" hidden title="Open the team that staffs this project">👥 Its team</button>
   <div id="costBadge" class="badge" hidden>—</div>
   <div class="spacer"></div>
   <button id="restartBtn" hidden title="Re-run the manager on this project">↻ Restart manager</button>
@@ -49,30 +50,34 @@
 </div>
 
 <section id="home">
-  <!-- Three ways in, stated as what they DO. "Plan" and "Develop" both sounded
-       like planning, so it was never obvious which one you wanted. Shape grows a
-       rough idea; Build runs the real pipeline; Improve turns the team on itself. -->
+  <!-- Three doors, and each one states what is behind it RIGHT NOW rather than what it is
+       for in the abstract. A landing page that describes its own features is a brochure; the
+       numbers under each door are the difference between "Teams: arrange your agents" and
+       "Teams: 3, one of them working". -->
   <div class="entries">
     <button class="entry-card feature" id="modeBuild">
       <span class="entry-ico">🏗</span>
-      <span class="entry-name">Build a project</span>
-      <span class="entry-desc">Hire a team and ship it. Tasks, branches, PRs, verified
-        merges — over as many sprints as you ask for.</span>
-      <span class="entry-go">Start building →</span>
+      <span class="entry-name">Projects</span>
+      <span class="entry-desc">Give it a repo and an idea. It plans the work, staffs it from a
+        team you choose, opens branches and merges what passes.</span>
+      <span class="entry-stat" id="statProjects"></span>
+      <span class="entry-go">Start a project →</span>
     </button>
     <button class="entry-card feature" id="modeStudio">
-      <span class="entry-ico">🎬</span>
-      <span class="entry-name">The Studio</span>
-      <span class="entry-desc">An infinite canvas. Drop in agents and objects, arrange them into
-        a scene, set the rules, and press play to watch them think — one screen, autosaved.</span>
-      <span class="entry-go">Open the Studio →</span>
+      <span class="entry-ico">👥</span>
+      <span class="entry-name">Teams</span>
+      <span class="entry-desc">Where the people live. Arrange agents on a canvas, wire who
+        talks to whom, and hand the team to a project.</span>
+      <span class="entry-stat" id="statTeams"></span>
+      <span class="entry-go">Open Teams Studio →</span>
     </button>
     <button class="entry-card" id="modeImprove">
       <span class="entry-ico">⟲</span>
-      <span class="entry-name">Self repair</span>
-      <span class="entry-desc">Point the team at this platform's own codebase. File an
-        issue, let it fix itself, review the PR, redeploy.</span>
-      <span class="entry-go">Open self-repair →</span>
+      <span class="entry-name">Devteam</span>
+      <span class="entry-desc">The team that works on this platform itself — its own crew, its
+        own sprints, kept out of Teams so nobody reorganises it mid-build.</span>
+      <span class="entry-stat" id="statDevteam"></span>
+      <span class="entry-go">Open the devteam →</span>
     </button>
   </div>
 
@@ -166,16 +171,16 @@
     <h2>The Studio</h2>
     <nav class="studio-tabs" id="studioTabs" role="tablist">
       <button class="studio-tab active" data-tab="agents" role="tab">Agents</button>
-      <button class="studio-tab" data-tab="scenes" role="tab">Scenes</button>
+      <button class="studio-tab" data-tab="scenes" role="tab">Teams</button>
       <button class="studio-tab" data-tab="artifacts" role="tab">Artifacts</button>
     </nav>
     <button class="scene-tolobby" id="sceneToLobby" hidden>← All scenes</button>
     <span class="scene-title-inline" id="sceneTitle" hidden></span>
     <div class="studio-spacer"></div>
     <span class="studio-budget" id="studioBudget" title="Today's background token spend"></span>
-    <span class="scene-meter" id="sceneMeter" hidden title="Model calls and tokens this scene has spent"></span>
+    <span class="scene-meter" id="sceneMeter" hidden title="Model calls and tokens this team has spent"></span>
     <button class="studio-hire" id="studioHire">＋ New hire</button>
-    <button class="studio-hire" id="sceneNew" hidden>＋ New scene</button>
+    <button class="studio-hire" id="sceneNew" hidden>＋ New team</button>
     <button class="studio-hire" id="artNew" hidden>＋ New artifact</button>
   </div>
 
@@ -212,7 +217,7 @@
   <div class="studio-bar sd-bar">
     <button class="studio-back" id="lwBack">← Home</button>
     <span class="sd-title" id="sdTitle" contenteditable="true" spellcheck="false" role="textbox" aria-label="Scene name">untitled</span>
-    <button class="sd-title-del" id="sdSceneDel" title="Delete this scene" aria-label="Delete this scene">🗑</button>
+    <button class="sd-title-del" id="sdSceneDel" title="Delete this team" aria-label="Delete this team">🗑</button>
     <span class="sd-save" id="sdSave" title="Everything saves automatically as you work"></span>
     <div class="studio-spacer"></div>
     <div class="sd-scenes-wrap">
@@ -791,6 +796,19 @@
         </div>
         <p class="sprint-says" id="sprintSays"></p>
       </div>
+      <!-- Who does the work, decided BEFORE the work. The manager still hires per task if you
+           pick nothing — this is not a new requirement, it is the option to arrange the people
+           first and then open them from the project afterwards. -->
+      <h3 class="ctl-h">Who should staff it?</h3>
+      <div class="teampick">
+        <select name="team" id="teamPick" data-staff="1">
+          <option value="">Let the manager hire per task (default)</option>
+          <option value="new">Build a team for this idea →</option>
+        </select>
+        <p class="hint" id="teamSays">The manager reads the brief and hires whoever each task
+          needs. Pick a team instead if you want the same people across the whole project.</p>
+      </div>
+
 <h3 class="ctl-h">Who is your manager?</h3>
       <div class="nums">
         <label>Manager's brain <span class="hint">stronger = better judgment</span>

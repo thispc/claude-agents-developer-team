@@ -285,3 +285,58 @@ def test_one_helper_hides_the_screens():
     from conftest import dashboard_js
     js = dashboard_js()
     assert "function hideScreens" in js and '"#agentPage"' in js
+
+
+# ---- the shape of the product ---------------------------------------------
+
+def test_the_devteam_is_not_listed_among_your_teams(root_client, fresh_db):
+    """It is not a team you assembled; it is the one that works on this platform, and it has
+    its own door. Mixing it into the same list invites someone to reorganise the crew that is
+    mid-sprint."""
+    from app import repair
+    from app.lifeworld import store
+    mine = store.create(1, "my team")
+    store.save(mine)
+    repair.ensure_team()
+    dev = (repair.team() or {}).get("world_id")
+    listed = [w["id"] for w in root_client.get("/api/lw").json()["worlds"]]
+    assert mine.id in listed and dev not in listed
+    assert root_client.get("/api/lw").json()["devteam_world"] == dev
+    # ...but it is reachable when explicitly asked for, which is what its own door does
+    both = [w["id"] for w in root_client.get("/api/lw?include_devteam=1").json()["worlds"]]
+    assert dev in both
+
+
+def test_a_project_can_name_the_team_that_staffs_it(fresh_db):
+    """Not a new requirement — with nothing chosen the manager hires per task exactly as
+    before. It is the option to arrange the people BEFORE the work."""
+    from conftest import make_project
+    from app import db
+    pid = make_project(owner_id=1, name="thing")
+    db.set_team(pid, 4, 9)
+    p = db.get_project(pid)
+    assert p["team_world"] == 4 and p["team_room"] == 9
+
+
+def test_migrations_are_appended_never_inserted():
+    """The tuple is indexed by PRAGMA user_version, so a statement inserted anywhere but the
+    end shifts every one after it: a database at version N skips the new statements and
+    re-runs old ones."""
+    src = Path(__file__).resolve().parents[1].joinpath("conductor/app/db.py").read_text()
+    block = src.split("migrations = (", 1)[1].split("\n    )", 1)[0]
+    assert "APPEND ONLY BELOW" in block
+    tail = block.split("APPEND ONLY BELOW", 1)[1]
+    assert "team_world" in tail, "the newest migration is not at the end"
+
+
+def test_the_landing_doors_say_what_is_behind_them():
+    """A landing page that describes its own features is a brochure. The numbers under each
+    door are the difference between "arrange your agents" and "3 teams, one working"."""
+    from conftest import dashboard_js
+    js = dashboard_js()
+    assert "async function paintHomeStats" in js
+    for stat in ("#statProjects", "#statTeams", "#statDevteam"):
+        assert stat in js
+    html = (Path(__file__).resolve().parents[1] / "dashboard/index.html").read_text()
+    for name in (">Projects<", ">Teams<", ">Devteam<"):
+        assert name in html, f"the landing page has no {name} door"

@@ -13,6 +13,7 @@ from . import (ambition, artifact_lib, artifacts, auth, blockers, bus, cloud, co
                memory, metrics, notify, planner, preview, process, providers,
                roundtable, sandbox, scene, scheduler, selfops, team, triage, tuning,
                upkeep, usage)
+from . import logs
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -40,6 +41,7 @@ class NewProject(BaseModel):
     manager_model: str = ""
     manager_persona: str = ""
     sprints: int = 1
+    staff_team: str = ""        # "" = the manager hires per task | "new" | "<world>:<room>"
     # agile | waterfall. Unset means agile, which is what the platform was already
     # doing badly — planning in one pass with dependencies wired by role is
     # waterfall in everything but name, and it was never a choice anyone made.
@@ -1693,6 +1695,48 @@ async def suggest_team(body: BriefOnly, request: Request) -> dict:
             "known_roles": [r["name"] for r in config.load_roles()]}
 
 
+async def _staff_from_team(project_id: int, body, owner) -> None:
+    """Attach a Studio team to a project, building one from the brief if asked.
+
+    Naming a team is not a new requirement — with nothing chosen the manager hires per task
+    exactly as it always has. It is the option to arrange the people BEFORE the work, and to
+    open them from the project afterwards, which is the whole reason the Studio and the
+    pipeline should not be two unrelated products.
+    """
+    choice = (getattr(body, "staff_team", "") or "").strip()
+    if not choice:
+        return
+    from .lifeworld import store
+    from .lifeworld_routes import ManifestAgent, ManifestBody, materialise_manifest
+    uid = (owner or {}).get("id") or 0
+    try:
+        if choice != "new":
+            wid, _, rid = choice.partition(":")
+            db.set_team(project_id, int(wid), int(rid or 0))
+            return
+        # "new": one team, named after the project, staffed from the roster the wizard
+        # already resolved — the same people, arranged where you can see and rewire them.
+        w = store.create(uid, f"{body.name} team")
+        names = [str(m.role or "").strip() or f"agent {i+1}"
+                 for i, m in enumerate(getattr(body, "team", []) or [])][:8]
+        if not names:
+            names = ["Lead", "Builder", "Reviewer"]
+        s_ = materialise_manifest(w, ManifestBody(
+            name=body.name[:60] or "team",
+            agents=[ManifestAgent(name=n, brief=f"{n} on {body.name[:40]}") for n in names],
+            edges=[[names[i], names[(i + 1) % len(names)]] for i in range(len(names))]
+                  if len(names) > 1 else [],
+            rules=body.brief[:400], manager={"model": "", "budget": 2},
+            protocol={"preset": "evidence-2026"}))
+        store.save(w)
+        db.set_team(project_id, w.id, s_.id)
+        bus.emit(project_id, None, "system", "team_built",
+                 {"world": w.id, "room": s_.id, "agents": len(names)})
+    except Exception as e:
+        # A project must never fail to start because the Studio hiccuped.
+        logs.warn("lifecycle", "team_attach_failed", str(e)[:200], project=project_id)
+
+
 @router.post("/api/projects")
 async def create_project(body: NewProject, request: Request) -> dict:
     owner = auth.user_for_token(request.cookies.get("devteam_session"))
@@ -1747,6 +1791,7 @@ async def create_project(body: NewProject, request: Request) -> dict:
                 (process.normalise(body.process),
                  ambition.normalise(body.ambition), project_id))
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
+    await _staff_from_team(project_id, body, owner)
     team.hire(project_id, roster)
     if scaled:
         bus.emit(project_id, None, "system", "run_cap_scaled",

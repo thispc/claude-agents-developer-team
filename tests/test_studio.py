@@ -471,9 +471,13 @@ def test_the_studio_has_its_own_route_and_is_hidden_by_other_screens():
     # exists both ways rather than pinning one spelling of it.
     assert '"#/studio"' in js and "studioTabHash" in js
     assert 'startsWith("#/studio")' in js
+    # Against the shared hide-list, not each function's body: six copies of one list is how a
+    # new screen gets forgotten by half of them.
+    assert '"#studio"' in js.split("const SCREENS = [", 1)[1].split("]", 1)[0]
     for opener in ("function showHome", "function openProject"):
         body = js.split(opener)[1][:600]
-        assert '"#studio"' in body or "studio" in body, f"{opener} does not hide the Studio"
+        assert "studio" in body or "hideScreens(" in body, \
+            f"{opener} neither hides the Studio nor uses the shared helper"
 
 
 @pytest.mark.hostonly

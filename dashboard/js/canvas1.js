@@ -584,10 +584,10 @@ function lwMountCanvas(room, agents, props) {
     const w = host.clientWidth, h = host.clientHeight;
     if (w > 0 && h > 0) {                         // never shrink to a fallback when host reads 0
       const sized = stage.width() !== w || stage.height() !== h;
-      if (sized) { stage.width(w); stage.height(h); }   // this CLEARS both the scene AND hit canvases
+      if (sized) { stage.width(w); stage.height(h); }   // this CLEARS both the team AND hit canvases
       let fitted = false;
       if (!lwKonva.framed) { lwFitView(); lwKonva.framed = true; fitted = true; }
-      // A resize (or a fit) leaves the hit canvas cleared/mis-transformed relative to the scene
+      // A resize (or a fit) leaves the hit canvas cleared/mis-transformed relative to the team
       // until a full draw — the source of "the token is right there but the click misses it".
       if (sized || fitted) lwKonva.worldLayer.batchDraw();
     }
@@ -653,7 +653,7 @@ function lwFitView() {
   stage.scale({ x: scale, y: scale });
   stage.position({ x: (W - cw * scale) / 2 - minX * scale, y: (H - ch * scale) / 2 - minY * scale });
   lwSaveView();
-  lwKonva.worldLayer.batchDraw();   // a fit moves the transform — redraw so the HIT graph tracks the scene
+  lwKonva.worldLayer.batchDraw();   // a fit moves the transform — redraw so the HIT graph tracks the team
 }
 
 // The dotted grid is a Miro-style affordance: hidden until a drag or a zoom, then
@@ -1822,7 +1822,7 @@ async function lwFillCast(pop) {
   catch (e) { box.innerHTML = `<p class="dim">Could not load the cast.</p>`; return; }
   const here = new Set(((lwRoom && lwRoom.agents) || []).map((a) => String(a.id)));
   const avail = agents.filter((a) => !here.has(String(a.id)));
-  if (!avail.length) { box.innerHTML = `<p class="dim">Everyone is already in this scene.</p>`; return; }
+  if (!avail.length) { box.innerHTML = `<p class="dim">Everyone is already in this team.</p>`; return; }
   box.innerHTML = avail.map((a) => {
     const seed = lwAvatarSeed({ name: a.name, id: a.id, figure: a.figure });
     return `<button class="lw-cast-item" data-cast="${escapeHtml(String(a.id))}">
@@ -2051,7 +2051,7 @@ async function lwPlayBubbles(lines) {
 // deterministic reflex is labelled as such. Only unseen lines animate in.
 function lwLogHtml(log, prevSeen) {
   if (!log || !log.length)
-    return `<div class="lw-log-empty">The ticker is quiet. Step the scene to stir them.</div>`;
+    return `<div class="lw-log-empty">The ticker is quiet. Step the team to stir them.</div>`;
   let newIdx = 0;
   return log.map((l) => {
     const isNew = !prevSeen.has(String(l.n));

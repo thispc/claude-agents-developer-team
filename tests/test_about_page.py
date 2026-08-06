@@ -35,12 +35,19 @@ def test_about_has_its_own_address_so_it_can_be_linked():
 
 
 def test_every_screen_hides_the_about_page():
-    """A screen left visible underneath another is the classic single-page bug:
-    it does not error, it just renders two pages on top of each other."""
+    """A screen left visible underneath another is the classic single-page bug: it does not
+    error, it just renders two pages on top of each other.
+
+    Asserted against the shared helper rather than each function's body — six copies of one
+    hide-list is how a NEW screen gets forgotten by half of them, which happened, so the list
+    now lives in one place and this checks that place.
+    """
+    assert "#aboutPage" in JS.split("const SCREENS = [", 1)[1].split("]", 1)[0]
     for opener in ("function showHome", "async function openSelfRepair",
                    "function openProject", "async function openPlan"):
         body = JS.split(opener)[1][:700]
-        assert "aboutPage" in body, f"{opener} does not hide the About page"
+        assert "aboutPage" in body or "hideScreens(" in body, \
+            f"{opener} neither hides the About page nor uses the shared helper"
 
 
 def test_the_about_page_says_what_is_unfinished():

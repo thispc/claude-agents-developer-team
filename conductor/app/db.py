@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS projects (
     manager_model TEXT NOT NULL DEFAULT '',       -- '' = server default
     manager_persona TEXT NOT NULL DEFAULT '',     -- extra character instructions
     is_self INTEGER NOT NULL DEFAULT 0,           -- this row is the platform's own codebase
+    team_world INTEGER NOT NULL DEFAULT 0,        -- the Studio team that staffs this project
+    team_room INTEGER NOT NULL DEFAULT 0,
     sprints INTEGER NOT NULL DEFAULT 1,           -- how many delivery cycles to run
     sprint INTEGER NOT NULL DEFAULT 1,            -- which one is in progress
     cost_usd REAL NOT NULL DEFAULT 0,
@@ -457,6 +459,11 @@ def init() -> None:
         "ALTER TABLE tasks ADD COLUMN compete INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE tasks ADD COLUMN seq INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE projects ADD COLUMN is_self INTEGER NOT NULL DEFAULT 0",
+        # Which team in the Studio staffs this project. A project without one still works —
+        # the manager hires per task, as it always did — but naming a team is what lets you
+        # arrange the people BEFORE the work, and open them from the project afterwards.
+        "ALTER TABLE projects ADD COLUMN team_world INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE projects ADD COLUMN team_room INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE projects ADD COLUMN sprints INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE projects ADD COLUMN sprint INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE tasks ADD COLUMN sprint INTEGER NOT NULL DEFAULT 1",
@@ -482,6 +489,16 @@ def init() -> None:
         "ALTER TABLE home_agents ADD COLUMN traits TEXT NOT NULL DEFAULT '{}'",
         # roundtables/seats/turns are created by SCHEMA above (CREATE TABLE IF NOT
         # EXISTS), so existing databases pick them up without a migration here.
+        #
+        # APPEND ONLY BELOW. This tuple is indexed by PRAGMA user_version, so inserting a
+        # statement anywhere but the end shifts every one after it — a database at version N
+        # would then skip the new statements and re-run old ones.
+        #
+        # Which team staffs a project. A project without one still works exactly as before —
+        # the manager hires per task — but naming a team is what lets you arrange the people
+        # BEFORE the work, and open them from the project afterwards.
+        "ALTER TABLE projects ADD COLUMN team_world INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE projects ADD COLUMN team_room INTEGER NOT NULL DEFAULT 0",
     )
     # PRAGMA user_version tracks how many of the migrations above are already
     # applied, so a DB that is caught up (a fresh one included, since SCHEMA
@@ -551,6 +568,12 @@ def advance_sprint(project_id: int) -> int:
 
 def set_max_runs(project_id: int, max_runs: int) -> None:
     _execute("UPDATE projects SET max_runs=? WHERE id=?", (max(1, int(max_runs)), project_id))
+
+
+def set_team(project_id: int, world_id: int, room_id: int) -> None:
+    """Point a project at the team that staffs it."""
+    _execute("UPDATE projects SET team_world=?, team_room=? WHERE id=?",
+             (int(world_id), int(room_id), int(project_id)))
 
 
 def set_sprints(project_id: int, sprints: int) -> None:
