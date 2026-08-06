@@ -14,10 +14,15 @@ request would land on the control plane instead — broken, and an app written b
 an agent would be able to reach our API with the operator's cookies. A separate
 port has no such ambiguity.
 
-**Locally, the child gets a scrubbed environment.** Agent-written code runs with
-the operator's user account, so it is started with a minimal env: no
-ANTHROPIC_API_KEY, no GITHUB_TOKEN, no WORKER_TOKEN. It cannot read the
-credentials of the platform that built it.
+**Locally, the app runs in a container, not as the operator's own user.** A
+Dockerfile already in the repo is used as-is; anything else gets one generated
+from the detected runtime. No bind mount reaches the host tree, so the
+container has no path to `~/.ssh`, `.env` or `devteam.db` — unlike a bare
+`subprocess.Popen`, which would inherit all three merely by running as this
+user. The child env is scrubbed on top of that (no ANTHROPIC_API_KEY, no
+GITHUB_TOKEN, no WORKER_TOKEN). Docker missing or unreachable is a hard error,
+not a silent drop to the host process — `DEPLOY_ALLOW_HOST_PROCESS=1` is the
+explicit, logged opt-out for when there is no docker at all.
 
 **A branch can be run before it is merged.** `branch` gets its own image, its own
 Deployment and its own hostname beside the deployed app, so "does this work?" is
@@ -447,13 +452,30 @@ async def rollback_k8s(project_id: int, branch: str = "") -> dict[str, Any]:
     return rollout.rollback(config.K8S_NAMESPACE, app_name(project_id, branch))
 
 
+def _docker_ready() -> bool:
+    """docker present AND its daemon actually answering.
+
+    A binary with no daemon behind it — not started, no permission on the
+    socket — fails a build exactly like a missing binary does, and the caller
+    needs to treat both the same way: refuse, rather than fall through to
+    running agent-written code unsandboxed because `shutil.which` alone said yes.
+    """
+    if not shutil.which("docker"):
+        return False
+    return rollout.sh("docker", "version", "--format", "{{.Server.Version}}",
+                      timeout=10).returncode == 0
+
+
 async def deploy_local(project_id: int, workspace: str = "",
                        branch: str = "") -> dict[str, Any]:
-    """Build and run the app as a subprocess on its own port.
+    """Build the app and run it, sandboxed, on its own port.
 
     `workspace` runs an agent's checkout instead of the merged default branch, so
     work can be exercised before it is committed. `branch` runs a pushed branch
     the same way, on its own port and beside the deployed app rather than over it.
+
+    Runs in a docker container by default — see the module docstring. Docker
+    missing or unreachable is a hard error unless DEPLOY_ALLOW_HOST_PROCESS=1.
     """
     if branch and not safe_branch(branch):
         return {"ok": False, "error": f"refusing {branch!r} as a git branch"}
@@ -496,21 +518,54 @@ async def deploy_local(project_id: int, workspace: str = "",
     # to our own socket. `finally` covers every early return below too, so a
     # failed build never leaks the reservation.
     try:
-        if spec["kind"] == "docker":
-            if not shutil.which("docker"):
-                return {"ok": False, "spec": spec,
-                        "error": "This project has a Dockerfile but docker isn't installed here."}
+        docker_up = _docker_ready()
+        if not docker_up and not config.DEPLOY_ALLOW_HOST_PROCESS:
+            # No silent fallback. Running agent-written code as this host's own
+            # user — able to read ~/.ssh, .env, devteam.db — must be something
+            # someone opted into, not something that happens because a laptop's
+            # Docker Desktop was asleep.
+            return {"ok": False, "spec": spec,
+                    "error": "docker is not available (missing, or its daemon isn't "
+                             "reachable), so there is no sandbox to run this app in. "
+                             "Agent-written code is not run unsandboxed by default — "
+                             "install/start docker, or set DEPLOY_ALLOW_HOST_PROCESS=1 "
+                             "to run it as this host's own user instead (it will then "
+                             "be able to read ~/.ssh, .env and devteam.db)."}
+
+        if docker_up:
+            # A Dockerfile already in the repo is used as-is; anything else gets
+            # one generated from the detected runtime, under our own name so it
+            # never shadows the repo's own file. Either way the image build is
+            # the ONLY thing that sees the host tree — the running container gets
+            # no bind mount back to it, `root`, or anywhere else on this host.
+            dockerfile_args: list[str] = []
+            if spec["kind"] != "docker":
+                (root / "Dockerfile.devteam").write_text(_generated_dockerfile(spec))
+                dockerfile_args = ["-f", "Dockerfile.devteam"]
+                _log(project_id, "no Dockerfile in the repo — generated one from the "
+                                 "detected runtime so this still runs in a container", branch)
             tag = f"{app_name(project_id, branch)}:latest"
             _log(project_id, f"docker build -t {tag}", branch)
-            b = subprocess.run(["docker", "build", "-t", tag, "."], cwd=root,
-                               capture_output=True, text=True, timeout=BUILD_TIMEOUT)
+            b = subprocess.run(["docker", "build", *dockerfile_args, "-t", tag, "."],
+                               cwd=root, capture_output=True, text=True, timeout=BUILD_TIMEOUT)
             _log(project_id, (b.stdout + b.stderr)[-4000:], branch)
             if b.returncode != 0:
                 return {"ok": False, "spec": spec,
                         "error": f"docker build failed: {b.stderr[-300:]}"}
-            cmd = ["docker", "run", "--rm", "-p", f"{port}:{port}",
-                   "-e", f"PORT={port}", "--name", app_name(project_id, branch), tag]
+            # A generated Dockerfile always listens on APP_PORT internally (see
+            # _generated_dockerfile); the repo's own Dockerfile is trusted to
+            # respect the $PORT it's handed, as it always has here.
+            container_port = APP_PORT if dockerfile_args else port
+            cmd = ["docker", "run", "--rm", "--network", "bridge",
+                   "-p", f"{port}:{container_port}", "-e", f"PORT={container_port}",
+                   "--name", app_name(project_id, branch), tag]
         else:
+            if spec["kind"] == "docker":
+                return {"ok": False, "spec": spec,
+                        "error": "This project only has a Dockerfile and docker isn't "
+                                 "available, so there is no host command to fall back to."}
+            _log(project_id, "DEPLOY_ALLOW_HOST_PROCESS=1 and docker is unavailable — "
+                             "running UNSANDBOXED as this host's own user", branch)
             if spec["build"]:
                 _log(project_id, f"build: {spec['build']}", branch)
                 b = subprocess.run(spec["build"], cwd=root, shell=True, capture_output=True,

@@ -702,3 +702,21 @@ def test_a_rulebook_cannot_squeeze_the_round_out_of_the_hosts_reply(fresh_db):
     src = Path(wmod.__file__).read_text()
     assert "60 * len(rules)" in src, "the token budget must account for the rules it asked for"
     assert "self.host_error =" in src, "a mediated round that degrades must say why"
+
+
+def test_the_server_can_actually_be_stopped():
+    """Background loops are written never to die — correct while the server is up, wrong the
+    moment it is going down. Nothing cancelled them, so a SIGTERM'd process could keep its
+    event loop alive, still holding the repair lease and still ticking the engine against the
+    same database as its replacement. That is the 'why is another devteam running' bug."""
+    src = Path(__file__).resolve().parents[1].joinpath("conductor/app/main.py").read_text()
+    head, _, tail = src.partition("    yield")
+    assert "background.append(loop.create_task(repair.loop()))" in head, \
+        "every never-die loop must be tracked"
+    starts = [ln.strip() for ln in head.splitlines() if "loop.create_task(" in ln]
+    assert starts, "the lifespan should still be starting background work"
+    for ln in starts:
+        assert ln.startswith("background.append(") or ln.startswith("_manager_tasks["), \
+            f"untracked background task cannot be stopped: {ln}"
+    assert "t.cancel()" in tail and "asyncio.wait(dying, timeout=" in tail, \
+        "shutdown must cancel them and wait, bounded"

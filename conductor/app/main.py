@@ -19,6 +19,8 @@ async def lifespan(app: FastAPI):
     findings.init()
     loop = asyncio.get_event_loop()
     bus.set_loop(loop)
+    # Every never-die background loop, so shutdown can actually end them (see below).
+    background: list[asyncio.Task] = []
     config.WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
     # No manager session survives a restart, so any question still marked pending
     # has no waiter — clear them so the dashboard doesn't re-raise dead questions.
@@ -58,21 +60,33 @@ async def lifespan(app: FastAPI):
     # not unattended: CI publishes an image and nothing adopts it.
     from . import cloud
     if cloud.in_cluster():
-        loop.create_task(cloud.watch())
+        background.append(loop.create_task(cloud.watch()))
     # Look at what went wrong, on a schedule, without being asked. Self-repair that
     # only runs when a human notices something is broken is not self-repair — the
     # value of the loop is entirely in the part nobody is present for.
-    loop.create_task(upkeep.loop())
+    background.append(loop.create_task(upkeep.loop()))
     # The Studio's background life. Free at rest — it wakes, reads rows, and almost
     # always finds nothing due. It spends a token only when an agent has genuinely
     # accumulated enough work to be worth remembering, under a hard daily budget,
     # on each owner's OWN credentials (default_settings_for).
-    loop.create_task(home.loop(home.default_settings_for))
+    background.append(loop.create_task(home.loop(home.default_settings_for)))
     # Self-repair v2 — the IT crew's sprint loop. A no-op every tick until the owner flips
     # the button; resumes mid-sprint after any restart because its state lives in kv.
     from . import repair
-    loop.create_task(repair.loop())
+    background.append(loop.create_task(repair.loop()))
     yield
+    # SHUTDOWN. These loops are written never to die, which is right while the server is up
+    # and wrong the moment it is going down: nothing cancelled them, so a SIGTERM'd process
+    # could keep its event loop alive — still holding the repair lease and still ticking the
+    # engine against the same database as its replacement. That is not theoretical; it is
+    # the "why is another devteam running" bug, and it wasted a sprint.
+    # Resumed manager sessions go with them: a manager that outlives the server is the same
+    # hazard wearing a different hat, and it holds an SDK subprocess open too.
+    dying = background + [t for t in _manager_tasks.values() if not t.done()]
+    for t in dying:
+        t.cancel()
+    if dying:
+        await asyncio.wait(dying, timeout=5)
 
 
 app = FastAPI(title="devteam conductor", lifespan=lifespan)

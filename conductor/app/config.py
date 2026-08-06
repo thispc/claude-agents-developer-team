@@ -157,6 +157,14 @@ APPS_DOMAIN = _env("APPS_DOMAIN")
 # "exec format error" on the node. Blank = build natively (local kind only).
 DEPLOY_PLATFORM = _env("DEPLOY_PLATFORM", "linux/amd64")
 
+# deploy_local runs the target app inside a docker container by default — no bind
+# mount reaches the host tree, so the app has no path to ~/.ssh, .env or
+# devteam.db the way a bare subprocess would. Docker is therefore REQUIRED for a
+# local deploy: if it is missing or its daemon is unreachable, deploy_local
+# refuses rather than quietly falling back to running agent-written code as this
+# host's own user. Set this to opt into that fallback anyway.
+DEPLOY_ALLOW_HOST_PROCESS = _flag("DEPLOY_ALLOW_HOST_PROCESS", default=False)
+
 # Domain for reaching LOCAL-mode previews from a browser. A preview runs as a
 # subprocess inside the conductor pod on localhost:PORT — unreachable from anywhere
 # but the pod. When this is set (e.g. "152-42-151-175.nip.io"), the conductor
