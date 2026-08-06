@@ -3,7 +3,7 @@
 **Status after the 2026-07-20 fix pass:** issues 4, 6, 8, 10, 11, 12, 13, 14,
 15, 16, 17 are fixed (see the commit "fix 11 known bugs…"), plus two new ones
 found by a security probe (suggest-team and model-health were anonymous — fixed).
-Still open: 2, 3, 5, 9, 18 below. (7 fixed since — see below.)
+Still open: 2, 3, 5, 9 below. (8 fixed since — see below.)
 
 Bugs found and confirmed but **not fixed**, worst first. Each one says what
 actually happens, why, and the concrete fix.
@@ -248,13 +248,17 @@ Every cookie ever issued is valid forever.
 
 **Fix:** store an expiry, check it in `user_for_token`, sweep on startup.
 
-## 18. Dead migrations mask real ones
+## 18. [FIXED] Dead migrations mask real ones
 
-All 14 `ALTER TABLE` statements duplicate columns already in `SCHEMA`, so on a
-fresh database every one raises and is swallowed by a blanket
-`except OperationalError: pass` — which would also swallow a *genuine* migration
-failure on an old database. The `seq` backfill also re-runs on every startup with
-a correlated subquery per row.
+All of the `ALTER TABLE` statements duplicated columns already in `SCHEMA`, so on
+a fresh database every one raised and was swallowed by a blanket
+`except OperationalError: pass` — which would also have swallowed a *genuine*
+migration failure on an old database. The `seq` backfill also re-ran on every
+startup with a correlated subquery per row.
 
-**Fix:** a `schema_version` row; run migrations only when behind, and let a
-failure surface.
+**Fix:** `db.init()` now tracks progress with `PRAGMA user_version`. Only the
+migrations past the stored version run at all, so a caught-up database (a fresh
+one included) does none of this on later boots. What does run only ignores the
+specific "duplicate column" error; anything else propagates. The `seq` backfill
+moved inside the same guard, so it rides along once instead of re-running every
+startup.

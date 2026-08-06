@@ -440,7 +440,9 @@ def init() -> None:
     _conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
     _conn.row_factory = sqlite3.Row
     _conn.executescript(SCHEMA)
-    for stmt in (  # migrations for pre-existing DBs (ignore "duplicate column")
+    migrations = (  # migrations for pre-existing DBs; SCHEMA above already has
+        # every one of these columns for a fresh database, so a fresh DB (and any
+        # DB already caught up) skips the lot via the schema_version guard below.
         "ALTER TABLE tasks ADD COLUMN deps TEXT NOT NULL DEFAULT '[]'",
         "ALTER TABLE projects ADD COLUMN max_runs INTEGER NOT NULL DEFAULT 40",
         "ALTER TABLE projects ADD COLUMN runs_used INTEGER NOT NULL DEFAULT 0",
@@ -480,19 +482,32 @@ def init() -> None:
         "ALTER TABLE home_agents ADD COLUMN traits TEXT NOT NULL DEFAULT '{}'",
         # roundtables/seats/turns are created by SCHEMA above (CREATE TABLE IF NOT
         # EXISTS), so existing databases pick them up without a migration here.
-    ):
-        try:
-            _conn.execute(stmt)
-        except sqlite3.OperationalError:
-            pass
-    # Backfill per-project task numbers for tasks created before seq existed,
-    # numbering them 1..N in creation order within each project.
-    _conn.execute("""
-        UPDATE tasks SET seq = (
-            SELECT COUNT(*) FROM tasks AS t2
-            WHERE t2.project_id = tasks.project_id AND t2.id <= tasks.id
-        ) WHERE seq = 0
-    """)
+    )
+    # PRAGMA user_version tracks how many of the migrations above are already
+    # applied, so a DB that is caught up (a fresh one included, since SCHEMA
+    # already has every column) does none of this on every later boot instead
+    # of re-running the whole list and swallowing "duplicate column" every
+    # single time — which also hid a genuine migration failure behind the same
+    # blanket except (KNOWN_ISSUES #18).
+    version = _conn.execute("PRAGMA user_version").fetchone()[0]
+    if version < len(migrations):
+        for stmt in migrations[version:]:
+            try:
+                _conn.execute(stmt)
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc):
+                    raise
+        _conn.execute(f"PRAGMA user_version = {len(migrations)}")
+        # Backfill per-project task numbers for tasks created before seq existed,
+        # numbering them 1..N in creation order within each project. Only needed
+        # once, so it rides along with the migration catch-up above rather than
+        # re-running its correlated subquery on every startup.
+        _conn.execute("""
+            UPDATE tasks SET seq = (
+                SELECT COUNT(*) FROM tasks AS t2
+                WHERE t2.project_id = tasks.project_id AND t2.id <= tasks.id
+            ) WHERE seq = 0
+        """)
     _conn.commit()
 
 
