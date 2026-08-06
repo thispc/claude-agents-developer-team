@@ -10,6 +10,8 @@ bounded spend), for when you want the agents to genuinely think.
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 from typing import Any
 
@@ -56,3 +58,21 @@ def listing(owner_id: int) -> list[dict]:
 
 def delete(world_id: int) -> None:
     db.delete_lw_world(world_id)
+
+
+# One lock per world, so a load→await→save cycle cannot be interleaved with another.
+#
+# A World is deserialized fresh on every request and saved back as a whole blob, so two
+# overlapping cycles are a lost update: the self-repair crew's sprint runs `load → await
+# run_deliberation → save` on the engine's task while `POST /api/repair/chat` does the same
+# round trip, and whichever finished last silently erased the other's memo, log and results.
+# Both live in one event loop, so an asyncio lock is the right grain.
+_WORLD_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def lock_for(world_id: int) -> asyncio.Lock:
+    """`async with store.lock_for(wid):` around any load…mutate…save."""
+    lk = _WORLD_LOCKS.get(int(world_id))
+    if lk is None:
+        lk = _WORLD_LOCKS[int(world_id)] = asyncio.Lock()
+    return lk

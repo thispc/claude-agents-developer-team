@@ -157,7 +157,8 @@ class World:
             return None
 
     async def host_plan(self, cfg: dict, ring, rulebook: str, transcript: str,
-                        devils_advocate: bool = False, want_unanimous: bool = False) -> dict | None:
+                        devils_advocate: bool = False, want_unanimous: bool = False,
+                        can_hear=None) -> dict | None:
         """The thread manager's ONE bounded spend per deliberation. In a SINGLE call it BOTH enforces
         the rulebook AND mediates the round, returning {"enforce": [line per rule], "round": [{"who":
         id, "text": line} per agent]} or None (Live only; free fallback is deterministic). One call
@@ -192,8 +193,20 @@ class World:
             sys += (" IMPORTANT: the panel was UNANIMOUS last round. This round, appoint exactly ONE agent "
                     "to argue the strongest opposing case (in character), and let the others answer it — "
                     "surface what the consensus might be missing.")
+        # WHO MAY REFERENCE WHOM. The host sees the whole ring — it is the mediator, and that
+        # is by design — but it also COMPOSES each agent's line, which means content from B can
+        # be written into A's mouth and then legitimately broadcast, laundering direction
+        # through the manager. Stating the adjacency is the honest thing we can do inside one
+        # call. It is a constraint on the model, not an enforcement boundary: enforcing it
+        # would need one call per agent, which is the O(N) cost this whole design exists to
+        # avoid. The alternative — an omniscient ghost-writer — is now at least documented.
+        hears = {str(h.id): [o.id for o in ring if o.id != h.id and can_hear(o.id, h.id)]
+                 for h in ring} if can_hear else {}
         prompt = (f"AGENTS: {json.dumps(roster)}\nTOPIC: {json.dumps(topic)}\nRULES: {json.dumps(rules)}\n"
-                  f"TRANSCRIPT SO FAR:\n{transcript[:1000] or '(nothing yet)'}\nReturn only the JSON object.")
+                  + (f"HEARS (agent id -> the ids it can hear; an agent must not reference "
+                     f"anything said by someone outside its own list): {json.dumps(hears)}\n"
+                     if hears else "")
+                  + f"TRANSCRIPT SO FAR:\n{transcript[:1000] or '(nothing yet)'}\nReturn only the JSON object.")
         try:
             # Budget for what we actually asked for: a line per agent AND a line per rule.
             budget = 110 * max(1, len(ring)) + 60 * len(rules) + 160

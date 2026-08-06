@@ -106,14 +106,18 @@ async def repair_chat(body: ChatText, request: Request) -> dict:
     if not info:
         raise HTTPException(409, "no crew yet — enable a factor first")
     from .lifeworld import store
-    w = store.load(info["world_id"], live=repair._live(),
-                   settings=repair._root_settings() if repair._live() else None)
-    s = w.scene(info["room_id"])
-    t = s.thread(info["thread_id"]) if s else None
-    if t is None:
-        raise HTTPException(409, "the crew's table is missing — toggle repair off and on")
-    res = await s.chat(t, "manager", body.text)
-    store.save(w)
+    # The engine's sprint does load → await → save on the same world. Without this lock the
+    # two overlap and the last writer wins, so a chat could erase a sprint's memo, or a
+    # sprint could erase the conversation.
+    async with store.lock_for(info["world_id"]):
+        w = store.load(info["world_id"], live=repair._live(),
+                       settings=repair._root_settings() if repair._live() else None)
+        s = w.scene(info["room_id"])
+        t = s.thread(info["thread_id"]) if s else None
+        if t is None:
+            raise HTTPException(409, "the crew's table is missing — toggle repair off and on")
+        res = await s.chat(t, "manager", body.text)
+        store.save(w)
     return res
 
 

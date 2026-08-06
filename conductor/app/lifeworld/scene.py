@@ -109,8 +109,16 @@ class Scene:
             t = new_thread(self.thread_seq)
             t["closed"] = bool(closed)
             self.threads.append(t)
-        if not any(edge_eq(e, a, b) for e in t["edges"]):
+        # Re-aiming an EXISTING edge used to be a silent no-op: `edge_eq` ignores the
+        # direction slot, so "these two are already connected" was treated as "nothing to do"
+        # and the one-way toggle did nothing at all on any arrow that already existed. That
+        # is a large part of why direction never looked like it worked.
+        existing = next((e for e in t["edges"] if edge_eq(e, a, b)), None)
+        if existing is None:
             t["edges"].append([a, b, dir])
+        elif len(existing) > 2 and (existing[0], existing[1], existing[2]) != (a, b, dir):
+            existing[0], existing[1] = a, b        # the caller's a→b is the direction meant
+            existing[2] = dir
         if closed:
             t["closed"] = True
         return t
@@ -246,7 +254,8 @@ class Scene:
             plan = await self.world.host_plan(cfg, ring, rulebook,
                                               self._thread_transcript(ring, anonymize=proto["anonymize"]),
                                               devils_advocate=devils_advocate,
-                                              want_unanimous=proto["on_unanimity"] == "devils_advocate")
+                                              want_unanimous=proto["on_unanimity"] == "devils_advocate",
+                                              can_hear=lambda spk, lst: self._hears(thread, spk, lst))
             if plan is None:                          # the model was expected but unreachable — say so, don't fake it
                 why = getattr(self.world, "host_error", "") or "no reply"
                 self._record("manage", None, f"host could not mediate thread {thread['id']} ({why}) — free replies this round")
@@ -271,8 +280,19 @@ class Scene:
                 return b == speaker
         return False
 
-    def _thread_transcript(self, ring: list[Human], anonymize: bool = False) -> str:
+    def _thread_transcript(self, ring: list[Human], anonymize: bool = False,
+                           thread: dict | None = None, for_agent: int | None = None) -> str:
+        """What has been said in this thread — optionally, only the part ONE agent could hear.
+
+        Without `for_agent` this is the ring-wide record, which is what the manager needs and
+        what it has always got. With it, the arrows apply: an agent's own model call must not
+        be seeded with lines it never heard, or the direction on the canvas is decoration.
+        That was a real leak — under a strict one-way edge the listener's STATE was correctly
+        untouched while its PROMPT contained the very utterance it was not supposed to have.
+        """
         ids = {h.id for h in ring}
+        if thread is not None and for_agent is not None:
+            ids = {i for i in ids if i == for_agent or self._hears(thread, i, for_agent)}
         says = [r for r in self.log if r.get("kind") == "say" and r.get("frm") in ids][-8:]
         if not anonymize:
             return "\n".join(r["text"] for r in says)
@@ -366,11 +386,15 @@ class Scene:
         others say this round (the transcript snapshot is taken before anyone speaks). Free
         deterministic stance lines offline. Cost: N calls, still bounded by construction."""
         topic = (rulebook or "").strip() or "the matter at hand"
-        snapshot = self._thread_transcript(ring, anonymize=proto.get("anonymize", False))
         lines = []
         for h in ring:
             text = None
             if self.world.is_live():
+                # Per agent, not one shared snapshot: the arrows decide what each of them has
+                # actually heard. Still free — building a string costs nothing, and the call
+                # count is unchanged at one per agent.
+                snapshot = self._thread_transcript(ring, anonymize=proto.get("anonymize", False),
+                                                   thread=thread, for_agent=h.id)
                 text = await self.world.agent_position(h, topic, snapshot, self.rules)
             lines.append({"who": h.id, "text": text or self._free_line(h, topic, _topic_of(thread))})
         await self._deliver_lines(thread, ring, lines, spend=False)
@@ -453,9 +477,12 @@ class Scene:
             convo.append({"role": "manager", "text": reply, "ts": time.time()})
         else:
             agent = self.world.get(int(key)) if key.lstrip("-").isdigit() else None
-            if not isinstance(agent, Human):
+            # Membership was never checked, so a chat could be addressed to ANY human in the
+            # world — one seated in another room, or in no graph at all — and it would think,
+            # spend its quota, and file the beat in this scene's log.
+            if not isinstance(agent, Human) or agent.id not in members_of(thread):
                 convo.pop()
-                return {"error": "no such agent"}
+                return {"error": "no such agent in this graph"}
             convo.append({"role": "agent", "text": await self._agent_reply(agent, text), "ts": time.time()})
         chats[key] = convo[-40:]                     # bound the history we keep
         return {"chat": chats[key], "to": key}
@@ -463,11 +490,18 @@ class Scene:
     async def _agent_reply(self, agent: Human, text: str) -> str:
         if agent.asleep():
             return f"({agent.name} is resting — out of model quota for now)"
+        # kind="ask", not "say". A compiled habit matches on {kind, tone, from_trusted} and
+        # nothing else, so an agent that has listened to a few rounds holds a reflex for
+        # exactly the shape a user's question used to arrive in — and answered it with the
+        # raw debug string "say (i=0.30)" instead of thinking. A question is its own kind of
+        # event and must not collide with overheard chatter.
         packet = await self.deliver(
-            Signal(kind="say", from_id=None, sense="hearing", intensity=0.6, stakes=0.6,
+            Signal(kind="ask", from_id=None, sense="hearing", intensity=0.6, stakes=0.6,
                    payload={"text": text, "tone": "neutral"}, domain=self.domain), agent)
         reply = (packet.action or {}).get("text") or packet.understood
-        if not self.world.is_live():                 # offline: a persona-flavoured line beats the canned reflex
+        # A reflex has no words worth showing a person; fall back to the persona line rather
+        # than surfacing an appraisal's internals.
+        if not self.world.is_live() or packet.tier == 1 or not str(reply or "").strip():
             reply = self._free_line(agent, text)
         return str(reply or "…")[:600]
 

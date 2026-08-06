@@ -450,6 +450,17 @@ def thread_connect(world_id: int, room_id: int, body: ThreadEdge, request: Reque
     s = w.scene(room_id)
     if not s:
         raise HTTPException(404, "no such room")
+    # Validated: this used to accept any two integers. An id belonging to an agent seated in
+    # a DIFFERENT room became a full member of this graph — speaking, hearing and spending —
+    # while being absent from the room's own agent list, so it was a participant nobody could
+    # see. A graph may only wire people who are actually in the room.
+    from .lifeworld.human import Human
+    for who in (body.a, body.b):
+        ent = w.get(who)
+        if not isinstance(ent, Human) or who not in s.seats:
+            raise HTTPException(400, "you can only connect agents seated in this room")
+    if body.a == body.b:
+        raise HTTPException(400, "an agent cannot be threaded to itself")
     t = s.connect(body.a, body.b, dir=body.dir, closed=body.closed)
     store.save(w)
     return {"thread": t, "threads": s.threads}

@@ -2068,6 +2068,15 @@ function lwLogHtml(log, prevSeen) {
   }).join("");
 }
 
+/** A habit's trigger is a DICT of the fields it matches on. `String(dict)` is
+ * "[object Object]", which is what every habit row has said until now. */
+function lwHabitWhen(when) {
+  if (!when || typeof when !== "object") return escapeHtml(String(when ?? "anything"));
+  const parts = Object.entries(when).filter(([, v]) => v !== null && v !== "")
+    .map(([k, v]) => `${escapeHtml(k)}=${escapeHtml(String(v))}`);
+  return parts.join(" · ") || "anything";
+}
+
 function paintLwLive() {
   const b = $("#lwLive");
   if (!b) return;
@@ -2203,12 +2212,12 @@ async function openPersonDrawer(hid, name) {
   const skills = Array.isArray(h.skills)
     ? h.skills.slice().sort((a, b) => Number(b[1]) - Number(a[1])).slice(0, 5) : [];
   const resume = h.resume || {};
-  const pins = Array.isArray(resume.pins) ? resume.pins : [];
+  const pinCount = typeof resume.pins === "number" ? resume.pins
+    : (Array.isArray(resume.pins) ? resume.pins.length : 0);
   const habits = Array.isArray(d.habits) ? d.habits : [];
   const bonds = (d.bonds && typeof d.bonds === "object") ? d.bonds : {};
   const hand = Array.isArray(d.hand) ? d.hand : [];
-  const pinText = (p) => typeof p === "object"
-    ? (p.text || p.what || p.name || JSON.stringify(p)) : String(p);
+
   box.innerHTML = `
     <div class="sd-head">
       <div class="fig-emblem lw-av-emblem"><img alt="" src="${lwSvgUri(lwAvatarSvg(lwAvatarSeed({ name: h.name || name, id: hid, figure: h.figure }), 48))}"></div>
@@ -2240,14 +2249,14 @@ async function openPersonDrawer(hid, name) {
 
     <div class="sd-label">Résumé ledger ${resume.intact
       ? `<span class="lw-verified">verified ✓</span>` : `<span class="lw-broken">unverified</span>`}</div>
-    ${resume.head ? `<p class="lw-resume-head">${escapeHtml(String(resume.head))}</p>` : ""}
-    ${pins.length
-      ? `<div class="lw-pins">${pins.map((p) => `<span class="lw-pin">📌 ${escapeHtml(pinText(p))}</span>`).join("")}</div>`
+    ${pinCount
+      ? `<p class="dim">${pinCount} pinned achievement${pinCount === 1 ? "" : "s"}${
+          resume.head ? ` · chain <code>${escapeHtml(String(resume.head).slice(0, 12))}</code>` : ""}</p>`
       : `<p class="dim">no pinned achievements yet</p>`}
 
     ${habits.length ? `<div class="sd-label">Compiled habits</div>
       <div class="lw-habits">${habits.map((hb) => `<div class="lw-habit">
-        <span class="lw-habit-when">when ${escapeHtml(String(hb.when))}</span>
+        <span class="lw-habit-when">when ${lwHabitWhen(hb.when)}</span>
         <span class="lw-habit-meta">conf ${lwPct(hb.confidence)} · fired ${escapeHtml(String(hb.fires ?? 0))}×</span>
       </div>`).join("")}</div>` : ""}
 

@@ -788,48 +788,52 @@ async def _phase_plan(st: dict, rec: dict) -> None:
         info = ensure_team()
         if info:
             from .lifeworld import store
-            w = store.load(info["world_id"], live=_live(), settings=_root_settings() if _live() else None)
-            s = w.scene(info["room_id"]) if w else None
-            thread = s.thread(info["thread_id"]) if s else None
-            if thread is not None:
-                lenses = "\n".join(f"- {f['id']}: {f['brief']}" for f in enabled_factors())
-                thread["topic"] = f"sprint {rec['no']}: what the devteam platform needs next"
-                thread["rulebook"] = (
-                    "You are the platform's own IT crew planning the NEXT FEW SPRINTS on the "
-                    "devteam codebase — one shared backlog you will work through in order.\n"
-                    f"Lenses:\n{lenses}\nScout findings:\n{rec['scout']['digest'] or '(none)'}\n"
-                    f"Decide the top {n_tasks} improvements, best first; the recommendation must "
-                    "name each task's title, factor, target files and acceptance checks.")[:2000]
-                too_big = _recent_too_big()
-                if too_big:
-                    # The crew kept proposing programme-sized work — "extract a router from
-                    # routes.py" — and each one died on turns. Showing it its own oversized
-                    # tasks is cheaper and more specific than any amount of prompt adjectives.
-                    thread["rulebook"] += (
-                        "\nThese were planned before and DIED because one engineer could not "
-                        "finish them in a single session — do not propose work of this size "
-                        "again; take a first slice instead:\n- " + "\n- ".join(too_big[:5]))
-                rounds = int(tuning.get("repair_plan_rounds"))
-                memo = await s.run_deliberation(thread, rounds=rounds)
-                store.save(w)
-                # independent init spends one call per agent for the opening round, a host plan
-                # per later round, and one closing memo — meter what actually went out.
-                from .lifeworld.threads import protocol_of
-                per_agent = len(ring_names) if (ring_names := [f for f in enabled_factors()]) and \
-                    protocol_of(thread).get("init") == "independent" else 1
-                ledger_add("plan", str(tuning.get("repair_builder_model")), 0,
-                           n=per_agent + max(0, rounds - 1) + 1)
-                # What each specialist actually argued, and what the manager concluded. The
-                # deliberation lived only in the Studio world's scene log, so from the Improve
-                # screen the plan appeared out of nowhere — the crew's reasoning is the most
-                # interesting thing it produces and it was the one thing not on screen.
-                names = (memo or {}).get("names") or {}
-                bus.emit(0, None, "repair", "repair_deliberated", {
-                    "sprint": rec["no"],
-                    "positions": [{"who": names.get(str(p.get("who")), "") or p.get("name", ""),
-                                   "text": str(p.get("position") or p.get("text") or "")[:400]}
-                                  for p in ((memo or {}).get("positions") or [])][:12],
-                    "recommendation": str((memo or {}).get("recommendation") or "")[:1200]})
+            # Held across load…save: the chat route does the same round trip on this world,
+            # and without the lock whichever finished last silently erased the other — a
+            # sprint's memo, or the operator's conversation.
+            async with store.lock_for(info["world_id"]):
+              w = store.load(info["world_id"], live=_live(), settings=_root_settings() if _live() else None)
+              s = w.scene(info["room_id"]) if w else None
+              thread = s.thread(info["thread_id"]) if s else None
+              if thread is not None:
+                  lenses = "\n".join(f"- {f['id']}: {f['brief']}" for f in enabled_factors())
+                  thread["topic"] = f"sprint {rec['no']}: what the devteam platform needs next"
+                  thread["rulebook"] = (
+                      "You are the platform's own IT crew planning the NEXT FEW SPRINTS on the "
+                      "devteam codebase — one shared backlog you will work through in order.\n"
+                      f"Lenses:\n{lenses}\nScout findings:\n{rec['scout']['digest'] or '(none)'}\n"
+                      f"Decide the top {n_tasks} improvements, best first; the recommendation must "
+                      "name each task's title, factor, target files and acceptance checks.")[:2000]
+                  too_big = _recent_too_big()
+                  if too_big:
+                      # The crew kept proposing programme-sized work — "extract a router from
+                      # routes.py" — and each one died on turns. Showing it its own oversized
+                      # tasks is cheaper and more specific than any amount of prompt adjectives.
+                      thread["rulebook"] += (
+                          "\nThese were planned before and DIED because one engineer could not "
+                          "finish them in a single session — do not propose work of this size "
+                          "again; take a first slice instead:\n- " + "\n- ".join(too_big[:5]))
+                  rounds = int(tuning.get("repair_plan_rounds"))
+                  memo = await s.run_deliberation(thread, rounds=rounds)
+                  store.save(w)
+                  # independent init spends one call per agent for the opening round, a host plan
+                  # per later round, and one closing memo — meter what actually went out.
+                  from .lifeworld.threads import protocol_of
+                  per_agent = len(ring_names) if (ring_names := [f for f in enabled_factors()]) and \
+                      protocol_of(thread).get("init") == "independent" else 1
+                  ledger_add("plan", str(tuning.get("repair_builder_model")), 0,
+                             n=per_agent + max(0, rounds - 1) + 1)
+                  # What each specialist actually argued, and what the manager concluded. The
+                  # deliberation lived only in the Studio world's scene log, so from the Improve
+                  # screen the plan appeared out of nowhere — the crew's reasoning is the most
+                  # interesting thing it produces and it was the one thing not on screen.
+                  names = (memo or {}).get("names") or {}
+                  bus.emit(0, None, "repair", "repair_deliberated", {
+                      "sprint": rec["no"],
+                      "positions": [{"who": names.get(str(p.get("who")), "") or p.get("name", ""),
+                                     "text": str(p.get("position") or p.get("text") or "")[:400]}
+                                    for p in ((memo or {}).get("positions") or [])][:12],
+                      "recommendation": str((memo or {}).get("recommendation") or "")[:1200]})
     except Exception as e:
         db.kv_set("repair:last_error", {"ts": time.time(), "phase": "plan", "detail": str(e)[:400]})
     rec["memo"] = memo
