@@ -289,17 +289,38 @@ class Scene:
             out.append(f"{label.get(r.get('frm'), 'Agent ?')}: {body}")
         return "\n".join(out)
 
-    def _free_line(self, h: Human, topic: str) -> str:
+    def _free_line(self, h: Human, topic: str, subject: str = "") -> str:
         """A deterministic, persona-flavoured stance — free, so the whole round costs nothing
-        when the world is offline (and is what the tests exercise)."""
-        goal, _ = h.drives.dominant_goal()
-        angle = {"social": "we should find common ground", "esteem": "the bold move is the right one",
-                 "curiosity": "let's look at the evidence first", "purpose": "what best serves the goal",
-                 "safety": "let's not rush this", "order": "let's keep it structured"}.get(goal, "let's weigh it carefully")
-        return f"On {topic[:70]} — {angle}."
+        when the world is offline (and is what the tests exercise).
 
-    def _free_round(self, ring: list[Human], topic: str) -> list[dict]:
-        return [{"who": h.id, "text": self._free_line(h, topic)} for h in ring]
+        It must DIFFER per agent: keying only on the dominant drive made every agent with the
+        same default psyche emit one identical sentence, so a six-person panel read as one
+        opinion repeated six times. The stance now comes from the agent's most defining TRAIT
+        as well as its drive, and the topic is trimmed to a real subject line rather than the
+        first 70 characters of whatever instruction block was handed in."""
+        goal, _ = h.drives.dominant_goal()
+        traits = getattr(getattr(h, "psyche", None), "traits", {}) or {}
+        trait = max(traits.items(), key=lambda kv: abs(kv[1] - 0.5))[0] if traits else ""
+        by_trait = {"conscientiousness": "the correct answer matters more than the quick one",
+                    "risk_appetite": "take the bold option; the cautious one costs more later",
+                    "composure": "nothing here is urgent enough to do badly",
+                    "curiosity": "the interesting question is what we have not looked at",
+                    "sociability": "whoever has to live with this should have a say",
+                    "empathy": "start from what it feels like to use",
+                    "willpower": "pick one thing and actually finish it"}
+        by_goal = {"social": "and whoever lives with it should have the last word",
+                   "esteem": "and it should be something we would show off",
+                   "curiosity": "and I would rather learn something than guess",
+                   "purpose": "and only if it moves the actual goal",
+                   "safety": "and I would rather be slow than sorry",
+                   "energy": "and I want the payoff soon, not eventually"}
+        # Trait AND drive, because either alone collides across a six-person panel.
+        head = by_trait.get(trait) or "let's weigh it carefully"
+        tail = by_goal.get(goal) or "and let's be honest about the trade"
+        return f"{subject or _subject(topic)} — {head}, {tail}."
+
+    def _free_round(self, ring: list[Human], topic: str, subject: str = "") -> list[dict]:
+        return [{"who": h.id, "text": self._free_line(h, topic, subject)} for h in ring]
 
     async def _hear(self, speaker: Human, listener: Human, text: str) -> None:
         """A listener ABSORBS an utterance — a free Tier-0 state nudge, never the model, so a round
@@ -335,7 +356,7 @@ class Scene:
         topic = (thread.get("rulebook") or "").strip() or "the matter at hand"
         # The round comes from the manager's single plan (Live); free & deterministic otherwise.
         live_round = bool(plan and plan.get("round"))
-        lines = (plan or {}).get("round") or self._free_round(ring, topic)
+        lines = (plan or {}).get("round") or self._free_round(ring, topic, _topic_of(thread))
         await self._deliver_lines(thread, ring, lines, spend=live_round)
 
     async def _independent_round(self, thread: dict, ring: list[Human], rulebook: str, proto: dict) -> None:
@@ -350,7 +371,7 @@ class Scene:
             text = None
             if self.world.is_live():
                 text = await self.world.agent_position(h, topic, snapshot, self.rules)
-            lines.append({"who": h.id, "text": text or self._free_line(h, topic)})
+            lines.append({"who": h.id, "text": text or self._free_line(h, topic, _topic_of(thread))})
         await self._deliver_lines(thread, ring, lines, spend=False)
 
     # --- the deliberation run: N rounds of perspectives, then ONE kept result --------------
@@ -536,6 +557,25 @@ class Scene:
                 "clusters": self.clusters(),
                 "threads": self.threads,
                 "log": self.log[-60:]}
+
+
+def _topic_of(thread: dict) -> str:
+    """What a thread is ABOUT, in a person's words — set by whoever built the graph. It is
+    deliberately NOT the rulebook: a rulebook is an instruction block addressed to the model
+    ("You are the platform's own IT crew…"), and using it as the subject of speech put that
+    sentence in every bubble. Empty is fine; the rulebook's first line then stands in."""
+    return str((thread or {}).get("topic") or "").strip()[:90]
+
+
+def _subject(topic: str) -> str:
+    """The first real sentence of a topic — a rulebook is an instruction block, and slicing its
+    first 70 characters produced beats like 'On You are the platform\'s own IT crew planning'."""
+    t = " ".join(str(topic or "").split())
+    for stop in (". ", "? ", "\n"):
+        if stop in t:
+            t = t.split(stop)[0]
+            break
+    return (t[:90] + "…") if len(t) > 90 else (t or "the matter at hand")
 
 
 def _tone(kind: str) -> str:

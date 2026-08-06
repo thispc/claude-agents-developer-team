@@ -938,6 +938,7 @@ function connectWs() {
       noteActivity(e); renderEvent(e); scheduleRefresh();
     }
     else loadProjects();  // on the home page, keep the table live
+    if (e.source === "repair" && typeof rpOnEvent === "function") rpOnEvent(e);
     if (e.kind === "boss_question" || e.kind === "answered") { refreshQuestion(); refreshBell(); }
     if (e.kind === "boss_question") notifyBoss(e);
     if (e.kind === "project_finished") notify("Project finished", `Project #${e.project_id} is done.`);
@@ -1072,13 +1073,25 @@ function trim(s, n) { s = (s || "").trim(); return s.length > n ? s.slice(0, n -
  *
  * Tasks accumulate across sprints, so by sprint 4 the board is a wall of work
  * mostly finished three cycles ago. This separates "what the team is doing now"
- * from "what it has already shipped", without hiding the latter. */
+ * from "what it has already shipped", without hiding the latter.
+ *
+ * Opening a sprint gives its BOARD — the same work grouped by how it ended, because
+ * "what shipped" and "what didn't" are two different questions and one flat list answers
+ * neither. Shown for one-sprint projects too: that is the common case, and "which of these
+ * failed" is exactly as worth asking there. */
 function renderSprints(p) {
   const total = p.sprints ?? 1;
-  if (total <= 1) return "";
+  if (!(p.tasks || []).length && total <= 1) return "";
   const cur = p.sprint ?? 1;
   const bySprint = {};
   for (const t of p.tasks || []) (bySprint[t.sprint || 1] ||= []).push(t);
+
+  const LANES = [
+    { label: "Completed", cls: "done", has: (t) => t.status === "done" },
+    { label: "Failed", cls: "failed", has: (t) => ["failed", "cancelled"].includes(t.status) },
+    { label: "In progress", cls: "running", has: (t) => ["running", "pushed", "review"].includes(t.status) },
+    { label: "Not started", cls: "queued", has: (t) => !["done", "failed", "cancelled", "running", "pushed", "review"].includes(t.status) },
+  ];
 
   const line = (n) => {
     const ts = bySprint[n] || [];
@@ -1086,11 +1099,17 @@ function renderSprints(p) {
     const failed = ts.filter((t) => t.status === "failed").length;
     const live = ts.filter((t) => ["running", "queued"].includes(t.status)).length;
     const state = n < cur ? "shipped" : n === cur ? "current" : "upcoming";
-    const titles = ts.map((t) =>
-      `<li class="sp-task ${t.status}"><b>#${t.seq}</b> ${escapeHtml(t.title)}
-         <span class="hint">${escapeHtml(t.role)} · ${t.status}</span></li>`).join("");
+    const lanes = LANES.map((ln) => {
+      const mine = ts.filter(ln.has);
+      if (!mine.length) return "";
+      return `<div class="sp-lane"><div class="sp-lane-h ${ln.cls}">${ln.label}
+          <span class="hint">${mine.length}</span></div>
+        <ul class="sp-tasks">${mine.map((t) =>
+          `<li class="sp-task ${t.status}"><b>#${t.seq}</b> ${escapeHtml(t.title)}
+             <span class="hint">${escapeHtml(t.role)} · ${escapeHtml(t.status)}</span></li>`).join("")}</ul></div>`;
+    }).join("");
     const body = ts.length
-      ? `<ul class="sp-tasks">${titles}</ul>`
+      ? `<div class="sp-lanes">${lanes}</div>`
       : `<p class="hint">Not planned yet — the manager decides this sprint's scope
            when the previous one ships.</p>`;
     // Only the current sprint is open by default; finished ones are archive.
@@ -1105,9 +1124,9 @@ function renderSprints(p) {
   };
 
   return `<div class="sprints-card">
-    <div class="bl">🗓 Sprints <span class="hint">${cur} of ${total}</span></div>
-    <p class="hint sp-lede">The manager plans each cycle itself and rolls straight
-      into the next — it only stops for you if it is genuinely blocked.</p>
+    <div class="bl">🗓 Sprint board <span class="hint">${total > 1 ? `${cur} of ${total}` : "every issue, and how it ended"}</span></div>
+    ${total > 1 ? `<p class="hint sp-lede">The manager plans each cycle itself and rolls straight
+      into the next — it only stops for you if it is genuinely blocked.</p>` : ""}
     ${Array.from({ length: total }, (_, i) => line(i + 1)).join("")}
   </div>`;
 }

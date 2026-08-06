@@ -282,6 +282,34 @@ KNOBS: dict[str, tuple[Any, type, str, str]] = {
         "Sessions of session-window headroom required to START a sprint; below "
         "it the manager sleeps until the window rolls. Starting with less risks "
         "dying between build and verify."),
+    # --- utilization: is the shared quota actually idle? ---
+    "usage_window_h": (
+        5.0, float, "USAGE_WINDOW_H",
+        "The rolling window every utilization number is measured over. 5 hours "
+        "because that is the session window Claude subscriptions reset on — "
+        "measuring over a different span would produce a meter that reads full "
+        "when the real quota has already rolled, or empty just before a wall."),
+    "usage_budget_usd": (
+        20.0, float, "USAGE_BUDGET_USD",
+        "What one window's worth of quota is treated as being worth, in the SDK's "
+        "API-equivalent pricing. A subscription exposes no token budget, so this "
+        "is the conversion between 'cost reported per session' and 'fraction of "
+        "the window consumed'. Raise it if the crew sleeps while quota is clearly "
+        "left; lower it if it keeps running into real rate limits."),
+    "repair_idle_share": (
+        0.6, float, "REPAIR_IDLE_SHARE",
+        "The most of one window self-repair may take when the box is otherwise "
+        "idle. Its actual allowance is this MINUS whatever the owner's own work "
+        "already spent, so a busy day shrinks the crew automatically and a quiet "
+        "one hands it the room — no separate crew budget to keep in sync. Not 1.0: "
+        "the owner must be able to start work without waiting for a window to roll."),
+    "repair_yield_quiet_s": (
+        900, int, "REPAIR_YIELD_QUIET_S",
+        "How long the platform must be free of owner-driven model spend before the "
+        "crew claims idle quota. This is the difference between 'nobody is using "
+        "it' and 'nobody used it in the last second': 15 minutes is short enough "
+        "that the crew still gets nights and lunch breaks, long enough that it "
+        "does not elbow into a session the owner is in the middle of."),
     "repair_builder_model": (
         "claude-sonnet-5", str, "REPAIR_BUILDER_MODEL",
         "The model that scouts and builds. Quality over price here: cheap-model "

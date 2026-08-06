@@ -82,7 +82,8 @@ async def _run_sdk(system_prompt: str, prompt: str, cwd: Path, tools: list[str],
                 if isinstance(block, TextBlock) and block.text.strip():
                     text = block.text
         elif isinstance(message, ResultMessage):
-            usd = message.total_cost_usd or 0.0
+            from . import usage
+            usd = usage.note_result("repair", model, message)
     if not text:
         raise RuntimeError("the session produced no output")
     return text, usd

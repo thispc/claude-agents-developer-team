@@ -12,7 +12,7 @@ from . import (ambition, artifact_lib, artifacts, auth, blockers, bus, cloud, co
                envs, feedback, findings, github_client, home, launcher, manager,
                memory, metrics, notify, planner, preview, process, providers,
                roundtable, sandbox, scene, scheduler, selfops, team, triage, tuning,
-               upkeep)
+               upkeep, usage)
 
 router = APIRouter()
 _manager_tasks: dict[int, asyncio.Task] = {}
@@ -2458,6 +2458,9 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
     _owns_task(body.project_id, body.task_id)
     status = "pushed" if body.status == "pushed" else "failed"
     task = db.get_task(body.task_id)
+    # Worker sessions draw on the same subscription quota the self-repair crew watches, so
+    # they are metered here — once, before the branchy paths below each bill the project.
+    usage.note("worker", (task or {}).get("model") or "", body.cost_usd)
 
     # A rival attempt reports into its own row; the task only advances once every
     # rival is in, and then it goes to the manager to judge — not straight to a PR.

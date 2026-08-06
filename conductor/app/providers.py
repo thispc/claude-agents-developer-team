@@ -318,7 +318,8 @@ async def complete(provider: str, model: str, system: str, prompt: str,
 async def _anthropic(model: str, system: str, prompt: str, settings: dict,
                      max_tokens: int) -> str:
     """Via the Agent SDK so a subscription OAuth token works, not just an API key."""
-    from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, TextBlock, query
+    from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ResultMessage,
+                                  TextBlock, query)
 
     env = {}
     if settings.get("anthropic_api_key"):
@@ -339,6 +340,11 @@ async def _anthropic(model: str, system: str, prompt: str, settings: dict,
             for b in msg.content:
                 if isinstance(b, TextBlock):
                     text += b.text
+        elif isinstance(msg, ResultMessage):
+            # Studio seats spend the same subscription quota as everything else on the
+            # box; the self-repair crew's idleness check is only honest if it sees them.
+            from . import usage
+            usage.note_result(usage.current_source("studio"), model, msg)
     if not text.strip():
         raise ProviderError("Claude returned an empty response")
     return text.strip()

@@ -25,10 +25,15 @@ import threading
 import time
 from pathlib import Path
 
-from . import bus, config, db, launcher, tuning
+from . import bus, config, db, launcher, tuning, usage
 from . import repair_builder as rb
 
 TICK_SECONDS = 20
+
+# Bumped whenever the built-in personas change. ensure_team() re-seats the crew when the kv
+# world was built under an older stamp — otherwise a persona fix only reaches brand-new
+# installs, and the running crew keeps the psyches it was born with.
+TEAM_PERSONAS = 2
 
 # Serializes read-modify-write cycles on the repair:state and repair:ledger kv keys.
 # tick() runs on the event loop, but toggle()/set_factors() are plain `def` FastAPI
@@ -37,25 +42,46 @@ TICK_SECONDS = 20
 # not an asyncio.Lock, which only serializes within a single event loop.
 _STATE_LOCK = threading.Lock()
 
+
+def hunger(drive: str, deficit: float = 0.35) -> dict:
+    """Seed a factor's motivation. A drive is a homeostatic LEVEL, not a wish: pressure is
+    setpoint minus level, so the agent that WANTS safety is the one whose safety sits BELOW
+    its setpoint. Seeding 0.9 ("very safety-minded") actually says "fully satisfied, wants
+    nothing" — which is how six factor agents ended up sharing one default goal."""
+    from .lifeworld.drives import SPEC
+    return {drive: round(max(0.0, SPEC.get(drive, (0.6, 0, 0))[0] - deficit), 3)}
+
+
 DEFAULT_FACTORS = [
+    # Dials use THIS engine's trait vocabulary (psyche.TRAITS: willpower, risk_appetite,
+    # composure, curiosity, sociability, empathy, conscientiousness) and drives.SPEC —
+    # anything else is silently dropped by the manifest, which is how six "specialists" ended
+    # up as six identical neutral agents saying the same sentence. A specialist must actually
+    # differ from its neighbours or the panel is one opinion repeated N times.
     {"id": "correctness", "name": "Correctness", "enabled": True,
      "brief": "bugs, races, broken flows — anything that behaves wrong or could",
-     "dials": {"conscientiousness": 92, "openness": 40}},
+     "dials": {"conscientiousness": 95, "risk_appetite": 15, "composure": 80, "curiosity": 55},
+     "drives": hunger("safety")},
     {"id": "simplicity", "name": "Simplicity", "enabled": True,
      "brief": "ruthless about steps, options and code that need not exist",
-     "dials": {"conscientiousness": 88, "agreeableness": 25}},
+     "dials": {"conscientiousness": 85, "empathy": 25, "willpower": 90, "curiosity": 40},
+     "drives": hunger("purpose")},
     {"id": "ui-polish", "name": "UI polish", "enabled": True,
      "brief": "visual coherence, spacing, affordances — the product should feel finished",
-     "dials": {"openness": 85, "conscientiousness": 70}},
+     "dials": {"empathy": 90, "curiosity": 80, "conscientiousness": 70, "risk_appetite": 45},
+     "drives": hunger("esteem")},
     {"id": "seamlessness", "name": "Seamlessness", "enabled": True,
      "brief": "fewer clicks, fewer surprises — flows that never make the user think about the tool",
-     "dials": {"agreeableness": 80, "openness": 70}},
+     "dials": {"empathy": 95, "sociability": 85, "conscientiousness": 60, "willpower": 45},
+     "drives": hunger("social")},
     {"id": "reusability", "name": "Reusability", "enabled": True,
      "brief": "shared helpers over copies; seams others can build on",
-     "dials": {"conscientiousness": 80, "openness": 60}},
+     "dials": {"curiosity": 85, "conscientiousness": 80, "composure": 75, "sociability": 35},
+     "drives": hunger("curiosity")},
     {"id": "speed", "name": "Speed", "enabled": True,
      "brief": "latency and waste — hot paths, needless work, snappier feedback",
-     "dials": {"extraversion": 70, "conscientiousness": 75}},
+     "dials": {"risk_appetite": 85, "willpower": 85, "composure": 40, "empathy": 30},
+     "drives": hunger("energy")},
 ]
 
 CURRENT_BUILD: asyncio.Task | None = None
@@ -190,7 +216,8 @@ def meters(now: float | None = None) -> dict:
     model = str(tuning.get("repair_builder_model"))
     cools = {m: launcher.cooldown_left(m) for m in {model, config.ESCALATION_MODEL}
              if launcher.cooldown_left(m) > 0}
-    return {"s5h": {"used": n5, "cap": cap5, "usd": usd5,
+    return {"util": usage.snapshot(now),
+            "s5h": {"used": n5, "cap": cap5, "usd": usd5,
                     "wake": (min(s5) + 5 * 3600) if n5 >= cap5 and s5 else 0},
             "w7d": {"used": n7, "cap": cap7, "usd": usd7,
                     "wake": (min(w7) + 7 * 86400) if n7 >= cap7 and w7 else 0},
@@ -208,16 +235,38 @@ def phase_cost(phase: str) -> int:
 
 
 def headroom(now: float | None = None, need: int = 0) -> tuple[bool, str, float]:
-    """(ok, reason, wake_ts) — the manager's sleep decision, in one place. `need` is what the
-    next phase will cost, so the cap is a real ceiling rather than a starting gun."""
+    """(ok, reason, wake_ts) — the manager's sleep decision, in one place.
+
+    Four questions, in order of how authoritative the answer is:
+
+    1. Is a model actually rate-limited? The provider said so in its own words
+       (launcher parses "session limit · resets 3pm") — nothing overrides that.
+    2. Is the quota IDLE? The crew shares one subscription with the owner, so what it may
+       spend is what the owner left unused (usage.verdict). This is the real signal: the
+       crew backs off within minutes of a human starting work, and helps itself to a quiet
+       night without anyone widening a cap.
+    3. Have we spent our whole week?
+    4. The session-count backstop, for boxes where cost reporting is absent or zero — a
+       count of sessions is a crude proxy for consumption, so it is the LAST word, not the
+       first. `need` is what the next phase will cost, making the cap a real ceiling rather
+       than a starting gun.
+    """
     now = now or time.time()
     m = meters(now)
     if m["cooldowns"]:
         model, left = max(m["cooldowns"].items(), key=lambda kv: kv[1])
         return False, f"{model} is cooling down (limit hit)", now + left
+    ok, why, wake = usage.verdict(now)
+    if not ok:
+        return False, why, wake
     if m["w7d"]["used"] >= m["w7d"]["cap"]:
         return False, "weekly session cap reached", m["w7d"]["wake"]
-    if m["s5h"]["cap"] - m["s5h"]["used"] < max(need, int(tuning.get("repair_headroom_min"))):
+    # The 5-hour SESSION COUNT is the fallback, not the rule. Where the SDK reports cost, the
+    # measured window above is a better answer to "is there quota left" than a hand-set number
+    # of calls — and letting the counter veto it is what put the crew to sleep for hours with
+    # the subscription sitting completely idle. With no cost signal at all, it is all we have.
+    if m["util"]["used_usd"] <= 0 and \
+            m["s5h"]["cap"] - m["s5h"]["used"] < max(need, int(tuning.get("repair_headroom_min"))):
         wake = m["s5h"]["wake"] or (now + 1800)
         return False, "session window nearly spent", wake
     return True, "", 0.0
@@ -227,10 +276,17 @@ def _sleep(reason: str, until: float, kind: str = "headroom", resume: str = "idl
     """kind: 'headroom' (wakes early the moment the window rolls enough) | 'cooldown' (a real
     provider wake time — wait it out) | 'pause' (the deliberate breath between sprints).
     `resume` is the phase to return to: sleeping mid-sprint and waking at 'idle' would start a
-    NEW sprint over the top of the planned one, throwing away work already paid for."""
+    NEW sprint over the top of the planned one, throwing away work already paid for.
+
+    A headroom sleep is re-evaluated on every 20s tick, so this is called over and over while
+    nothing changes. Only the CHANGE is worth an event: emitting each time buried the crew's
+    actual history under one identical 'sleeping' line every twenty seconds."""
+    was = state()
     set_state(phase="sleeping", sleep_until=until, sleep_reason=reason, sleep_kind=kind,
               resume_phase=resume)
-    bus.emit(0, None, "repair", "repair_sleeping", {"reason": reason, "until": until, "kind": kind})
+    if was.get("phase") != "sleeping" or was.get("sleep_reason") != reason:
+        bus.emit(0, None, "repair", "repair_sleeping",
+                 {"reason": reason, "until": until, "kind": kind})
 
 
 # --- the button --------------------------------------------------------------
@@ -293,7 +349,8 @@ def ensure_team():
     fs = enabled_factors()
     want = sorted(f["id"] for f in fs)
     info = team()
-    if info and info.get("factor_ids") == want and store.load(info["world_id"]):
+    if (info and info.get("factor_ids") == want and info.get("personas") == TEAM_PERSONAS
+            and store.load(info["world_id"])):
         return info
     u = auth.get_user_by_name(auth.ROOT_USERNAME)
     if not u or not fs:
@@ -306,14 +363,14 @@ def ensure_team():
     names = [f["name"] for f in fs]
     body = ManifestBody(
         name=f"sprint table · {len(fs)} lenses",
-        agents=[ManifestAgent(name=f["name"], brief=f["brief"], dials=f.get("dials") or {})
-                for f in fs],
+        agents=[ManifestAgent(name=f["name"], brief=f["brief"], dials=f.get("dials") or {},
+                              drives=f.get("drives") or {}) for f in fs],
         edges=[[names[i], names[(i + 1) % len(names)]] for i in range(len(names))] if len(names) > 1 else [],
         rules="", manager={"model": str(tuning.get("repair_builder_model")), "budget": 2},
         protocol={"preset": "evidence-2026"})
     s = materialise_manifest(w, body)
     store.save(w)
-    info = {"world_id": w.id, "room_id": s.id,
+    info = {"world_id": w.id, "room_id": s.id, "personas": TEAM_PERSONAS,
             "thread_id": s.threads[0]["id"] if s.threads else 0,
             "agents": {f["id"]: hid for f, hid in zip(fs, s.seats)},
             "factor_ids": want}
@@ -360,6 +417,15 @@ async def tick() -> None:
 
 
 async def advance(st: dict) -> None:
+    with usage.attributed("repair"):
+        await _advance(st)
+
+
+async def _advance(st: dict) -> None:
+    """One persisted phase transition. Everything it spends is billed to the crew — the
+    deliberation goes through the same `providers.complete` a Studio seat uses, and filed as
+    the owner's it would read as 'someone else is using the quota', putting the crew to sleep
+    on its own footsteps."""
     phase = st["phase"]
     if phase == "idle":
         # a sprint that must scout+plan needs room for the whole plan, not just the scout
@@ -476,6 +542,7 @@ async def _phase_plan(st: dict, rec: dict) -> None:
             thread = s.thread(info["thread_id"]) if s else None
             if thread is not None:
                 lenses = "\n".join(f"- {f['id']}: {f['brief']}" for f in enabled_factors())
+                thread["topic"] = f"sprint {rec['no']}: what the devteam platform needs next"
                 thread["rulebook"] = (
                     "You are the platform's own IT crew planning the NEXT FEW SPRINTS on the "
                     "devteam codebase — one shared backlog you will work through in order.\n"
@@ -492,6 +559,17 @@ async def _phase_plan(st: dict, rec: dict) -> None:
                     protocol_of(thread).get("init") == "independent" else 1
                 ledger_add("plan", str(tuning.get("repair_builder_model")), 0,
                            n=per_agent + max(0, rounds - 1) + 1)
+                # What each specialist actually argued, and what the manager concluded. The
+                # deliberation lived only in the Studio world's scene log, so from the Improve
+                # screen the plan appeared out of nowhere — the crew's reasoning is the most
+                # interesting thing it produces and it was the one thing not on screen.
+                names = (memo or {}).get("names") or {}
+                bus.emit(0, None, "repair", "repair_deliberated", {
+                    "sprint": rec["no"],
+                    "positions": [{"who": names.get(str(p.get("who")), "") or p.get("name", ""),
+                                   "text": str(p.get("position") or p.get("text") or "")[:400]}
+                                  for p in ((memo or {}).get("positions") or [])][:12],
+                    "recommendation": str((memo or {}).get("recommendation") or "")[:1200]})
     except Exception as e:
         db.kv_set("repair:last_error", {"ts": time.time(), "phase": "plan", "detail": str(e)[:400]})
     rec["memo"] = memo
@@ -738,6 +816,7 @@ def _hold_lease() -> bool:
 async def loop() -> None:
     """The never-die background loop (upkeep.py's contract): errors are recorded and
     reported, never fatal — a self-repair engine that can crash itself is a joke."""
+    usage.backfill_repair()          # one-shot: the crew's own history into the shared meter
     while True:
         try:
             if not _hold_lease():

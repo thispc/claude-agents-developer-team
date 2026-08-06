@@ -1169,7 +1169,10 @@ async def run_manager(project_id: int) -> None:
                                  {"tool": block.name.replace("mcp__team__", ""),
                                   "input": {k: (str(v)[:400]) for k, v in (block.input or {}).items()}})
             elif isinstance(message, ResultMessage):
-                cost = message.total_cost_usd or 0.0
+                from . import usage
+                # The shared-quota meter, not the project bill: it is what tells the
+                # self-repair crew that a human is using the subscription right now.
+                cost = usage.note_result("manager", options.model or "", message)
                 db.add_project_cost(project_id, cost)
                 bus.emit(project_id, None, "manager", "result", {"cost_usd": cost})
     except Exception as e:

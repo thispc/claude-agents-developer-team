@@ -410,3 +410,257 @@ def test_the_new_screen_owns_renderself_and_keeps_the_pins():
         assert pin in js, f"missing pinned marker {pin}"
     html = (Path(__file__).resolve().parent.parent / "dashboard" / "index.html").read_text()
     assert '<script src="js/repair.js"></script>' in html
+
+
+# --------------------------------------------------------------------------
+# the crew must be six DIFFERENT people
+# --------------------------------------------------------------------------
+
+def test_factor_dials_use_vocabulary_the_engine_actually_understands(fresh_db):
+    """The first version of these personas used Big Five names (openness, agreeableness).
+    `materialise_manifest` drops unknown keys silently, so every specialist was born with a
+    neutral psyche and the same dominant drive — six seats saying one sentence six times.
+    A dial that lands nowhere is worse than no dial: it reads as configured."""
+    from app.lifeworld.drives import SPEC as DRIVES
+    from app.lifeworld.psyche import TRAITS
+    for f in repair.DEFAULT_FACTORS:
+        for k in (f.get("dials") or {}):
+            assert k in TRAITS, f"{f['id']} dials an unknown trait {k!r}"
+        for k in (f.get("drives") or {}):
+            assert k in DRIVES, f"{f['id']} seeds an unknown drive {k!r}"
+
+
+def test_each_specialist_wants_something_different(fresh_db):
+    """A drive is a homeostatic LEVEL: a high number means SATISFIED, so seeding 0.9 for
+    'cares deeply about safety' produced an agent that wanted nothing. Six distinct goals is
+    the point of a panel — without it the graph is one opinion with five echoes."""
+    from app.lifeworld.world import World
+    w = World(name="crew")
+    goals = []
+    for f in repair.DEFAULT_FACTORS:
+        h = w.spawn_human(f["name"], dials=dict(f["dials"]))
+        for k, v in (f.get("drives") or {}).items():
+            h.drives.level[k] = float(v)
+        goals.append(h.drives.dominant_goal()[0])
+    assert len(set(goals)) == len(goals), f"specialists share goals: {goals}"
+
+
+def test_the_free_round_gives_every_specialist_its_own_line(fresh_db):
+    """The offline stance line keyed only on the dominant drive, so identical psyches
+    produced identical text — the literal 'all six saying the same thing' report."""
+    from app.lifeworld.world import World
+    w = World(name="crew")
+    s = w.new_room("table", "freeplay")
+    for f in repair.DEFAULT_FACTORS:
+        h = w.spawn_human(f["name"], dials=dict(f["dials"]))
+        for k, v in (f.get("drives") or {}).items():
+            h.drives.level[k] = float(v)
+        s.seat(h)
+    lines = {s._free_line(h, "You are the crew. Decide what to do next.") for h in s.players()}
+    assert len(lines) == len(s.players()), f"repeated stance lines: {lines}"
+
+
+def test_a_thread_topic_is_what_the_bubble_says_not_the_rulebook(fresh_db):
+    """Bubbles read 'On You are the platform's own IT crew planning the NEXT FEW SPRIN…'
+    because the topic handed to the free line was the instruction block."""
+    from app.lifeworld.world import World
+    w = World(name="crew")
+    s = w.new_room("table", "freeplay")
+    h = w.spawn_human("Correctness", dials={"conscientiousness": 95})
+    s.seat(h)
+    rulebook = "You are the platform's own IT crew planning the NEXT FEW SPRINTS. Do X. Do Y."
+    # With nothing better to go on, the first SENTENCE stands in — never a 70-character slice
+    # that stops mid-word, and never the rest of the instruction block.
+    fallback = s._free_line(h, rulebook)
+    assert "Do X" not in fallback and "SPRINTS —" in fallback
+    # But a graph that names its subject gets its subject.
+    line = s._free_line(h, rulebook, "sprint 3: what the platform needs next")
+    assert line.startswith("sprint 3: what the platform needs next —")
+    from app.lifeworld.scene import _topic_of
+    assert _topic_of({"topic": "sprint 3: what the platform needs next"}).startswith("sprint 3")
+    assert _topic_of({"rulebook": rulebook}) == "", "a rulebook is not a topic"
+
+
+def test_changing_the_personas_reseats_a_crew_that_already_exists(fresh_db):
+    """A persona fix that only reaches fresh installs is not a fix: the running crew keeps
+    the psyches it was born with forever."""
+    _root_user()
+    info = repair.ensure_team()
+    assert info and info["personas"] == repair.TEAM_PERSONAS
+    stale = dict(info, personas=repair.TEAM_PERSONAS - 1)
+    db.kv_set("repair:world", stale)
+    again = repair.ensure_team()
+    assert again["personas"] == repair.TEAM_PERSONAS, "a stale persona stamp must force a rebuild"
+
+
+# --------------------------------------------------------------------------
+# sleeping on real utilization, not a call counter
+# --------------------------------------------------------------------------
+
+def test_the_crew_yields_while_you_are_using_the_quota(fresh_db, no_spend):
+    from app import usage
+    now = time.time()
+    ok, _, _ = repair.headroom(now)
+    assert ok, "an idle box must let the crew work"
+    usage.note("manager", "claude-opus-5", usd=0.4, ts=now - 30)
+    ok, why, wake = repair.headroom(now)
+    assert not ok and "your own work" in why
+    assert wake > now, "a yield must name a time to check back"
+
+
+def test_the_crew_does_not_yield_to_its_own_spending(fresh_db, no_spend):
+    """The crew's deliberation runs through the same provider path a Studio seat does. Filed
+    as the owner's, its own spend would read as 'someone else is using the quota' — and it
+    would put itself to sleep forever, one tick after starting."""
+    from app import usage
+    now = time.time()
+    usage.note("repair", "claude-sonnet-5", usd=2.0, ts=now - 10)
+    ok, why, _ = repair.headroom(now)
+    assert ok, f"the crew slept because of its own spend: {why}"
+
+
+def test_attribution_follows_the_caller_not_the_call_site(fresh_db):
+    from app import usage
+    assert usage.current_source("studio") == "studio"
+    with usage.attributed("repair"):
+        assert usage.current_source("studio") == "repair"
+    assert usage.current_source("studio") == "studio"
+
+
+def test_your_spending_shrinks_the_crews_allowance(fresh_db):
+    from app import usage
+    now = time.time()
+    budget = float(tuning.get("usage_budget_usd"))
+    share = float(tuning.get("repair_idle_share"))
+    assert usage.snapshot(now)["allowance_usd"] == pytest.approx(budget * share, rel=1e-3)
+    usage.note("worker", "claude-sonnet-5", usd=budget * share, ts=now - 60)
+    u = usage.snapshot(now)
+    assert u["allowance_usd"] == 0, "the owner's work must take the room back"
+    assert u["idle_frac"] < 1.0
+
+
+def test_a_quiet_hour_stops_counting_as_contention(fresh_db, no_spend):
+    from app import usage
+    now = time.time()
+    quiet = int(tuning.get("repair_yield_quiet_s"))
+    usage.note("manager", "claude-opus-5", usd=0.01, ts=now - quiet - 60)
+    ok, why, _ = repair.headroom(now)
+    assert ok, f"the crew must claim genuinely idle quota: {why}"
+    assert usage.snapshot(now)["contended"] is False
+
+
+def test_a_real_rate_limit_still_outranks_every_utilization_number(fresh_db, no_spend):
+    """The provider's own words are the only authoritative signal; a meter that says
+    'plenty left' cannot talk the crew into a wall."""
+    model = str(tuning.get("repair_builder_model"))
+    launcher.note_rate_limit(model, "You've hit your session limit · resets 3pm")
+    ok, why, _ = repair.headroom(time.time())
+    assert not ok and "cooling" in why
+
+
+# --------------------------------------------------------------------------
+# transparency: the board and the activity stream
+# --------------------------------------------------------------------------
+
+def test_the_board_endpoint_returns_a_whole_sprint(client):
+    from conftest import login
+    login(client, "root", "testpass")
+    db.kv_set("repair:sprint:4", {"no": 4, "retro": "one landed", "landed": 1, "failed": 1,
+                                  "tasks": [{"title": "fix a race", "status": "landed", "landed_sha": "abc1234"},
+                                            {"title": "tidy the css", "status": "failed", "error": "suite red"}]})
+    r = client.get("/api/repair/sprint/4")
+    assert r.status_code == 200
+    s = r.json()["sprint"]
+    assert [t["status"] for t in s["tasks"]] == ["landed", "failed"]
+    assert client.get("/api/repair/sprint/99").status_code == 404
+
+
+def test_the_activity_endpoint_shows_the_crew_and_only_the_crew(client):
+    from conftest import login
+    from app import bus
+    login(client, "root", "testpass")
+    bus.emit(0, None, "repair", "repair_landed", {"task": "fix a race", "sha": "abc1234"})
+    bus.emit(0, None, "system", "something_else", {})
+    kinds = [e["kind"] for e in client.get("/api/repair/activity").json()["events"]]
+    assert "repair_landed" in kinds and "something_else" not in kinds
+
+
+def test_the_board_and_activity_are_root_gated_like_everything_else(client):
+    from conftest import _signup
+    _signup(client, "muggle2")
+    client.post("/api/login", json={"username": "muggle2", "password": "hunter2pw"})
+    assert client.get("/api/repair/sprint/1").status_code == 403
+    assert client.get("/api/repair/activity").status_code == 403
+
+
+def test_the_screen_shows_utilization_the_board_and_the_activity_feed():
+    js = dashboard_js()
+    for pin in ("rpUtilHtml", "rpBoard", "rpActivity", "rpOnEvent",
+                "/api/repair/activity", "/api/repair/sprint/"):
+        assert pin in js, f"missing {pin}"
+    # the shared socket has to actually feed it, or the feed is a 5s poll pretending to be live
+    assert "rpOnEvent(e)" in js
+
+
+def test_a_headroom_sleep_does_not_repeat_itself_into_the_feed(fresh_db, no_spend):
+    """A headroom sleep is re-decided every tick. Emitting each time produced one identical
+    'sleeping' line every 20 seconds — 180 an hour, burying everything the crew actually did."""
+    from app import bus
+    n = lambda: len([e for e in db.list_events(0, limit=500) if e["kind"] == "repair_sleeping"])
+    before = n()
+    for _ in range(5):
+        repair._sleep("session window nearly spent", time.time() + 60)
+    assert n() == before + 1, "only the change is news"
+    repair._sleep("claude-sonnet-5 is cooling down (limit hit)", time.time() + 600, kind="cooldown")
+    assert n() == before + 2, "a different reason IS news"
+    assert bus is not None
+
+
+def test_the_call_counter_is_a_fallback_not_a_veto(fresh_db, no_spend):
+    """An idle subscription and a crew asleep on '14 calls in 5 hours' was the whole
+    complaint. Where real spend is measured, the measurement decides; the counter only
+    speaks for boxes whose SDK reports no cost at all."""
+    from app import usage
+    now = time.time()
+    cap = int(tuning.get("repair_session_cap"))
+    db.kv_set("repair:ledger", [{"ts": now - 60, "kind": "build", "model": "m", "usd": 0, "n": cap}])
+    ok, why, _ = repair.headroom(now)
+    assert not ok and "session window" in why, "with no cost signal the counter still rules"
+    # now the same box, but the SDK is reporting cost and the window is plainly idle
+    usage.note("repair", "claude-sonnet-5", usd=0.02, ts=now - 60)
+    ok, why, _ = repair.headroom(now)
+    assert ok, f"a measured-idle window must beat the proxy: {why}"
+    # ...and a measured-FULL window still stops it
+    usage.note("repair", "claude-sonnet-5",
+               usd=float(tuning.get("usage_budget_usd")) * float(tuning.get("repair_idle_share")),
+               ts=now - 60)
+    ok, why, _ = repair.headroom(now)
+    assert not ok and "share of this window" in why
+
+
+def test_the_crews_own_history_reaches_the_shared_meter_once(fresh_db):
+    """Until the crew's existing ledger shows up in the shared meter, utilization reads
+    '$0 used' on a box that has spent real money all week — and the crude counter keeps
+    deciding. It must also run exactly once: twice would double the crew's apparent spend."""
+    from app import usage
+    now = time.time()
+    db.kv_set("repair:ledger", [{"ts": now - 60, "kind": "build", "model": "m", "usd": 1.25, "n": 1},
+                                {"ts": now - 30, "kind": "plan", "model": "m", "usd": 0, "n": 8}])
+    assert usage.backfill_repair() == 1, "only rows with a cost are worth importing"
+    assert usage.snapshot(now)["repair_usd"] == pytest.approx(1.25)
+    assert usage.backfill_repair() == 0
+    assert usage.snapshot(now)["repair_usd"] == pytest.approx(1.25), "must not double-count"
+
+
+def test_a_sprints_provider_calls_are_billed_to_the_crew(fresh_db, no_spend, monkeypatch):
+    """`advance` wraps every phase in the crew's attribution, so the deliberation's calls —
+    which go through the very same provider path a Studio seat uses — are not mistaken for
+    the owner's work by the contention check."""
+    from app import usage
+    seen = {}
+
+    async def fake_advance(st):
+        seen["source"] = usage.current_source("studio")
+    monkeypatch.setattr(repair, "_advance", fake_advance)
+    asyncio.run(repair.advance({"phase": "idle"}))
+    assert seen["source"] == "repair"

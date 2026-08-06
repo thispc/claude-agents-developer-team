@@ -67,6 +67,28 @@ def repair_sprints(request: Request, limit: int = 20) -> dict:
     return {"sprints": rows[-max(1, min(limit, 100)):]}
 
 
+@router.get("/sprint/{no}")
+def repair_sprint(no: int, request: Request) -> dict:
+    """One sprint in full — its board. The list view can only say "2 landed, 1 failed"; the
+    question that actually gets asked is *which* one failed and what the suite said about it,
+    and that answer was only ever in the server log."""
+    _root(request)
+    rec = db.kv_get(f"repair:sprint:{int(no)}")
+    if not rec:
+        raise HTTPException(404, f"no sprint {no}")
+    return {"sprint": rec}
+
+
+@router.get("/activity")
+def repair_activity(request: Request, after: int = 0, limit: int = 120) -> dict:
+    """The crew's own event stream. Every phase transition already goes to the bus under
+    project 0 — this is what makes it visible on the Improve screen instead of only in the
+    terminal the server happens to be running in."""
+    _root(request)
+    rows = db.list_events(0, after_id=max(0, int(after)), limit=max(1, min(int(limit), 500)))
+    return {"events": [r for r in rows if r.get("source") == "repair"]}
+
+
 @router.post("/chat")
 async def repair_chat(body: ChatText, request: Request) -> dict:
     _root(request)
