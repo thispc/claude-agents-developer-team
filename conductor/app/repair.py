@@ -220,7 +220,7 @@ def _clear_error() -> None:
 # EVERY model call counts against the window. Metering only the heavy scout/build sessions
 # undercounted reality — the plan deliberation and the extraction spend real tokens too, and a
 # meter that reads 5/6 while four other calls went out is not "limits visible at all times".
-SESSION_KINDS = ("scout", "build", "plan", "extract", "memo", "chat")
+SESSION_KINDS = ("scout", "build", "plan", "extract", "memo", "chat", "consult", "review")
 
 
 def meters(now: float | None = None) -> dict:
@@ -485,6 +485,201 @@ def _specialist(factor: str):
     h = w.get(hid) if hid else None
     from .lifeworld.human import Human
     return (w, h) if isinstance(h, Human) else (w, None)
+
+
+EXPERIENCE_K = 3   # lessons per build prompt: enough to matter, small enough that the
+                   # task — not the memoir — is the prompt
+
+
+def _task_cue(task: dict) -> str:
+    """ONE definition of 'the situation this task is'. note_decision writes under this key
+    and specialist_context reads under it — recall only works if the writer and the reader
+    key the same way, which is exactly the kind of drift a shared function prevents."""
+    return str(task.get("evidence") or task.get("brief") or task.get("title") or "")
+
+
+async def specialist_context(task: dict) -> dict | None:
+    """Everything the build needs to be a SPECIALIST's session rather than an anonymous one:
+    who is building, what it is like, what it has PROVEN about situations like this task,
+    and which teammates its arrows let it consult.
+
+    None → the anonymous build, byte-identical to today (no crew, unknown factor, offline).
+    Read-only — a snapshot load, no world lock; only load→mutate→save cycles need one.
+    """
+    if not _live():
+        return None
+    ensure_team()                    # a backlog-driven sprint skips _phase_plan, the only
+    factor = str(task.get("factor") or "")       # other place the world is guaranteed built
+    w, h = _specialist(factor)
+    if not h:
+        return None
+    try:
+        from .lifeworld.decisions import signature
+        from .lifeworld.threads import members_of
+        from .lifeworld.world import _persona
+        from . import knowledge
+        cue = _task_cue(task)
+        p = _persona(h)
+        brief = next((f.get("brief", "") for f in enabled_factors() if f["id"] == factor), "")
+
+        # Experience: proven only, no manufactured authority. The exact association first —
+        # its bar (conf ≥ .5, evidence ≥ 2) already guards assumptions. Knowledge hits pass
+        # at "held up more often than not": one row per outcome means demanding 2 here would
+        # silence the store for its first sprints, and a SUGGESTION may be looser than an
+        # assumption.
+        experience = []
+        exact = h.decisions.recall(signature(cue, kind="task"))
+        if exact is not None:
+            experience.append({"says": exact.says[:200],
+                               "label": f"proven x{exact.evidence}, {exact.confidence:.0%}"})
+        for hit in await knowledge.recall(reg_key_for(info_world(), h.id), cue,
+                                          k=EXPERIENCE_K, settings=_root_settings()):
+            if hit["good"] > hit["bad"] and hit["evidence"] >= 1                     and hit["says"][:200] not in [e["says"] for e in experience]:
+                experience.append({"says": hit["says"][:200],
+                                   "label": f"held up {hit['good']}/{hit['evidence']}"})
+
+        # Teammates via the arrows: a consult's ANSWER must be able to reach the asker, so a
+        # neighbour is someone the asker hears.
+        info = team()
+        s_ = w.scene(info["room_id"]) if info else None
+        t_ = s_.thread(info["thread_id"]) if s_ else None
+        neighbours = []
+        if t_ is not None:
+            for pid in members_of(t_):
+                other = w.get(pid)
+                if pid != h.id and other is not None and s_._hears(t_, pid, h.id):
+                    neighbours.append(other.name)
+
+        logs.info("session", "specialist_briefed",
+                  f"{h.name} briefed with {len(experience)} proven lesson(s)"
+                  + (f" and {len(neighbours)} consultable teammate(s)" if neighbours else ""),
+                  factor=factor, task=str(task.get("title", ""))[:80], lessons=len(experience))
+        return {"factor": factor, "name": h.name, "brief": brief,
+                "traits": p.get("traits") or {}, "wants": p.get("wants") or "",
+                "experience": experience[:EXPERIENCE_K + 1], "neighbours": neighbours,
+                "consults_cap": int(tuning.get("repair_consults_per_task"))}
+    except Exception as e:
+        # A briefing failure must never cost the build: anonymous is a working fallback.
+        logs.warn("session", "briefing_failed", str(e)[:200], factor=factor)
+        return None
+
+
+def _resolve_peer(peers: list, who: str):
+    """The NAMED half of picking a neighbour: case-insensitive match, or None — which the
+    caller reads as 'refuse' when a name was given and as 'pick by knowledge' when none was.
+    Returning peers[0] here for the unnamed case looked harmless and quietly disabled the
+    knowledge-scored pick entirely."""
+    if not who:
+        return None
+    wl = who.strip().lower()
+    return next((p for p in peers if p.name.lower() == wl), None)
+
+
+async def _best_informed_peer(peers: list, question: str, world_id: int):
+    from . import knowledge
+    best, score = None, -1.0
+    for p in peers:
+        try:
+            hits = await knowledge.recall(reg_key_for(world_id, p.id), question, k=1,
+                                          settings=_root_settings())
+            s_ = hits[0]["score"] if hits else 0.0
+        except Exception:
+            s_ = 0.0
+        if s_ > score:
+            best, score = p, s_
+    return best
+
+
+async def consult(task: dict, question: str, who: str = "") -> str:
+    """A build session asking a crew teammate for help. ALWAYS returns advisory text and
+    never raises — a broken consult must cost the session a turn, not its life.
+
+    The arrows are enforced here, not requested: only a graph neighbour the asker can hear
+    may answer, a named outsider gets a refusal that names the real neighbours, and every
+    answered consult is one bounded call on the ANSWERING agent's own model. Both agents
+    genuinely perceive the exchange (free), so it lands in their memories like any other
+    conversation — collaboration that leaves no trace in the participants is theatre.
+    """
+    question = str(question or "").strip()
+    if not question:
+        return "(ask an actual question — include what you tried and the exact error)"
+    consults = task.setdefault("consults", [])
+    cap = int(tuning.get("repair_consults_per_task"))
+    if len(consults) >= cap:
+        return (f"(you have used all {cap} consults for this task — "
+                "finish with your best judgement)")
+    ok, reason, _wake = headroom(need=1)
+    if not ok:
+        return f"(no quota room for a consult right now: {reason} — carry on alone)"
+    info = team()
+    if not (_live() and info):
+        return "(the crew is not available — use your best judgement)"
+    try:
+        from .lifeworld import store
+        from .lifeworld.threads import members_of
+        from .lifeworld.decisions import signature
+        from . import knowledge
+        async with store.lock_for(info["world_id"]):
+            w = store.load(info["world_id"], live=True, settings=_root_settings())
+            s_ = w.scene(info["room_id"]) if w else None
+            t_ = s_.thread(info["thread_id"]) if s_ else None
+            hid = (info.get("agents") or {}).get(str(task.get("factor") or ""))
+            me = w.get(hid) if (w and hid) else None
+            if not (t_ is not None and me is not None):
+                return "(the crew is not available — use your best judgement)"
+            peers = [w.get(i) for i in members_of(t_)
+                     if i != me.id and w.get(i) is not None and s_._hears(t_, i, me.id)]
+            if not peers:
+                return "(you have no teammates on the graph — use your best judgement)"
+            nb = _resolve_peer(peers, who)
+            if who and nb is None:
+                names = ", ".join(p.name for p in peers)
+                return (f"You can only consult your graph neighbours — the arrows are the "
+                        f"org chart. Yours are: {names}.")
+            if nb is None:
+                nb = await _best_informed_peer(peers, question, info["world_id"]) or peers[0]
+            # The ask goes on the ROOM record first — _hear moves the listener's state but
+            # writes no log row, and a consultation that leaves no trace in the room is
+            # invisible on the canvas. Then the neighbour genuinely hears it: a free Tier-0
+            # perceive that files its own memory, exactly as any overheard remark would.
+            s_._record("say", me.id, f"{me.name}: (consult) {question[:180]}", frm=me.id)
+            await s_._hear(me, nb, f"(consult) {question[:200]}")
+            known = nb.decisions.recall(signature(question))
+            recalled = None
+            if known is not None:
+                recalled = {"says": known.says, "confidence": known.confidence,
+                            "seen": known.evidence}
+            else:
+                hits = await knowledge.recall(reg_key_for(info["world_id"], nb.id), question,
+                                              k=1, settings=_root_settings())
+                if hits and hits[0]["score"] >= 0.25:
+                    recalled = {"says": hits[0]["says"], "confidence": hits[0]["confidence"],
+                                "seen": hits[0]["evidence"]}
+            ring = [h for h in (w.get(i) for i in members_of(t_)) if h is not None]
+            answer = await w.agent_reply(
+                nb, question,
+                transcript=s_._thread_transcript(ring, thread=t_, for_agent=nb.id),
+                recalled=recalled)
+            if not answer:
+                return f"({nb.name} could not be reached — use your best judgement)"
+            s_._record("say", nb.id, f"{nb.name}: {answer[:200]}", frm=nb.id)
+            await s_._hear(nb, me, answer)          # the asker absorbs the answer, free
+            store.save(w)
+        consults.append({"who": nb.name, "q": question[:200], "a": answer[:300],
+                         "ts": time.time()})
+        ledger_add("consult", w.model_for(nb) if hasattr(w, "model_for") else "", 0)
+        bus.emit(0, None, "repair", "repair_consult",
+                 {"task": str(task.get("title", ""))[:80], "who": nb.name,
+                  "q": question[:160]})
+        bus.emit(0, None, "repair", "repair_consult_reply",
+                 {"who": nb.name, "a": answer[:200]})
+        logs.info("session", "consult", f"{task.get('factor', '?')} asked {nb.name}: "
+                  f"{question[:120]}", who=nb.name)
+        logs.info("session", "consult_reply", answer[:160], who=nb.name)
+        return answer
+    except Exception as e:
+        logs.warn("session", "consult_failed", str(e)[:200])
+        return "(the consult failed — use your best judgement)"
 
 
 def note_decision(task: dict, saw: str) -> None:
@@ -1010,12 +1205,21 @@ async def _phase_build(st: dict, rec: dict) -> None:
     bus.emit(0, None, "repair", "repair_building", {"sprint": rec["no"], "task": t["title"]})
     logs.info("session", "build_started", t["title"], sprint=rec["no"],
               factor=t.get("factor"), attempt=t.get("attempts"))
-    note_decision(t, t.get("evidence") or t.get("brief") or t["title"])
+    # A backlog-driven sprint skips _phase_plan, which was the only place the crew world was
+    # guaranteed built — so on a fresh box the first build's note_decision found no team and
+    # silently recorded nothing. The specialists must exist before anything is filed on them.
+    ensure_team()
+    note_decision(t, _task_cue(t))
     _note_activity(t, "building", t["title"])
+    crew = await specialist_context(t)
+    if crew and crew.get("neighbours"):
+        import functools
+        crew["ask"] = functools.partial(consult, t)
     try:
         wt = t.get("worktree")
         CURRENT_BUILD = asyncio.ensure_future(
-            rb.build(t, rec["no"], _root_settings(), wt=None if wt is None else Path(wt)))
+            rb.build(t, rec["no"], _root_settings(), wt=None if wt is None else Path(wt),
+                     crew=crew))
         out = await CURRENT_BUILD
         CURRENT_BUILD = None
         t["branch"], t["worktree"] = out["branch"], out["worktree"]
@@ -1089,6 +1293,23 @@ async def _phase_verify(st: dict, rec: dict) -> None:
              task=t["title"], attempt=t.get("attempts"),
              failures=len(res.get("failures") or []))
     if res.get("ok"):
+        # The suite proves the change WORKS; a neighbour judges whether it is the RIGHT
+        # change — different questions. One bounded call, one send-back per task, and the
+        # send-back rides the exact plumbing a red suite uses: evidence, same branch.
+        verdict = await _review_green(t, rec)
+        if verdict is not None:
+            t["sent_back"] = True
+            t["evidence"] = f"a reviewer ({verdict['who']}) sent it back: {verdict['feedback']}"
+            t["status"] = "pending"
+            save_sprint(rec)
+            set_state(phase="build")               # same task_idx → retry with the feedback
+            bus.emit(0, None, "repair", "repair_review",
+                     {"task": t["title"], "verdict": "send_back", "who": verdict["who"],
+                      "feedback": verdict["feedback"][:200]})
+            logs.info("verify", "review_sent_back",
+                      f"{verdict['who']} sent back: {t['title']} — {verdict['feedback'][:120]}",
+                      task=t["title"], who=verdict["who"])
+            return
         t["status"] = "green"
         save_sprint(rec)
         set_state(phase="land")
@@ -1111,6 +1332,67 @@ async def _phase_verify(st: dict, rec: dict) -> None:
     logs.warn("verify", "task_abandoned",
               f"{t['title']} — {res.get('headline', 'tests failed')}",
               task=t["title"], too_big=bool(t.get("too_big")), attempts=t.get("attempts"))
+
+
+async def _review_green(task: dict, rec: dict) -> dict | None:
+    """A graph neighbour reads the green diff. None = approve; {who, feedback} = send back.
+
+    FAIL-OPEN everywhere: knob off, already sent back once, no crew, no neighbours, the
+    reviewer unreachable, or a reply that does not parse — all approve. A green suite must
+    never be blocked by machinery being absent or by a reviewer's formatting. The reviewer
+    only VERDICTS; it never edits — two writers on one branch is the mars-rover
+    double-dispatch bug wearing a lab coat.
+    """
+    if not bool(tuning.get("repair_review")) or task.get("sent_back"):
+        return None
+    info = team()
+    if not (_live() and info and task.get("worktree")):
+        return None
+    try:
+        from .lifeworld import store
+        from .lifeworld.threads import members_of
+        diff = rb._git("diff", "--stat", "main...HEAD",
+                       cwd=Path(task["worktree"]), check=False).stdout[-1200:]
+        head = ((task.get("verification") or {}).get("headline") or "")[:200]
+        accept = "; ".join(str(a) for a in (task.get("acceptance") or []))[:400]
+        q = (f"Your teammate finished a change and the full suite is GREEN. Task: "
+             f"{task.get('title', '')}. Acceptance: {accept or '(none stated)'}. "
+             f"Suite: {head or 'green'}.\nDiff stat:\n{diff}\n"
+             "Is this the RIGHT change — scoped to the task, no collateral edits, nothing "
+             "suspicious in what it touched? Reply with exactly APPROVE, or "
+             "SEND_BACK: <one concrete, actionable complaint>.")
+        async with store.lock_for(info["world_id"]):
+            w = store.load(info["world_id"], live=True, settings=_root_settings())
+            s_ = w.scene(info["room_id"]) if w else None
+            t_ = s_.thread(info["thread_id"]) if s_ else None
+            hid = (info.get("agents") or {}).get(str(task.get("factor") or ""))
+            me = w.get(hid) if (w and hid) else None
+            if not (t_ is not None and me is not None):
+                return None
+            peers = [w.get(i) for i in members_of(t_)
+                     if i != me.id and w.get(i) is not None and s_._hears(t_, i, me.id)]
+            if not peers:
+                return None
+            reviewer = await _best_informed_peer(peers, _task_cue(task),
+                                                 info["world_id"]) or peers[0]
+            answer = await w.agent_reply(reviewer, q)
+            store.save(w)
+        ledger_add("review", "", 0)
+        if not answer:
+            return None
+        text = answer.strip()
+        if text.upper().startswith("SEND_BACK"):
+            feedback = text.split(":", 1)[1].strip() if ":" in text else text[9:].strip()
+            if feedback:
+                return {"who": reviewer.name, "feedback": feedback[:400]}
+        bus.emit(0, None, "repair", "repair_review",
+                 {"task": task.get("title", ""), "verdict": "approve", "who": reviewer.name})
+        logs.info("verify", "review_approved", f"{reviewer.name} approved: {task.get('title', '')}",
+                  who=reviewer.name)
+        return None
+    except Exception as e:
+        logs.warn("verify", "review_failed", str(e)[:200])
+        return None
 
 
 async def _phase_land(st: dict, rec: dict) -> None:

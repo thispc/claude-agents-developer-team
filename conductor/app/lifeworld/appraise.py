@@ -104,7 +104,17 @@ async def model(human, signal: Signal, ctx: dict, *, settings: dict,
     if rules and rules.strip():
         sys += " SCENE RULES you must obey: " + rules.strip()[:600]
     prompt = (f"YOU: {json.dumps(_self_view(human))}\nEVENT: {json.dumps(_signal_view(signal))}\n"
-              f"WHAT YOU RECALL: {human.memory.recall(signal.domain)[:600]}\n\nReturn only the JSON.")
+              f"WHAT YOU RECALL: {human.memory.recall(signal.domain)[:600]}\n")
+    r = (ctx or {}).get("recalled") or {}
+    if r.get("says"):
+        # perceive() pays for this lookup — the exact-signature association, else the
+        # knowledge base's nearest proven lesson — before EVERY appraisal, and until now no
+        # appraiser read it: the agent remembered, then thought from nothing anyway. Same
+        # phrasing world.agent_reply uses, so the two prompts speak one language.
+        prompt += (f"YOU HAVE MET THIS BEFORE and concluded: {r['says']!r} "
+                   f"(held up {r.get('confidence', 0)} of the time across {r.get('seen', 0)}; "
+                   f"via {r.get('via', '?')}). Weigh it; ignore it only if it does not apply.\n")
+    prompt += "\nReturn only the JSON."
     try:
         raw = await complete("anthropic", model_name, sys, prompt, settings, max_tokens=max_tokens)
     except Exception as e:                      # the floor: fall back to free Tier 0

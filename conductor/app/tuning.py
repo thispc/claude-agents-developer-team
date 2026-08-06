@@ -312,6 +312,21 @@ KNOBS: dict[str, tuple[Any, type, str, str]] = {
         "it' and 'nobody used it in the last second': 15 minutes is short enough "
         "that the crew still gets nights and lunch breaks, long enough that it "
         "does not elbow into a session the owner is in the middle of."),
+    "repair_consults_per_task": (
+        2, int, "REPAIR_CONSULTS_PER_TASK",
+        "Answered teammate consults one build session may make. Each consult is one "
+        "bounded call on the ANSWERING agent's own model, so a build's worst case grows "
+        "from 1 call to 1+N — two covers the honest pattern (one to get unblocked, one to "
+        "sanity-check the fix) while keeping a session's cost known in advance. Refusals "
+        "and cap messages are free and do not count."),
+    "repair_review": (
+        True, bool, "REPAIR_REVIEW",
+        "After the suite goes green, one graph neighbour of the builder reads the diff "
+        "stat and may send the task back ONCE with written feedback — the same retry "
+        "plumbing a red suite uses, same branch. Owner-confirmed on: the suite proves the "
+        "change works, the neighbour judges whether it is the RIGHT change, and those are "
+        "different questions. The knob exists because it adds one model call to every "
+        "green task."),
     "repair_max_attempts": (
         3, int, "REPAIR_MAX_ATTEMPTS",
         "Total build sessions one task may ever consume, counted across restarts. A "

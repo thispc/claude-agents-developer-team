@@ -157,7 +157,7 @@ needs to evaluate, host or extend it.
 
 ### What "the conductor" actually is
 
-One program: a Python web server of about 19,500 lines doing five jobs and no
+One program: a Python web server of about 26,500 lines doing five jobs and no
 others.
 
 - **Serves the dashboard.** Plain HTML, CSS and JavaScript read off disk. No

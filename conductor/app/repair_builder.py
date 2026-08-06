@@ -65,16 +65,18 @@ def _cred_env(settings: dict) -> dict:
 
 
 async def _run_sdk(system_prompt: str, prompt: str, cwd: Path, tools: list[str],
-                   max_turns: int, model: str, env: dict) -> tuple[str, float]:
+                   max_turns: int, model: str, env: dict, *,
+                   mcp_servers: dict | None = None) -> tuple[str, float]:
     """One Claude Agent SDK session (the worker.run_claude_session pattern, minus the teammate
     server). Returns (last text, usd). Raises RuntimeError with the SDK's error text — the
     caller classifies rate limits. Tests monkeypatch THIS function; nothing else spends."""
     from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ResultMessage,
                                   TextBlock, query)
+    kw = {"mcp_servers": mcp_servers} if mcp_servers else {}
     options = ClaudeAgentOptions(
         system_prompt=system_prompt, model=model, max_turns=max_turns, cwd=str(cwd),
         allowed_tools=list(tools), permission_mode="bypassPermissions",
-        env={**env, "GIT_TERMINAL_PROMPT": "0"})
+        env={**env, "GIT_TERMINAL_PROMPT": "0"}, **kw)
     text, usd = "", 0.0
     async for message in query(prompt=prompt, options=options):
         if isinstance(message, AssistantMessage):
@@ -187,7 +189,66 @@ BUILDER_SYSTEM = (
     "A landed slice plus an honest note beats an ambitious diff that never lands.")
 
 
-async def build(task: dict, sprint_no: int, settings: dict, wt: Path | None = None) -> dict:
+def builder_system(crew: dict | None) -> str:
+    """BUILDER_SYSTEM as a function of WHO is building.
+
+    None → the anonymous prompt, byte-identical to before — the fallback for a missing
+    factor, an unbuilt crew, or offline. With a crew dict, the specialist block goes FIRST:
+    identity is the frame the ground rules are read through, not a footnote to them.
+
+    The EXPERIENCE block is omitted entirely when there is none — a specialist with no
+    record gets no manufactured authority — and every lesson carries its own numbers, so
+    the model can weigh a 1/1 suggestion differently from a 5/5 law.
+    """
+    if not crew:
+        return BUILDER_SYSTEM
+    head = []
+    traits = ", ".join(f"{k} {v:.2f}" for k, v in list((crew.get("traits") or {}).items())[:3])
+    head.append(f"You are {crew.get('name', 'a specialist')}, the crew's {crew.get('factor', '')} "
+                f"specialist — {crew.get('brief', '')}."
+                + (f" Defining traits: {traits};" if traits else "")
+                + (f" you most want {crew['wants']}." if crew.get("wants") else ""))
+    if crew.get("experience"):
+        head.append("\nYOUR EXPERIENCE (your own record on situations like this task):")
+        for e in crew["experience"]:
+            head.append(f"- [{e.get('label', '?')}] {e.get('says', '')}")
+        head.append("Let it guide the change; if a lesson does not apply, one line in your "
+                    "final message saying why.")
+    if crew.get("neighbours") and crew.get("ask"):
+        names = ", ".join(crew["neighbours"])
+        head.append(f"\nTEAMMATES: use the ask_teammate tool to consult {names} — your graph "
+                    f"neighbours; the arrows are the org chart, nobody else can hear you. You "
+                    f"have {crew.get('consults_cap', 2)} consults; spend them on a real "
+                    f"blocker, not reassurance.")
+    return "\n".join(head) + "\n\n" + BUILDER_SYSTEM
+
+
+def consult_server(ask):
+    """The one door out of a build session: ask_teammate, answered by a LIVE crew agent.
+
+    Imitates the projects worker's helper server (worker.py) with two deliberate
+    differences: no HTTP hop — the conductor holds the crew world in this very process —
+    and no separate consult model, because the answerer speaks on ITS OWN model, which is
+    the lifeworld's point. `ask` is a callable the ENGINE injects (functools.partial over
+    repair.consult with the task bound), which keeps this module free of a circular import:
+    rb is the hands, and the engine hands the hands a phone.
+    """
+    from claude_agent_sdk import create_sdk_mcp_server, tool
+
+    @tool("ask_teammate",
+          "Ask a crew teammate for help when you are stuck or unsure. Include what you "
+          "tried and the exact error — they cannot see your screen. Leave `who` empty to "
+          "reach the neighbour most likely to know. Only your graph neighbours can hear you.",
+          {"question": str, "who": str})
+    async def ask_teammate(args):
+        text = await ask(str(args.get("question", ""))[:4000], str(args.get("who", ""))[:60])
+        return {"content": [{"type": "text", "text": text}]}
+
+    return create_sdk_mcp_server(name="crew", version="1.0.0", tools=[ask_teammate])
+
+
+async def build(task: dict, sprint_no: int, settings: dict, wt: Path | None = None,
+                crew: dict | None = None) -> dict:
     """One coding session in a worktree. Returns {branch, worktree, usd}. The engine tracks the
     task dict; a retry passes the existing worktree so evidence accumulates on one branch."""
     branch = task.get("branch") or f"repair/s{sprint_no}-{task['slug']}"
@@ -200,11 +261,16 @@ async def build(task: dict, sprint_no: int, settings: dict, wt: Path | None = No
     before = _live_fingerprint()
     brief = (f"TASK ({task.get('factor', 'improvement')}): {task['title']}\n\n{task.get('brief', '')}\n"
              + (f"\nACCEPTANCE:\n- " + "\n- ".join(task["acceptance"]) if task.get("acceptance") else "")
-             + (f"\nPREVIOUS ATTEMPT'S TEST FAILURES (fix these):\n{task.get('evidence', '')}" if task.get("evidence") else ""))
-    _, usd = await _run_sdk(BUILDER_SYSTEM, brief, wt,
-                            ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+             + (f"\nFEEDBACK ON THE PREVIOUS ATTEMPT (address it):\n{task.get('evidence', '')}" if task.get("evidence") else ""))
+    tools = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+    extra = {}
+    if crew and crew.get("neighbours") and crew.get("ask"):
+        tools.append("mcp__crew__ask_teammate")
+        extra["mcp_servers"] = {"crew": consult_server(crew["ask"])}
+    _, usd = await _run_sdk(builder_system(crew), brief, wt, tools,
                             int(tuning.get("repair_max_turns")),
-                            str(tuning.get("repair_builder_model")), _cred_env(settings))
+                            str(tuning.get("repair_builder_model")), _cred_env(settings),
+                            **extra)
     stray, theirs = _escaped(before, wt)
     if theirs:
         # Not the session's doing, and not ours to undo. Worth saying out loud, because it is
