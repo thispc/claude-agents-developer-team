@@ -68,4 +68,13 @@ async function boot() {
     setTimeout(() => Notification.requestPermission(), 1500);
 }
 boot();
-setInterval(() => { if (currentProject) refreshBoard(); else loadProjects(); }, 10000);
+// connectWs()'s ws.onmessage already re-fetches/re-renders on every board-relevant event
+// (loadProjects() on the home page, scheduleRefresh() -> refreshBoard() on a project page),
+// so polling on top of that was pure redundancy — a second re-render of the same data a
+// moment later, which is what showed up as table flicker and scroll jumps. Keep this tick
+// as a fallback ONLY for when the socket is not actually live (still connecting, dropped,
+// or stuck mid-reconnect) so the board can't go stale if the WS never comes back.
+setInterval(() => {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+  if (currentProject) refreshBoard(); else loadProjects();
+}, 10000);
