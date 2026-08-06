@@ -144,13 +144,28 @@ def detect(root: Path) -> dict[str, Any]:
             "build": None, "run": None, "health": "/"}
 
 
-def _free_port() -> int:
+def _free_port() -> tuple[int, socket.socket]:
+    """Reserve a free port, returning it still bound.
+
+    connect_ex-then-close tells you a port was free a moment ago, not that it
+    still is: the gap before the child actually binds it can be as long as the
+    build (docker build, npm install, ...), so two deploys started together can
+    scan, both see the same port free, and both be handed it. Binding it here
+    with SO_REUSEADDR and handing back the open socket makes the OS the referee
+    — a concurrent call's bind() on that port fails outright — and the caller
+    holds the reservation until moments before the child starts.
+    """
     for p in range(PORT_RANGE_START, PORT_RANGE_START + 200):
         if p in {r["port"] for r in RUNNING.values()}:      # includes branch previews
             continue
-        with socket.socket() as s:
-            if s.connect_ex(("127.0.0.1", p)) != 0:
-                return p
+        s = socket.socket()
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", p))
+        except OSError:
+            s.close()
+            continue
+        return p, s
     raise RuntimeError("no free port available for a deployment")
 
 
@@ -474,32 +489,39 @@ async def deploy_local(project_id: int, workspace: str = "",
                 "error": "This project builds a static bundle and has no server. "
                          "Use the static preview instead."}
 
-    port = _free_port()
+    port, port_sock = _free_port()
 
-    if spec["kind"] == "docker":
-        if not shutil.which("docker"):
-            return {"ok": False, "spec": spec,
-                    "error": "This project has a Dockerfile but docker isn't installed here."}
-        tag = f"{app_name(project_id, branch)}:latest"
-        _log(project_id, f"docker build -t {tag}", branch)
-        b = subprocess.run(["docker", "build", "-t", tag, "."], cwd=root,
-                           capture_output=True, text=True, timeout=BUILD_TIMEOUT)
-        _log(project_id, (b.stdout + b.stderr)[-4000:], branch)
-        if b.returncode != 0:
-            return {"ok": False, "spec": spec,
-                    "error": f"docker build failed: {b.stderr[-300:]}"}
-        cmd = ["docker", "run", "--rm", "-p", f"{port}:{port}",
-               "-e", f"PORT={port}", "--name", app_name(project_id, branch), tag]
-    else:
-        if spec["build"]:
-            _log(project_id, f"build: {spec['build']}", branch)
-            b = subprocess.run(spec["build"], cwd=root, shell=True, capture_output=True,
-                               text=True, timeout=BUILD_TIMEOUT, env=_child_env(port))
+    # The reservation only needs to outlive the build — it must be gone before
+    # the child tries to bind the same port itself, or the child loses the race
+    # to our own socket. `finally` covers every early return below too, so a
+    # failed build never leaks the reservation.
+    try:
+        if spec["kind"] == "docker":
+            if not shutil.which("docker"):
+                return {"ok": False, "spec": spec,
+                        "error": "This project has a Dockerfile but docker isn't installed here."}
+            tag = f"{app_name(project_id, branch)}:latest"
+            _log(project_id, f"docker build -t {tag}", branch)
+            b = subprocess.run(["docker", "build", "-t", tag, "."], cwd=root,
+                               capture_output=True, text=True, timeout=BUILD_TIMEOUT)
             _log(project_id, (b.stdout + b.stderr)[-4000:], branch)
             if b.returncode != 0:
                 return {"ok": False, "spec": spec,
-                        "error": f"build failed: {(b.stderr or b.stdout)[-300:]}"}
-        cmd = ["/bin/sh", "-c", spec["run"].replace("$PORT", str(port))]
+                        "error": f"docker build failed: {b.stderr[-300:]}"}
+            cmd = ["docker", "run", "--rm", "-p", f"{port}:{port}",
+                   "-e", f"PORT={port}", "--name", app_name(project_id, branch), tag]
+        else:
+            if spec["build"]:
+                _log(project_id, f"build: {spec['build']}", branch)
+                b = subprocess.run(spec["build"], cwd=root, shell=True, capture_output=True,
+                                   text=True, timeout=BUILD_TIMEOUT, env=_child_env(port))
+                _log(project_id, (b.stdout + b.stderr)[-4000:], branch)
+                if b.returncode != 0:
+                    return {"ok": False, "spec": spec,
+                            "error": f"build failed: {(b.stderr or b.stdout)[-300:]}"}
+            cmd = ["/bin/sh", "-c", spec["run"].replace("$PORT", str(port))]
+    finally:
+        port_sock.close()
 
     _log(project_id, f"starting on port {port}: "
                      f"{' '.join(cmd) if isinstance(cmd, list) else cmd}", branch)

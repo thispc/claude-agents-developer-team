@@ -3,7 +3,7 @@
 **Status after the 2026-07-20 fix pass:** issues 4, 6, 8, 10, 11, 12, 13, 14,
 15, 16, 17 are fixed (see the commit "fix 11 known bugs…"), plus two new ones
 found by a security probe (suggest-team and model-health were anonymous — fixed).
-Still open: 2, 3, 5, 7, 9, 18 below.
+Still open: 2, 3, 5, 9, 18 below. (7 fixed since — see below.)
 
 Bugs found and confirmed but **not fixed**, worst first. Each one says what
 actually happens, why, and the concrete fix.
@@ -109,15 +109,18 @@ older than the newest few tags.
 
 ---
 
-## 7. Two concurrent deploys can grab the same port
+## 7. [FIXED] Two concurrent deploys can grab the same port
 
-**Why:** `_free_port()` checks whether a port is free, then returns it. The
-child binds it later, so two deploys started together can be handed the same
-number.
+**Why:** `_free_port()` checked whether a port was free with `connect_ex`, then
+closed the probe socket and returned the number. The child binds it later, so
+two deploys started together could scan, both see the same port free, and both
+be handed it.
 
-**Fix:** hold the socket. Bind it in `_free_port`, keep it open until the child
-starts with `SO_REUSEADDR`, or simply catch the boot failure and retry with the
-next port — the health check already detects "exited immediately".
+**Fix:** `_free_port()` now binds the port itself (`SO_REUSEADDR`) and hands
+back the still-open socket — a concurrent scan's own `bind()` on that port
+fails outright instead of racing. `deploy_local` holds the reservation for the
+build and closes it in a `finally` right before the child starts, so a failed
+build can't leak it either.
 
 ---
 

@@ -5,6 +5,7 @@ Commits: e50c3a0 (full deployment), 33a6d3f + d716e24 (k8s ingress/labels/arch).
 These test pure logic — no docker/kubectl needed.
 """
 
+import socket
 import tempfile
 from pathlib import Path
 
@@ -111,6 +112,47 @@ def test_local_child_env_has_no_platform_secrets(monkeypatch):
                  "CLAUDE_CODE_OAUTH_TOKEN"):
         assert leak not in env, f"deployed app can read {leak}"
     assert env["PORT"] == "8600"
+
+
+# ---- port allocation holds the port instead of check-then-close -----------
+# The bug: _free_port() used to connect_ex a port, close that probe socket, and
+# hand back the number — leaving it unreserved for however long the build then
+# took. Two deploys started together could both scan, both see it free, and
+# both be handed it. It now binds the port itself and returns the open socket,
+# so a concurrent scan's own bind() fails instead of racing.
+
+def test_free_port_returns_a_still_bound_socket():
+    port, sock = deploy._free_port()
+    try:
+        assert deploy.PORT_RANGE_START <= port < deploy.PORT_RANGE_START + 200
+        other = socket.socket()
+        with pytest.raises(OSError):
+            other.bind(("127.0.0.1", port))     # taken — deploy.py is holding it
+        other.close()
+    finally:
+        sock.close()
+
+
+def test_free_port_will_not_hand_out_a_port_still_held_by_an_earlier_call():
+    port1, sock1 = deploy._free_port()
+    try:
+        port2, sock2 = deploy._free_port()
+        try:
+            assert port1 != port2, "handed out a port that's still reserved"
+        finally:
+            sock2.close()
+    finally:
+        sock1.close()
+
+
+def test_free_port_is_reusable_once_the_reservation_is_released():
+    port1, sock1 = deploy._free_port()
+    sock1.close()                               # e.g. deploy_local's build-phase finally
+    port2, sock2 = deploy._free_port()
+    try:
+        assert deploy.PORT_RANGE_START <= port2 < deploy.PORT_RANGE_START + 200
+    finally:
+        sock2.close()
 
 
 # ---- what the platform learned about itself, applied to project apps ------
