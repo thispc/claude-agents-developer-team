@@ -810,8 +810,8 @@ async function refreshBoard() {
       try { deps = JSON.parse(t.deps || "[]"); } catch { /* old rows */ }
       const links = [];
       if (deps.length) links.push(`after ${depLabels(deps).join(",")}`);
-      if (t.issue_number && p.repo) links.push(`<a target="_blank" href="https://github.com/${p.repo}/issues/${t.issue_number}">#${t.issue_number}</a>`);
-      if (t.pr_number && p.repo) links.push(`<a target="_blank" href="https://github.com/${p.repo}/pull/${t.pr_number}">PR ${t.pr_number}</a>`);
+      if (t.issue_number && p.repo) links.push(`<a target="_blank" href="${gitWebUrl(p.repo, "issue", t.issue_number)}">#${t.issue_number}</a>`);
+      if (t.pr_number && p.repo) links.push(`<a target="_blank" href="${gitWebUrl(p.repo, "pr", t.pr_number)}">PR ${t.pr_number}</a>`);
       card.innerHTML = `
         <div class="role ${t.role}">${t.role}</div>
         <div class="title">${escapeHtml(t.title)}</div>
@@ -1008,9 +1008,9 @@ async function showTask(id) {
   try { deps = JSON.parse(t.deps || "[]"); } catch { /* noop */ }
   const repo = currentRepo;
   const links = [];
-  if (t.issue_number && repo) links.push(`<a target="_blank" href="https://github.com/${repo}/issues/${t.issue_number}">issue #${t.issue_number}</a>`);
-  if (t.pr_number && repo) links.push(`<a target="_blank" href="https://github.com/${repo}/pull/${t.pr_number}">PR #${t.pr_number}</a>`);
-  if (t.branch && repo) links.push(`<a target="_blank" href="https://github.com/${repo}/tree/${t.branch}">${t.branch}</a>`);
+  if (t.issue_number && repo) links.push(`<a target="_blank" href="${gitWebUrl(repo, "issue", t.issue_number)}">issue #${t.issue_number}</a>`);
+  if (t.pr_number && repo) links.push(`<a target="_blank" href="${gitWebUrl(repo, "pr", t.pr_number)}">PR #${t.pr_number}</a>`);
+  if (t.branch && repo) links.push(`<a target="_blank" href="${gitWebUrl(repo, "branch", t.branch)}">${t.branch}</a>`);
   const canRetry = ["failed", "review", "done"].includes(t.status);
   const canSkip = !["done"].includes(t.status);
   $("#taskDetail").innerHTML = `
@@ -1968,7 +1968,7 @@ async function renderArtifacts(force) {
       <div class="work-head">
         <span class="role">${escapeHtml(w.role)}</span>
         <span class="pill ${w.status === "done" ? "ok" : w.status === "failed" ? "bad" : "warn"}">${w.status}</span>
-        ${w.pr ? `<a href="https://github.com/${a.repo}/pull/${w.pr}" target="_blank">PR #${w.pr}</a>` : ""}
+        ${w.pr ? `<a href="${gitWebUrl(a.repo, "pr", w.pr)}" target="_blank">PR #${w.pr}</a>` : ""}
         <span class="hint">${escapeHtml(w.model || "")}${w.attempts > 1 ? ` · ${w.attempts} attempts` : ""}</span>
       </div>
       <div class="work-title">${escapeHtml(w.title)}</div>

@@ -1676,7 +1676,11 @@ def health() -> dict:
     return {"ok": True, "launcher": config.LAUNCHER, "auth": config.auth_mode(),
             "github": bool(config.GITHUB_TOKEN) or config.DEMO_MODE,
             "demo": config.DEMO_MODE, "stale_ui": stale_ui,
-            "weak_password": auth.password_is_weak(auth.ROOT_PASSWORD)}
+            "weak_password": auth.password_is_weak(auth.ROOT_PASSWORD),
+            # So the dashboard can build git-host links (gitWebUrl in core.js)
+            # from the same config github_client.py uses, instead of a
+            # hardcoded github.com that 404s against a self-hosted host.
+            "git_web": config.GIT_WEB, "git_provider": config.GIT_PROVIDER}
 
 
 @router.post("/api/suggest-team")

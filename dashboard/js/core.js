@@ -20,6 +20,23 @@ async function api(path, opts) {
 
 let authMode = "none";
 let me = { signed_in: false };
+// GIT_WEB/GIT_PROVIDER, filled in by loadHealth() below. Default to github.com so
+// a page render that races the first /api/health call still links somewhere sane.
+let gitWeb = "https://github.com";
+let gitProvider = "github";
+
+// The one place that turns a repo into a link — every screen calls this instead
+// of string-building "https://github.com/..." itself, so a self-hosted GIT_WEB
+// (Gitea, GitHub Enterprise) gets correct links everywhere, not just wherever
+// someone remembered to parametrize it. `kind` picks the browser path Gitea
+// diverges on ('pulls' not 'pull', 'src/branch' not 'tree'), mirroring
+// conductor/app/github_client.py's repo_url/issue_url/pr_url/branch_url.
+function gitWebUrl(repo, kind, value) {
+  if (kind === "issue") return `${gitWeb}/${repo}/issues/${value}`;
+  if (kind === "pr") return `${gitWeb}/${repo}/${gitProvider === "gitea" ? "pulls" : "pull"}/${value}`;
+  if (kind === "branch") return `${gitWeb}/${repo}/${gitProvider === "gitea" ? "src/branch" : "tree"}/${value}`;
+  return `${gitWeb}/${repo}`;
+}
 
 // --- sign-in / settings -----------------------------------------------------
 const PERSONAS = {
@@ -272,6 +289,8 @@ async function loadHealth() {
   try {
     const h = await api("/api/health");
     authMode = h.auth || "none";
+    gitWeb = h.git_web || gitWeb;
+    gitProvider = h.git_provider || gitProvider;
     // The dashboard is served from disk; the API is whatever process is running.
     // Change both and the page runs ahead of the server, which looks like a broken
     // feature — an empty dropdown, a button that does nothing — rather than a
@@ -334,7 +353,7 @@ function renderHome(projects) {
       ? `${p.runs_used ?? 0}/${p.max_runs ?? 40} runs`
       : `$${(p.cost_usd || 0).toFixed(2)}`;
     const repoCell = p.repo
-      ? `<a href="https://github.com/${p.repo}" target="_blank" onclick="event.stopPropagation()">${p.repo}</a>`
+      ? `<a href="${gitWebUrl(p.repo)}" target="_blank" onclick="event.stopPropagation()">${p.repo}</a>`
       : "—";
     const active = !["done", "failed", "cancelled"].includes(p.status);
     const canRestart = ["failed", "review", "cancelled"].includes(p.status);
