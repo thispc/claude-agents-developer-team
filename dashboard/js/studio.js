@@ -22,7 +22,15 @@ let lwWorldId = null;
 let lwTab = "overview";        // overview | agents | artifacts | rooms
 let lwRoom = null;             // the open ROOM (GET .../room/{rid})
 let lwRoomId = null;
-let lwLive = false;            // Live = agents actually think (spends tokens)
+// Live = agents actually think. It defaults ON wherever the platform has credentials, and
+// falls back to deterministic only when there is nothing to think WITH.
+//
+// It used to default off, which made the Studio's first impression its weakest one: six
+// agents producing free stance lines look identical to six agents with nothing to say, and
+// "why is everyone saying the same thing" is exactly the report that came back. Deterministic
+// remains genuinely useful — it is what makes the whole suite free and reproducible, and what
+// keeps an unconfigured install working — but it is the fallback, not the intent.
+let lwLive = false;
 let lwSeenLog = new Set();     // room-log 'n's already shown, so only new lines animate
 let lwRoomTypes = [];          // [{type,theme,blurb}] from the API
 
@@ -30,6 +38,15 @@ let lwRoomTypes = [];          // [{type,theme,blurb}] from the API
 // map. Indexed by the room's position in the world's room list.
 const LW_ROOM_HUES = [162, 26, 214, 276, 128, 336, 46, 194];
 const lwLiveQ = () => (lwLive ? "?live=1" : "");
+
+/** Turn Live on if this platform can actually think. Called once, at boot. */
+async function lwDefaultLive() {
+  try {
+    const h = await api("/api/health");
+    lwLive = !!(h.auth && h.auth !== "none");
+  } catch { lwLive = false; }   // no answer, no thinking: deterministic is the safe place
+  if (typeof paintLwLive === "function") paintLwLive();
+}
 
 // --- Konva room canvas: the infinite paintable room -------------------------
 // One Stage per open room, mounted into #lwKonvaHost. Tokens live in worldLayer;

@@ -20,6 +20,8 @@ $("#lwLive") && $("#lwLive").addEventListener("click", () => {
     ? "🧠 Live — a round asks real models to think and spends tokens"
     : "💤 Deterministic — free, reproducible reflexes";
 });
+// Ask once, at boot, whether this platform can think at all — and start Live if it can.
+if (typeof lwDefaultLive === "function") lwDefaultLive();
 document.querySelectorAll(".lw-tab").forEach((b) =>
   b.addEventListener("click", () => selectLwTab(b.dataset.lwtab)));
 

@@ -273,3 +273,63 @@ def test_selecting_one_node_tells_you_it_belongs_to_something():
     is one that does not exist."""
     src = (Path(__file__).resolve().parents[1] / "dashboard/canvas2/index.js").read_text()
     assert "Select its graph" in src
+
+
+# ---- the canvas has to make direction and activity legible -----------------
+
+def _c2(name):
+    return (Path(__file__).resolve().parents[1] / "dashboard/canvas2" / name).read_text()
+
+
+def test_a_wire_stops_short_of_its_tokens_so_the_arrowhead_is_visible():
+    """Wires ran centre to centre, which drew the arrowhead UNDERNEATH the circle: the
+    direction was rendered and then hidden, which is why it was never readable."""
+    src = _c2("render.js")
+    assert "export function wireEnds" in src
+    assert "WIRE_GAP = SIZES.AGENT_R" in src
+    ends = src.split("export function wireEnds", 1)[1].split("\n}", 1)[0]
+    assert "Math.hypot" in ends and "Math.min(WIRE_GAP" in ends, "short wires must not invert"
+
+
+def test_two_way_is_two_heads_not_the_absence_of_one():
+    """Head-versus-no-head is nearly invisible at any real zoom, and conversation flow
+    depends on reading it correctly. The difference has to be a thing that is THERE."""
+    src = _c2("render.js")
+    wire = src.split("export function wireNode", 1)[1].split("\n}", 1)[0]
+    assert 'dir === "a2b" || dir === "both"' in wire
+    assert 'dir === "b2a" || dir === "both"' in wire
+
+
+def test_an_agent_that_is_working_says_so(fresh_db):
+    """You can still talk to a busy agent — but you should be able to see it is mid-task
+    before you interrupt."""
+    import time as _t
+    from app.lifeworld.world import World
+    w = World(name="w")
+    h = w.spawn_human("Correctness")
+    assert h.usage()["busy"] is False
+    h.spends.append(_t.time())
+    assert h.usage()["busy"] is True, "a call just now means it is thinking now"
+    h.spends[-1] = _t.time() - 600
+    assert h.usage()["busy"] is False, "and it stops glowing when the round ends"
+    src = _c2("render.js")
+    assert "lw2-busyring" in src and "lw2-busy" in src
+
+
+def test_the_busy_ring_respects_reduced_motion():
+    css = (Path(__file__).resolve().parents[1] / "dashboard/style.css").read_text()
+    block = css.split(".lw2-busyring", 1)[1][:600]
+    assert "prefers-reduced-motion: no-preference" in block, \
+        "the animation must be opt-out, not opt-in"
+
+
+def test_live_is_the_default_wherever_the_platform_can_actually_think():
+    """Six agents producing free stance lines look identical to six agents with nothing to
+    say, and that is exactly the report that came back. Deterministic stays — it is what
+    makes the suite free and an unconfigured install usable — but it is the fallback."""
+    from conftest import dashboard_js
+    js = dashboard_js()
+    assert "async function lwDefaultLive" in js
+    fn = js.split("async function lwDefaultLive", 1)[1].split("\n}", 1)[0]
+    assert '/api/health' in fn and 'h.auth' in fn
+    assert "lwDefaultLive()" in js, "and it has to actually run at boot"

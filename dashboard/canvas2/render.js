@@ -34,7 +34,14 @@ export function agentNode(a) {
   const R = SIZES.AGENT_R, seed = W.lwAvatarSeed(a), manager = W.lwIsManager(a);
   const rim = manager ? "#2C6A63" : W.lwAvatarColor(seed);
   const asleep = !!(a.usage && a.usage.asleep);
-  const g = svgEl("g", { class: "lw2-token lw2-agent" + (manager ? " lw2-manager" : "") + (asleep ? " lw2-asleep" : ""), "data-id": String(a.id), "data-kind": "agent" });
+  // Working on something right now. Not a lock — you can still talk to it — but you should
+  // be able to see that it is mid-task before you interrupt.
+  const busy = !!(a.usage && a.usage.busy) && !asleep;
+  const g = svgEl("g", { class: "lw2-token lw2-agent" + (manager ? " lw2-manager" : "")
+    + (asleep ? " lw2-asleep" : "") + (busy ? " lw2-busy" : ""),
+    "data-id": String(a.id), "data-kind": "agent" });
+  if (busy) g.append(svgEl("circle", { r: SIZES.AGENT_R + 7, class: "lw2-busyring",
+                                       fill: "none", "pointer-events": "none" }));
   g.append(
     svgEl("circle", { r: R + 3, fill: rim, class: "lw2-rim" }),
     svgEl("circle", { r: R, class: "lw2-body", fill: W.lwAvatarBg(seed), stroke: "rgba(255,255,255,.9)", "stroke-width": 2 }),
@@ -129,23 +136,47 @@ export function speechBubble(text, order) {
 
 // A wire between two world points, honouring direction (both | a2b | b2a). A fat transparent
 // hit-line sits under the thin visible one so it's easy to click (native hit-testing on the stroke).
+// How far short of a token's centre a wire stops. Wires used to run centre to centre, which
+// drew the arrowhead UNDERNEATH the circle — the direction was rendered and then hidden, and
+// the owner quite reasonably reported never being able to tell one-way from two-way.
+const WIRE_GAP = SIZES.AGENT_R + 9;
+
+/** Pull both ends of a wire in, so its arrowheads land outside the tokens. */
+export function wireEnds(ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay;
+  const len = Math.hypot(dx, dy) || 1;
+  // Never invert a short wire: if the tokens overlap, draw the little that is left rather
+  // than a line pointing backwards.
+  const cut = Math.min(WIRE_GAP, Math.max(0, (len - 6) / 2));
+  const ux = (dx / len) * cut, uy = (dy / len) * cut;
+  return { x1: ax + ux, y1: ay + uy, x2: bx - ux, y2: by - uy };
+}
+
 export function wireNode(edge) {
   const dir = edge.dir || "both";
   const oneWay = dir === "a2b" || dir === "b2a";
+  const e = wireEnds(edge.ax, edge.ay, edge.bx, edge.by);
   const g = svgEl("g", { class: "lw2-wire" + (oneWay ? " lw2-wire-one" : " lw2-wire-both"),
     "data-tid": String(edge.tid), "data-a": String(edge.a), "data-b": String(edge.b) });
   g.append(
-    svgEl("line", { class: "lw2-wire-hit", x1: edge.ax, y1: edge.ay, x2: edge.bx, y2: edge.by,
+    svgEl("line", { class: "lw2-wire-hit", x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2,
       stroke: "transparent", "stroke-width": 18, "pointer-events": "stroke" }),
-    // one-way: a bold solid line + a clear arrowhead at the head. two-way: a lighter plain line, no head.
-    svgEl("line", { class: "lw2-wire-vis", x1: edge.ax, y1: edge.ay, x2: edge.bx, y2: edge.by,
-      stroke: "hsl(160 45% 42%)", "stroke-width": oneWay ? 2.75 : 2, "stroke-linecap": "round", "pointer-events": "none",
+    // ONE head means one-way; TWO heads mean both ways. Head-versus-no-head was the old
+    // encoding and it is nearly invisible at any real zoom — the difference has to be a
+    // thing that is THERE rather than a thing that is absent, because conversation flow
+    // depends on reading it correctly.
+    svgEl("line", { class: "lw2-wire-vis", x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2,
+      stroke: "hsl(160 45% 42%)", "stroke-width": 2.5, "stroke-linecap": "round", "pointer-events": "none",
       "stroke-dasharray": edge.closed ? null : "8 5",
-      "marker-end": dir === "a2b" ? "url(#lw2-arrow)" : null,
-      "marker-start": dir === "b2a" ? "url(#lw2-arrow)" : null }),
+      "marker-end": dir === "a2b" || dir === "both" ? "url(#lw2-arrow)" : null,
+      "marker-start": dir === "b2a" || dir === "both" ? "url(#lw2-arrow)" : null }),
   );
   return g;
 }
 export function setWireEnds(g, ax, ay, bx, by) {
-  g.querySelectorAll("line").forEach((ln) => { ln.setAttribute("x1", ax); ln.setAttribute("y1", ay); ln.setAttribute("x2", bx); ln.setAttribute("y2", by); });
+  const e = wireEnds(ax, ay, bx, by);
+  g.querySelectorAll("line").forEach((ln) => {
+    ln.setAttribute("x1", e.x1); ln.setAttribute("y1", e.y1);
+    ln.setAttribute("x2", e.x2); ln.setAttribute("y2", e.y2);
+  });
 }

@@ -2951,3 +2951,16 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
   background: var(--card-2); font-size: 12.5px; cursor: pointer; }
 .rp-autorow input { margin-top: 2px; flex: none; }
 .rp-autorow .dim { display: block; margin-top: 3px; line-height: 1.5; max-width: 78ch; }
+
+/* ── an agent that is working on something ───────────────────────────────────
+   A ring, not a lock: you can still talk to a busy agent, but you should be able to see it
+   is mid-task before you interrupt. Animation is a nicety and is dropped entirely for
+   anyone who has asked for less motion. */
+.lw2-busyring { stroke: var(--accent); stroke-width: 2; opacity: 0.75; }
+@media (prefers-reduced-motion: no-preference) {
+  .lw2-busyring { animation: lw2-pulse 1.9s ease-in-out infinite; transform-origin: center; }
+  @keyframes lw2-pulse {
+    0%, 100% { opacity: 0.28; stroke-width: 2; }
+    50%      { opacity: 0.9;  stroke-width: 3.5; }
+  }
+}

@@ -31,6 +31,11 @@ from .ledger import Ledger
 # than a reflex. Scaled by the signal's stakes.
 ENGAGE = {0: 0.3, 1: 0.4, 2: 1.0}
 
+# How recently an agent must have spent to count as working on something. Long enough to
+# cover the gap between calls in one deliberation round, short enough that it stops glowing
+# soon after the round ends.
+BUSY_SECONDS = 90
+
 
 @register
 class Human(Being):
@@ -216,8 +221,14 @@ class Human(Being):
         self.spends = [t for t in self.spends if now - t < win]
         used = len(self.spends)
         asleep = used >= cap
+        # "Busy" is free: the agent already records when it last spent, and a call inside the
+        # last minute-and-a-half means it is thinking about something right now. Worth showing
+        # on the canvas — you can still talk to a busy agent, but you should be able to SEE
+        # that it is mid-task rather than idle.
+        last = max(self.spends) if self.spends else 0.0
         return {"used": used, "cap": cap, "frac": round(min(1.0, used / cap), 3),
                 "asleep": asleep, "wakes_at": (min(self.spends) + win) if (asleep and self.spends) else 0.0,
+                "busy": bool(last and now - last < BUSY_SECONDS), "last_spend": last,
                 "window": win, "model": self.model}
 
     def asleep(self, now=None) -> bool:
