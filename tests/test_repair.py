@@ -1256,3 +1256,12 @@ def test_the_story_feed_uses_the_same_visual_language_as_a_project():
     assert "RP_EV_CLASS" in js and "RP_EV_WHO" in js
     assert '`<div class="ev ${cls}">' in js and '<div class="src">' in js
     assert "outcome good" in js and "outcome bad" in js
+
+
+def test_the_story_feed_does_not_render_its_own_indentation():
+    """.ev is `white-space: pre-wrap`, so a prettily-indented template renders the template's
+    own newlines and every row comes out three times taller than its content."""
+    js = dashboard_js()
+    body = js.split("function rpActLine(", 1)[1].split("\n}", 1)[0]
+    ret = body.split("return `", 1)[1].split("`;", 1)[0]
+    assert "\n" not in ret, f"the .ev template spans lines: {ret[:80]}"

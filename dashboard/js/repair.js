@@ -794,9 +794,12 @@ function rpActLine(e, n = 1) {
   const who = RP_EV_WHO[e.kind] || (verify ? "🧪 Verifier" : "⚙️ Engine");
   const when = e.ts ? new Date(e.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }) : "";
   const sha = p && p.sha ? String(p.sha).slice(0, 8) : "";
-  return `<div class="ev ${cls}">
-    <div class="src">${escapeHtml(who)} · ${escapeHtml(e.kind.replace(/^repair_/, ""))} · ${escapeHtml(when)}${n > 1 ? ` · ×${n}` : ""}</div>
-    ${escapeHtml(trim(rpActText(e), 400))}${sha ? ` <code>${escapeHtml(sha)}</code>` : ""}</div>`;
+  // No newlines or indentation inside the element: .ev is `white-space: pre-wrap`, so a
+  // prettily-indented template renders its own indentation as blank space and every row
+  // ends up three times taller than its content.
+  const src = `<div class="src">${escapeHtml(who)} · ${escapeHtml(e.kind.replace(/^repair_/, ""))} · ${escapeHtml(when)}${n > 1 ? ` · ×${n}` : ""}</div>`;
+  const body = `${escapeHtml(trim(rpActText(e), 400))}${sha ? ` <code>${escapeHtml(sha)}</code>` : ""}`;
+  return `<div class="ev ${cls}">${src}${body}</div>`;
 }
 
 /** Consecutive identical beats collapse to one line with a count.
