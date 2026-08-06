@@ -8,6 +8,9 @@ let rpChatOpen = false;
 // Which tab is open. Module-level, because the status poll re-renders #self every few seconds
 // and a tab that reset itself to "Crew" mid-read would be unusable.
 let rpTab = "crew";
+let rpActView = "story";     // story = the narrative bus feed | logs = the structured pipeline
+let rpLogLevel = "";         // a FLOOR: "warn" means warn AND error
+let rpLogQ = "";
 
 async function renderSelf() {
   rpEnsureBoard();
@@ -239,6 +242,35 @@ function rpUsagePanel(d, m) {
   </div>`;
 }
 
+/** Two views of the same question, because they answer different halves of it.
+ *
+ * STORY is the narrative bus feed: what the crew did, in order, in sentences. LOGS is the
+ * structured pipeline — levelled and categorised — which is what you want the moment the
+ * story stops making sense and you need to know which part broke. Filtering by level is a
+ * FLOOR, so "warnings" means warnings and errors: nobody looking for trouble wants errors
+ * hidden behind a stricter filter. */
+function rpActivityPanel() {
+  return `
+  <div class="rp-card">
+    <div class="rp-card-h">Activity
+      <span class="dim" id="rpActNote">everything the crew does, as it does it</span>
+      <button class="rp-link" id="rpActReload">refresh</button></div>
+    <div class="rp-filters">
+      <span class="rp-seg2">
+        <button class="rp-fchip${rpActView === "story" ? " on" : ""}" data-view="story">Story</button>
+        <button class="rp-fchip${rpActView === "logs" ? " on" : ""}" data-view="logs">Logs</button>
+      </span>
+      <span class="rp-logonly"${rpActView === "logs" ? "" : " hidden"}>
+        ${["", "info", "warn", "error"].map((lv) =>
+          `<button class="rp-fchip${rpLogLevel === lv ? " on" : ""}" data-level="${lv}">${lv || "all"}</button>`).join("")}
+        <select id="rpLogCat" class="rp-select"><option value="">every category</option></select>
+        <input id="rpLogQ" class="rp-search" placeholder="search…" value="${escapeHtml(rpLogQ)}">
+      </span>
+    </div>
+    <div id="repairActivity" class="rp-act rp-act-tall"><p class="dim">…</p></div>
+  </div>`;
+}
+
 function rpCommandPanel() {
   return `
   <div class="rp-card">
@@ -272,11 +304,7 @@ function rpHtml(d) {
   const badge = u.budget_tok
     ? `<span class="rp-tabnote">${Math.round((u.frac || 0) * 100)}% of this window used</span>` : "";
   const panels = { crew: rpCrewPanel(d, m), board: rpBoardPanel(d),
-                   activity: `<div class="rp-card">
-    <div class="rp-card-h">Activity <span class="dim">everything the crew does, as it does it</span>
-      <button class="rp-link" id="rpActReload">refresh</button></div>
-    <div id="repairActivity" class="rp-act rp-act-tall"><p class="dim">…</p></div>
-  </div>`,
+                   activity: rpActivityPanel(),
                    usage: rpUsagePanel(d, m), command: rpCommandPanel() };
 
   return `
@@ -423,6 +451,28 @@ function rpWire(d) {
     b.addEventListener("click", () => rpBoard(b.dataset.board)));
   const areload = $("#rpActReload");
   if (areload) areload.addEventListener("click", rpActivity);
+  el.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => {
+    rpActView = b.dataset.view;
+    el.querySelectorAll("[data-view]").forEach((x) => x.classList.toggle("on", x.dataset.view === rpActView));
+    const only = el.querySelector(".rp-logonly");
+    if (only) only.hidden = rpActView !== "logs";
+    rpActivity();
+  }));
+  el.querySelectorAll("[data-level]").forEach((b) => b.addEventListener("click", () => {
+    rpLogLevel = b.dataset.level;
+    el.querySelectorAll("[data-level]").forEach((x) => x.classList.toggle("on", x.dataset.level === rpLogLevel));
+    rpActivity();
+  }));
+  const lcat = $("#rpLogCat");
+  if (lcat) lcat.addEventListener("change", rpActivity);
+  const lq = $("#rpLogQ");
+  if (lq) {
+    let t = null;
+    lq.addEventListener("input", () => {
+      clearTimeout(t);
+      t = setTimeout(() => { rpLogQ = lq.value.trim(); rpActivity(); }, 350);
+    });
+  }
 
   // Tabs. Every panel is in the DOM and inactive ones are `hidden`, so switching is instant,
   // form state survives, and nothing has to be re-fetched to look at it again.
@@ -570,21 +620,61 @@ function rpCollapse(events) {
   return out;
 }
 
+const RP_LOGCOL = { debug: "quiet", info: "", warn: "warnline", error: "errline" };
+
+function rpLogLine(r) {
+  const when = r.ts ? new Date(r.ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }) : "";
+  const skip = { ts: 1, level: 1, cat: 1, event: 1, msg: 1, repeats: 1 };
+  const fields = Object.entries(r).filter(([k, v]) => !skip[k] && v !== null && v !== "")
+    .map(([k, v]) => `<span class="rp-lf">${escapeHtml(k)}=${escapeHtml(trim(String(v), 70))}</span>`).join(" ");
+  return `<div class="rp-actline ${RP_LOGCOL[r.level] || ""}">
+    <span class="rp-actwhen">${escapeHtml(when)}</span>
+    <span class="rp-lcat">${escapeHtml(r.cat)}/${escapeHtml(r.event)}</span>
+    <span>${escapeHtml(trim(String(r.msg || ""), 200))}${r.repeats > 1
+      ? ` <span class="dim">×${r.repeats}</span>` : ""} ${fields}</span></div>`;
+}
+
 async function rpActivity() {
   const el = $("#repairActivity"); if (!el) return;
   try {
-    const r = await api("/api/repair/activity?limit=200");
-    const rows = rpCollapse(r.events || []).map((g) => rpActLine(g.e, g.n)).join("");
-    el.innerHTML = rows || `<p class="dim">nothing yet — the crew has not run</p>`;
+    if (rpActView === "logs") {
+      const qs = new URLSearchParams({ limit: "300" });
+      if (rpLogLevel) qs.set("level", rpLogLevel);
+      const cat = $("#rpLogCat"); if (cat && cat.value) qs.set("cat", cat.value);
+      if (rpLogQ) qs.set("q", rpLogQ);
+      const r = await api(`/api/logs?${qs}`);
+      rpFillCats(r.categories || {});
+      const note = $("#rpActNote");
+      if (note) note.textContent = `${(r.logs || []).length} lines — what the system did, and whether it worked`;
+      el.innerHTML = (r.logs || []).map(rpLogLine).join("")
+        || `<p class="dim">nothing matches that filter</p>`;
+    } else {
+      const r = await api("/api/repair/activity?limit=200");
+      const note = $("#rpActNote");
+      if (note) note.textContent = "everything the crew does, as it does it";
+      el.innerHTML = rpCollapse(r.events || []).map((g) => rpActLine(g.e, g.n)).join("")
+        || `<p class="dim">nothing yet — the crew has not run</p>`;
+    }
     el.scrollTop = el.scrollHeight;
-  } catch { el.innerHTML = `<p class="dim">—</p>`; }
+  } catch (e) { el.innerHTML = `<p class="dim">${escapeHtml(e.message)}</p>`; }
+}
+
+/** The category list comes from the server, so the vocabulary has exactly one home. */
+function rpFillCats(cats) {
+  const sel = $("#rpLogCat"); if (!sel || sel.dataset.filled) return;
+  for (const [k, why] of Object.entries(cats)) {
+    const o = document.createElement("option");
+    o.value = k; o.textContent = k; o.title = why;
+    sel.appendChild(o);
+  }
+  sel.dataset.filled = "1";
 }
 
 /** Called from the shared WS handler so the feed is live, not a 5s poll. */
 function rpOnEvent(e) {
   if (!e || e.source !== "repair") return;
   const el = $("#repairActivity");
-  if (!el || $("#selfPage").hidden) return;
+  if (!el || $("#selfPage").hidden || rpActView !== "story") return;
   if (el.querySelector("p.dim")) el.innerHTML = "";
   const last = el.lastElementChild;
   if (last && last.dataset.k === e.kind && last.dataset.t === rpActText(e)) {

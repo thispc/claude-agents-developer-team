@@ -263,6 +263,11 @@ def note_rate_limit(model: str, text: str) -> float | None:
         db.set_cooldown(model, until, text[:200])   # survive a restart
     except Exception:
         pass
+    # The only quota signal we did not invent — worth a record in the provider's own words,
+    # because every other number on the usage screen is a proxy for this one.
+    from . import logs
+    logs.warn("quota", "rate_limited", f"{model} is cooling down for {seconds}s",
+              model=model, seconds=seconds, said=(text or "")[:200])
     return until
 
 

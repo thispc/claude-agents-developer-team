@@ -60,7 +60,9 @@ def init() -> None:
         salt = secrets.token_hex(16)
         db._execute("UPDATE users SET pw_hash=?, pw_salt=? WHERE id=?",
                     (_hash(ROOT_PASSWORD, salt), salt, existing["id"]))
-        print("[startup] root password updated from the environment")
+        from . import logs
+        logs.info("auth", "root_password_updated",
+                  "root password updated from the environment")
 
 
 def create_user(username: str, password: str, is_root: bool = False) -> int:

@@ -2825,3 +2825,24 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .rp-table td { padding: 6px 8px 6px 0; border-bottom: 1px dashed var(--line-soft); }
 .rp-table tr:last-child td { border-bottom: none; }
 .rp-table .rp-num { text-align: right; font-family: var(--mono); }
+
+/* ── the log view inside Activity ─────────────────────────────────────────── */
+.rp-filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.rp-seg2 { display: inline-flex; gap: 2px; background: var(--soft); border-radius: 8px; padding: 2px; }
+.rp-logonly { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.rp-logonly[hidden] { display: none; }
+.rp-fchip { background: none; border: none; border-radius: 6px; color: var(--dim); font: inherit;
+  font-size: 12px; padding: 4px 10px; cursor: pointer; }
+.rp-fchip:hover { color: var(--text); }
+.rp-fchip.on { background: var(--card); color: var(--accent); font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
+.rp-select, .rp-search { border: 1px solid var(--line); border-radius: var(--ctl-radius);
+  background: var(--card-2); color: var(--text); font-size: 12px;
+  padding: var(--ctl-pad-y-tight) var(--ctl-pad-x-tight); }
+.rp-search { width: 150px; }
+.rp-lcat { font-family: var(--mono); font-size: 11px; color: var(--accent); flex: none;
+  min-width: 148px; }
+.rp-lf { font-family: var(--mono); font-size: 11px; color: var(--faint); white-space: nowrap; }
+.rp-actline.warnline { background: var(--warn-soft); }
+.rp-actline.errline { background: var(--bad-soft, rgba(178,59,59,0.08)); }
+.rp-actline.errline .rp-lcat { color: var(--bad); }

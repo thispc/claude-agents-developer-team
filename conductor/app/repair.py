@@ -25,7 +25,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import bus, config, db, launcher, tuning, usage
+from . import bus, config, db, launcher, logs, tuning, usage
 from . import repair_builder as rb
 
 TICK_SECONDS = 20
@@ -311,6 +311,8 @@ def _sleep(reason: str, until: float, kind: str = "headroom", resume: str = "idl
     if was.get("phase") != "sleeping" or was.get("sleep_reason") != reason:
         bus.emit(0, None, "repair", "repair_sleeping",
                  {"reason": reason, "until": until, "kind": kind})
+        logs.info("sleep", "stand_down", reason, kind=kind, resume=resume,
+                  wake_in_s=max(0, int(until - time.time())), was=was.get("phase"))
 
 
 # --- the button --------------------------------------------------------------
@@ -451,12 +453,21 @@ async def advance(st: dict) -> None:
         await _advance(st)
 
 
+def _phase_log(phase: str, st: dict) -> None:
+    """One line per transition. The phase machine is the thing you most want a history of
+    when a sprint went somewhere unexpected, and until now it existed only as the CURRENT
+    value of one kv key — by the time anyone looked, it had moved on."""
+    logs.info("sprint", f"phase_{phase}", f"entering {phase}",
+              sprint=st.get("sprint_no"), task=st.get("task_idx"))
+
+
 async def _advance(st: dict) -> None:
     """One persisted phase transition. Everything it spends is billed to the crew — the
     deliberation goes through the same `providers.complete` a Studio seat uses, and filed as
     the owner's it would read as 'someone else is using the quota', putting the crew to sleep
     on its own footsteps."""
     phase = st["phase"]
+    _phase_log(phase, st)
     if phase == "idle":
         # a sprint that must scout+plan needs room for the whole plan, not just the scout
         ok, reason, wake = headroom(need=1 if backlog_fresh() else phase_cost("plan") + 1)
@@ -685,6 +696,8 @@ async def _phase_build(st: dict, rec: dict) -> None:
     t["attempts"] += 1
     save_sprint(rec)
     bus.emit(0, None, "repair", "repair_building", {"sprint": rec["no"], "task": t["title"]})
+    logs.info("session", "build_started", t["title"], sprint=rec["no"],
+              factor=t.get("factor"), attempt=t.get("attempts"))
     try:
         wt = t.get("worktree")
         CURRENT_BUILD = asyncio.ensure_future(
@@ -702,6 +715,8 @@ async def _phase_build(st: dict, rec: dict) -> None:
     except Exception as e:
         CURRENT_BUILD = None
         ledger_add("build", str(tuning.get("repair_builder_model")), 0)       # a failed session still burned quota
+        logs.error("session", "build_died", str(e)[:300], task=t["title"],
+                   attempt=t.get("attempts"), kind=type(e).__name__)
         if _rate_limited(str(e)):
             t["status"] = "pending"                 # resume this same task after the sleep
             t["attempts"] -= 1
@@ -734,14 +749,24 @@ async def _phase_verify(st: dict, rec: dict) -> None:
     if bad:
         t["status"] = "failed"
         t["error"] = f"touched a protected path: {bad}"
+        logs.error("sandbox", "protected_path",
+                   f"a build touched {bad} — refused before it could be verified",
+                   task=t["title"], path=bad)
         rec["failed"] += 1
         rb.discard(t["branch"], t["worktree"])
         save_sprint(rec)
         set_state(phase="build", task_idx=st["task_idx"] + 1)
         bus.emit(0, None, "repair", "repair_task_failed", {"task": t["title"], "why": t["error"]})
+        logs.warn("session", "build_failed", f"{t['title']} — {t['error']}",
+                  sprint=rec["no"], factor=t.get("factor"))
         return
     res = await rb.verify(t["worktree"])
     t["verification"] = res
+    logs.log("verify", "suite_green" if res.get("ok") else "suite_red",
+             res.get("headline", "") or ("the suite passed" if res.get("ok") else "the suite failed"),
+             level="info" if res.get("ok") else "warn",
+             task=t["title"], attempt=t.get("attempts"),
+             failures=len(res.get("failures") or []))
     if res.get("ok"):
         t["status"] = "green"
         save_sprint(rec)
@@ -749,6 +774,8 @@ async def _phase_verify(st: dict, rec: dict) -> None:
         return
     if not t.get("too_big") and t["attempts"] <= int(tuning.get("repair_fix_attempts")):
         t["evidence"] = "\n".join(res.get("failures") or [])[:1500] or res.get("headline", "")
+        logs.info("session", "build_retry", f"{t['title']} — retrying with the failures as evidence",
+                  task=t["title"], attempt=t.get("attempts"))
         t["status"] = "pending"
         save_sprint(rec)
         set_state(phase="build")                    # same task_idx → retry with evidence
@@ -760,6 +787,9 @@ async def _phase_verify(st: dict, rec: dict) -> None:
     set_state(phase="build", task_idx=st["task_idx"] + 1)
     bus.emit(0, None, "repair", "repair_task_failed",
              {"task": t["title"], "why": res.get("headline", "tests failed")})
+    logs.warn("verify", "task_abandoned",
+              f"{t['title']} — {res.get('headline', 'tests failed')}",
+              task=t["title"], too_big=bool(t.get("too_big")), attempts=t.get("attempts"))
 
 
 async def _phase_land(st: dict, rec: dict) -> None:
@@ -788,6 +818,8 @@ async def _phase_land(st: dict, rec: dict) -> None:
             rb.discard(t["branch"], t["worktree"])
             _clear_error()                           # something landed — the last failure is history
             bus.emit(0, None, "repair", "repair_landed", {"task": t["title"], "sha": out["sha"]})
+            logs.info("git", "landed", t["title"], sha=str(out["sha"])[:8],
+                      files=len(out.get("files") or []))
         else:                                        # dirty tree / moved main → queue, don't lose it
             q = db.kv_get("repair:queue") or []
             q.append({"branch": t["branch"], "sprint_no": rec["no"], "slug": t["slug"],
@@ -797,6 +829,8 @@ async def _phase_land(st: dict, rec: dict) -> None:
             db.kv_set("repair:queue", q)
             t["status"] = "queued"
             bus.emit(0, None, "repair", "repair_queued", {"task": t["title"], "why": out.get("reason")})
+        logs.info("git", "queued_not_landed", f"{t['title']} — {out.get('reason', '')}",
+                  task=t["title"], reason=out.get("reason"))
     save_sprint(rec)
     set_state(phase="build", task_idx=st["task_idx"] + 1)
 
@@ -862,7 +896,11 @@ def claim_lease() -> None:
     next tick instead of the other way round.
     """
     import os
+    prev = (db.kv_get("repair:lease") or {}).get("pid")
     db.kv_set("repair:lease", {"pid": os.getpid(), "ts": time.time()})
+    logs.info("lifecycle", "lease_claimed",
+              "this process owns the self-repair engine (it bound the port)",
+              pid=os.getpid(), previous=prev)
 
 
 def _hold_lease() -> bool:
@@ -875,6 +913,11 @@ def _hold_lease() -> bool:
     now = time.time()
     lease = db.kv_get("repair:lease") or {}
     if lease.get("pid") != os.getpid() and now - (lease.get("ts") or 0) < TICK_SECONDS * 3:
+        # Every 20s forever if a zombie holds it, so damped: the fact matters, the repetition
+        # does not, and 180 identical lines an hour would bury everything else.
+        logs.log("lifecycle", "lease_held_elsewhere",
+                 "another process is driving the engine — standing down this tick",
+                 level="warn", dedupe_s=600, holder=lease.get("pid"), me=os.getpid())
         return False
     db.kv_set("repair:lease", {"pid": os.getpid(), "ts": now})
     return True
@@ -891,8 +934,11 @@ async def loop() -> None:
                 continue
             await tick()
         except Exception as e:
-            db.kv_set("repair:last_error", {"ts": time.time(), "phase": state().get("phase", "?"),
+            phase = state().get("phase", "?")
+            db.kv_set("repair:last_error", {"ts": time.time(), "phase": phase,
                                             "detail": str(e)[:400]})
+            logs.error("sprint", "phase_failed", str(e)[:300], phase=phase,
+                       kind=type(e).__name__)
             try:
                 bus.emit(0, None, "repair", "engine_error", {"detail": str(e)[:200]})
             except Exception:

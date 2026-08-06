@@ -35,7 +35,7 @@ import contextvars
 import threading
 import time
 
-from . import db, tuning
+from . import db, logs, tuning
 
 LEDGER_KEY = "usage:ledger"
 MAX_ROWS = 2000                 # ~a week of busy days; the window queries only look back hours
@@ -104,6 +104,10 @@ def note_result(source: str, model: str, message) -> float:
         cache = (int(u.get("cache_read_input_tokens") or 0)
                  + int(u.get("cache_creation_input_tokens") or 0))
     note(source, model, tok=tok, cache=cache, usd=usd)
+    # Logged HERE rather than at each call site, so a new spender cannot forget to: this is
+    # the one function every Agent SDK session's result passes through.
+    logs.debug("spend", "session_metered", f"{source} used {tok} tokens on {model}",
+               source=source, model=model, tok=tok, cache=cache)
     return usd
 
 

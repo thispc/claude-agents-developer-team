@@ -94,6 +94,27 @@ Changing these in code reaches a running crew only when `TEAM_PERSONAS` (current
 | One engine per database | a kv lease; the process that bound the port claims it |
 | Kill switch | the toggle, and abort for the task in flight |
 
+## What it writes down
+
+Two channels, deliberately separate. `bus.emit` is the NARRATIVE — what the crew did, in order, for the person watching, and it is what the Activity tab's *Story* view shows. `logs.log` is the OPERATIONAL record — levelled, categorised and searchable, which is what you want the moment the story stops making sense and you need to know which part broke. The *Logs* view is that, filtered.
+
+A log row is `{ts, level, cat, event, msg, …fields}`. `event` is a stable slug you can count and alert on; `msg` is prose and may change freely. Levels: `debug`, `info`, `warn`, `error` — and filtering by level is a FLOOR, so asking for warnings gives errors too.
+
+| category | what kind of fact this is |
+|---|---|
+| auth | access decisions worth keeping a record of |
+| data | schema, migrations, storage |
+| git | worktrees, branches, merges, reverts |
+| http | failures on the API surface |
+| lifecycle | the process itself — startup, shutdown, restarts, which server owns the engine |
+| quota | rate limits and cooldowns, in the provider's own words |
+| sandbox | isolation — protected paths, and anything that wrote where it should not |
+| session | model sessions — started, finished, died, and how long they ran |
+| sleep | standing down, and the reason it will wake |
+| spend | what a session consumed, and against whose share of the window |
+| sprint | the self-repair crew's phase machine: what it decided to do next |
+| verify | test-suite runs and their verdicts |
+
 ## State (all in kv — no new tables)
 
 | key | holds |
@@ -168,5 +189,7 @@ Changeable on a running instance (Settings, or the `tuning` table); every one ca
 | `conductor/app/repair_routes.py` | the HTTP surface |
 | `conductor/app/usage.py` | the shared token meter every spender reports to |
 | `dashboard/js/repair.js` | the whole Improve screen |
+| `conductor/app/logs.py` | the levelled, categorised log pipeline |
+| `conductor/app/logs_routes.py` | reading and filtering those logs, root only |
 | `tests/test_repair.py` | the offline suite — a full sprint with zero model calls |
 

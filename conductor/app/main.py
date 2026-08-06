@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, bus, config, db, findings, home, launcher, manager, scheduler, upkeep
+from . import auth, bus, config, db, findings, home, launcher, logs, manager, scheduler, upkeep
 from .routes import router, _manager_tasks
 
 
@@ -15,6 +15,7 @@ STARTED_AT = time.time()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init()
+    logs.info("lifecycle", "starting", "conductor starting up")
     auth.init()       # seeds the root superuser from .env on first run
     findings.init()
     loop = asyncio.get_event_loop()
@@ -30,16 +31,20 @@ async def lifespan(app: FastAPI):
     # it shows in the Agents tab forever as something you cannot kill.
     ghosts = launcher.sweep_orphans()
     if ghosts:
-        print(f"[startup] released {ghosts} task(s) orphaned by the previous run")
+        logs.info("lifecycle", "orphans_released",
+                  f"released {ghosts} task(s) orphaned by the previous run", n=ghosts)
     cooled = launcher.load_cooldowns()
     if cooled:
-        print(f"[startup] restored {cooled} model cooldown(s) from the last run")
+        logs.info("quota", "cooldowns_restored",
+                  f"restored {cooled} model cooldown(s) from the last run", n=cooled)
     pruned = launcher.prune_workspaces()
     if pruned:
-        print(f"[startup] pruned {pruned} old worker workspace(s)")
+        logs.info("lifecycle", "workspaces_pruned",
+                  f"pruned {pruned} old worker workspace(s)", n=pruned)
     stale = auth.prune_sessions()
     if stale:
-        print(f"[startup] removed {stale} expired session(s)")
+        logs.info("auth", "sessions_expired",
+                  f"removed {stale} expired session(s)", n=stale)
     # Resume any project that was mid-flight when the conductor last stopped, so a
     # restart (deploy, crash) doesn't strand a running project without its manager.
     if config.DEMO_MODE:
@@ -83,6 +88,7 @@ async def lifespan(app: FastAPI):
     # the "why is another devteam running" bug, and it wasted a sprint.
     # Resumed manager sessions go with them: a manager that outlives the server is the same
     # hazard wearing a different hat, and it holds an SDK subprocess open too.
+    logs.info("lifecycle", "stopping", "shutting down — cancelling background loops")
     dying = background + [t for t in _manager_tasks.values() if not t.done()]
     for t in dying:
         t.cancel()
@@ -125,4 +131,6 @@ from .lifeworld_routes import router as lifeworld_router   # the Lifeworld: its 
 app.include_router(lifeworld_router)
 from .repair_routes import router as repair_router         # self-repair v2: its own router
 app.include_router(repair_router)
+from .logs_routes import router as logs_router             # the log pipeline: its own router
+app.include_router(logs_router)
 app.mount("/", StaticFiles(directory=str(config.DASHBOARD_DIR), html=True), name="dashboard")

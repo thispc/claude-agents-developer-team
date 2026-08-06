@@ -22,7 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import bus, config, selfops, tuning
+from . import bus, config, logs, selfops, tuning
 
 REPAIR_DIR_NAME = ".repair"
 
@@ -135,6 +135,7 @@ def worktree_add(branch: str, name: str) -> Path:
     _try_git("worktree", "remove", "--force", str(wt))
     _try_git("branch", "-D", branch)
     _git("worktree", "add", "-b", branch, str(wt), "main")
+    logs.info("git", "worktree_added", f"isolated build tree for {branch}", branch=branch)
     venv = live_tree() / ".venv"
     link = wt / ".venv"
     if venv.exists() and not link.exists():
@@ -196,6 +197,8 @@ async def build(task: dict, sprint_no: int, settings: dict, wt: Path | None = No
         # worktree, and since the operator was committing at the time, half-finished unverified
         # work rode into main inside an unrelated commit. Fail loudly and name the files. We do
         # NOT revert them — that tree belongs to a person who may have their own work in it.
+        logs.error("sandbox", "escape", "a build session wrote into the live checkout",
+                   files=", ".join(stray[:6]), n=len(stray))
         raise RuntimeError(
             "the session wrote outside its worktree, into the live checkout: "
             + ", ".join(stray[:6]) + (" …" if len(stray) > 6 else "")

@@ -264,6 +264,22 @@ def build() -> str:
         ("Kill switch", "the toggle, and abort for the task in flight"),
     ]))
     add("")
+    add("## What it writes down")
+    add("")
+    add("Two channels, deliberately separate. `bus.emit` is the NARRATIVE — what the crew did, "
+        "in order, for the person watching, and it is what the Activity tab's *Story* view "
+        "shows. `logs.log` is the OPERATIONAL record — levelled, categorised and searchable, "
+        "which is what you want the moment the story stops making sense and you need to know "
+        "which part broke. The *Logs* view is that, filtered.")
+    add("")
+    add("A log row is `{ts, level, cat, event, msg, …fields}`. `event` is a stable slug you "
+        "can count and alert on; `msg` is prose and may change freely. Levels: "
+        + ", ".join(f"`{lv}`" for lv in _mod("app.logs").LEVELS)
+        + " — and filtering by level is a FLOOR, so asking for warnings gives errors too.")
+    add("")
+    add(_table(["category", "what kind of fact this is"],
+               sorted(_mod("app.logs").CATEGORIES.items())))
+    add("")
     add("## State (all in kv — no new tables)")
     add("")
     add(_table(["key", "holds"], _kv_keys()))
@@ -289,6 +305,8 @@ def build() -> str:
         ("`conductor/app/repair_routes.py`", "the HTTP surface"),
         ("`conductor/app/usage.py`", "the shared token meter every spender reports to"),
         ("`dashboard/js/repair.js`", "the whole Improve screen"),
+        ("`conductor/app/logs.py`", "the levelled, categorised log pipeline"),
+        ("`conductor/app/logs_routes.py`", "reading and filtering those logs, root only"),
         ("`tests/test_repair.py`", "the offline suite — a full sprint with zero model calls"),
     ]))
     add("")

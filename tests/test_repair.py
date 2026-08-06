@@ -875,3 +875,136 @@ def test_a_sleeping_engine_keeps_its_reason_current(fresh_db, no_spend):
     st = repair.state()
     assert st["phase"] == "sleeping"
     assert "session window" in st["sleep_reason"], f"stale reason: {st['sleep_reason']}"
+
+
+# --------------------------------------------------------------------------
+# the log pipeline
+# --------------------------------------------------------------------------
+
+def test_a_log_row_is_levelled_categorised_and_machine_readable(fresh_db, monkeypatch):
+    from app import logs
+    monkeypatch.setattr(logs, "ECHO", False)
+    r = logs.warn("quota", "rate_limited", "sonnet is cooling down", model="claude-sonnet-5")
+    assert r["level"] == "warn" and r["cat"] == "quota" and r["event"] == "rate_limited"
+    assert r["model"] == "claude-sonnet-5", "fields ride along, not glued into the sentence"
+    assert logs.rows()[-1]["event"] == "rate_limited"
+
+
+def test_an_unknown_category_is_corrected_rather_than_invented(fresh_db, monkeypatch):
+    """The vocabulary is the axis people filter on. A typo that silently created a new
+    category would split the very history someone is searching."""
+    from app import logs
+    monkeypatch.setattr(logs, "ECHO", False)
+    assert logs.info("repair_builder", "x")["cat"] == "lifecycle"
+    assert set(logs.CATEGORIES) >= {"sprint", "session", "spend", "sleep", "quota",
+                                    "git", "verify", "sandbox", "lifecycle"}
+
+
+def test_level_filtering_is_a_floor_not_an_equality(fresh_db, monkeypatch):
+    """Someone asking for warnings is looking for trouble; hiding errors behind a stricter
+    filter is the opposite of what they meant."""
+    from app import logs
+    monkeypatch.setattr(logs, "ECHO", False)
+    logs.debug("git", "a"); logs.info("git", "b"); logs.warn("git", "c"); logs.error("git", "d")
+    assert [r["event"] for r in logs.recent(level="warn")] == ["c", "d"]
+    assert [r["event"] for r in logs.recent(level="debug")] == ["a", "b", "c", "d"]
+    assert [r["event"] for r in logs.recent(cat="git", event="b")] == ["b"]
+
+
+def test_errors_survive_a_chatty_hour(fresh_db, monkeypatch):
+    """The ring is bounded, so a loop that logs every tick would otherwise push the one row
+    anyone actually wants out of the record."""
+    from app import logs
+    monkeypatch.setattr(logs, "ECHO", False)
+    monkeypatch.setattr(logs, "MAX_ROWS", 10)
+    logs.error("sandbox", "escape", "wrote into the live checkout")
+    for i in range(30):
+        logs.info("sprint", f"noise_{i}")
+    assert not [r for r in logs.rows() if r["event"] == "escape"], "the ring is bounded"
+    assert [r["event"] for r in logs.rows(errors_only=True)] == ["escape"]
+
+
+def test_stats_turn_a_count_into_a_diagnosis(fresh_db, monkeypatch):
+    from app import logs
+    monkeypatch.setattr(logs, "ECHO", False)
+    logs.error("sandbox", "escape"); logs.error("sandbox", "escape"); logs.info("git", "landed")
+    st = logs.stats(3600)
+    assert st["by_level"]["error"] == 2 and st["by_cat"]["sandbox"] == 2
+    assert st["last_error"]["cat"] == "sandbox"
+    assert st["categories"]["sandbox"], "the vocabulary travels with the numbers"
+
+
+def test_the_engine_logs_the_moments_that_matter(fresh_db, no_spend, monkeypatch):
+    """A phase machine whose history exists only as the CURRENT value of one kv key cannot be
+    diagnosed after the fact — by the time anyone looks, it has moved on."""
+    from app import logs
+    monkeypatch.setattr(logs, "ECHO", False)
+    monkeypatch.setattr(config, "AUTH_CONFIGURED", False)
+    _root_user()
+    repair.toggle(True)
+    for _ in range(4):
+        asyncio.run(repair.tick())
+    cats = {r["cat"] for r in logs.rows()}
+    assert "sprint" in cats, "phase transitions must be on the record"
+    assert any(r["event"].startswith("phase_") for r in logs.rows())
+
+
+def test_the_log_endpoints_are_root_gated(client):
+    from conftest import _signup
+    _signup(client, "snoop")
+    client.post("/api/login", json={"username": "snoop", "password": "hunter2pw"})
+    for path in ("/api/logs", "/api/logs/stats", "/api/logs/errors"):
+        assert client.get(path).status_code == 403, f"{path} leaks"
+
+
+def test_root_can_read_and_filter_the_logs(client, fresh_db, monkeypatch):
+    from conftest import login
+    from app import logs
+    monkeypatch.setattr(logs, "ECHO", False)
+    login(client, "root", "testpass")
+    logs.error("sandbox", "escape", "wrote into the live checkout", files="a.py")
+    logs.info("git", "landed", "a fix", sha="abc1234")
+    r = client.get("/api/logs?level=warn").json()
+    assert [x["event"] for x in r["logs"]] == ["escape"]
+    assert "sandbox" in r["categories"] and "error" in r["levels"]
+    assert client.get("/api/logs?q=abc1234").json()["logs"][0]["event"] == "landed"
+    assert client.get("/api/logs/stats").json()["by_cat"]["sandbox"] == 1
+
+
+def test_the_activity_tab_can_show_the_pipeline_not_just_the_story():
+    js = dashboard_js()
+    assert "rpActView" in js and 'data-view="logs"' in js and 'data-view="story"' in js
+    assert "/api/logs?" in js, "the log view must actually read the pipeline"
+    assert "rpFillCats" in js, "the category vocabulary has one home: the server"
+    # a live crew event must not scribble over the log view
+    assert 'rpActView !== "story"' in js
+
+
+def test_every_way_a_task_can_end_leaves_a_log_row(fresh_db, tmp_repo, no_spend, monkeypatch):
+    """The three endings that matter — the suite went red, the session died, something wrote
+    where it should not — each need a row of their own, or "the sprint failed" is all anyone
+    can find out afterwards."""
+    from app import logs
+    monkeypatch.setattr(logs, "ECHO", False)
+    src = Path(__file__).resolve().parents[1].joinpath("conductor/app/repair.py").read_text()
+    for event in ("suite_red", "build_died", "protected_path", "task_abandoned", "build_retry"):
+        assert f'"{event}"' in src, f"nothing logs {event}"
+    # and each is filed under the category someone would actually look in
+    assert 'logs.error("sandbox", "protected_path"' in src
+    assert 'logs.error("session", "build_died"' in src
+
+
+def test_a_repeated_warning_is_counted_not_repeated(fresh_db, monkeypatch):
+    """A never-die loop that finds the same thing wrong every 20 seconds writes 180 identical
+    lines an hour, and the record becomes unreadable exactly when someone needs it."""
+    from app import logs
+    monkeypatch.setattr(logs, "ECHO", False)
+    logs._LAST.clear()
+    for _ in range(5):
+        logs.log("lifecycle", "lease_held_elsewhere", "standing down", level="warn", dedupe_s=600)
+    rows = [r for r in logs.rows() if r["event"] == "lease_held_elsewhere"]
+    assert len(rows) == 1, "the repetition must collapse"
+    assert rows[0]["repeats"] == 5, "but the count has to survive"
+    logs._LAST.clear()                       # a later window is news again
+    logs.log("lifecycle", "lease_held_elsewhere", "standing down", level="warn", dedupe_s=600)
+    assert len([r for r in logs.rows() if r["event"] == "lease_held_elsewhere"]) == 2
