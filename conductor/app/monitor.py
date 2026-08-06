@@ -160,12 +160,48 @@ def _rule_red_streak(rows: list[dict]) -> list[dict]:
         action="pause_repair")]
 
 
+def _rule_dashboard(rows: list[dict]) -> list[dict]:
+    """A broken screen, reported by the screen itself.
+
+    This is the loop the owner asked for and did not get: a JavaScript error sat visible in
+    the UI for an hour without ever becoming a bug, because the code that caught it also hid
+    it. Now it arrives here — and the obvious next move is not "look into it", it is "put it
+    in front of the crew", so the proposal queues it as a P2 bug for the next sprint.
+    """
+    hits = [r for r in rows if r.get("event") in ("dashboard_error", "request_crashed")]
+    if not hits:
+        return []
+    out = []
+    by_msg: dict[str, list[dict]] = {}
+    for r in hits:
+        by_msg.setdefault(str(r.get("msg", ""))[:120], []).append(r)
+    for msg, group in by_msg.items():
+        where = str(group[-1].get("page") or group[-1].get("path") or "")
+        out.append(_notice(
+            "dashboard", "critical" if len(group) > 2 else "warning",
+            f"the app is throwing: {msg[:80]}",
+            f"Reported {len(group)}× by the page itself{f' on {where}' if where else ''}. "
+            "It is a real defect in code that shipped, not a transient.",
+            fp_parts=(msg,), evidence=group, count=len(group),
+            since=min(float(r.get("ts", 0)) for r in group),
+            proposal="Queue it as a bug for the crew's next sprint.",
+            action="file_task",
+            params={"title": f"Fix: {msg[:100]}", "type": "bug", "priority": "p2",
+                    "factor": "correctness",
+                    "brief": f"The dashboard reported this error {len(group)} times"
+                             f"{f' on {where}' if where else ''}: {msg}. "
+                             "Find the cause, fix it, and add the test that would have caught it."}))
+    return out
+
+
 def _rule_errors(rows: list[dict]) -> list[dict]:
     """Anything logged at error level that no other rule has a better story for."""
     claimed = {"sandbox", "session"}
+    claimed_events = {"dashboard_error", "request_crashed"}
     groups: dict[tuple, list[dict]] = {}
     for r in rows:
-        if r.get("level") != "error" or r.get("cat") in claimed:
+        if r.get("level") != "error" or r.get("cat") in claimed \
+                or r.get("event") in claimed_events:
             continue
         groups.setdefault((r.get("cat"), r.get("event")), []).append(r)
     out = []
@@ -228,7 +264,7 @@ def _rule_stuck(_rows: list[dict]) -> list[dict]:
 
 
 RULES: list[Callable[[list[dict]], list[dict]]] = [
-    _rule_sandbox, _rule_zombie, _rule_build_deaths, _rule_red_streak,
+    _rule_sandbox, _rule_zombie, _rule_dashboard, _rule_build_deaths, _rule_red_streak,
     _rule_errors, _rule_quota, _rule_queue, _rule_stuck,
 ]
 
@@ -286,10 +322,34 @@ async def _act_abort_task(_p: dict) -> str:
     return "the task in flight was aborted"
 
 
+async def _act_file_task(p: dict) -> str:
+    """Put a task at the FRONT of the crew's backlog, so the next sprint picks it up.
+
+    The front, not the back: a notice reaches a human because something is actually broken,
+    and burying it under six planned improvements would answer "queue it as a bug" with
+    "eventually". It goes in as a proper typed task, so it looks exactly like planned work
+    on the board — because from the crew's side it is."""
+    from . import repair
+    b = repair.backlog()
+    task = repair._typed({
+        "slug": repair._slug(str(p.get("title", "reported defect"))),
+        "title": str(p.get("title", "reported defect"))[:140],
+        "type": p.get("type"), "priority": p.get("priority"),
+        "factor": str(p.get("factor", "correctness"))[:24],
+        "brief": str(p.get("brief", ""))[:800], "acceptance": [],
+        "branch": "", "status": "pending", "worktree": None, "verification": None,
+        "landed_sha": None, "attempts": 0, "evidence": "", "from_monitor": True})
+    b["tasks"] = [task] + [t for t in b.get("tasks", []) if t.get("slug") != task["slug"]]
+    b["ts"] = b.get("ts") or time.time()
+    repair.save_backlog(b)
+    return f"queued for the next sprint: {task['title'][:60]}"
+
+
 ACTIONS: dict[str, Callable] = {
     "pause_repair": _act_pause_repair,
     "set_knob": _act_set_knob,
     "abort_task": _act_abort_task,
+    "file_task": _act_file_task,
 }
 
 

@@ -47,7 +47,7 @@ function rpEnsureBoard() {
 async function rpRefresh(force) {
   let d;
   try { d = await api("/api/repair/status"); } catch (e) {
-    $("#self").innerHTML = `<div class="self-banner">Could not read self-repair: ${escapeHtml(e.message)}</div>`;
+    $("#self").innerHTML = `<div class="self-banner">Could not read self-repair: ${escapeHtml(reportCaught(e, "rpRefresh"))}</div>`;
     return;
   }
   const el = $("#self");
@@ -199,7 +199,7 @@ async function rpNotices() {
       } catch (e) { toast(e.message); }
       rpNotices();
     }));
-  } catch (e) { el.innerHTML = `<p class="dim">${escapeHtml(e.message)}</p>`; }
+  } catch (e) { el.innerHTML = `<p class="dim">${escapeHtml(reportCaught(e, "repair"))}</p>`; }
 }
 
 function rpCrewPanel(d, m) {
@@ -648,7 +648,7 @@ async function rpChatHistory() {
     const r = await api("/api/repair/chat", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "" }) });
     rpRenderChat(r.chat || []);
-  } catch (e) { log.innerHTML = `<p class="dim">${escapeHtml(e.message)}</p>`; }
+  } catch (e) { log.innerHTML = `<p class="dim">${escapeHtml(reportCaught(e, "rpChatHistory"))}</p>`; }
 }
 
 async function rpHistory() {
@@ -682,7 +682,7 @@ const RP_LANES = [
 async function rpBoard(no) {
   let s;
   try { s = (await api(`/api/repair/sprint/${encodeURIComponent(no)}`)).sprint; }
-  catch (e) { toast(`Could not open sprint ${no}: ${e.message}`); return; }
+  catch (e) { toast(`Could not open sprint ${no}: ${reportCaught(e, "rpBoard")}`); return; }
   const tasks = s.tasks || [];
   const card = (t) => {
     const v = t.verification || {};
@@ -802,6 +802,24 @@ function rpActLine(e, n = 1) {
   return `<div class="ev ${cls}">${src}${body}</div>`;
 }
 
+// A log row is denser than a story beat: level colour, the cat/event slug you filter on, the
+// message, then every extra field the call site attached. Different shape from `.ev` on
+// purpose — one is a narrative, the other is a table you scan.
+const RP_LOGCOL = { debug: "quiet", info: "", warn: "warnline", error: "errline" };
+
+function rpLogLine(r) {
+  // 24-hour, because "12:07:37 PM" does not fit the column and wrapped onto two lines —
+  // and an operational log is one of the few places nobody wants am/pm.
+  const when = r.ts ? new Date(r.ts * 1000).toLocaleTimeString([], {
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }) : "";
+  const skip = { ts: 1, level: 1, cat: 1, event: 1, msg: 1, repeats: 1 };
+  const fields = Object.entries(r).filter(([k, v]) => !skip[k] && v !== null && v !== "")
+    .map(([k, v]) => `<span class="rp-lf">${escapeHtml(k)}=${escapeHtml(trim(String(v), 70))}</span>`).join(" ");
+  return `<div class="rp-actline ${RP_LOGCOL[r.level] || ""}"><span class="rp-actwhen">${escapeHtml(when)}</span>`
+    + `<span class="rp-lcat">${escapeHtml(r.cat)}/${escapeHtml(r.event)}</span>`
+    + `<span>${escapeHtml(trim(String(r.msg || ""), 200))}${r.repeats > 1 ? ` <span class="dim">×${r.repeats}</span>` : ""} ${fields}</span></div>`;
+}
+
 /** Consecutive identical beats collapse to one line with a count.
  *
  * A sleeping engine used to emit the same sentence every twenty seconds; it no longer does,
@@ -839,7 +857,9 @@ async function rpActivity() {
         || `<p class="dim">nothing yet — the crew has not run</p>`;
     }
     el.scrollTop = el.scrollHeight;
-  } catch (e) { el.innerHTML = `<p class="dim">${escapeHtml(e.message)}</p>`; }
+  } catch (e) {
+    el.innerHTML = `<p class="dim">${escapeHtml(reportCaught(e, "rpActivity"))}</p>`;
+  }
 }
 
 /** The category list comes from the server, so the vocabulary has exactly one home. */

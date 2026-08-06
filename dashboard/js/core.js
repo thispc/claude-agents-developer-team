@@ -298,6 +298,21 @@ function reportClientError(message, stack, url) {
                            url: location.hash || location.pathname }),
   }).catch(() => { /* if reporting fails, stay quiet: never a loop */ });
 }
+/** Report an error the UI CAUGHT, and hand back the message to show.
+ *
+ * window.onerror only sees what nobody caught. Every `catch (e) { show(e.message) }` in this
+ * dashboard was therefore invisible to the error pipeline — which is exactly how a
+ * "rpLogLine is not defined" sat on screen for an hour without ever becoming a log row, a
+ * notice, or a bug. Catching an error to render it nicely must not also hide it.
+ */
+function reportCaught(e, where) {
+  try {
+    reportClientError(`${(e && e.message) || e} [caught in ${where}]`,
+                      (e && e.stack) || "", location.hash || location.pathname);
+  } catch { /* reporting must never be the thing that breaks */ }
+  return (e && e.message) || String(e);
+}
+
 window.addEventListener("error", (e) =>
   reportClientError(e.message, e.error && e.error.stack, e.filename));
 window.addEventListener("unhandledrejection", (e) =>

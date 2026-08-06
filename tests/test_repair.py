@@ -1067,7 +1067,7 @@ def test_approving_a_proposal_actually_does_the_thing(fresh_db, no_spend, monkey
     out = asyncio.run(monitor.approve(n["fp"]))
     assert out["ok"] and repair.enabled() is False, "approval must actually pause it"
     assert monitor.decisions()[n["fp"]]["state"] == "approved"
-    assert set(monitor.ACTIONS) == {"pause_repair", "set_knob", "abort_task"}, \
+    assert set(monitor.ACTIONS) == {"pause_repair", "set_knob", "abort_task", "file_task"}, \
         "a new action is a deliberate widening of what Approve can do"
 
 
@@ -1265,3 +1265,73 @@ def test_the_story_feed_does_not_render_its_own_indentation():
     body = js.split("function rpActLine(", 1)[1].split("\n}", 1)[0]
     ret = body.split("return `", 1)[1].split("`;", 1)[0]
     assert "\n" not in ret, f"the .ev template spans lines: {ret[:80]}"
+
+
+def test_every_function_the_screen_calls_actually_exists():
+    """Twice now a block rewrite deleted a helper that lived between two others, and the only
+    symptom was "rpLogLine is not defined" in the browser — invisible to every test we had,
+    because a missing function is not a syntax error. This is the cheap static check that
+    would have caught both."""
+    import re
+    js = dashboard_js()
+    defined = set(re.findall(r"(?:async\s+)?function\s+([A-Za-z_$][\w$]*)", js))
+    defined |= set(re.findall(r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function|\()", js))
+    called = set(re.findall(r"\b(rp[A-Z]\w*)\s*\(", js))
+    missing = sorted(c for c in called if c not in defined)
+    assert not missing, f"the screen calls functions that do not exist: {missing}"
+
+
+def test_an_error_the_ui_catches_is_still_reported(fresh_db):
+    """window.onerror only sees what nobody caught, so every `catch (e) { show(e.message) }`
+    was invisible to the pipeline. That is exactly how "rpLogLine is not defined" sat on
+    screen without ever becoming a log row, a notice, or a bug."""
+    js = dashboard_js()
+    assert "function reportCaught" in js
+    assert "reportClientError(" in js.split("function reportCaught", 1)[1][:400]
+    # and the screens that render an error to the user go through it
+    rp = js.split("// repair.js", 1)[1]
+    for shown in rp.split("catch (e)")[1:]:
+        head = shown[:160]
+        if "innerHTML" in head and "escapeHtml(" in head:
+            assert "reportCaught" in head, f"a caught error is being hidden: {head[:90]}"
+
+
+def test_a_reported_dashboard_error_becomes_a_queued_bug(fresh_db, no_spend, monkeypatch):
+    """The loop the owner asked for: a broken screen reports itself, the monitor turns it
+    into a notice, and one click puts it in front of the crew as a typed bug."""
+    from app import logs, monitor
+    monkeypatch.setattr(logs, "ECHO", False)
+    logs.error("http", "dashboard_error", "rpLogLine is not defined", page="#/improve")
+    n = next(x for x in monitor.scan() if x["kind"] == "dashboard")
+    assert n["action"] == "file_task" and "next sprint" in n["proposal"]
+    out = asyncio.run(monitor.approve(n["fp"]))
+    assert out["ok"]
+    task = repair.backlog()["tasks"][0]
+    assert task["type"] == "bug" and task["priority"] == "p2"
+    assert "rpLogLine" in task["title"] and task["from_monitor"] is True
+    assert "add the test that would have caught it" in task["brief"]
+
+
+def test_a_queued_bug_goes_to_the_front_of_the_backlog(fresh_db, no_spend, monkeypatch):
+    """Burying a live defect under six planned improvements answers "queue it as a bug"
+    with "eventually"."""
+    from app import logs, monitor
+    monkeypatch.setattr(logs, "ECHO", False)
+    repair.save_backlog({"ts": time.time(), "digest": "", "tasks": [
+        {"slug": "planned", "title": "A planned improvement", "type": "chore", "priority": "p3"}]})
+    logs.error("http", "request_crashed", "GET /api/x: boom", path="/api/x")
+    n = next(x for x in monitor.scan() if x["kind"] == "dashboard")
+    asyncio.run(monitor.approve(n["fp"]))
+    titles = [t["title"] for t in repair.backlog()["tasks"]]
+    assert titles[0].startswith("Fix:") and "A planned improvement" in titles
+
+
+def test_filing_the_same_defect_twice_does_not_duplicate_it(fresh_db, no_spend, monkeypatch):
+    from app import logs, monitor
+    monkeypatch.setattr(logs, "ECHO", False)
+    logs.error("http", "dashboard_error", "x is not a function", page="#/improve")
+    n = next(x for x in monitor.scan() if x["kind"] == "dashboard")
+    asyncio.run(monitor.approve(n["fp"]))
+    asyncio.run(monitor._act_file_task(n["params"]))
+    slugs = [t["slug"] for t in repair.backlog()["tasks"]]
+    assert len(slugs) == len(set(slugs)), f"duplicated: {slugs}"
