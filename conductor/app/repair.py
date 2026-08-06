@@ -30,10 +30,13 @@ from . import repair_builder as rb
 
 TICK_SECONDS = 20
 
-# Bumped whenever the built-in personas change. ensure_team() re-seats the crew when the kv
-# world was built under an older stamp — otherwise a persona fix only reaches brand-new
-# installs, and the running crew keeps the psyches it was born with.
-TEAM_PERSONAS = 2
+# Bumped whenever the built-in personas change. It drives BOTH refreshes a running crew needs:
+# factors() re-syncs the kv factor list with DEFAULT_FACTORS, and ensure_team() re-seats the
+# world. Without it a persona fix only ever reaches a brand-new install, because the kv copies
+# of both are what the live crew actually runs on.
+#   2 — real trait/drive vocabulary (the Big Five names this engine never had)
+#   3 — the same, actually delivered: bumping is what makes an existing crew take it
+TEAM_PERSONAS = 3
 
 # Serializes read-modify-write cycles on the repair:state and repair:ledger kv keys.
 # tick() runs on the event loop, but toggle()/set_factors() are plain `def` FastAPI
@@ -112,10 +115,30 @@ def set_state(**patch) -> dict:
 
 
 def factors() -> list[dict]:
+    """The factor list, kv-persisted — and re-synced with the built-in personas when those
+    change.
+
+    Two different things live in one list. Which factors are ON, and any factor the owner
+    ADDED, are the owner's — nothing here may overwrite them. But what a built-in specialist
+    IS (its dials, its drive, what it hunts for) belongs to the code, and the kv copy was
+    winning: the running crew kept the psyches it was seeded with on day one, so fixing the
+    personas only ever reached a fresh install. The stamp makes the refresh happen exactly
+    once per persona revision.
+    """
     f = db.kv_get("repair:factors")
     if not f:
         f = [dict(x) for x in DEFAULT_FACTORS]
         db.kv_set("repair:factors", f)
+        db.kv_set("repair:factors_v", TEAM_PERSONAS)
+        return f
+    if int(db.kv_get("repair:factors_v") or 0) != TEAM_PERSONAS:
+        builtin = {d["id"]: d for d in DEFAULT_FACTORS}
+        for row in f:
+            d = builtin.get(row.get("id"))
+            if d:                                  # keep `enabled`; refresh what the code owns
+                row.update(brief=d["brief"], dials=dict(d["dials"]), drives=dict(d["drives"]))
+        db.kv_set("repair:factors", f)
+        db.kv_set("repair:factors_v", TEAM_PERSONAS)
     return f
 
 

@@ -664,3 +664,41 @@ def test_a_sprints_provider_calls_are_billed_to_the_crew(fresh_db, no_spend, mon
     monkeypatch.setattr(repair, "_advance", fake_advance)
     asyncio.run(repair.advance({"phase": "idle"}))
     assert seen["source"] == "repair"
+
+
+def test_the_activity_feed_collapses_repeats_and_names_the_empty_states():
+    js = dashboard_js()
+    assert "function rpCollapse" in js, "repeated beats must collapse, not scroll the news away"
+    assert "rpActText" in js and "rpActLine(g.e, g.n)" in js
+    # an enabled engine mid-scout must not tell the reader to flip a switch that is already on
+    assert "no sprint yet — flip the switch" in js and "scouting the repo — nothing planned yet" in js
+    assert "This sprint has not taken on any work yet." in js
+
+
+def test_a_persona_revision_reaches_a_crew_that_already_exists(fresh_db):
+    """The factor list is kv-persisted, so DEFAULT_FACTORS only ever seeded a fresh install:
+    the live crew kept its day-one psyches through every fix. What the OWNER chose (which
+    factors are on, which they added) must survive the refresh; what the CODE defines must not."""
+    stale = [{"id": "correctness", "name": "Correctness", "enabled": False, "brief": "old",
+              "dials": {"openness": 40}},                       # a trait this engine never had
+             {"id": "mine", "name": "Mine", "enabled": True, "brief": "my own", "dials": {}}]
+    db.kv_set("repair:factors", stale)
+    db.kv_set("repair:factors_v", 0)
+    out = {f["id"]: f for f in repair.factors()}
+    assert out["correctness"]["dials"] == dict(DEFAULTS := repair.DEFAULT_FACTORS[0]["dials"])
+    assert out["correctness"]["drives"] == repair.DEFAULT_FACTORS[0]["drives"]
+    assert out["correctness"]["enabled"] is False, "the owner's own toggle must survive"
+    assert out["mine"]["brief"] == "my own", "a factor the owner added is theirs"
+    assert db.kv_get("repair:factors_v") == repair.TEAM_PERSONAS
+    assert DEFAULTS  # silence the walrus lint
+
+
+def test_a_rulebook_cannot_squeeze_the_round_out_of_the_hosts_reply(fresh_db):
+    """Every rulebook LINE was handed to the host as a rule to echo. A prose rulebook then
+    filled the reply with rule echoes, the JSON truncated, the parse failed — and the round
+    silently fell back to canned lines with the reason recorded nowhere."""
+    from app.lifeworld import world as wmod
+    assert wmod.MAX_RULES <= 12
+    src = Path(wmod.__file__).read_text()
+    assert "60 * len(rules)" in src, "the token budget must account for the rules it asked for"
+    assert "self.host_error =" in src, "a mediated round that degrades must say why"

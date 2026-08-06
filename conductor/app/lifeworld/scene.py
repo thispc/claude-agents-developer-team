@@ -248,7 +248,8 @@ class Scene:
                                               devils_advocate=devils_advocate,
                                               want_unanimous=proto["on_unanimity"] == "devils_advocate")
             if plan is None:                          # the model was expected but unreachable — say so, don't fake it
-                self._record("manage", None, f"host could not reach the model for thread {thread['id']} — free replies this round")
+                why = getattr(self.world, "host_error", "") or "no reply"
+                self._record("manage", None, f"host could not mediate thread {thread['id']} ({why}) — free replies this round")
         await self._host_manage(thread, ring, plan)   # survey + enforce (from the one plan, or free rulebook)
         await self._converse(thread, ring, plan)      # mediate one round; the members talk (or free round)
         return plan

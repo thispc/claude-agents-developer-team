@@ -27,6 +27,11 @@ MODEL_WHITELIST = frozenset({
 })
 
 
+# How many rulebook lines the host is asked to enforce in one reply. Past this the reply is
+# mostly rule echoes, and the round it is supposed to mediate gets squeezed out of the budget.
+MAX_RULES = 8
+
+
 def _persona(h) -> dict:
     """A compact persona so the manager can voice each agent IN CHARACTER — its most defining
     traits (furthest from neutral) and what it wants. Keeps the prompt small but makes the
@@ -58,6 +63,7 @@ class World:
         self._complete = complete
         self._settings = settings or {}
         self._model_name = model_name
+        self.host_error = ""                  # why the last mediated call produced nothing
         self._utter_tokens = utter_tokens
         self.tau = 0                          # world clock: total scans across everyone
 
@@ -162,7 +168,11 @@ class World:
         import json
         model = cfg.get("model") if cfg.get("model") in MODEL_WHITELIST else self._model_name
         roster = [{"id": h.id, "name": h.name, **_persona(h)} for h in ring]   # give the host each agent's real substance
-        rules = [ln.strip() for ln in (rulebook or "").splitlines() if ln.strip()]
+        # A rulebook is prose written for the model, and splitting it into lines can yield
+        # dozens of "rules" — each of which the host is then asked to echo a line for. That is
+        # what silently blew the reply past its token budget: the JSON truncated, the parse
+        # failed, and the round fell back to canned lines with no explanation anywhere.
+        rules = [ln.strip() for ln in (rulebook or "").splitlines() if ln.strip()][:MAX_RULES]
         topic = (rulebook or "the matter at hand").strip()
         # The unanimity clause is only sent when the thread's protocol actually consumes it — so a
         # classic thread's prompt stays exactly what it always was (prompt-level backward compat).
@@ -185,7 +195,9 @@ class World:
         prompt = (f"AGENTS: {json.dumps(roster)}\nTOPIC: {json.dumps(topic)}\nRULES: {json.dumps(rules)}\n"
                   f"TRANSCRIPT SO FAR:\n{transcript[:1000] or '(nothing yet)'}\nReturn only the JSON object.")
         try:
-            raw = await self._complete("anthropic", model, sys, prompt, self._settings, max_tokens=110 * max(1, len(ring)) + 140)
+            # Budget for what we actually asked for: a line per agent AND a line per rule.
+            budget = 110 * max(1, len(ring)) + 60 * len(rules) + 160
+            raw = await self._complete("anthropic", model, sys, prompt, self._settings, max_tokens=budget)
             obj = json.loads(raw[raw.index("{"):raw.rindex("}") + 1])
             enforce = [str(x)[:140] for x in (obj.get("enforce") or []) if str(x).strip()] or None
             ids = {h.id for h in ring}
@@ -202,8 +214,12 @@ class World:
             # any non-empty string is True, which would spend a spurious devil's-advocate round.
             u = obj.get("unanimous") if want_unanimous else None
             unanimous = u is True or (isinstance(u, str) and u.strip().lower() == "true")
+            self.host_error = ""
             return {"enforce": enforce, "round": rnd or None, "unanimous": unanimous}
-        except Exception:
+        except Exception as e:
+            # Keep returning None (the caller has a free fallback), but say WHY. A mediated
+            # round that quietly degrades to canned lines looks like the feature not working.
+            self.host_error = f"{type(e).__name__}: {str(e)[:160]}"
             return None
 
     async def host_memo(self, cfg: dict, ring, rulebook: str, transcript: str) -> dict | None:

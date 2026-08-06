@@ -123,7 +123,11 @@ function rpHtml(d) {
       : (t.verification && t.verification.headline ? ` <span class="dim">${escapeHtml(trim(t.verification.headline, 60))}</span>` : "");
     return `<div class="rp-task s-${escapeHtml(t.status)}"><span class="rp-task-ico">${icon}</span>
       <span class="rp-task-t">[${escapeHtml(t.factor || "?")}] ${escapeHtml(t.title)}</span>${extra}</div>`;
-  }).join("") || `<p class="dim">no sprint yet — flip the switch</p>`;
+  }).join("") || (d.enabled
+    ? `<p class="dim">${escapeHtml({ scout: "scouting the repo — nothing planned yet",
+        plan: "the crew is deciding what to work on", idle: "waiting for quota" }[(d.state || {}).phase]
+        || "no tasks in this sprint yet")}</p>`
+    : `<p class="dim">no sprint yet — flip the switch</p>`);
   const queue = (d.queue || []).map((q) =>
     `<div class="rp-task s-queued"><span class="rp-task-ico">⏸</span>
       <span class="rp-task-t">${escapeHtml(q.title)}${q.note ? ` <span class="dim">(${escapeHtml(q.note)})</span>` : ""}</span>
@@ -396,11 +400,14 @@ async function rpBoard(no) {
       ${t.branch && !t.landed_sha ? `<div class="rp-bcard-m dim"><code>${escapeHtml(t.branch)}</code></div>` : ""}
     </div>`;
   };
-  const lanes = RP_LANES.map((ln) => {
-    const mine = tasks.filter(ln.match);
-    return `<div class="rp-lane"><div class="rp-lane-h">${ln.label} <span class="dim">${mine.length}</span></div>
-      ${mine.map(card).join("") || `<p class="dim">none</p>`}</div>`;
-  }).join("");
+  const lanes = tasks.length
+    ? RP_LANES.map((ln) => {
+        const mine = tasks.filter(ln.match);
+        if (!mine.length) return "";
+        return `<div class="rp-lane"><div class="rp-lane-h">${ln.label} <span class="dim">${mine.length}</span></div>
+          ${mine.map(card).join("")}</div>`;
+      }).join("")
+    : `<p class="dim">This sprint has not taken on any work yet.</p>`;
   const memo = s.memo || {};
   const positions = (memo.positions || []).map((p) =>
     `<div class="rp-msg them"><b>${escapeHtml(p.name || memo.names?.[String(p.who)] || "crew")}</b>
@@ -445,22 +452,41 @@ const RP_ACT = {
   engine_error: (p) => `engine error — ${p.detail}`,
 };
 
-function rpActLine(e) {
+function rpActText(e) {
   let p = e.payload;
   try { p = typeof p === "string" ? JSON.parse(p) : (p || {}); } catch { p = { detail: String(p) }; }
   const fn = RP_ACT[e.kind];
-  const quiet = !fn;
-  const text = fn ? fn(p) : `${e.kind.replace(/^verify_/, "verify · ")}: ${typeof p === "object" ? (p.detail || p.text || JSON.stringify(p)) : p}`;
+  return fn ? String(fn(p))
+    : `${e.kind.replace(/^verify_/, "verify · ")}: ${typeof p === "object" ? (p.detail || p.text || JSON.stringify(p)) : p}`;
+}
+
+function rpActLine(e, n = 1) {
+  const quiet = !RP_ACT[e.kind];
   const when = e.ts ? new Date(e.ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
   return `<div class="rp-actline${quiet ? " quiet" : ""}"><span class="rp-actwhen">${escapeHtml(when)}</span>
-    <span>${escapeHtml(trim(String(text), 220))}</span></div>`;
+    <span>${escapeHtml(trim(rpActText(e), 220))}${n > 1 ? ` <span class="dim">×${n}</span>` : ""}</span></div>`;
+}
+
+/** Consecutive identical beats collapse to one line with a count.
+ *
+ * A sleeping engine used to emit the same sentence every twenty seconds; the engine no
+ * longer does that, but months of it are already in the log and any future repeat would
+ * push everything interesting off the screen the same way. */
+function rpCollapse(events) {
+  const out = [];
+  for (const e of events) {
+    const last = out[out.length - 1];
+    if (last && last.e.kind === e.kind && last.text === rpActText(e)) { last.n++; last.e = e; continue; }
+    out.push({ e, text: rpActText(e), n: 1 });
+  }
+  return out;
 }
 
 async function rpActivity() {
   const el = $("#repairActivity"); if (!el) return;
   try {
-    const r = await api("/api/repair/activity?limit=120");
-    const rows = (r.events || []).map(rpActLine).join("");
+    const r = await api("/api/repair/activity?limit=200");
+    const rows = rpCollapse(r.events || []).map((g) => rpActLine(g.e, g.n)).join("");
     el.innerHTML = rows || `<p class="dim">nothing yet — the crew has not run</p>`;
     el.scrollTop = el.scrollHeight;
   } catch { el.innerHTML = `<p class="dim">—</p>`; }
@@ -472,7 +498,18 @@ function rpOnEvent(e) {
   const el = $("#repairActivity");
   if (!el || $("#selfPage").hidden) return;
   if (el.querySelector("p.dim")) el.innerHTML = "";
+  const last = el.lastElementChild;
+  if (last && last.dataset.k === e.kind && last.dataset.t === rpActText(e)) {
+    const n = Number(last.dataset.n || 1) + 1;
+    last.outerHTML = rpActLine(e, n);
+    const now = el.lastElementChild;
+    now.dataset.k = e.kind; now.dataset.t = rpActText(e); now.dataset.n = n;
+    el.scrollTop = el.scrollHeight;
+    return;
+  }
   el.insertAdjacentHTML("beforeend", rpActLine(e));
+  const added = el.lastElementChild;
+  added.dataset.k = e.kind; added.dataset.t = rpActText(e); added.dataset.n = 1;
   while (el.children.length > 200) el.removeChild(el.firstElementChild);
   el.scrollTop = el.scrollHeight;
 }
