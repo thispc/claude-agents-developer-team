@@ -312,6 +312,13 @@ KNOBS: dict[str, tuple[Any, type, str, str]] = {
         "it' and 'nobody used it in the last second': 15 minutes is short enough "
         "that the crew still gets nights and lunch breaks, long enough that it "
         "does not elbow into a session the owner is in the middle of."),
+    "repair_max_attempts": (
+        3, int, "REPAIR_MAX_ATTEMPTS",
+        "Total build sessions one task may ever consume, counted across restarts. A "
+        "restart mid-build resumes the sprint — correct — but it starts a FRESH session "
+        "for the same task, so a task worked on across five restarts quietly cost five "
+        "sessions (sprint 14 did exactly that). This is the ceiling that turns an "
+        "interrupted task into a failed one instead of an open tab on the quota."),
     "repair_builder_model": (
         "claude-sonnet-5", str, "REPAIR_BUILDER_MODEL",
         "The model that scouts and builds. Quality over price here: cheap-model "

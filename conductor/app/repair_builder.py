@@ -191,14 +191,21 @@ async def build(task: dict, sprint_no: int, settings: dict, wt: Path | None = No
                             ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
                             int(tuning.get("repair_max_turns")),
                             str(tuning.get("repair_builder_model")), _cred_env(settings))
-    stray = _escaped(before)
+    stray, theirs = _escaped(before, wt)
+    if theirs:
+        # Not the session's doing, and not ours to undo. Worth saying out loud, because it is
+        # also why a landing may queue instead of land a minute from now.
+        logs.info("sandbox", "live_tree_moved",
+                  "the live checkout changed while the session ran — not attributable to it",
+                  files=", ".join(theirs[:6]), n=len(theirs))
     if stray:
         # Sprint 11 did exactly this: the session edited the OPERATOR'S checkout instead of its
         # worktree, and since the operator was committing at the time, half-finished unverified
         # work rode into main inside an unrelated commit. Fail loudly and name the files. We do
         # NOT revert them — that tree belongs to a person who may have their own work in it.
-        logs.error("sandbox", "escape", "a build session wrote into the live checkout",
-                   files=", ".join(stray[:6]), n=len(stray))
+        logs.error("sandbox", "escape",
+                   "a build session wrote into the live checkout the same files it changed "
+                   "in its worktree", files=", ".join(stray[:6]), n=len(stray))
         raise RuntimeError(
             "the session wrote outside its worktree, into the live checkout: "
             + ", ".join(stray[:6]) + (" …" if len(stray) > 6 else "")
@@ -229,12 +236,28 @@ def _live_fingerprint() -> dict[str, str]:
     return out
 
 
-def _escaped(before: dict[str, str]) -> list[str]:
-    """Paths in the live tree the session changed. `.repair/` is ours and is gitignored, so
-    anything listed here is genuinely outside the sandbox."""
+def _escaped(before: dict[str, str], wt: Path | None = None) -> tuple[list[str], list[str]]:
+    """(wrote_outside, changed_by_someone_else) — the live-tree paths that moved during the
+    session, split by whether the SESSION is plausibly responsible.
+
+    The first version of this blamed the session for every change, which is wrong the moment
+    a human is editing the same checkout: sprints 13 and 17 were failed for files the
+    operator was working on at that instant, and the crew's finished work was thrown away
+    for it. The evidence that separates them is cheap — a session that wrote a file outside
+    its worktree almost always wrote it INSIDE too, because the file is what it was working
+    on. Overlap with the worktree's own diff is therefore attributable; anything else is
+    somebody else's edit and is reported, not punished.
+    """
     after = _live_fingerprint()
-    return sorted(p for p, code in after.items()
-                  if not p.startswith(".repair/") and before.get(p) != code)
+    moved = sorted(p for p, code in after.items()
+                   if not p.startswith(".repair/") and before.get(p) != code)
+    mine: set[str] = set()
+    if wt:
+        r = _git("diff", "--name-only", "main...HEAD", cwd=wt, check=False)
+        mine = {ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()}
+        r2 = _git("status", "--porcelain", "-uall", cwd=wt, check=False)
+        mine |= {ln[3:].strip() for ln in (r2.stdout or "").splitlines() if len(ln) > 3}
+    return [p for p in moved if p in mine], [p for p in moved if p not in mine]
 
 
 def protected_violation(wt: str | Path) -> str | None:

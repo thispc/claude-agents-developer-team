@@ -195,13 +195,18 @@ function selectEdge(inst, wireEl) {
   log("select", "edge " + tid, { a, b });
 }
 
-// double-click a node → select its whole graph + Manage/Delete; else open its detail
-function graphSelect(inst, id) {
+// The graph's actions, shown when the selection IS a graph.
+//
+// This used to be bound to double-click, which meant double-clicking an agent could never
+// open that agent — the graph swallowed the gesture. Double-click is now unambiguously
+// "show me this one", and a graph reveals its actions when you have actually selected it:
+// marquee across its nodes, and once the selection covers a whole thread the Run/Chat/Rules
+// panel appears. Selecting a thing to act on it is the more ordinary idea anyway; the old
+// binding was a shortcut that had quietly taken the obvious gesture hostage.
+function graphActionsFor(inst, threadId) {
   const threads = (inst.ctx.room.threads) || [];
-  const t = threads.find((th) => (th.edges || []).some((e) => String(e[0]) === id || String(e[1]) === id));
+  const t = threads.find((th) => th.id === threadId);
   if (!t) return false;
-  clearGraphUI(inst); clearSel(inst);
-  [...new Set(t.edges.flatMap((e) => [String(e[0]), String(e[1])]))].forEach((nid) => addSel(inst, nid));
   try {
     W.lwShowActions && W.lwShowActions("graph", [
       { label: "▶ Run", onClick: () => W.sdRunGraph && W.sdRunGraph(t.id) },
@@ -215,6 +220,47 @@ function graphSelect(inst, id) {
     ]);
   } catch (e) { /* */ }
   return true;
+}
+
+/** Which thread the current selection completely covers, if any.
+ *
+ * Deliberately "covers the whole graph", not "touches one of its nodes": a partial selection
+ * is usually somebody halfway through a marquee, and popping a Delete-graph button up under
+ * a moving cursor is how accidents happen. */
+function selectedThread(inst) {
+  const threads = (inst.ctx.room.threads) || [];
+  if (inst.sel.size < 2) return null;
+  for (const t of threads) {
+    const members = new Set(t.edges.flatMap((e) => [String(e[0]), String(e[1])]));
+    if (members.size !== inst.sel.size) continue;
+    if ([...members].every((m) => inst.sel.has(m))) return t;
+  }
+  return null;
+}
+
+/** Called whenever the selection settles.
+ *
+ * With a whole graph selected, its actions. With ONE of its nodes selected, a single button
+ * that selects the rest — because "marquee across it" is not a thing anyone guesses, and a
+ * capability nobody can find is one that does not exist. Clicking a node is how you find out
+ * it is part of something. */
+function offerGraphActions(inst) {
+  const t = selectedThread(inst);
+  if (t) { graphActionsFor(inst, t.id); return; }
+  clearGraphUI(inst);
+  if (inst.sel.size !== 1) return;
+  const id = [...inst.sel][0];
+  const threads = (inst.ctx.room.threads) || [];
+  const owner = threads.find((th) => (th.edges || []).some((e) => String(e[0]) === id || String(e[1]) === id));
+  if (!owner) return;
+  const members = [...new Set(owner.edges.flatMap((e) => [String(e[0]), String(e[1])]))];
+  try {
+    W.lwShowActions && W.lwShowActions("graph", [
+      { label: `◌ Select its graph (${members.length})`, onClick: () => {
+        clearSel(inst); members.forEach((m) => addSel(inst, m)); offerGraphActions(inst);
+      } },
+    ]);
+  } catch (e) { /* the canvas works without a panel */ }
 }
 
 // ---- events / gestures ----------------------------------------------------
@@ -296,11 +342,12 @@ function pressToken(inst, e, tokEl) {
     moved: false, world0: inst.world.toWorld(e.clientX, e.clientY) };
 }
 function fireDoubleClick(inst, id, kind) {
-  if (!graphSelect(inst, id)) {
-    const t = inst.tokens.get(id); if (!t) return;
-    if (kind === "agent") W.openPersonDrawer && W.openPersonDrawer(t.data.id, t.data.name);
-    else W.lwOpenArtifactPeek && W.lwOpenArtifactPeek(t.data.id);
-  }
+  // Always the thing you double-clicked. No exceptions and no "unless it happens to be in a
+  // graph" — a gesture that means two different things depending on invisible state is a
+  // gesture people stop trusting.
+  const t = inst.tokens.get(id); if (!t) return;
+  if (kind === "agent") W.openPersonDrawer && W.openPersonDrawer(t.data.id, t.data.name);
+  else W.lwOpenArtifactPeek && W.lwOpenArtifactPeek(t.data.id);
 }
 
 function beginMarquee(inst, e) {
@@ -387,7 +434,10 @@ async function pointerUp(inst, e) {
   if (g.type === "arm") {
     if (!g.moved) {                                           // released without moving → a click
       if (g.maybeDouble) { inst._lastClick = null; fireDoubleClick(inst, g.id, g.kind); }
-      else inst._lastClick = { id: g.id, t: nowMs() };        // remember for a possible next-click double
+      else {
+        inst._lastClick = { id: g.id, t: nowMs() };           // remember for a possible next-click double
+        offerGraphActions(inst);                             // a click is also a selection
+      }
       return;
     }
     inst._lastClick = null;                                   // a drag is not part of a double-click
@@ -405,6 +455,7 @@ function endMarquee(inst, g) {
     if (!g.add) clearSel(inst);
     inst.tokens.forEach((t, id) => { if (t.x >= bx && t.x <= bx + bw && t.y >= by && t.y <= by + bh) addSel(inst, id); });
   }
+  offerGraphActions(inst);
   log("marquee", "end", { w: Math.round(bw), h: Math.round(bh), sel: inst.sel.size });
 }
 

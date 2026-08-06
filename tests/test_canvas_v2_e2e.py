@@ -177,15 +177,48 @@ def test_v2_handle_drag_connects(server, page):
     assert page.evaluate("() => ((lwRoom && lwRoom.threads) || []).length") >= 1, "handle-drag did not connect"
 
 
-def test_v2_double_click_graph_and_wire_and_collapse(server, page):
+def _select_graph(page, screen_pt):
+    """Select the whole graph a node belongs to, the way a person now does it.
+
+    Double-click used to do this, which meant double-clicking an agent could never open that
+    agent. Now: click the node, and the action bar offers to select the rest — the button
+    exists because "marquee across it" is not a gesture anyone guesses.
+    """
+    page.mouse.click(screen_pt["x"], screen_pt["y"])
+    page.wait_for_timeout(250)
+    page.evaluate("""() => {
+      const b = [...document.querySelectorAll('.lw-act-btn')]
+        .find(x => x.textContent.includes('Select its graph'));
+      if (!b) throw new Error('no "Select its graph" offered for a node in a graph');
+      b.click();
+    }""")
+    page.wait_for_timeout(250)
+
+
+def test_v2_double_click_opens_the_agent_not_its_graph(server, page):
+    """Root's call: double-click is unambiguously "show me this one". A gesture that means
+    two different things depending on invisible state is one people stop trusting."""
+    wid, rid = _mk(server["client"])
+    a, b = _two_connected(server["client"], wid, rid)
+    server["client"].post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b})
+    _open(page, wid, rid)
+    pa = _tpos(page, a)
+    sa = _scr(page, pa["x"], pa["y"])
+    page.mouse.dblclick(sa["x"], sa["y"]); page.wait_for_timeout(500)
+    assert page.evaluate("() => { const d = document.querySelector('#lwDetail'); return !!d && !d.hidden; }"), \
+        "double-clicking an agent did not open the agent"
+    assert _sel(page) != 2, "it selected the graph instead of opening the agent"
+
+
+def test_v2_select_graph_then_wire_and_collapse(server, page):
     wid, rid = _mk(server["client"])
     a, b = _two_connected(server["client"], wid, rid)
     server["client"].post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b})
     _open(page, wid, rid)
     pa = _tpos(page, a); pb = _tpos(page, b)
     sa = _scr(page, pa["x"], pa["y"]); sb = _scr(page, pb["x"], pb["y"])
-    page.mouse.dblclick(sa["x"], sa["y"]); page.wait_for_timeout(300)
-    assert _sel(page) == 2, "double-click did not select the whole graph"
+    _select_graph(page, sa)
+    assert _sel(page) == 2, "the graph was not selected"
     mid = _scr(page, (pa["x"] + pb["x"]) / 2, (pa["y"] + pb["y"]) / 2)
     page.mouse.click(mid["x"], mid["y"]); page.wait_for_timeout(250)
     assert page.evaluate("() => !!window.LWCanvas2._inst.selEdge"), "single-click on the wire did not select the edge"
@@ -206,8 +239,8 @@ def test_v2_grouped_selection_click_resolves_via_real_hit_test(server, page):
     _open(page, wid, rid)
     pa = _tpos(page, a); pb = _tpos(page, b)
     sa = _scr(page, pa["x"], pa["y"]); sb = _scr(page, pb["x"], pb["y"])
-    page.mouse.dblclick(sa["x"], sa["y"]); page.wait_for_timeout(300)   # double-click groups the whole graph
-    assert _sel(page) == 2, "double-click did not select the whole graph"
+    _select_graph(page, sa)
+    assert _sel(page) == 2, "the graph was not selected"
     # the real-user probe: what does the browser itself resolve at B's screen point, right now?
     hit = page.evaluate(
         "([x, y]) => { const el = document.elementFromPoint(x, y); const t = el && el.closest && el.closest('.lw2-token'); return t ? t.getAttribute('data-id') : null; }",
@@ -251,7 +284,7 @@ def test_v2_run_produces_a_decision_memo_card(server, page):
            json={"rulebook": "debate the most sustainable route from A to B", "manager": {"budget": 2}})
     _open(page, wid, rid)
     p = _tpos(page, a); s = _scr(page, p["x"], p["y"])
-    page.mouse.dblclick(s["x"], s["y"]); page.wait_for_timeout(300)
+    _select_graph(page, s)
     assert page.evaluate("() => [...document.querySelectorAll('.lw-act-btn')].some(b => b.textContent.includes('Run'))"), "no ▶ Run in the graph action bar"
     page.evaluate("() => [...document.querySelectorAll('.lw-act-btn')].find(b => b.textContent.includes('Run')).click()")
     page.wait_for_selector(".sd-memo-card", timeout=10000)

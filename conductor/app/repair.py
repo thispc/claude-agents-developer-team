@@ -427,6 +427,7 @@ def ensure_team():
     if keep_thread and s.threads:
         s.threads[0]["chats"] = keep_thread.get("chats") or {}
         s.threads[0]["results"] = keep_thread.get("results") or []
+    _tidy_crew_world(w, s.id)
     store.save(w)
     info = {"world_id": w.id, "room_id": s.id, "personas": TEAM_PERSONAS,
             "thread_id": s.threads[0]["id"] if s.threads else 0,
@@ -435,6 +436,28 @@ def ensure_team():
     db.kv_set("repair:world", info)
     bus.emit(0, None, "repair", "repair_team_ready", {"world_id": w.id, "agents": len(fs)})
     return info
+
+
+def _tidy_crew_world(w, keep_room: int) -> int:
+    """Leave exactly one sprint table behind.
+
+    Every rebuild used to materialise a new scene and simply abandon the old one, so the
+    crew's world quietly accumulated a room per persona bump and per factor toggle — six of
+    them, five dead, each still holding six agents. It is not only clutter: the world is one
+    blob, loaded and saved whole, so the dead rooms were being paid for on every tick. This
+    world is entirely ours — nobody authored anything in it by hand — so anything outside
+    the current table can go.
+    """
+    from .lifeworld.human import Human
+    dropped = 0
+    for sid in [i for i in list(w.scenes) if i != keep_room]:
+        w.scenes.pop(sid, None)
+        dropped += 1
+    seated = set(w.scene(keep_room).seats) if w.scene(keep_room) else set()
+    for eid, ent in list(w.entities.items()):
+        if isinstance(ent, Human) and eid not in seated:
+            w.entities.pop(eid, None)
+    return dropped
 
 
 def _crew_world():
@@ -684,6 +707,18 @@ TASK_TYPES = {
 }
 PRIORITIES = {"p1": "drop everything", "p2": "this sprint", "p3": "when there is room"}
 
+def _recent_too_big(limit: int = 5) -> list[str]:
+    """Titles of tasks that ran out of turns lately — the crew's own evidence about what it
+    consistently over-scopes."""
+    out = []
+    for rec in sorted(db.kv_prefix("repair:sprint:").values(),
+                      key=lambda r: r.get("no", 0), reverse=True)[:8]:
+        for t in rec.get("tasks", []):
+            if t.get("too_big") and t.get("title"):
+                out.append(str(t["title"])[:100])
+    return out[:limit]
+
+
 PLAN_EXTRACT_SYSTEM = (
     "You turn a sprint-planning memo into build tasks. Each task must be finishable by ONE "
     "focused engineer in roughly 30 tool calls — a narrow, surgical change to a handful of "
@@ -693,7 +728,10 @@ PLAN_EXTRACT_SYSTEM = (
     'chore|idea>, "priority": <p1|p2|p3>, "brief": <2-4 sentences of exactly '
     'what to change and where>, "acceptance": [<checkable outcomes>]} — at most N items, '
     "highest value first. Be honest about type and priority: p1 means the platform is "
-    "broken or losing data for someone right now, and most work is not p1.")
+    "broken or losing data for someone right now, and most work is not p1. "
+    "A task that names more than about three files, or says 'extract', 'migrate' or "
+    "'refactor X into Y' about a whole module, is a PROGRAMME and will die unfinished — "
+    "emit its first concrete slice instead.")
 
 
 def classify(title: str, brief: str = "", factor: str = "") -> tuple[str, str]:
@@ -762,6 +800,15 @@ async def _phase_plan(st: dict, rec: dict) -> None:
                     f"Lenses:\n{lenses}\nScout findings:\n{rec['scout']['digest'] or '(none)'}\n"
                     f"Decide the top {n_tasks} improvements, best first; the recommendation must "
                     "name each task's title, factor, target files and acceptance checks.")[:2000]
+                too_big = _recent_too_big()
+                if too_big:
+                    # The crew kept proposing programme-sized work — "extract a router from
+                    # routes.py" — and each one died on turns. Showing it its own oversized
+                    # tasks is cheaper and more specific than any amount of prompt adjectives.
+                    thread["rulebook"] += (
+                        "\nThese were planned before and DIED because one engineer could not "
+                        "finish them in a single session — do not propose work of this size "
+                        "again; take a first slice instead:\n- " + "\n- ".join(too_big[:5]))
                 rounds = int(tuning.get("repair_plan_rounds"))
                 memo = await s.run_deliberation(thread, rounds=rounds)
                 store.save(w)
@@ -846,6 +893,23 @@ async def _phase_build(st: dict, rec: dict) -> None:
     t = _task(st, rec)
     if t is None:
         set_state(phase="retro")
+        return
+    # Before anything else, including any question of credentials or quota: has this task
+    # already had its chances? A restart resumes the sprint — correct — but starts a FRESH
+    # session for the same task, so without a ceiling an interrupted task is an open tab on
+    # the quota rather than a failure. Sprint 14 reached five attempts that way, one per
+    # restart, each a whole session spent with nothing to show.
+    if int(t.get("attempts") or 0) >= int(tuning.get("repair_max_attempts")):
+        t["status"] = "failed"
+        t["error"] = f"gave up after {t['attempts']} sessions — it never finished one"
+        rec["failed"] += 1
+        rb.discard(t.get("branch", ""), t.get("worktree"))
+        save_sprint(rec)
+        set_state(task_idx=st["task_idx"] + 1)
+        logs.warn("session", "gave_up", f"{t['title']} — {t['error']}", task=t["title"],
+                  attempts=t["attempts"])
+        bus.emit(0, None, "repair", "repair_task_failed",
+                 {"task": t["title"], "why": t["error"]})
         return
     if not _live():                                 # offline: nothing can build — mark and move on
         t["status"] = "failed"

@@ -734,8 +734,11 @@ def test_a_session_that_writes_outside_its_worktree_fails_the_task(fresh_db, tmp
     task = {"slug": "x", "title": "X", "brief": "", "acceptance": []}
 
     async def sneaky(system, prompt, cwd, tools, turns, model, env):
-        (tmp_repo / "conductor").mkdir(exist_ok=True)
-        (tmp_repo / "conductor" / "trespass.py").write_text("# not my tree\n")
+        # The signature of a real escape: the same file written in BOTH trees, because the
+        # file is what the session was working on.
+        for root in (Path(cwd), tmp_repo):
+            (root / "conductor").mkdir(exist_ok=True)
+            (root / "conductor" / "trespass.py").write_text("# not my tree\n")
         return "done", 0.0
     monkeypatch.setattr(rb, "_run_sdk", sneaky)
     with pytest.raises(RuntimeError) as e:
@@ -743,6 +746,23 @@ def test_a_session_that_writes_outside_its_worktree_fails_the_task(fresh_db, tmp
     assert "outside its worktree" in str(e.value) and "trespass.py" in str(e.value)
     # and it must NOT clean up after itself: that tree belongs to a person
     assert (tmp_repo / "conductor" / "trespass.py").exists()
+
+
+def test_the_operators_own_edits_do_not_fail_the_crews_task(fresh_db, tmp_repo, monkeypatch):
+    """Sprints 13 and 17 were failed for files the OPERATOR was editing at that instant, and
+    the crew's finished work was thrown away for it. A session that truly wrote outside its
+    worktree almost always wrote the same file inside it too; anything else is somebody
+    else's edit, and is reported rather than punished."""
+    monkeypatch.setattr(rb.selfops, "LIVE_TREE", tmp_repo)
+    task = {"slug": "y", "title": "Y", "brief": "", "acceptance": []}
+
+    async def works_properly(system, prompt, cwd, tools, turns, model, env):
+        (Path(cwd) / "in_the_worktree.py").write_text("# proper work\n")
+        (tmp_repo / "the_operator_was_here.py").write_text("# my own edit\n")   # a human, mid-session
+        return "done", 0.0
+    monkeypatch.setattr(rb, "_run_sdk", works_properly)
+    out = asyncio.run(rb.build(task, 1, {}))
+    assert out["branch"], "the crew's work must survive somebody else typing"
 
 
 def test_the_builder_is_told_to_stay_in_its_worktree():
@@ -1411,3 +1431,58 @@ def test_the_switch_is_where_the_approving_happens():
     js = dashboard_js()
     assert 'id="rpAuto"' in js and "/api/logs/notices/auto" in js
     assert "always waits for you" in js, "the limit has to be stated where the switch is"
+
+
+def test_a_task_cannot_burn_the_quota_across_restarts(fresh_db, no_spend, monkeypatch):
+    """A restart resumes the sprint — correct — but starts a FRESH session for the same task.
+    Sprint 14 reached five attempts that way, one per restart, and each one was a whole
+    session off the quota with nothing to show."""
+    monkeypatch.setattr(config, "AUTH_CONFIGURED", False)
+    tuning.set("repair_max_attempts", 2)
+    rec = {"no": 1, "started_at": time.time(), "scout": {}, "memo": None, "landed": 0,
+           "failed": 0, "landed_files": [],
+           "tasks": [{"slug": "big", "title": "A big one", "factor": "speed", "brief": "",
+                      "acceptance": [], "branch": "", "status": "pending", "worktree": None,
+                      "verification": None, "landed_sha": None, "attempts": 2, "evidence": ""}]}
+    repair.save_sprint(rec)
+    db.kv_set("repair:seq", 1)
+    repair.toggle(True)
+    repair.set_state(phase="build", sprint_no=1, task_idx=0)
+    asyncio.run(repair.tick())
+    t = repair.sprint(1)["tasks"][0]
+    assert t["status"] == "failed" and "gave up after" in t["error"]
+    assert repair.state()["task_idx"] == 1, "and the sprint moves on"
+
+
+def test_the_crew_is_shown_the_work_it_keeps_over_scoping(fresh_db):
+    """"extract a router from routes.py" died on turns three sprints running. Showing the
+    crew its own oversized tasks is cheaper and far more specific than prompt adjectives."""
+    db.kv_set("repair:sprint:9", {"no": 9, "tasks": [
+        {"title": "Extract first domain router from routes.py", "too_big": True},
+        {"title": "A small fix that worked", "status": "landed"}]})
+    assert repair._recent_too_big() == ["Extract first domain router from routes.py"]
+    src = Path(repair.__file__).read_text()
+    assert "do not propose work of this size" in src
+    assert "is a PROGRAMME and will die unfinished" in repair.PLAN_EXTRACT_SYSTEM
+
+
+def test_the_crew_world_keeps_exactly_one_sprint_table(fresh_db, no_spend):
+    """Every rebuild used to materialise a new scene and abandon the old one, so the world
+    accumulated a room per persona bump and per factor toggle — six of them, five dead, each
+    still holding six agents. The world is one blob loaded and saved whole, so the dead rooms
+    were being paid for on every tick."""
+    _root_user()
+    from app.lifeworld import store
+    info = repair.ensure_team()
+    for _ in range(3):                                    # three lineup changes
+        repair.set_factors([{"id": "speed", "enabled": False}])
+        repair.ensure_team()
+        repair.set_factors([{"id": "speed", "enabled": True}])
+        info = repair.ensure_team()
+    w = store.load(info["world_id"])
+    assert len(w.scenes) == 1, f"{len(w.scenes)} sprint tables piled up"
+    s = w.scene(info["room_id"])
+    assert s is not None and len(s.seats) == 6
+    from app.lifeworld.human import Human
+    people = [e for e in w.entities.values() if isinstance(e, Human)]
+    assert len(people) == 6, f"{len(people)} agents left behind by old tables"

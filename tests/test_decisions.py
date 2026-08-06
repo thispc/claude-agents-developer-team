@@ -7,6 +7,7 @@ substrate rests on.
 """
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -242,3 +243,33 @@ def test_the_node_data_is_not_serialised_into_the_page():
     assert "<script" not in tree, "the renderer must not serialise nodes into the page"
     assert "JSON.stringify" not in tree
     assert "let lwDagRows" in js, "the click handler reads them from memory instead"
+
+
+# ---- gestures: double-click means "show me this one" ----------------------
+
+def test_double_click_always_opens_the_thing_you_clicked():
+    """It used to select the whole graph instead, which meant double-clicking an agent could
+    never open that agent — the graph swallowed the gesture. A gesture that means two
+    different things depending on invisible state is one people stop trusting."""
+    src = (Path(__file__).resolve().parents[1] / "dashboard/canvas2/index.js").read_text()
+    dbl = src.split("function fireDoubleClick", 1)[1].split("\n}", 1)[0]
+    assert "openPersonDrawer" in dbl
+    assert "graphSelect" not in src, "the old double-click-selects-graph path is back"
+
+
+def test_a_graph_offers_its_actions_when_it_is_actually_selected():
+    src = (Path(__file__).resolve().parents[1] / "dashboard/canvas2/index.js").read_text()
+    assert "function selectedThread" in src and "function offerGraphActions" in src
+    # covering the WHOLE graph, not merely touching it: a partial selection is usually
+    # somebody halfway through a marquee
+    sel = src.split("function selectedThread", 1)[1].split("\n}", 1)[0]
+    assert "members.size !== inst.sel.size" in sel
+    # and it is offered from both a completed marquee and a plain click
+    assert src.count("offerGraphActions(inst)") >= 3
+
+
+def test_selecting_one_node_tells_you_it_belongs_to_something():
+    """"Marquee across it" is not a gesture anyone guesses, and a capability nobody can find
+    is one that does not exist."""
+    src = (Path(__file__).resolve().parents[1] / "dashboard/canvas2/index.js").read_text()
+    assert "Select its graph" in src
