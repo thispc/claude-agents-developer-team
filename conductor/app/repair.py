@@ -821,6 +821,21 @@ def _tell_crew(rec: dict) -> None:
 
 # --- the loop ----------------------------------------------------------------
 
+def claim_lease() -> None:
+    """Take the lease unconditionally, at startup.
+
+    `_hold_lease` correctly refuses to run two engines against one database — but it picks the
+    wrong winner. A server that has been told to stop, and has already released the port, can
+    keep its event loop alive and keep heartbeating; the NEW server, the one that just bound
+    the port, then stands down and the crew silently does nothing while a zombie drives it on
+    stale code. Binding the port is the only unforgeable proof of being the current conductor,
+    so the process that managed it claims the engine, and the old holder stands down on its
+    next tick instead of the other way round.
+    """
+    import os
+    db.kv_set("repair:lease", {"pid": os.getpid(), "ts": time.time()})
+
+
 def _hold_lease() -> bool:
     """ONE engine per database. The crew's own threading.Lock (landed by sprint 2) serializes
     writers inside a process; this lease serializes across PROCESSES — a stray old server whose

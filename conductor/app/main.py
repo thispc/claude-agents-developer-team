@@ -73,6 +73,7 @@ async def lifespan(app: FastAPI):
     # Self-repair v2 — the IT crew's sprint loop. A no-op every tick until the owner flips
     # the button; resumes mid-sprint after any restart because its state lives in kv.
     from . import repair
+    repair.claim_lease()          # we bound the port; the engine is ours, not a zombie's
     background.append(loop.create_task(repair.loop()))
     yield
     # SHUTDOWN. These loops are written never to die, which is right while the server is up

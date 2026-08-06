@@ -746,3 +746,18 @@ def test_a_session_that_writes_outside_its_worktree_fails_the_task(fresh_db, tmp
 def test_the_builder_is_told_to_stay_in_its_worktree():
     assert "never use an absolute path" in rb.BUILDER_SYSTEM
     assert "operator's live tree" in rb.BUILDER_SYSTEM
+
+
+def test_the_process_that_owns_the_port_owns_the_engine(fresh_db, no_spend):
+    """The lease stopped two engines racing, but it let the WRONG one win: a server told to
+    stop, port already released, kept heartbeating — so the new server stood down and the crew
+    silently did nothing while a zombie drove it on stale code. Binding the port is the only
+    unforgeable proof of being the current conductor."""
+    import os
+    db.kv_set("repair:lease", {"pid": os.getpid() + 99999, "ts": time.time()})   # a live zombie
+    assert repair._hold_lease() is False
+    repair.claim_lease()                                                         # we bound the port
+    assert repair._hold_lease() is True
+    assert db.kv_get("repair:lease")["pid"] == os.getpid()
+    src = Path(__file__).resolve().parents[1].joinpath("conductor/app/main.py").read_text()
+    assert "repair.claim_lease()" in src, "startup must claim it, or the fix is theoretical"
