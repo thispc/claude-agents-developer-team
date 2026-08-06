@@ -25,8 +25,9 @@ function waitForRestart(msg) {
   }, 2000);
 }
 
-// Brief, non-blocking confirmation of something that already happened.
-function toast(msg) {
+// Brief, non-blocking confirmation of something that already happened —
+// or, with isError, a non-blocking error notice. Never blocks the page.
+function toast(msg, isError) {
   let el = $("#toast");
   if (!el) {
     el = document.createElement("div");
@@ -34,6 +35,7 @@ function toast(msg) {
     document.body.appendChild(el);
   }
   el.textContent = msg;
+  el.classList.toggle("error", !!isError);
   el.classList.add("show");
   clearTimeout(toast._t);
   toast._t = setTimeout(() => el.classList.remove("show"), 4000);
@@ -1392,7 +1394,7 @@ function renderCommand(p) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: msg }),
     }).then(() => { inp.value = ""; toast("Sent to your manager."); })
-      .catch((e) => alert(e.message));
+      .catch((e) => toast(e.message, true));
   });
   el.querySelectorAll(".agent").forEach((a) =>
     a.addEventListener("click", () => showTask(Number(a.dataset.task))));
@@ -1452,7 +1454,7 @@ function renderCommand(p) {
         ? "Full autonomy — it will stop asking and decide for itself."
         : "Supervised — it will check with you on the important calls.");
       refreshBoard();
-    } catch (e) { alert(e.message); ab.disabled = false; }
+    } catch (e) { toast(e.message, true); ab.disabled = false; }
   });
 
   const bossNode = $("#bossNode");
@@ -1596,7 +1598,7 @@ $("#directiveForm").addEventListener("submit", async (ev) => {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     });
-  } catch (e) { alert(e.message); }
+  } catch (e) { toast(e.message, true); }
 });
 $("#closeFileBtn").addEventListener("click", () => $("#fileDialog").close());
 $("#closeTaskBtn").addEventListener("click", () => $("#taskDialog").close());
@@ -2008,7 +2010,7 @@ async function renderArtifacts(force) {
     const label = bp.textContent;
     bp.disabled = true; bp.textContent = "Pulling latest…";
     try { await api(`/api/projects/${currentProject}/preview`, { method: "POST" }); renderArtifacts(true); }
-    catch (e) { alert(e.message); bp.disabled = false; bp.textContent = label; }
+    catch (e) { toast(e.message, true); bp.disabled = false; bp.textContent = label; }
   });
 }
 
@@ -2097,7 +2099,7 @@ async function renderDeploy() {
       }
       artifactsSig = ""; renderDeploy();
     } catch (e) {
-      alert(e.message); go.disabled = false; go.textContent = label;
+      toast(e.message, true); go.disabled = false; go.textContent = label;
     }
   });
   const stop = $("#stopDeployBtn");
@@ -2472,7 +2474,7 @@ $("#chatForm").addEventListener("submit", async (ev) => {
     setTimeout(() => { $("#chatStatus").textContent = ""; }, 6000);
   } catch (e) {
     inp.value = text;      // don't lose what they typed
-    alert(e.message);
+    toast(e.message, true);
   }
 });
 $("#startTableBtn").addEventListener("click", startTable);
@@ -2602,7 +2604,7 @@ $("#restartBtn").addEventListener("click", async () => {
   try {
     await api(`/api/projects/${currentProject}/restart`, { method: "POST" });
     refreshBoard();
-  } catch (e) { alert(e.message); }
+  } catch (e) { toast(e.message, true); }
 });
 $("#newProjectForm").addEventListener("submit", async (ev) => {
   ev.preventDefault();
