@@ -810,7 +810,13 @@ def peek(world_id: int, human_id: int, request: Request) -> dict:
              if is_root or n.scope != "private"]
     assoc = sorted((a.to_dict() for a in h.decisions.assoc.values()),
                    key=lambda a: (-a["confidence"], -a["evidence"]))
+    # What it is doing right now — the first question anyone opens an agent to ask, and the
+    # one with a wrong answer that costs money: an agent asleep on its session cap looks
+    # exactly like one idle for a good reason.
+    from .lifeworld.scene import _activity_of
     out = {"human": h.profile(), "narrative": h.narrative, "hand": hand,
+           "activity": _activity_of(world_id, h.id), "usage": h.usage(),
+           "withheld": 0 if is_root else sum(1 for n in h.decisions.nodes if n.scope == "private"),
            "habits": [{"when": r.match, "confidence": round(r.confidence, 2), "fires": r.fires}
                       for r in h.rules.rules],
            "bonds": {oid: {"trust": round(b.trust, 2), "warmth": round(b.warmth, 2)}

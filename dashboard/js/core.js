@@ -2,6 +2,18 @@
 // Split from the old monolithic app.js (order preserved; classic scripts share one global scope; index.html defines load order).
 
 const $ = (s) => document.querySelector(s);
+
+// Every full-screen section. Six functions used to each carry their own copy of this list,
+// which is how a new screen ends up visible underneath another one.
+const SCREENS = ["#home", "main", "#plan", "#studio", "#scenes", "#lifeworld",
+                 "#aboutPage", "#selfPage", "#agentPage"];
+function hideScreens(except) {
+  for (const sel of SCREENS) {
+    if (sel === except) continue;
+    const e = document.querySelector(sel);
+    if (e) e.hidden = true;
+  }
+}
 let currentProject = null;
 let ws = null;
 
@@ -747,6 +759,7 @@ async function openSelfRepair(skipHash) {
   const ab = $("#aboutPage"); if (ab) ab.hidden = true;
   const scn = $("#scenes"); if (scn) scn.hidden = true;
   const lw = $("#lifeworld"); if (lw) lw.hidden = true;
+  const agp = $("#agentPage"); if (agp) agp.hidden = true;
   $("#projectBar").hidden = true;
   $("#selfPage").hidden = false;
   if (!skipHash) setHash("#/improve");
@@ -856,6 +869,10 @@ function route() {
   if (location.hash.startsWith("#/lifeworld")) { openStudio(true); return; }   // legacy link
   if (location.hash.startsWith("#/about")) { openAbout(true); return; }
   if (location.hash.startsWith("#/improve")) { openSelfRepair(true); return; }
+  {
+    const ag = location.hash.match(/^#\/agent\/(\d+)(?:\/(\w+))?/);
+    if (ag) { openAgentPage(Number(ag[1]), ag[2] || "now", true); return; }
+  }
   const m = location.hash.match(/^#\/p\/(\d+)(?:\/(\w+))?/);
   if (m) openProject(Number(m[1]), m[2] || "command", true);
   else showHome(true);

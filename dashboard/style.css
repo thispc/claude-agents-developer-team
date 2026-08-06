@@ -2994,3 +2994,54 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
   .sd-chat-tab { left: auto; right: 12px; top: -26px; width: 44px; height: 26px;
     border-radius: 9px 9px 0 0; border: 1px solid var(--line); border-bottom: none; }
 }
+
+/* ── the agent page ──────────────────────────────────────────────────────────
+   The drawer this replaces was 340px wide with a 340px-tall DAG inside it, so a graph five
+   siblings wide was read through a keyhole with two nested scrollbars. Here the page body
+   scrolls and nothing inside it does, except the graph itself. */
+#agentPage { padding: 22px 28px 40px; overflow-y: auto; }
+#agentBody { max-width: 1120px; }
+.ag-id { display: flex; gap: 16px; align-items: center; margin-bottom: 6px; }
+.ag-id-main { flex: 1; min-width: 0; }
+.ag-id-main h2 { margin: 0 0 2px; font-size: 21px; }
+.ag-id .sd-facts { flex: none; }
+.ag-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
+.ag-doing { font-size: 14px; margin: 4px 0 10px; }
+.ag-legend { display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+  font-size: 11.5px; color: var(--faint); margin-bottom: 10px; }
+.ag-legend i.ag-k { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+  margin-right: 5px; vertical-align: -1px; border: 2px solid var(--dim); background: var(--card); }
+/* Specificity: the base rule is `.ag-legend i.ag-k`, so these have to match it or the
+   legend renders four identical hollow dots and explains nothing. */
+.ag-legend i.ag-k.good { background: var(--good); border-color: var(--good); }
+.ag-legend i.ag-k.bad { background: var(--bad); border-color: var(--bad); }
+.ag-legend i.ag-k.canon { border-color: var(--accent); border-width: 3px; }
+/* the graph finally gets room — this is the whole reason the page exists */
+.ag-why { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
+.ag-why > .sd-label { grid-column: 1 / -1; }
+.ag-why > .lw-dagwrap { grid-column: 1; }
+.ag-why > .lw-dpanel { grid-column: 2; grid-row: 2; position: sticky; top: 16px; }
+#agentPage .lw-dagwrap { max-height: none; height: clamp(420px, 62vh, 760px); }
+@media (max-width: 1000px) {
+  .ag-grid, .ag-why { grid-template-columns: minmax(0, 1fr); }
+  .ag-why > .lw-dpanel { grid-column: 1; grid-row: auto; position: static; }
+}
+
+/* ── the single-click popup ──────────────────────────────────────────────────
+   Five facts and `overflow: hidden`, so "no scrolling needed" is structural rather than a
+   promise about content length — and the ✕ can never scroll out of reach, which is what was
+   actually wrong with the drawer's. */
+.sd-peek { position: fixed; right: 18px; top: 74px; width: 280px; z-index: 40;
+  background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 14px 40px rgba(0,0,0,.18); padding: 12px 14px; overflow: hidden; }
+.sd-peek[hidden] { display: none; }
+.sd-peek-head { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
+.sd-peek-head img { width: 30px; height: 30px; border-radius: 50%; }
+.sd-peek-head b { flex: 1; min-width: 0; font-size: 13.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sd-peek-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px;
+  white-space: nowrap; overflow: hidden; }
+.sd-peek-row > span { width: 58px; flex: none; color: var(--faint);
+  font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; }
+.sd-peek-row > b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
+.sd-peek-open { width: 100%; margin-top: 9px; }

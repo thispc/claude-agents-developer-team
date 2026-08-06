@@ -253,7 +253,7 @@ def test_double_click_always_opens_the_thing_you_clicked():
     different things depending on invisible state is one people stop trusting."""
     src = (Path(__file__).resolve().parents[1] / "dashboard/canvas2/index.js").read_text()
     dbl = src.split("function fireDoubleClick", 1)[1].split("\n}", 1)[0]
-    assert "openPersonDrawer" in dbl
+    assert "openAgentPage" in dbl, "double-click must open the agent's own page"
     assert "graphSelect" not in src, "the old double-click-selects-graph path is back"
 
 
@@ -333,3 +333,27 @@ def test_live_is_the_default_wherever_the_platform_can_actually_think():
     fn = js.split("async function lwDefaultLive", 1)[1].split("\n}", 1)[0]
     assert '/api/health' in fn and 'h.auth' in fn
     assert "lwDefaultLive()" in js, "and it has to actually run at boot"
+
+
+def test_a_reflex_does_not_write_a_debugger_string_into_the_tree(fresh_db):
+    """A Tier-0 packet's `understood` is "say (i=0.30)" — the appraiser telling itself how
+    intense the signal was, not something the agent decided. Recording it made a decision
+    tree that read like a debugger."""
+    from app.lifeworld.types import Signal
+    from app.lifeworld.world import World
+    w = World(name="w"); w.new_room("r", "freeplay")
+    h = w.spawn_human("A")
+    sig = Signal(kind="say", from_id=None, sense="hearing", intensity=0.9, stakes=0.8,
+                 payload={"text": "the build failed with ImportError"}, domain="work.tech")
+    asyncio.run(h.perceive(sig, w, free=True))
+    n = h.decisions.nodes[-1]
+    assert "i=0." not in n.understood and "i=0." not in n.chose
+    assert "ImportError" in n.understood, "it should record what it reacted TO"
+
+
+def test_the_legend_dots_are_actually_different_colours():
+    """The base rule is `.ag-legend i.ag-k`, so a plain `.ag-k.good` loses on specificity and
+    the legend renders four identical hollow dots, explaining nothing."""
+    css = (Path(__file__).resolve().parents[1] / "dashboard/style.css").read_text()
+    for cls in ("good", "bad", "canon"):
+        assert f".ag-legend i.ag-k.{cls}" in css, f"{cls} loses the specificity fight"

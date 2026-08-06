@@ -115,10 +115,16 @@ class Human(Being):
         act = (p.action or {}).get("kind") or ""
         if not act and not p.understood:
             return
+        # A Tier-0 packet's `understood` is diagnostic — "say (i=0.30)" is the appraiser
+        # telling itself how intense the signal was, not a thing the agent decided. Recording
+        # it makes a decision tree that reads like a debugger, so a reflex records what it
+        # REACTED TO instead.
+        told = p.understood if p.tier != 0 else (str(s.text() or "")[:120] or p.understood)
         try:
             self.decisions.record(
-                tau=self.tau, sig=sig, saw=s.text(), understood=p.understood,
-                chose=f"{act}: {(p.action or {}).get('text', '')}".strip(": "),
+                tau=self.tau, sig=sig, saw=s.text(), understood=told,
+                chose=(f"{act}: {(p.action or {}).get('text', '')}".strip(": ")
+                       if p.tier != 0 else (act or "reacted")),
                 because={"wanted": goal, "pressure": round(float(pressure), 3),
                          "mood": max(p.mood.items(), key=lambda kv: abs(kv[1]))[0] if p.mood else "",
                          "tier": p.tier, "recalled": bool(known)},

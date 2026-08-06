@@ -358,7 +358,7 @@ function fireDoubleClick(inst, id, kind) {
   // graph" — a gesture that means two different things depending on invisible state is a
   // gesture people stop trusting.
   const t = inst.tokens.get(id); if (!t) return;
-  if (kind === "agent") W.openPersonDrawer && W.openPersonDrawer(t.data.id, t.data.name);
+  if (kind === "agent") W.openAgentPage && W.openAgentPage(t.data.id);
   else W.lwOpenArtifactPeek && W.lwOpenArtifactPeek(t.data.id);
 }
 
@@ -449,7 +449,11 @@ async function pointerUp(inst, e) {
       else {
         inst._lastClick = { id: g.id, t: nowMs() };           // remember for a possible next-click double
         offerGraphActions(inst);                             // a click is also a selection
-        aimChat(inst, g.id, g.kind);                         // ...and aims the conversation
+            aimChat(inst, g.id, g.kind);                     // ...and aims the conversation
+        if (g.kind === "agent") {                        // ...and shows the five facts
+          const tk = inst.tokens.get(g.id);
+          if (tk && W.lwPeekOpen) W.lwPeekOpen(tk.data);
+        } else if (W.lwPeekClose) W.lwPeekClose();
       }
       return;
     }

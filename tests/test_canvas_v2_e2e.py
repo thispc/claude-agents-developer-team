@@ -195,7 +195,27 @@ def _select_graph(page, screen_pt):
     page.wait_for_timeout(250)
 
 
-def test_v2_double_click_opens_the_agent_not_its_graph(server, page):
+def test_a_single_click_shows_five_facts_and_cannot_scroll(server, page):
+    """The drawer's close button was not buggy — it sat inside the scrolling container and
+    scrolled off the top. So the popup cannot scroll at all: five facts and overflow:hidden,
+    which makes "no scrolling needed" structural rather than a promise about content."""
+    wid, rid = _mk(server["client"])
+    a, b = _two_connected(server["client"], wid, rid)
+    _open(page, wid, rid)
+    pa = _tpos(page, a); sa = _scr(page, pa["x"], pa["y"])
+    page.mouse.click(sa["x"], sa["y"]); page.wait_for_timeout(500)
+    assert page.evaluate("() => { const e = document.querySelector('#lwPeek'); return !!e && !e.hidden; }"), \
+        "a single click showed no popup"
+    box = page.evaluate("""() => { const e = document.querySelector('#lwPeek');
+        return [e.scrollHeight - e.clientHeight, getComputedStyle(e).overflow]; }""")
+    assert box[0] <= 1, f"the popup needs scrolling ({box[0]}px of overflow)"
+    assert box[1] == "hidden", f"overflow is {box[1]} — the guarantee has to be structural"
+    # ...and its close is reachable, always: Escape, and a ✕ that cannot scroll away
+    page.keyboard.press("Escape"); page.wait_for_timeout(250)
+    assert page.evaluate("() => document.querySelector('#lwPeek').hidden"), "Escape did not close it"
+
+
+def test_v2_double_click_opens_the_agent_page(server, page):
     """Root's call: double-click is unambiguously "show me this one". A gesture that means
     two different things depending on invisible state is one people stop trusting."""
     wid, rid = _mk(server["client"])
@@ -204,10 +224,13 @@ def test_v2_double_click_opens_the_agent_not_its_graph(server, page):
     _open(page, wid, rid)
     pa = _tpos(page, a)
     sa = _scr(page, pa["x"], pa["y"])
-    page.mouse.dblclick(sa["x"], sa["y"]); page.wait_for_timeout(500)
-    assert page.evaluate("() => { const d = document.querySelector('#lwDetail'); return !!d && !d.hidden; }"), \
-        "double-clicking an agent did not open the agent"
-    assert _sel(page) != 2, "it selected the graph instead of opening the agent"
+    page.mouse.dblclick(sa["x"], sa["y"]); page.wait_for_timeout(900)
+    # It opens the agent's own PAGE now, not a 340px drawer with the decision graph squeezed
+    # into a 340px keyhole behind two nested scrollbars.
+    assert page.evaluate("() => !document.querySelector('#agentPage').hidden"), \
+        "double-clicking an agent did not open its page"
+    assert "#/agent/" in page.evaluate("() => location.hash"), "the page has no address"
+    assert page.evaluate("() => document.querySelectorAll('[data-agtab]').length") == 5
 
 
 def test_v2_select_graph_then_wire_and_collapse(server, page):

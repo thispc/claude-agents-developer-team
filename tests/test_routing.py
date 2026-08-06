@@ -241,3 +241,37 @@ def test_a_bubble_says_what_an_agent_is_doing_not_what_it_said():
     fn = src.split("function showActivity", 1)[1].split("\n}", 1)[0]
     assert "act.busy" in fn, "a bubble must be reserved for an agent that is working"
     assert "room.log" not in fn, "it must not be reading the transcript any more"
+
+
+def test_the_agent_page_answers_what_it_is_doing_first(root_client, fresh_db):
+    """The first question anyone opens an agent to ask, and the one with a wrong answer that
+    costs money: an agent asleep on its cap looks exactly like one idle for a good reason."""
+    from app import agents
+    from app.lifeworld import store
+    w = store.create(1, "w")
+    h = w.spawn_human("A")
+    store.save(w)
+    agents.note(agents.key_for("lw", w.id, h.id), "building", "the k8s reaper")
+    d = root_client.get(f"/api/lw/{w.id}/human/{h.id}").json()
+    assert d["activity"]["busy"] is True and d["activity"]["what"] == "the k8s reaper"
+    assert "usage" in d and "withheld" in d
+
+
+def test_the_agent_page_exists_and_is_addressable():
+    from conftest import dashboard_js
+    js = dashboard_js()
+    assert "async function openAgentPage" in js
+    assert "#/agent/" in js, "it needs an address, or you cannot link to it"
+    for tab in ("now", "why", "learned", "record", "makeup"):
+        assert f'id: "{tab}"' in js.split("const AG_TABS = [", 1)[1].split("];", 1)[0]
+    # the graph gets room — the entire reason the page exists
+    css = (Path(__file__).resolve().parents[1] / "dashboard/style.css").read_text()
+    assert "#agentPage .lw-dagwrap { max-height: none;" in css
+
+
+def test_one_helper_hides_the_screens():
+    """Six functions each carried their own copy of the hide-list, which is how a new screen
+    ends up visible underneath another one — and it did, twice, in one edit."""
+    from conftest import dashboard_js
+    js = dashboard_js()
+    assert "function hideScreens" in js and '"#agentPage"' in js
