@@ -209,7 +209,7 @@ async function rpNotices() {
       } catch (e) { toast(e.message); }
       rpNotices();
     }));
-  } catch (e) { el.innerHTML = `<p class="dim">${escapeHtml(reportCaught(e, "repair"))}</p>`; }
+  } catch (e) { el.innerHTML = `<p class="err">${escapeHtml(reportCaught(e, "repair"))}</p>`; }
 }
 
 /** Who is actually working, from the register — the same question the projects Agents tab
@@ -249,7 +249,7 @@ async function rpAgents() {
       they are asked to.</p>`;
     el.querySelectorAll("[data-agentlogs]").forEach((b) => b.addEventListener("click", () =>
       rpAgentLogs(b.dataset.agentlogs)));
-  } catch (e) { el.innerHTML = `<p class="dim">${escapeHtml(reportCaught(e, "rpAgents"))}</p>`; }
+  } catch (e) { el.innerHTML = `<p class="err">${escapeHtml(reportCaught(e, "rpAgents"))}</p>`; }
 }
 
 /** One agent's own rows out of the pipeline — the reason this tab is worth opening rather
@@ -736,7 +736,7 @@ async function rpChatHistory() {
     const r = await api("/api/repair/chat", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "" }) });
     rpRenderChat(r.chat || []);
-  } catch (e) { log.innerHTML = `<p class="dim">${escapeHtml(reportCaught(e, "rpChatHistory"))}</p>`; }
+  } catch (e) { log.innerHTML = `<p class="err">${escapeHtml(reportCaught(e, "rpChatHistory"))}</p>`; }
 }
 
 async function rpHistory() {
@@ -749,7 +749,7 @@ async function rpHistory() {
     el.innerHTML = rows || `<p class="dim">no sprints yet</p>`;
     el.querySelectorAll("[data-board]").forEach((b) =>
       b.addEventListener("click", () => rpBoard(b.dataset.board)));
-  } catch { el.innerHTML = `<p class="dim">—</p>`; }
+  } catch { el.innerHTML = `<p class="err">—</p>`; }
 }
 
 // ---- the sprint board -----------------------------------------------------
@@ -946,7 +946,7 @@ async function rpActivity() {
     }
     el.scrollTop = el.scrollHeight;
   } catch (e) {
-    el.innerHTML = `<p class="dim">${escapeHtml(reportCaught(e, "rpActivity"))}</p>`;
+    el.innerHTML = `<p class="err">${escapeHtml(reportCaught(e, "rpActivity"))}</p>`;
   }
 }
 

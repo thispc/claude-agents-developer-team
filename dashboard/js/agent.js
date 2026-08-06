@@ -52,7 +52,7 @@ async function agRefresh() {
       agData = await api(`/api/lw/${lwWorldId}/human/${agId}`);
     }
   } catch (e) {
-    $("#agentBody").innerHTML = `<p class="dim">${escapeHtml(reportCaught(e, "agentPage"))}</p>`;
+    $("#agentBody").innerHTML = `<p class="err">${escapeHtml(reportCaught(e, "agentPage"))}</p>`;
     return;
   }
   const h = agData.human || {};
@@ -279,7 +279,7 @@ function agWireAsk() {
         <p class="dim ag-hit-backend">matched by ${escapeHtml(r.backend || "")}</p>`
         : `<p class="dim">Nothing it knows is close to that — which is the right answer when
            it has not met the situation. A store that always replies cannot be trusted when it does.</p>`;
-    } catch (e) { out.innerHTML = `<p class="dim">${escapeHtml(reportCaught(e, "agAsk"))}</p>`; }
+    } catch (e) { out.innerHTML = `<p class="err">${escapeHtml(reportCaught(e, "agAsk"))}</p>`; }
   });
 }
 

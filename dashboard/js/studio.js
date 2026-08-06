@@ -203,7 +203,7 @@ async function sdOpenRoster() {
   host.innerHTML = `<div class="sd-roster-card"><p class="dim">gathering the cast…</p></div>`;
   let d;
   try { d = await api(`/api/lw/${lwWorldId}`); }
-  catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="dim">Could not read the cast: ${escapeHtml(e.message)}</p></div>`; return; }
+  catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="err">Could not read the cast: ${escapeHtml(e.message)}</p></div>`; return; }
   const rooms = d.rooms || [], agents = d.agents || [];
   const byRoom = {}; agents.forEach((a) => { const k = a.room == null ? "loose" : String(a.room); (byRoom[k] = byRoom[k] || []).push(a); });
   const nameOf = (k) => k === "loose" ? "Not in a scene" : ((rooms.find((r) => String(r.id) === k) || {}).name || "untitled");
@@ -295,7 +295,7 @@ async function sdChatLoad() {
       `<div class="rp-msg ${m.role === "user" ? "me" : "them"}">${escapeHtml(m.text || "")}</div>`).join("")
       || `<p class="dim">nothing said yet</p>`;
     log.scrollTop = log.scrollHeight;
-  } catch (e) { log.innerHTML = `<p class="dim">${escapeHtml(reportCaught(e, "sdChatLoad"))}</p>`; }
+  } catch (e) { log.innerHTML = `<p class="err">${escapeHtml(reportCaught(e, "sdChatLoad"))}</p>`; }
 }
 
 function sdChatPaint() {
@@ -728,7 +728,7 @@ async function sdOpenThreads(focusId) {
   host.innerHTML = `<div class="sd-roster-card"><p class="dim">reading the graph…</p></div>`;
   let room;
   try { room = (await api(`/api/lw/${lwWorldId}/room/${lwRoomId}`)).room; }
-  catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="dim">Could not read graphs: ${escapeHtml(e.message)}</p></div>`; return; }
+  catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="err">Could not read graphs: ${escapeHtml(e.message)}</p></div>`; return; }
   const nameOf = (id) => { const a = (room.agents || []).find((x) => x.id === id) || (room.props || []).find((x) => x.id === id); return a ? a.name : `#${id}`; };
   const models = LW_MODELS.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join("");
   let threads = (room.threads || []).slice();
@@ -791,7 +791,7 @@ async function sdRunGraph(tid) {
     const r = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${tid}/run${lwLiveQ()}${lwLive ? "&" : "?"}rounds=2`, { method: "POST" });
     sdFlash(); await lwReloadRoom();               // the debate's bubbles land on the canvas
     sdShowMemo(r.result, tid);
-  } catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="dim">Run failed: ${escapeHtml(e.message)}</p></div>`; }
+  } catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="err">Run failed: ${escapeHtml(e.message)}</p></div>`; }
 }
 function sdShowMemo(memo, tid) {
   const host = $("#sdRosterHost"); if (!host || !memo) return;
@@ -820,7 +820,7 @@ async function sdOpenChat(tid, peer) {
   host.innerHTML = `<div class="sd-roster-card"><p class="dim">opening chat…</p></div>`;
   let room;
   try { room = (await api(`/api/lw/${lwWorldId}/room/${lwRoomId}`)).room; }
-  catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="dim">Could not open chat: ${escapeHtml(e.message)}</p></div>`; return; }
+  catch (e) { host.innerHTML = `<div class="sd-roster-card"><p class="err">Could not open chat: ${escapeHtml(e.message)}</p></div>`; return; }
   const threads = room.threads || [];
   const t = (tid != null && threads.find((x) => x.id === tid)) || threads[0];
   if (!t) { host.innerHTML = `<div class="sd-roster-card"><div class="sd-roster-head"><h3>Chat</h3><button class="sd-close" onclick="this.closest('#sdRosterHost').hidden=true">✕</button></div><p class="dim">Connect some tokens into a graph first.</p></div>`; return; }

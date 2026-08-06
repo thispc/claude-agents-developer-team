@@ -511,6 +511,7 @@ dialog textarea { resize: vertical; min-height: 96px; line-height: 1.55; }
 .logline.log-report { color: var(--good); }
 .task-actions { display: flex; gap: 8px; }
 pre.dim, .dim { color: var(--dim); }
+pre.err, .err { color: var(--bad); }
 
 /* approval modal */
 

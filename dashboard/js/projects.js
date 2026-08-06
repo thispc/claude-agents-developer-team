@@ -1044,7 +1044,7 @@ async function showTask(id) {
       const when = e.ts ? new Date(e.ts * 1000).toLocaleTimeString() : "";
       return `<div class="logline log-${e.kind}"><span class="lt">${when} · ${escapeHtml(e.kind)}</span>${escapeHtml(text)}</div>`;
     }).join("");
-  }).catch(() => { $("#taskLog").innerHTML = `<pre class="dim">could not load log</pre>`; });
+  }).catch(() => { $("#taskLog").innerHTML = `<pre class="err">could not load log</pre>`; });
   $("#taskDetail").querySelectorAll(".task-actions button").forEach((b) =>
     b.addEventListener("click", async () => {
       await api(`/api/tasks/${b.dataset.id}/${b.dataset.act}`, { method: "POST" });
@@ -1634,7 +1634,7 @@ async function loadProjectFiles() {
   if (!box) return;
   let d;
   try { d = await api(`/api/projects/${currentProject}/files`); }
-  catch (e) { box.innerHTML = `<p class="dim">${escapeHtml(e.message || e)}</p>`; return; }
+  catch (e) { box.innerHTML = `<p class="err">${escapeHtml(e.message || e)}</p>`; return; }
   if (!(d.files || []).length) {
     box.innerHTML = `<p class="dim">${escapeHtml(d.reason || "Nothing has been merged yet.")}</p>`;
     return;
@@ -1889,7 +1889,7 @@ async function renderByAgent() {
   if (!pane) return;
   let d;
   try { d = await api(`/api/projects/${currentProject}/by-agent`); }
-  catch (e) { pane.innerHTML = `<p class="dim">could not load: ${escapeHtml(e.message)}</p>`; return; }
+  catch (e) { pane.innerHTML = `<p class="err">could not load: ${escapeHtml(e.message)}</p>`; return; }
   const groups = d.agents || d.groups || [];
   if (!groups.length) {
     pane.innerHTML = `<p class="dim">Nothing attributed yet.</p>`;
@@ -1956,7 +1956,7 @@ async function renderArtifacts(force) {
     </div>`;
   let a;
   try { a = await api(`/api/projects/${currentProject}/artifacts`); }
-  catch (e) { el.innerHTML = `<div class="pane"><p class="dim">${escapeHtml(e.message)}</p></div>`; return; }
+  catch (e) { el.innerHTML = `<div class="pane"><p class="err">${escapeHtml(e.message)}</p></div>`; return; }
   const sig = JSON.stringify(a);
   if (!force && sig === artifactsSig) return;
   artifactsSig = sig;
@@ -2165,7 +2165,7 @@ async function renderAgents() {
   // Scope to the project you're looking at — otherwise other projects' agents show up here.
   const scope = currentProject ? `?project_id=${currentProject}` : "";
   try { a = await api("/api/agents" + scope); }
-  catch (e) { el.innerHTML = `<div class="pane"><p class="dim">${escapeHtml(e.message)}</p></div>`; return; }
+  catch (e) { el.innerHTML = `<div class="pane"><p class="err">${escapeHtml(e.message)}</p></div>`; return; }
 
   const row = (g, live) => `
     <tr class="${live ? "live" : "past"}">
