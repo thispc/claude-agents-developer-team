@@ -852,6 +852,13 @@ function switchView(view, skipHash) {
 
 function route() {
   if (suppressHash) return;
+  // Any route that is not the agent page must first put it away. Screens are siblings that
+  // hide each other, so a section left visible sits on top of whatever comes next — the
+  // "messed up" studio was this page still open behind it.
+  if (!location.hash.startsWith("#/agent/")) {
+    const ag = $("#agentPage");
+    if (ag && !ag.hidden) { ag.hidden = true; if (typeof agTimer !== "undefined" && agTimer) { clearInterval(agTimer); agTimer = null; } }
+  }
   const plan = location.hash.match(/^#\/plan(?:\/(\d+))?/);
   if (plan) {
     openPlan();

@@ -254,7 +254,7 @@ function sdChatHtml() {
   return `<aside class="sd-chat${sdChatOpen ? "" : " closed"}" id="sdChat">
     <button class="sd-chat-tab" id="sdChatTab" title="${sdChatOpen ? "Hide" : "Show"} the conversation">${sdChatOpen ? "›" : "‹"}</button>
     <div class="sd-chat-in">
-      <div class="sd-chat-head">
+      <div class="sd-chat-head" id="sdChatHead">
         <b id="sdChatWho">the room</b>
         <span class="dim" id="sdChatNote">pick someone on the canvas, or talk to the manager</span>
       </div>
@@ -269,35 +269,49 @@ function sdChatHtml() {
 
 /** Who you are talking to, and through which graph. Selecting a token aims the panel. */
 function sdChatAim(agent, threadId) {
-  sdChatTo = agent ? { kind: "agent", id: agent.id, name: agent.name, threadId } : null;
+  sdChatTo = agent ? { kind: "agent", id: agent.id, name: agent.name, threadId, data: agent } : null;
   sdChatPaint();
 }
 
 function sdChatPaint() {
-  const who = $("#sdChatWho"), note = $("#sdChatNote"), inp = $("#sdChatText");
-  if (!who) return;
+  const head = $("#sdChatHead"), inp = $("#sdChatText"), send = $("#sdChatSend");
+  if (!head) return;
+  // WHO first, always. Selecting somebody and being shown nothing about them — because the
+  // room happens to have no graph yet — is the kind of empty state that reads as a bug.
+  // Whether you can talk to them yet is a separate question, answered underneath.
+  if (sdChatTo) {
+    const a = sdChatTo.data || {};
+    const u = a.usage || {}, act = a.activity || {};
+    head.innerHTML = `
+      <div class="sd-chat-id">
+        <img class="sd-chat-face" alt="" src="${lwSvgUri(lwAvatarSvg(lwAvatarSeed(a), 54))}">
+        <b id="sdChatWho">${escapeHtml(sdChatTo.name || "someone")}</b>
+        <span class="sd-chat-sub">${escapeHtml(act.busy ? (act.what || act.state) : "idle")}</span>
+        <div class="sd-facts sd-chat-facts">
+          <span>${escapeHtml(String(a.wants || "—"))}</span>
+          <span>${u.asleep ? "resting" : `${u.used || 0}/${u.cap || "?"}`}</span>
+          <span>τ ${escapeHtml(String(a.tau ?? 0))}</span>
+        </div>
+        <button class="rp-mini sd-chat-open" data-openagent="${escapeHtml(String(sdChatTo.id))}">Its decisions ⤢</button>
+      </div>`;
+    const go = head.querySelector("[data-openagent]");
+    if (go) go.addEventListener("click", () => openAgentPage(Number(go.dataset.openagent)));
+  } else {
+    head.innerHTML = `<b id="sdChatWho">the manager</b>
+      <span class="dim">it sees every graph in this room — ask it to decide something</span>`;
+  }
   // A conversation is routed along the arrows, so with no graph there is nothing to route
   // through. Say that, rather than accepting a sentence and failing on send: an input that
-  // takes your words and loses them is worse than one that tells you why it can't.
-  const send = $("#sdChatSend");
-  if (!sdFirstThreadId()) {
-    who.textContent = "nobody yet";
-    note.textContent = "drag one agent onto another to connect them — a conversation follows the arrows";
-    if (inp) { inp.disabled = true; inp.placeholder = "connect two agents first"; }
-    if (send) send.disabled = true;
-    return;
+  // takes your words and loses them is worse than one that tells you why it cannot.
+  const wired = !!sdFirstThreadId();
+  if (inp) {
+    inp.disabled = !wired;
+    inp.placeholder = wired ? (sdChatTo ? `Ask ${sdChatTo.name}…` : "Ask the manager…")
+                            : "connect two agents first — a conversation follows the arrows";
   }
-  if (inp) inp.disabled = false;
-  if (send) send.disabled = false;
-  if (sdChatTo) {
-    who.textContent = sdChatTo.name;
-    note.textContent = "they answer, and their graph runs because you asked";
-    if (inp) inp.placeholder = `Ask ${sdChatTo.name}…`;
-  } else {
-    who.textContent = "the manager";
-    note.textContent = "it sees every graph in this room";
-    if (inp) inp.placeholder = "Ask the manager…";
-  }
+  if (send) send.disabled = !wired;
+  const note = head.querySelector(".sd-chat-sub");
+  if (!wired && note) note.textContent = "not connected to anyone yet";
 }
 
 function sdChatAppend(role, text) {
@@ -1220,7 +1234,7 @@ function renderOverview() {
   stage.querySelectorAll(".lw-group-open").forEach((b) =>
     b.addEventListener("click", () => openRoom(b.dataset.room)));
   stage.querySelectorAll("[data-agent]").forEach((b) =>
-    b.addEventListener("click", () => openPersonDrawer(b.dataset.agent)));
+    b.addEventListener("click", () => openAgentPage(b.dataset.agent)));
   stage.querySelectorAll("[data-artifact]").forEach((b) =>
     b.addEventListener("click", () => lwOpenArtifactPeek(b.dataset.artifact)));
 }
@@ -1249,7 +1263,7 @@ function renderAgentsTab() {
   }).join("");
   stage.innerHTML = `<div class="lw-gallery">${cards}</div>`;
   stage.querySelectorAll("[data-agent]").forEach((b) =>
-    b.addEventListener("click", () => openPersonDrawer(b.dataset.agent)));
+    b.addEventListener("click", () => openAgentPage(b.dataset.agent)));
 }
 
 let lwAgentDraft = null;

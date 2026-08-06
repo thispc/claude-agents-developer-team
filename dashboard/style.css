@@ -3017,14 +3017,36 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .ag-legend i.ag-k.bad { background: var(--bad); border-color: var(--bad); }
 .ag-legend i.ag-k.canon { border-color: var(--accent); border-width: 3px; }
 /* the graph finally gets room — this is the whole reason the page exists */
-.ag-why { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 16px; align-items: start; }
-.ag-why > .sd-label { grid-column: 1 / -1; }
-.ag-why > .lw-dagwrap { grid-column: 1; }
-.ag-why > .lw-dpanel { grid-column: 2; grid-row: 2; position: sticky; top: 16px; }
-#agentPage .lw-dagwrap { max-height: none; height: clamp(420px, 62vh, 760px); }
+/* The graph and its inspector, side by side, and nothing else on the page competing for the
+   space. The first version had five tabs; a tab strip is a filing cabinet, and what this
+   screen is FOR is exploring how an agent got where it is. */
+.ag-explore { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+.ag-graph { min-width: 0; }
+#agentPage .lw-dagwrap { max-height: none; height: clamp(460px, 68vh, 900px); }
+#agentPage .lw-dpanel { display: none; }        /* the inspector replaces the built-in rail */
+.ag-inspect { position: sticky; top: 16px; background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; padding: 13px 15px; max-height: 78vh; overflow-y: auto; }
+.ag-ins-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; margin-bottom: 9px; }
+.ag-ins-head .dim { display: block; width: 100%; font-size: 11.5px; line-height: 1.4; }
+.ag-ins-head .rp-link { margin-left: auto; }
+.ag-ins-body { font-size: 12.5px; line-height: 1.6; display: flex; flex-direction: column; gap: 3px; }
+.ag-ins-body b { color: var(--faint); font-weight: 600; margin-right: 5px; }
+.ag-ins-why { margin-top: 4px; }
+.ag-taught { margin-top: 12px; padding-top: 11px; border-top: 1px dashed var(--line); }
+.ag-taught-says { font-size: 13px; line-height: 1.5; margin: 4px 0 3px; }
+.ag-filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 14px 0 12px; }
+.ag-filters .ag-legend { margin-left: auto; }
+.ag-makeup { margin: 8px 0 4px; }
+.ag-makeup[hidden] { display: none; }
+.ag-info { width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--line);
+  background: var(--card-2); color: var(--dim); font-size: 11px; font-weight: 700;
+  font-family: var(--mono); cursor: pointer; vertical-align: 3px; margin-left: 8px; }
+.ag-info:hover, .ag-info.on { border-color: var(--accent); color: var(--accent); }
+.lw-assoc button.lw-as { width: 100%; text-align: left; cursor: pointer; font: inherit; }
+.lw-assoc button.lw-as:hover { border-color: var(--accent); }
 @media (max-width: 1000px) {
-  .ag-grid, .ag-why { grid-template-columns: minmax(0, 1fr); }
-  .ag-why > .lw-dpanel { grid-column: 1; grid-row: auto; position: static; }
+  .ag-grid, .ag-explore { grid-template-columns: minmax(0, 1fr); }
+  .ag-inspect { position: static; max-height: none; }
 }
 
 /* ── the single-click popup ──────────────────────────────────────────────────
@@ -3045,3 +3067,15 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
   font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; }
 .sd-peek-row > b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
 .sd-peek-open { width: 100%; margin-top: 9px; }
+
+/* ── the agent inside the conversation panel ────────────────────────────────
+   Selecting somebody used to raise a second window beside this one; now this IS the detail
+   view. Face, name, the few facts worth knowing before you type, and the way into the full
+   decision history. */
+.sd-chat-id { display: flex; flex-direction: column; align-items: center; text-align: center;
+  gap: 4px; padding: 4px 0 8px; border-bottom: 1px dashed var(--line); }
+.sd-chat-face { width: 54px; height: 54px; border-radius: 50%; }
+.sd-chat-id b { font-size: 14.5px; }
+.sd-chat-sub { font-size: 11.5px; color: var(--dim); }
+.sd-chat-facts { justify-content: center; flex-wrap: wrap; }
+.sd-chat-open { margin-top: 4px; }

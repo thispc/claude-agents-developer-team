@@ -162,13 +162,15 @@ def test_a_habit_says_what_it_matches_on_not_object_Object():
     assert "escapeHtml(String(hb.when))" not in js
 
 
-def test_the_resume_pin_count_is_treated_as_the_number_it_is():
-    """`resume.pins` is an int; the drawer did `Array.isArray(...) ? ... : []` and then
-    rendered the empty list — so no pinned achievement has ever appeared."""
+def test_the_drawer_is_gone_entirely():
+    """Two windows for one agent, a close button that scrolled out of reach, and the decision
+    graph squeezed into a 340px keyhole. Everything it rendered lives on the agent's page."""
     from conftest import dashboard_js
     js = dashboard_js()
-    assert "typeof resume.pins === \"number\"" in js
-    assert "pins.map((p)" not in js
+    assert "function openPersonDrawer" not in js, "the drawer is back"
+    assert "lwPeekOpen" not in js, "and so is the popup that replaced it"
+    # #lwDetail itself stays — artifacts still use it. Only the person branch is retired.
+    assert "openAgentPage" in js, "and something has to open the agent instead"
 
 
 # ---- the agent register ---------------------------------------------------
@@ -262,9 +264,13 @@ def test_the_agent_page_exists_and_is_addressable():
     js = dashboard_js()
     assert "async function openAgentPage" in js
     assert "#/agent/" in js, "it needs an address, or you cannot link to it"
-    for tab in ("now", "why", "learned", "record", "makeup"):
-        assert f'id: "{tab}"' in js.split("const AG_TABS = [", 1)[1].split("];", 1)[0]
-    # the graph gets room — the entire reason the page exists
+    # ONE page, no tab strip: a tab strip is a filing cabinet, and this screen is for
+    # exploring how an agent got where it is.
+    assert "AG_TABS" not in js, "the tabs came back"
+    assert "function agInspectHtml" in js and "function agKnowledgeHtml" in js
+    for f in ("all", "pivots", "learned", "bad"):
+        assert f'id: "{f}"' in js.split("const AG_FILTERS = [", 1)[1].split("];", 1)[0]
+    # the graph gets the page — the entire reason it exists
     css = (Path(__file__).resolve().parents[1] / "dashboard/style.css").read_text()
     assert "#agentPage .lw-dagwrap { max-height: none;" in css
 

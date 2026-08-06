@@ -452,8 +452,8 @@ async function pointerUp(inst, e) {
             aimChat(inst, g.id, g.kind);                     // ...and aims the conversation
         if (g.kind === "agent") {                        // ...and shows the five facts
           const tk = inst.tokens.get(g.id);
-          if (tk && W.lwPeekOpen) W.lwPeekOpen(tk.data);
-        } else if (W.lwPeekClose) W.lwPeekClose();
+          if (tk && W.sdChatAim) W.sdChatAim(tk.data, 0);   // the panel IS the detail view
+        }
       }
       return;
     }
@@ -555,7 +555,7 @@ function keyDown(inst, e) {
     e.preventDefault();
     deleteMembers(inst, [...inst.sel].map((id) => ({ id }))); return;
   }
-  if (e.key === "Enter" && inst.sel.size) { const t = inst.tokens.get([...inst.sel][0]); if (t) { if (t.kind === "agent") W.openPersonDrawer && W.openPersonDrawer(t.data.id, t.data.name); else W.lwOpenArtifactPeek && W.lwOpenArtifactPeek(t.data.id); } }
+  if (e.key === "Enter" && inst.sel.size) { const t = inst.tokens.get([...inst.sel][0]); if (t) { if (t.kind === "agent") W.openAgentPage && W.openAgentPage(t.data.id); else W.lwOpenArtifactPeek && W.lwOpenArtifactPeek(t.data.id); } }
 }
 
 function saveView(inst) { try { localStorage.setItem(inst.viewKey, JSON.stringify(inst.world.getView())); } catch (e) { /* */ } }

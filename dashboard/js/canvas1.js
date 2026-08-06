@@ -253,7 +253,7 @@ let lwNudgeTimer = null;
 function lwOpenSelected() {
   const list = lwSelList(); if (!list.length) return;
   const s = list[0];
-  if (s.kind === "agent") openPersonDrawer(s.entry.data.id, s.entry.data.name);
+  if (s.kind === "agent") openAgentPage(s.entry.data.id);
   else lwOpenArtifactPeek(s.entry.data.id);
 }
 function lwNudgeSelection(dx, dy) {
@@ -567,7 +567,7 @@ function lwMountCanvas(room, agents, props) {
     const w = lwPointerWorld(); const tk = w && lwPickToken(w);
     if (tk) {
       if (!lwGraphSelect(tk.id)) {
-        if (tk.type === "agent") openPersonDrawer(tk.id, tk.entry.data.name);
+        if (tk.type === "agent") openAgentPage(tk.id);
         else lwOpenArtifactPeek(tk.id);
       }
     }
@@ -2001,7 +2001,7 @@ function lwFloorMenu(evt, world) {
   ]);
 }
 function lwAgentMenu(evt, a) {
-  const items = [{ label: `Peek ${a.name || "them"}`, act: () => openPersonDrawer(a.id, a.name) }];
+  const items = [{ label: `Open ${a.name || "them"} ⤢`, act: () => openAgentPage(a.id) }];
   const entry = lwKonva && lwKonva.agents.get(String(a.id));
   if (entry && entry.seat)
     items.push({ label: `Unseat ${a.name || "them"}`, act: () => lwUnseatAgent(a, entry.seat.propId) });
@@ -2193,91 +2193,10 @@ function lwHandCardHtml(value) {
     <span class="pc-c br">${r}<b>${s.glyph}</b></span>
   </span>`;
 }
-async function openPersonDrawer(hid, name) {
-  const box = $("#lwDetail");
-  box.hidden = false;
-  box.className = "studio-detail";
-  box.innerHTML = `<p class="dim">reading ${escapeHtml(name || "them")}…</p>`;
-  let d;
-  try { d = await api(`/api/lw/${lwWorldId}/human/${hid}`); }
-  catch (e) {
-    box.innerHTML = `<p class="dim">Could not read them: ${escapeHtml(e.message || String(e))}</p>
-      <div class="sc-actions"><button id="lwDClose">Close</button></div>`;
-    $("#lwDClose") && $("#lwDClose").addEventListener("click", () => { box.hidden = true; });
-    return;
-  }
-  const h = d.human || {};
-  const mood = h.mood || {};
-  const want = dominantWant(h.wants);
-  const skills = Array.isArray(h.skills)
-    ? h.skills.slice().sort((a, b) => Number(b[1]) - Number(a[1])).slice(0, 5) : [];
-  const resume = h.resume || {};
-  const pinCount = typeof resume.pins === "number" ? resume.pins
-    : (Array.isArray(resume.pins) ? resume.pins.length : 0);
-  const habits = Array.isArray(d.habits) ? d.habits : [];
-  const bonds = (d.bonds && typeof d.bonds === "object") ? d.bonds : {};
-  const hand = Array.isArray(d.hand) ? d.hand : [];
-
-  box.innerHTML = `
-    <div class="sd-head">
-      <div class="fig-emblem lw-av-emblem"><img alt="" src="${lwSvgUri(lwAvatarSvg(lwAvatarSeed({ name: h.name || name, id: hid, figure: h.figure }), 48))}"></div>
-      <div style="flex:1"><h3>${escapeHtml(h.name || name || "someone")}</h3>
-        <p class="sd-persona">${escapeHtml(d.narrative || h.narrative || "no story yet")}</p></div>
-      <button class="sd-close" id="lwDClose">✕</button>
-    </div>
-    <div class="sd-facts">
-      <span>τ ${escapeHtml(String(h.tau ?? 0))}</span>
-      <span>${escapeHtml(String(h.memories ?? 0))} memories</span>
-      <span>${escapeHtml(String(h.habits ?? habits.length))} habits</span>
-    </div>
-
-    <div class="sd-label">Mood</div>
-    <div class="lw-meters">
-      ${lwMeter("confidence", mood.confidence)}
-      ${lwMeter("stress", mood.stress)}
-      ${lwMeter("hope", mood.hope)}
-      ${lwMeter("focus", mood.focus)}
-    </div>
-
-    ${want ? `<div class="sd-label">Wants</div>
-      <div class="lw-want-big">▸ ${escapeHtml(want.name)}${
-        want.pressure != null ? ` <span class="dim">pressure ${lwPct(want.pressure)}</span>` : ""}</div>` : ""}
-
-    ${skills.length ? `<div class="sd-label">Top skills</div>
-      <div class="sc-row">${skills.map((s) =>
-        `<span class="sc-chip on">${escapeHtml(String(s[0]))} <i>${escapeHtml(String(s[1]))}</i></span>`).join("")}</div>` : ""}
-
-    <div class="sd-label">Résumé ledger ${resume.intact
-      ? `<span class="lw-verified">verified ✓</span>` : `<span class="lw-broken">unverified</span>`}</div>
-    ${pinCount
-      ? `<p class="dim">${pinCount} pinned achievement${pinCount === 1 ? "" : "s"}${
-          resume.head ? ` · chain <code>${escapeHtml(String(resume.head).slice(0, 12))}</code>` : ""}</p>`
-      : `<p class="dim">no pinned achievements yet</p>`}
-
-    ${habits.length ? `<div class="sd-label">Compiled habits</div>
-      <div class="lw-habits">${habits.map((hb) => `<div class="lw-habit">
-        <span class="lw-habit-when">when ${lwHabitWhen(hb.when)}</span>
-        <span class="lw-habit-meta">conf ${lwPct(hb.confidence)} · fired ${escapeHtml(String(hb.fires ?? 0))}×</span>
-      </div>`).join("")}</div>` : ""}
-
-    ${Object.keys(bonds).length ? `<div class="sd-label">Bonds</div>
-      <div class="lw-bonds">${Object.entries(bonds).map(([oid, b]) => `<div class="lw-bond">
-        <span class="lw-bond-name">${escapeHtml(lwNameOf(oid))}</span>
-        <span class="lw-bond-meta">trust ${lwPct(b && b.trust)} · warmth ${lwPct(b && b.warmth)}</span>
-      </div>`).join("")}</div>` : ""}
-
-    <div class="sd-label">Their hand <span class="dim">(the operator's privilege — a card's value is a secret only its holder can read)</span></div>
-    <div class="lw-hand">${hand.length
-      ? hand.map((c) => lwHandCardHtml(c.value)).join("")
-      : `<span class="dim">empty-handed</span>`}</div>
-
-    ${lwAssocHtml(d.associations)}
-    ${lwTreeHtml(d.decisions, d.canon)}
-    ${lwAgentLogsHtml(d.logs)}`;
-  $("#lwDClose").addEventListener("click", () => { box.hidden = true; });
-  lwWireDag(box);
-}
-
+// openPersonDrawer is retired. Its 340px drawer was the thing root asked to be rid of: two
+// windows for one agent, a close button that scrolled out of reach, and the decision graph
+// squeezed into a keyhole. Everything it rendered now lives on the agent's own page, and the
+// helpers below are shared with it.
 /** What this agent has learned to expect — the part that makes it faster next time.
  *
  * A signature is a coarse fingerprint of a situation ("http:505"), so the same lesson is

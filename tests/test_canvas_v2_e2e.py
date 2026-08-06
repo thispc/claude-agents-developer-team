@@ -195,24 +195,20 @@ def _select_graph(page, screen_pt):
     page.wait_for_timeout(250)
 
 
-def test_a_single_click_shows_five_facts_and_cannot_scroll(server, page):
-    """The drawer's close button was not buggy — it sat inside the scrolling container and
-    scrolled off the top. So the popup cannot scroll at all: five facts and overflow:hidden,
-    which makes "no scrolling needed" structural rather than a promise about content."""
+def test_a_single_click_opens_exactly_one_thing(server, page):
+    """Clicking an agent used to raise a second window beside the conversation panel — two
+    places showing one agent, while the panel you actually type into showed nothing. Now the
+    panel IS the detail view: face, name, a few facts, and the box you were going to use."""
     wid, rid = _mk(server["client"])
     a, b = _two_connected(server["client"], wid, rid)
     _open(page, wid, rid)
     pa = _tpos(page, a); sa = _scr(page, pa["x"], pa["y"])
-    page.mouse.click(sa["x"], sa["y"]); page.wait_for_timeout(500)
-    assert page.evaluate("() => { const e = document.querySelector('#lwPeek'); return !!e && !e.hidden; }"), \
-        "a single click showed no popup"
-    box = page.evaluate("""() => { const e = document.querySelector('#lwPeek');
-        return [e.scrollHeight - e.clientHeight, getComputedStyle(e).overflow]; }""")
-    assert box[0] <= 1, f"the popup needs scrolling ({box[0]}px of overflow)"
-    assert box[1] == "hidden", f"overflow is {box[1]} — the guarantee has to be structural"
-    # ...and its close is reachable, always: Escape, and a ✕ that cannot scroll away
-    page.keyboard.press("Escape"); page.wait_for_timeout(250)
-    assert page.evaluate("() => document.querySelector('#lwPeek').hidden"), "Escape did not close it"
+    page.mouse.click(sa["x"], sa["y"]); page.wait_for_timeout(600)
+    assert page.query_selector("#lwPeek") is None, "the popup is back"
+    assert page.evaluate("() => { const d = document.querySelector('#lwDetail'); return !d || d.hidden; }"), \
+        "the old drawer opened as well"
+    assert page.query_selector(".sd-chat-face") is not None, \
+        "the conversation panel did not become the detail view"
 
 
 def test_v2_double_click_opens_the_agent_page(server, page):
@@ -230,7 +226,14 @@ def test_v2_double_click_opens_the_agent_page(server, page):
     assert page.evaluate("() => !document.querySelector('#agentPage').hidden"), \
         "double-clicking an agent did not open its page"
     assert "#/agent/" in page.evaluate("() => location.hash"), "the page has no address"
-    assert page.evaluate("() => document.querySelectorAll('[data-agtab]').length") == 5
+    # one page, no tab strip — the graph and the filters that explore it
+    assert page.evaluate("() => document.querySelectorAll('[data-agtab]').length") == 0
+    assert page.evaluate("() => document.querySelectorAll('[data-agfilter]').length") == 4
+    # ...and leaving it puts the Studio back rather than leaving a half-torn-down canvas
+    page.click("#agBack"); page.wait_for_timeout(900)
+    assert page.evaluate("() => document.querySelector('#agentPage').hidden"), "the page stayed open"
+    assert page.evaluate("() => !document.querySelector('#lifeworld').hidden"), \
+        "going back left the studio hidden"
 
 
 def test_v2_select_graph_then_wire_and_collapse(server, page):

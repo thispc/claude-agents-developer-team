@@ -357,3 +357,43 @@ def test_the_legend_dots_are_actually_different_colours():
     css = (Path(__file__).resolve().parents[1] / "dashboard/style.css").read_text()
     for cls in ("good", "bad", "canon"):
         assert f".ag-legend i.ag-k.{cls}" in css, f"{cls} loses the specificity fight"
+
+
+# ---- the tree and the cache are connected --------------------------------
+
+def test_a_belief_remembers_which_decisions_built_it(fresh_db):
+    """A conclusion you cannot trace is a number to take on faith, and "why do you think
+    that?" is the first question anyone asks a knowledge base."""
+    log = DecisionLog()
+    a = log.record(1, "build failed ImportError", "the venv symlink is missing", "symlink it")
+    log.resolve(a.id, "good", says="an ImportError here means the venv symlink")
+    b = log.record(2, "another ImportError", "same cause", "apply the fix", parents=[a.id])
+    log.resolve(b.id, "good", says="an ImportError here means the venv symlink")
+    assoc = log.assoc["error:ImportError"]
+    assert assoc.from_decisions == [a.id, b.id]
+    assert log.taught_by(a.id) is assoc
+    assert log.taught_by(999) is None
+
+
+def test_recall_returns_the_path_somebody_already_walked(fresh_db):
+    """Meeting a familiar situation should not mean thinking it through from nothing; it
+    should mean walking a path somebody already walked, with the outcomes attached."""
+    log = DecisionLog()
+    root = log.record(1, "ImportError in the build", "the venv symlink", "symlink it")
+    log.resolve(root.id, "good", says="an ImportError here means the venv symlink")
+    kid = log.record(2, "ImportError again", "same", "apply the fix", parents=[root.id])
+    log.resolve(kid.id, "good", says="an ImportError here means the venv symlink")
+    out = log.recall_path("error:ImportError")
+    assert out["known"] is True and out["confidence"] == 1.0
+    assert [n["chose"] for n in out["path"]] == ["symlink it", "apply the fix"]
+    assert log.recall_path("error:NeverSeen")["known"] is False
+
+
+def test_the_page_links_a_node_to_what_it_taught():
+    from conftest import dashboard_js
+    js = dashboard_js()
+    ins = js.split("function agInspectHtml", 1)[1].split("\n}", 1)[0]
+    assert "from_decisions" in ins, "a node must find the belief it contributed to"
+    assert "What it took from this" in ins
+    # ...and back the other way: a belief jumps to the decision that produced it
+    assert "data-agsig" in js and "why do you think that" in js

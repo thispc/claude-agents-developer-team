@@ -99,6 +99,10 @@ class Assoc:
     good: int = 0
     bad: int = 0
     tau: int = 0
+    # Which decisions produced this belief. The whole point of keeping a tree AND a cache is
+    # that the two are connected: a conclusion you cannot trace is a number to take on faith,
+    # and "why do you think that?" is the first question anyone asks a knowledge base.
+    from_decisions: list = field(default_factory=list)
 
     @property
     def evidence(self) -> int:
@@ -114,7 +118,8 @@ class Assoc:
 
     def to_dict(self) -> dict[str, Any]:
         return {"sig": self.sig, "says": self.says, "good": self.good, "bad": self.bad,
-                "tau": self.tau, "confidence": self.confidence, "evidence": self.evidence}
+                "tau": self.tau, "confidence": self.confidence, "evidence": self.evidence,
+                "from_decisions": list(self.from_decisions)}
 
 
 class DecisionLog:
@@ -185,6 +190,8 @@ class DecisionLog:
             a.says = says                       # the conclusion that actually worked
         setattr(a, outcome, getattr(a, outcome) + 1)
         a.tau = max(a.tau, d.tau)
+        if d.id not in a.from_decisions:
+            a.from_decisions = (a.from_decisions + [d.id])[-12:]
         self.assoc[d.sig] = a
         self._trim_assoc()
 
@@ -195,6 +202,37 @@ class DecisionLog:
         ranked = sorted(self.assoc.values(), key=lambda a: (a.confidence, a.evidence, a.tau))
         for a in ranked[:len(self.assoc) - MAX_ASSOC]:
             self.assoc.pop(a.sig, None)
+
+    def taught_by(self, did: int) -> Assoc | None:
+        """What this one decision contributed to — the belief it helped build, if any."""
+        for a in self.assoc.values():
+            if did in a.from_decisions:
+                return a
+        return None
+
+    def recall_path(self, sig: str) -> dict:
+        """Everything this agent knows about a situation of this shape: the belief, the
+        decisions that built it, and the pivots those hang from.
+
+        This is the retrieval primitive — the point of compiling experience at all. Meeting a
+        familiar situation should not mean thinking it through again from nothing; it should
+        mean walking a path somebody already walked, with the outcomes attached.
+        """
+        a = self.assoc.get(sig or "")
+        if not a:
+            return {"sig": sig, "known": False, "says": "", "confidence": 0.0,
+                    "evidence": 0, "path": []}
+        nodes = [n for n in self.nodes if n.id in a.from_decisions or n.sig == sig]
+        seen, path = set(), []
+        for n in sorted(nodes, key=lambda x: x.id):
+            for pid in n.parents:                    # the pivots it hangs from come first
+                p = self.get(pid)
+                if p and p.id not in seen:
+                    seen.add(p.id); path.append(p.to_dict())
+            if n.id not in seen:
+                seen.add(n.id); path.append(n.to_dict())
+        return {"sig": sig, "known": a.evidence >= MIN_EVIDENCE, "says": a.says,
+                "confidence": a.confidence, "evidence": a.evidence, "path": path[-12:]}
 
     def recall(self, sig: str) -> Assoc | None:
         """What this agent expects of this situation — the cache read. O(1), free, and silent
@@ -232,8 +270,9 @@ class DecisionLog:
 
     def to_dict(self) -> dict[str, Any]:
         return {"seq": self.seq, "nodes": [n.to_dict() for n in self.nodes],
-                "assoc": {k: {"sig": a.sig, "says": a.says, "good": a.good,
-                              "bad": a.bad, "tau": a.tau} for k, a in self.assoc.items()}}
+                "assoc": {k: {"sig": a.sig, "says": a.says, "good": a.good, "bad": a.bad,
+                              "tau": a.tau, "from_decisions": list(a.from_decisions)}
+                          for k, a in self.assoc.items()}}
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> "DecisionLog":
@@ -250,7 +289,8 @@ class DecisionLog:
             try:
                 assoc[k] = Assoc(sig=raw.get("sig", k), says=raw.get("says", ""),
                                  good=int(raw.get("good", 0)), bad=int(raw.get("bad", 0)),
-                                 tau=int(raw.get("tau", 0)))
+                                 tau=int(raw.get("tau", 0)),
+                                 from_decisions=list(raw.get("from_decisions") or []))
             except Exception:
                 continue
         return cls(nodes=nodes, assoc=assoc, seq=int(d.get("seq", 0) or 0))
