@@ -2260,7 +2260,76 @@ async function openPersonDrawer(hid, name) {
     <div class="sd-label">Their hand <span class="dim">(the operator's privilege — a card's value is a secret only its holder can read)</span></div>
     <div class="lw-hand">${hand.length
       ? hand.map((c) => lwHandCardHtml(c.value)).join("")
-      : `<span class="dim">empty-handed</span>`}</div>`;
+      : `<span class="dim">empty-handed</span>`}</div>
+
+    ${lwAssocHtml(d.associations)}
+    ${lwTreeHtml(d.decisions, d.canon)}
+    ${lwAgentLogsHtml(d.logs)}`;
   $("#lwDClose").addEventListener("click", () => { box.hidden = true; });
+  box.querySelectorAll("[data-dnode]").forEach((el) => el.addEventListener("click", () => {
+    const open = el.classList.toggle("open");
+    const why = el.querySelector(".lw-dwhy");
+    if (why) why.hidden = !open;
+  }));
+}
+
+/** What this agent has learned to expect — the part that makes it faster next time.
+ *
+ * A signature is a coarse fingerprint of a situation ("http:505"), so the same lesson is
+ * found again when the wording, the host and the day are all different. Confidence is the
+ * share of times the conclusion preceded a good outcome, and anything under two agreeing
+ * outcomes is not shown as knowledge at all — one coincidence is superstition. */
+function lwAssocHtml(assoc) {
+  const rows = Array.isArray(assoc) ? assoc : [];
+  if (!rows.length) return "";
+  return `<div class="sd-label">What it expects <span class="dim">recalled instantly, before it thinks — a hit costs nothing</span></div>
+    <div class="lw-assoc">${rows.map((a) => `<div class="lw-as${a.confidence >= 0.5 ? " live" : " weak"}">
+      <code class="lw-as-sig">${escapeHtml(a.sig)}</code>
+      <span class="lw-as-says">${escapeHtml(a.says || "")}</span>
+      <span class="lw-as-meta">${a.evidence < 2 ? "not yet trusted" : `${Math.round(a.confidence * 100)}% · ${a.evidence} times`}</span>
+    </div>`).join("")}</div>`;
+}
+
+/** The decisions it made, newest last, with the causes folded away until you ask.
+ *
+ * CANON is marked, not chosen: a decision is canon when enough later decisions descend from
+ * it, which is what a pivot actually is. STALE means something it rested on was later shown
+ * to be wrong — kept rather than deleted, because the mistake is the interesting part. */
+function lwTreeHtml(nodes, canon) {
+  const rows = Array.isArray(nodes) ? nodes : [];
+  if (!rows.length) return "";
+  const canonSet = new Set(canon || []);
+  return `<div class="sd-label">How it got here <span class="dim">${rows.length} decisions · ${canonSet.size} turned out to be pivots</span></div>
+    <div class="lw-tree">${rows.slice(-40).map((n) => {
+      const why = Object.entries(n.because || {}).filter(([, v]) => v !== "" && v !== null)
+        .map(([k, v]) => `<span class="rp-lf">${escapeHtml(k)}=${escapeHtml(String(v))}</span>`).join(" ");
+      return `<div class="lw-dnode${n.canon ? " canon" : ""}${n.stale ? " stale" : ""} o-${escapeHtml(n.outcome || "open")}" data-dnode="${n.id}">
+        <div class="lw-dhead">
+          <span class="lw-dmark">${n.canon ? "★" : n.stale ? "⚠" : "·"}</span>
+          <span class="lw-dchose">${escapeHtml(n.chose || n.understood || "(no action)")}</span>
+          ${n.sig ? `<code class="lw-as-sig">${escapeHtml(n.sig)}</code>` : ""}
+          <span class="lw-dout">${escapeHtml(n.outcome || "")}</span>
+        </div>
+        <div class="lw-dwhy" hidden>
+          <div><b>saw</b> ${escapeHtml(n.saw || "")}</div>
+          <div><b>made of it</b> ${escapeHtml(n.understood || "")}</div>
+          <div>${why}</div>
+          ${n.parents && n.parents.length ? `<div class="dim">after #${n.parents.join(", #")}</div>` : ""}
+        </div></div>`;
+    }).join("")}</div>`;
+}
+
+/** The backend's own record of this agent. Root only — the server decides that, not this
+ * function; if the field is absent, you are not root and there is nothing to hide badly. */
+function lwAgentLogsHtml(rows) {
+  if (!Array.isArray(rows) || !rows.length) return "";
+  return `<div class="sd-label">Backend log <span class="dim">what the server recorded about them</span></div>
+    <div class="lw-alogs">${rows.slice(-25).map((r) => {
+      const when = r.ts ? new Date(r.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }) : "";
+      return `<div class="rp-actline ${r.level === "error" ? "errline" : r.level === "warn" ? "warnline" : ""}">`
+        + `<span class="rp-actwhen">${escapeHtml(when)}</span>`
+        + `<span class="rp-lcat">${escapeHtml(r.cat)}/${escapeHtml(r.event)}</span>`
+        + `<span>${escapeHtml(String(r.msg || "").slice(0, 160))}</span></div>`;
+    }).join("")}</div>`;
 }
 

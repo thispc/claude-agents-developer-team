@@ -19,6 +19,7 @@ from .entity import Being, register
 from .types import Packet, Signal
 from .psyche import Psyche
 from .senses import Senses, ATTENTION_FLOOR
+from .decisions import DecisionLog, signature
 from .memory import Memory
 from .skills import Skills
 from .drives import Drives
@@ -44,6 +45,9 @@ class Human(Being):
         self.psyche = psyche or Psyche()
         self.senses = Senses()
         self.memory = Memory()
+        # What it decided and why, and what it has learned to expect. Free to keep: every
+        # field comes from the packet the appraisal already returned.
+        self.decisions = DecisionLog()
         self.skills = Skills()
         self.drives = Drives()
         self.rules = RuleEngine()
@@ -76,6 +80,14 @@ class Human(Being):
             return Packet(understood="(ignored)")
 
         ctx = self._ctx(s)
+        # THE CACHE READ. If this agent has met this kind of situation before and what it
+        # concluded then held up, that conclusion goes in before anything is asked of a
+        # model — the point of remembering is not having to think again.
+        sig = signature(s.text())
+        known = self.decisions.recall(sig)
+        if known is not None:
+            ctx["recalled"] = {"sig": known.sig, "says": known.says,
+                               "confidence": known.confidence, "seen": known.evidence}
         packet = self.rules.reflex(s, ctx) if flags.on("rule_compiler") else None
         if packet is None:
             packet = await world.appraise(self, s, ctx, free=free)  # Tier 0 (free) or Tier 2 (spend)
@@ -86,7 +98,30 @@ class Human(Being):
                 self.rules.observe(s, packet, ctx, self.tau)
 
         self._apply(s, packet, flags, pressure)
+        self._note_decision(s, packet, sig, goal, pressure, known)
         return packet
+
+    def _note_decision(self, s: Signal, p: Packet, sig: str, goal: str,
+                       pressure: float, known) -> None:
+        """Record the decision and the causes we already computed. Costs nothing.
+
+        Only decisions with an actual choice in them are kept — an agent that logs every
+        ignored signal fills its own tree with noise and buries the moments that turned."""
+        act = (p.action or {}).get("kind") or ""
+        if not act and not p.understood:
+            return
+        try:
+            self.decisions.record(
+                tau=self.tau, sig=sig, saw=s.text(), understood=p.understood,
+                chose=f"{act}: {(p.action or {}).get('text', '')}".strip(": "),
+                because={"wanted": goal, "pressure": round(float(pressure), 3),
+                         "mood": max(p.mood.items(), key=lambda kv: abs(kv[1]))[0] if p.mood else "",
+                         "tier": p.tier, "recalled": bool(known)},
+                parents=[known_id for known_id in ([] if known is None else
+                         [n.id for n in self.decisions.nodes[-12:] if n.sig == sig][-2:])],
+                scope="private" if s.payload.get("secret") else "public")
+        except Exception:
+            pass                      # a diary must never be able to break the day
 
     def _ctx(self, s: Signal) -> dict:
         """What the tiers need beyond the raw signal — chiefly whether the sender is
@@ -208,7 +243,8 @@ class Human(Being):
                  psyche=self.psyche.to_dict(), senses=self.senses.to_dict(),
                  memory=self.memory.to_dict(), skills=self.skills.to_dict(),
                  drives=self.drives.to_dict(), rules=self.rules.to_dict(),
-                 social=self.social.to_dict(), ledger=self.ledger.to_dict())
+                 social=self.social.to_dict(), ledger=self.ledger.to_dict(),
+                 decisions=self.decisions.to_dict())
         return d
 
     @classmethod
@@ -223,6 +259,7 @@ class Human(Being):
         h.rules = RuleEngine.from_dict(d.get("rules"))
         h.social = Social.from_dict(d.get("social"))
         h.ledger = Ledger.from_dict(d.get("ledger"))
+        h.decisions = DecisionLog.from_dict(d.get("decisions"))
         h.last_action = d.get("last_action", {})
         h.model = d.get("model", "")
         h.flag_overrides = d.get("flag_overrides", {})

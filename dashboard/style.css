@@ -2895,3 +2895,31 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
    the same way; only the spacing is set here. */
 .rp-act .ev { margin-bottom: 6px; }
 .rp-act .ev.chatter { opacity: 0.65; }
+
+/* ── an agent's decisions, and what it learned from them ─────────────────────
+   Three questions in one panel: what does it expect (the cache), how did it get here (the
+   tree), and what does the server say about it (root only). The tree is folded by default —
+   the causes matter when you are asking why, and are noise when you are scanning. */
+.lw-assoc { display: flex; flex-direction: column; gap: 5px; }
+.lw-as { display: flex; gap: 9px; align-items: baseline; font-size: 12px; padding: 5px 8px;
+  border-radius: 8px; background: var(--card-2); border: 1px solid var(--line); }
+.lw-as.weak { opacity: 0.5; }
+.lw-as.live { border-color: var(--good); }
+.lw-as-sig { font-family: var(--mono); font-size: 11px; color: var(--accent); flex: none; }
+.lw-as-says { flex: 1; line-height: 1.4; }
+.lw-as-meta { font-size: 11px; color: var(--faint); flex: none; }
+.lw-tree { display: flex; flex-direction: column; gap: 4px; }
+.lw-dnode { border-left: 3px solid var(--line); padding: 5px 9px; border-radius: 0 8px 8px 0;
+  background: var(--card-2); cursor: pointer; }
+.lw-dnode.o-good { border-left-color: var(--good); }
+.lw-dnode.o-bad { border-left-color: var(--bad); }
+.lw-dnode.canon { border-left-width: 5px; border-left-color: var(--accent); }
+.lw-dnode.stale { opacity: 0.55; text-decoration-color: var(--bad); }
+.lw-dhead { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; }
+.lw-dmark { flex: none; color: var(--accent); }
+.lw-dchose { flex: 1; }
+.lw-dout { font-size: 11px; color: var(--faint); flex: none; }
+.lw-dwhy { margin-top: 6px; font-size: 11.5px; line-height: 1.6; color: var(--dim);
+  display: flex; flex-direction: column; gap: 2px; }
+.lw-dwhy b { color: var(--faint); font-weight: 600; margin-right: 4px; }
+.lw-alogs { max-height: 220px; overflow-y: auto; font-size: 12px; }

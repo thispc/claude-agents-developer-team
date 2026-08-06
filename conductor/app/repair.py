@@ -405,6 +405,76 @@ def ensure_team():
     return info
 
 
+def _crew_world():
+    """(world, scene) for the crew, or (None, None). Loaded free — no model, no live flag."""
+    info = team()
+    if not info:
+        return None, None
+    try:
+        from .lifeworld import store
+        w = store.load(info["world_id"])
+        return w, (w.scene(info["room_id"]) if w else None)
+    except Exception:
+        return None, None
+
+
+def _specialist(factor: str):
+    """The agent that owns a factor. Its decisions and what it learns from them belong to
+    IT — that is what makes the crew's experience inspectable per specialist rather than
+    pooled into one anonymous heap."""
+    info = team()
+    w, _ = _crew_world()
+    if not (info and w):
+        return None, None
+    hid = (info.get("agents") or {}).get(factor)
+    h = w.get(hid) if hid else None
+    from .lifeworld.human import Human
+    return (w, h) if isinstance(h, Human) else (w, None)
+
+
+def note_decision(task: dict, saw: str) -> None:
+    """Record, on the specialist that owns this task, the decision to attempt it.
+
+    The crew is the right first tenant for this because its outcomes are not a matter of
+    opinion: the suite goes green or it does not. An association trained on that is trained
+    on truth, which is the difference between learning and superstition.
+    """
+    factor = str(task.get("factor") or "")
+    w, h = _specialist(factor)
+    if not h:
+        return
+    try:
+        from .lifeworld.decisions import signature
+        d = h.decisions.record(
+            tau=int(getattr(h, "tau", 0)), sig=signature(saw, kind="task"), saw=saw,
+            understood=str(task.get("brief", ""))[:200],
+            chose=f"build: {task.get('title', '')}",
+            because={"factor": factor, "type": task.get("type"),
+                     "priority": task.get("priority"), "attempt": task.get("attempts")})
+        task["decision_id"] = d.id
+        from .lifeworld import store
+        store.save(w)
+    except Exception:
+        pass
+
+
+def note_outcome(task: dict, ok: bool, says: str = "") -> None:
+    """Stamp how it turned out, which is the only thing that moves an association."""
+    did = task.get("decision_id")
+    factor = str(task.get("factor") or "")
+    if not did:
+        return
+    w, h = _specialist(factor)
+    if not h:
+        return
+    try:
+        h.decisions.resolve(int(did), "good" if ok else "bad", says=says[:200])
+        from .lifeworld import store
+        store.save(w)
+    except Exception:
+        pass
+
+
 def team_usage() -> list[dict]:
     info = team()
     if not info:
@@ -755,6 +825,7 @@ async def _phase_build(st: dict, rec: dict) -> None:
     bus.emit(0, None, "repair", "repair_building", {"sprint": rec["no"], "task": t["title"]})
     logs.info("session", "build_started", t["title"], sprint=rec["no"],
               factor=t.get("factor"), attempt=t.get("attempts"))
+    note_decision(t, t.get("evidence") or t.get("brief") or t["title"])
     try:
         wt = t.get("worktree")
         CURRENT_BUILD = asyncio.ensure_future(
@@ -819,6 +890,11 @@ async def _phase_verify(st: dict, rec: dict) -> None:
         return
     res = await rb.verify(t["worktree"])
     t["verification"] = res
+    # What the suite said is the outcome that teaches. A red headline is also the situation
+    # this specialist will recognise next time it sees one like it.
+    note_outcome(t, bool(res.get("ok")),
+                 says=("the change held up" if res.get("ok")
+                       else f"this kind of change breaks: {res.get('headline', '')}"))
     logs.log("verify", "suite_green" if res.get("ok") else "suite_red",
              res.get("headline", "") or ("the suite passed" if res.get("ok") else "the suite failed"),
              level="info" if res.get("ok") else "warn",

@@ -789,8 +789,25 @@ def peek(world_id: int, human_id: int, request: Request) -> dict:
         raise HTTPException(404, "no such agent")
     hand = [{"id": a.id, "value": a.reveal(h)} for a in w.artifacts()
             if a.kind == "card" and a.holder == human_id]
-    return {"human": h.profile(), "narrative": h.narrative, "hand": hand,
-            "habits": [{"when": r.match, "confidence": round(r.confidence, 2), "fires": r.fires}
-                       for r in h.rules.rules],
-            "bonds": {oid: {"trust": round(b.trust, 2), "warmth": round(b.warmth, 2)}
-                      for oid, b in h.social.bonds.items()}}
+    # The decision tree, and what this agent has learned to expect. Private decisions are
+    # withheld from everyone but root: an agent's own reasoning is exactly the kind of thing
+    # a scene may have made secret, and a detail panel must not be the way it leaks.
+    from . import auth, logs
+    u = auth.user_for_token(request.cookies.get("devteam_session")) or {}
+    is_root = bool(u.get("is_root"))
+    nodes = [n.to_dict() for n in h.decisions.nodes
+             if is_root or n.scope != "private"]
+    assoc = sorted((a.to_dict() for a in h.decisions.assoc.values()),
+                   key=lambda a: (-a["confidence"], -a["evidence"]))
+    out = {"human": h.profile(), "narrative": h.narrative, "hand": hand,
+           "habits": [{"when": r.match, "confidence": round(r.confidence, 2), "fires": r.fires}
+                      for r in h.rules.rules],
+           "bonds": {oid: {"trust": round(b.trust, 2), "warmth": round(b.warmth, 2)}
+                     for oid, b in h.social.bonds.items()},
+           "decisions": nodes[-60:], "associations": assoc,
+           "canon": [n["id"] for n in nodes if n.get("canon")]}
+    if is_root:
+        # The backend's own record of this agent, from the log pipeline. Root only — logs
+        # name file paths, branch names and the shape of the operator's work.
+        out["logs"] = logs.recent(q=h.name, limit=40) if h.name else []
+    return out
