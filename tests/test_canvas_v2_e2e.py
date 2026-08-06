@@ -259,24 +259,30 @@ def test_v2_grouped_selection_click_resolves_via_real_hit_test(server, page):
 
 def test_v2_shows_a_mediated_conversation(server, page):
     """Step a round on a connected thread → the hidden manager mediates and each agent's line
-    appears as a speech bubble on the canvas. The whole round is free/deterministic offline."""
+    arrives in the CONVERSATION panel, and the canvas shows only who is working. The whole
+    round is free/deterministic offline."""
     c = server["client"]; wid, rid = _mk(c, "Talk")
     a, b = _two_connected(c, wid, rid)
     th = c.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b}).json()["thread"]
     c.post(f"/api/lw/{wid}/room/{rid}/thread/{th['id']}",
            json={"rulebook": "debate the most sustainable route from A to B", "manager": {"budget": 2}})
     _open(page, wid, rid)
-    # step a round the same way the time-bar does, then let v2 re-render from the new room
     page.evaluate("([wid,rid]) => fetch(`/api/lw/${wid}/room/${rid}/round`, {method:'POST'}).then(r=>r.json()).then(j=>lwRenderRoom(j.room))", [wid, rid])
-    page.wait_for_function("() => window.LWCanvas2._inst && document.querySelectorAll('.lw2-bubble').length >= 2", timeout=8000)
-    bubbles = page.evaluate("() => [...document.querySelectorAll('.lw2-bubble')].map(b => b.textContent)")
-    assert len(bubbles) >= 2, f"expected a speech bubble per speaker, got {bubbles}"
-    assert all("route" in t.lower() for t in bubbles), f"bubbles not grounded in the topic: {bubbles}"
+    page.wait_for_timeout(1200)
+    said = c.get(f"/api/lw/{wid}/room/{rid}").json()["room"]["log"]
+    lines = [b["text"] for b in said if b["kind"] == "say"]
+    assert len(lines) >= 2, f"expected a line per speaker, got {lines}"
+    assert all("route" in t.lower() for t in lines), f"lines not grounded in the topic: {lines}"
+    # ...and the canvas is NOT plastered with them: a bubble is reserved for the agent that
+    # is working right now, so the picture answers "who is busy" instead of repeating the
+    # transcript the panel already holds, scrollable and quotable.
+    idle_bubbles = page.evaluate("() => document.querySelectorAll('.lw2-bubble').length")
+    assert idle_bubbles == 0, f"speech was popped onto the canvas again ({idle_bubbles} bubbles)"
 
 
 def test_v2_run_produces_a_decision_memo_card(server, page):
-    """The product loop on the canvas: double-click a graph → ▶ Run → the manager deliberates
-    (free offline) and the DECISION MEMO card appears with a position per agent."""
+    """The product loop, without a Run button: you TALK to the graph and it deliberates,
+    because asking is the act. The decision memo appears with a position per agent."""
     c = server["client"]; wid, rid = _mk(c, "Memo")
     a, b = _two_connected(c, wid, rid)
     th = c.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b}).json()["thread"]
@@ -285,9 +291,19 @@ def test_v2_run_produces_a_decision_memo_card(server, page):
     _open(page, wid, rid)
     p = _tpos(page, a); s = _scr(page, p["x"], p["y"])
     _select_graph(page, s)
-    assert page.evaluate("() => [...document.querySelectorAll('.lw-act-btn')].some(b => b.textContent.includes('Run'))"), "no ▶ Run in the graph action bar"
-    page.evaluate("() => [...document.querySelectorAll('.lw-act-btn')].find(b => b.textContent.includes('Run')).click()")
-    page.wait_for_selector(".sd-memo-card", timeout=10000)
+    # Run and Chat are gone from the bar: running is what happens when you speak, and the
+    # conversation is always on the right. A second way to do one thing is one too many.
+    labels = page.evaluate("() => [...document.querySelectorAll('.lw-act-btn')].map(b => b.textContent)")
+    assert not any("Run" in t for t in labels), f"a Run button came back: {labels}"
+    assert not any("Chat" in t for t in labels), f"a Chat button came back: {labels}"
+    # Asking the MANAGER is the deliberation: "decide X" is not a remark, it is the product
+    # loop, and cost stays proportional to intent (one agent → one round). Selecting the graph
+    # aimed the panel at an agent, so address the room again first — which is what clicking
+    # empty floor means.
+    page.evaluate("() => { const i = window.LWCanvas2._inst; i.sel.clear(); if (window.sdChatAim) window.sdChatAim(null, 0); }")
+    page.fill("#sdChatText", "decide the route and write it up")
+    page.click("#sdChatSend")
+    page.wait_for_selector(".sd-memo-card", timeout=15000)
     assert page.evaluate("() => document.querySelectorAll('.sd-memo-pos').length") == 2, "expected a final position per agent"
     assert page.evaluate("() => document.querySelector('.sd-memo-rec').textContent.length > 20"), "no recommendation in the memo"
 

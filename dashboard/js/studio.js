@@ -237,8 +237,164 @@ async function sdOpenRoster() {
   }));
 }
 
-// --- the time transport: play/pause, single-step, speed --------------------
-let sdPlaying = false, sdTimer = null, sdSpeed = 2, sdMax = 10, sdRun = 0;   // sec between beats, cap, done
+// --- the conversation panel: the way you drive a team ----------------------
+//
+// The old bottom bar was a SCENE transport — play, single-step, seconds-between-beats, a cap
+// on beats. That is the vocabulary of a simulation you watch. This is a team you talk to, and
+// the two ideas fought: nobody wants to set a tick rate to ask their crew a question.
+//
+// So: no transport, no explicit Run. You type to someone, and the graph they are in runs
+// because you did. What they say arrives here, not in a bubble on the canvas — words belong
+// somewhere you can read, scroll and quote.
+let sdChatOpen = true;                 // open by default: it is the primary control now
+let sdChatTo = null;                   // {kind: "manager"|"agent", id, name, threadId}
+let sdChatBusy = false;
+
+function sdChatHtml() {
+  return `<aside class="sd-chat${sdChatOpen ? "" : " closed"}" id="sdChat">
+    <button class="sd-chat-tab" id="sdChatTab" title="${sdChatOpen ? "Hide" : "Show"} the conversation">${sdChatOpen ? "›" : "‹"}</button>
+    <div class="sd-chat-in">
+      <div class="sd-chat-head">
+        <b id="sdChatWho">the room</b>
+        <span class="dim" id="sdChatNote">pick someone on the canvas, or talk to the manager</span>
+      </div>
+      <div class="sd-chat-log" id="sdChatLog"></div>
+      <form class="sd-chat-form" id="sdChatForm">
+        <input id="sdChatText" placeholder="Say something…" autocomplete="off">
+        <button class="rp-mini" id="sdChatSend">Send</button>
+      </form>
+    </div>
+  </aside>`;
+}
+
+/** Who you are talking to, and through which graph. Selecting a token aims the panel. */
+function sdChatAim(agent, threadId) {
+  sdChatTo = agent ? { kind: "agent", id: agent.id, name: agent.name, threadId } : null;
+  sdChatPaint();
+}
+
+function sdChatPaint() {
+  const who = $("#sdChatWho"), note = $("#sdChatNote"), inp = $("#sdChatText");
+  if (!who) return;
+  // A conversation is routed along the arrows, so with no graph there is nothing to route
+  // through. Say that, rather than accepting a sentence and failing on send: an input that
+  // takes your words and loses them is worse than one that tells you why it can't.
+  const send = $("#sdChatSend");
+  if (!sdFirstThreadId()) {
+    who.textContent = "nobody yet";
+    note.textContent = "drag one agent onto another to connect them — a conversation follows the arrows";
+    if (inp) { inp.disabled = true; inp.placeholder = "connect two agents first"; }
+    if (send) send.disabled = true;
+    return;
+  }
+  if (inp) inp.disabled = false;
+  if (send) send.disabled = false;
+  if (sdChatTo) {
+    who.textContent = sdChatTo.name;
+    note.textContent = "they answer, and their graph runs because you asked";
+    if (inp) inp.placeholder = `Ask ${sdChatTo.name}…`;
+  } else {
+    who.textContent = "the manager";
+    note.textContent = "it sees every graph in this room";
+    if (inp) inp.placeholder = "Ask the manager…";
+  }
+}
+
+function sdChatAppend(role, text) {
+  const log = $("#sdChatLog"); if (!log) return;
+  log.insertAdjacentHTML("beforeend",
+    `<div class="rp-msg ${role === "me" ? "me" : "them"}">${escapeHtml(text)}</div>`);
+  log.scrollTop = log.scrollHeight;
+}
+
+function sdWireChat() {
+  const tab = $("#sdChatTab");
+  if (tab) tab.addEventListener("click", () => {
+    sdChatOpen = !sdChatOpen;
+    const box = $("#sdChat");
+    if (box) box.classList.toggle("closed", !sdChatOpen);
+    tab.textContent = sdChatOpen ? "›" : "‹";
+  });
+  const form = $("#sdChatForm");
+  if (form) form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const inp = $("#sdChatText"), text = (inp.value || "").trim();
+    if (!text || sdChatBusy) return;
+    inp.value = ""; sdChatBusy = true;
+    sdChatAppend("me", text);
+    sdChatAppend("them", "…");
+    const log = $("#sdChatLog");
+    try {
+      const tid = (sdChatTo && sdChatTo.threadId) || sdFirstThreadId();
+      if (!tid) throw new Error("connect two agents first — a conversation needs a graph");
+      const to = sdChatTo ? String(sdChatTo.id) : "manager";
+      const r = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${tid}/chat${lwLiveQ()}`,
+        { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ to, text }) });
+      const last = (r.chat || []).slice(-1)[0];
+      if (log && log.lastElementChild) log.lastElementChild.remove();
+      sdChatAppend("them", last ? last.text : "…");
+      // Speaking to someone IS the run. There is no separate Run button because there is no
+      // separate act: you asked the room something, so the room deliberates about it, and
+      // what they say arrives here rather than in bubbles nobody can scroll.
+      await sdRunAfterChat();
+    } catch (e) {
+      if (log && log.lastElementChild) log.lastElementChild.remove();
+      sdChatAppend("them", typeof reportCaught === "function" ? reportCaught(e, "sdChat") : e.message);
+    }
+    sdChatBusy = false;
+  });
+  sdChatPaint();
+}
+
+/** Run because somebody was spoken to, and put what was said into the panel.
+ *
+ * What runs depends on WHO you asked, which keeps the cost proportional to the intent:
+ *
+ *   a specific agent  → one round. You asked a person a question; the graph advances once
+ *                       and they answer. Cheap, conversational, what most messages are.
+ *   the manager       → a full deliberation with a decision memo. "Decide X" is not a remark,
+ *                       it is the product loop, and the manager is who you address for it.
+ *
+ * This is why there is no Run button: Run was never a separate act, it was the act of asking
+ * with the asking removed. */
+async function sdRunAfterChat() {
+  const before = sdLastSayId();
+  const tid = (sdChatTo && sdChatTo.threadId) || sdFirstThreadId();
+  if (!sdChatTo && tid) {                     // addressed the manager → deliberate
+    await sdRunGraph(tid);
+    return;
+  }
+  try {
+    const r = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/round${lwLiveQ()}`, { method: "POST" });
+    const room = (r && r.room) || null;
+    for (const beat of (room && room.log) || []) {
+      if (beat.kind !== "say" || (beat.n || 0) <= before) continue;
+      sdChatAppend("them", String(beat.text || ""));
+    }
+    if (room) { lwRoom = room; }
+  } catch (e) {
+    sdChatAppend("them", typeof reportCaught === "function" ? reportCaught(e, "sdRunAfterChat") : e.message);
+  }
+  lwReloadRoom && lwReloadRoom();               // the canvas repaints: who is busy just changed
+}
+
+/** The newest say-beat we have already shown, so a run only appends what is new. */
+function sdLastSayId() {
+  const log = (lwRoom && lwRoom.log) || [];
+  let max = 0;
+  for (const b of log) if (b.kind === "say" && (b.n || 0) > max) max = b.n;
+  return max;
+}
+
+/** The graph to route through when you have not aimed at anyone. */
+function sdFirstThreadId() {
+  const th = (lwRoom && lwRoom.threads) || [];
+  return th.length ? th[0].id : 0;
+}
+
+// --- the time transport: retired (see above) -------------------------------
+let sdPlaying = false, sdTimer = null, sdSpeed = 2, sdMax = 10, sdRun = 0;
 function sdTimeBarHtml() {
   const maxLbl = sdMax === Infinity ? "∞" : sdMax;
   return `<div class="sd-time" id="sdTime">
@@ -745,7 +901,10 @@ function setLwBar(mode) {
   $("#lwNewArtifact").hidden = mode !== "artifacts";
   $("#lwNewRoom").hidden = mode !== "rooms";
   $("#lwLive").hidden = !inRoom;
-  $("#lwTau").hidden = !inRoom;
+  // #lwTau lived inside the retired time transport, so it may simply not exist. An
+  // unguarded dereference here threw during chrome paint and took the whole room render
+  // with it — the canvas came up blank with no error anyone could see.
+  const tau = $("#lwTau"); if (tau) tau.hidden = !inRoom;
   document.querySelectorAll(".lw-tab").forEach((b) =>
     b.classList.toggle("active", b.dataset.lwtab === lwTab));
 }
@@ -1387,12 +1546,11 @@ function lwRenderRoom(room) {
       <button class="sd-rules-btn" id="sdRulesBtn" title="Scene rules — obeyed on every run">⚖ Rules</button>
       <div class="sd-rules-pop" id="sdRulesPop" hidden></div>
       <div class="sd-activity" id="sdActivity"${sdActOpen ? "" : " hidden"}></div>
-      ${sdTimeBarHtml()}
-    </div>`;
+    </div>
+    ${sdChatHtml()}`;
 
   lwWireDock();
-  sdWireTime();
-  paintLwTau();
+  sdWireChat();
   sdSavedIdle();
   const rb = $("#sdRulesBtn"); if (rb) rb.addEventListener("click", sdToggleRules);
   if (sdActOpen) sdShowActivity(true);      // refresh the activity panel after a beat

@@ -513,6 +513,27 @@ def note_decision(task: dict, saw: str) -> None:
         pass
 
 
+def _note_activity(task: dict, state: str, what: str) -> None:
+    """Put the specialist that owns this task on the board. The crew's agents are the ones
+    doing the longest-running work on the platform, so they are exactly what a monitor is
+    for — and until now a build in flight was visible only as a phase string in kv."""
+    from . import agents as reg
+    info, factor = team(), str(task.get("factor") or "")
+    hid = ((info or {}).get("agents") or {}).get(factor)
+    if not (info and hid):
+        return
+    reg.note(reg.key_for("lw", info["world_id"], hid), state, what,
+             name=factor, where="self-repair", kind="agent")
+
+
+def _release_activity(task: dict) -> None:
+    from . import agents as reg
+    info, factor = team(), str(task.get("factor") or "")
+    hid = ((info or {}).get("agents") or {}).get(factor)
+    if info and hid:
+        reg.done(reg.key_for("lw", info["world_id"], hid))
+
+
 def note_outcome(task: dict, ok: bool, says: str = "") -> None:
     """Stamp how it turned out, which is the only thing that moves an association."""
     did = task.get("decision_id")
@@ -932,6 +953,7 @@ async def _phase_build(st: dict, rec: dict) -> None:
     logs.info("session", "build_started", t["title"], sprint=rec["no"],
               factor=t.get("factor"), attempt=t.get("attempts"))
     note_decision(t, t.get("evidence") or t.get("brief") or t["title"])
+    _note_activity(t, "building", t["title"])
     try:
         wt = t.get("worktree")
         CURRENT_BUILD = asyncio.ensure_future(
@@ -994,10 +1016,12 @@ async def _phase_verify(st: dict, rec: dict) -> None:
         logs.warn("session", "build_failed", f"{t['title']} — {t['error']}",
                   sprint=rec["no"], factor=t.get("factor"))
         return
+    _note_activity(t, "verifying", t["title"])
     res = await rb.verify(t["worktree"])
     t["verification"] = res
     # What the suite said is the outcome that teaches. A red headline is also the situation
     # this specialist will recognise next time it sees one like it.
+    _release_activity(t)
     note_outcome(t, bool(res.get("ok")),
                  says=("the change held up" if res.get("ok")
                        else f"this kind of change breaks: {res.get('headline', '')}"))

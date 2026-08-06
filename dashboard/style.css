@@ -2964,3 +2964,33 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
     50%      { opacity: 0.9;  stroke-width: 3.5; }
   }
 }
+
+/* ── the conversation panel ──────────────────────────────────────────────────
+   The primary control of a team, so it is open by default and pinned to the right. The old
+   bottom bar was a SCENE transport — play, step, seconds-per-beat — which is the vocabulary
+   of a simulation you watch rather than a team you talk to. */
+.sd-room { display: flex; align-items: stretch; height: 100%; min-height: 0; }
+.sd-room > .sd-canvas { flex: 1; min-width: 0; }
+.sd-chat { position: relative; flex: 0 0 340px; border-left: 1px solid var(--line);
+  background: var(--card); display: flex; min-height: 0; transition: flex-basis .18s ease; }
+.sd-chat.closed { flex-basis: 0; }
+.sd-chat.closed .sd-chat-in { display: none; }
+.sd-chat-tab { position: absolute; left: -26px; top: 14px; width: 26px; height: 44px;
+  border: 1px solid var(--line); border-right: none; border-radius: 9px 0 0 9px;
+  background: var(--card); color: var(--dim); cursor: pointer; font-size: 15px; z-index: 2; }
+.sd-chat-tab:hover { color: var(--accent); }
+.sd-chat-in { display: flex; flex-direction: column; width: 100%; min-height: 0; padding: 12px; gap: 10px; }
+.sd-chat-head b { font-size: 13.5px; }
+.sd-chat-head .dim { display: block; font-size: 11.5px; margin-top: 2px; line-height: 1.4; }
+.sd-chat-log { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 7px;
+  min-height: 0; }
+.sd-chat-form { display: flex; gap: 7px; }
+.sd-chat-form input { flex: 1; min-width: 0; padding: var(--ctl-pad-y) var(--ctl-pad-x);
+  border: 1px solid var(--line); border-radius: 18px; background: var(--card-2);
+  color: var(--text); font-size: var(--ctl-size); }
+@media (max-width: 900px) {
+  .sd-room { flex-direction: column; }
+  .sd-chat { flex-basis: 240px; border-left: none; border-top: 1px solid var(--line); }
+  .sd-chat-tab { left: auto; right: 12px; top: -26px; width: 44px; height: 26px;
+    border-radius: 9px 9px 0 0; border: 1px solid var(--line); border-bottom: none; }
+}

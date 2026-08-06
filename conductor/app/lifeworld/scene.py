@@ -40,6 +40,17 @@ ROOM_TYPES: dict[str, dict] = {
 }
 
 
+def _activity_of(world_id: int, human_id: int) -> dict:
+    """One row from the agent register, trimmed to what a canvas needs."""
+    try:
+        from ..agents import get, key_for
+        a = get(key_for("lw", world_id, human_id))
+        return {"state": a["state"], "busy": a["busy"], "what": a.get("what", ""),
+                "for_s": a.get("for_s", 0)}
+    except Exception:
+        return {"state": "idle", "busy": False, "what": "", "for_s": 0}
+
+
 def resolve_room(type: str) -> dict:
     return ROOM_TYPES.get(type, ROOM_TYPES["freeplay"])
 
@@ -582,7 +593,10 @@ class Scene:
                 "agents": [{"id": h.id, "name": h.name, "figure": h.figure,
                             "pos": list(h.pos), "mood": h.psyche.mood,
                             "wants": h.drives.dominant_goal()[0], "tau": h.tau,
-                            "usage": h.usage()}                       # model session usage → the meter/sleep
+                            "usage": h.usage(),                       # model session usage → the meter/sleep
+                            # What it is doing RIGHT NOW, from the central register — so the
+                            # canvas can glow the working ones without asking per agent.
+                            "activity": _activity_of(self.world.id, h.id)}
                            for h in self.players()],
                 "props": [{"id": a.id, "name": a.name, "kind": a.kind, "figure": a.figure,
                            "pos": list(a.pos), "public": a.public, "sealed": bool(a.secret),

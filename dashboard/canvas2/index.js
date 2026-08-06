@@ -87,33 +87,29 @@ function refresh(inst, room, agents, props) {
   (props || []).forEach((p) => addToken(inst, "prop", p, pos.get("prop:" + p.id)));
   (agents || []).forEach((a) => addToken(inst, "agent", a, pos.get("agent:" + a.id)));
   (room.threads || []).forEach((t) => (t.edges || []).forEach((e) => addEdge(inst, t, e)));
-  showSpeech(inst, room);
+  showActivity(inst, room);
   reselect(inst);
 }
 
-// Speech bubbles for the MOST RECENT round's utterances — so a step visibly shows the agents
-// talking. One bubble per speaker; rebuilt on every refresh (the next round replaces them).
-function showSpeech(inst, room) {
+// A bubble says what an agent is DOING — not what it said.
+//
+// It used to pop the whole of the last round's speech, on every agent, every repaint: six
+// bubbles of transcript on top of the graph, which is unreadable as a picture and redundant
+// with the conversation panel, where the words belong and can be scrolled and quoted. And it
+// left no way to answer the question the canvas IS good at: which of these is working?
+//
+// So a bubble now appears only on an agent the register says is busy, and it carries the
+// activity — "thinking", "building: fix the k8s reaper". One glance, one fact each.
+function showActivity(inst, room) {
   if (inst._speechTimers) inst._speechTimers.forEach((t) => clearTimeout(t));
   inst._speechTimers = [];
-  const says = (room.log || []).filter((r) => r.kind === "say" && r.frm != null);
-  if (!says.length) return;
-  const maxRound = Math.max(...says.map((r) => r.round || 0));
-  // log order within the round == the manager's chosen SPEAKING order — preserve it, one bubble/speaker
-  const seen = new Set(), ordered = [];
-  says.filter((r) => (r.round || 0) === maxRound).forEach((r) => {
-    const id = String(r.frm); if (!inst.tokens.get(id)) return;
-    const say = String(r.text).replace(/^[^:]+:\s*/, "");   // drop the "Name: " prefix the beat carries
-    const found = ordered.find((o) => o.id === id);
-    if (found) found.text = say; else { seen.add(id); ordered.push({ id, text: say }); }
-  });
-  // reveal them one at a time, in order, so a debate is followable (numbered 1..N)
-  ordered.forEach((o, i) => {
-    const t = inst.tokens.get(o.id); if (!t) return;
-    const fo = speechBubble(o.text, ordered.length > 1 ? i + 1 : 0);
-    if (ordered.length > 1) { fo.style.opacity = "0"; inst._speechTimers.push(setTimeout(() => { fo.style.opacity = "1"; }, i * 650)); }
-    t.g.appendChild(fo);
-  });
+  for (const a of room.agents || []) {
+    const t = inst.tokens.get(String(a.id));
+    const act = a.activity || {};
+    if (!t || !act.busy) continue;
+    const label = act.what ? `${act.state}: ${act.what}` : act.state;
+    t.g.appendChild(speechBubble(label, 0));
+  }
 }
 
 function addToken(inst, kind, data, p) {
@@ -208,9 +204,10 @@ function graphActionsFor(inst, threadId) {
   const t = threads.find((th) => th.id === threadId);
   if (!t) return false;
   try {
+    // No Run, no Chat. Running is what happens when you talk to someone in the graph — a
+    // button that does it separately is a second way to do one thing, and the one people
+    // reach for is the sentence they were going to type anyway. Chat is always on the right.
     W.lwShowActions && W.lwShowActions("graph", [
-      { label: "▶ Run", onClick: () => W.sdRunGraph && W.sdRunGraph(t.id) },
-      { label: "💬 Chat", onClick: () => W.sdOpenChat && W.sdOpenChat(t.id) },
       { label: "⚙ Rules", onClick: () => W.sdOpenThreads && W.sdOpenThreads(t.id) },
       { label: "✕ Delete graph", danger: true, onClick: async () => {
         if (!confirm("Delete this graph? The tokens stay; only the connections go.")) return;
@@ -238,6 +235,17 @@ function selectedThread(inst) {
   return null;
 }
 
+/** Point the conversation panel at whoever was just selected, and at the graph they are in.
+ * Selecting somebody and then typing is the whole interaction now, so the two have to be the
+ * same gesture. */
+function aimChat(inst, id, kind) {
+  if (kind !== "agent") return;
+  const t = inst.tokens.get(id);
+  const threads = (inst.ctx.room.threads) || [];
+  const owner = threads.find((th) => (th.edges || []).some((e) => String(e[0]) === id || String(e[1]) === id));
+  if (t && W.sdChatAim) W.sdChatAim(t.data, owner ? owner.id : 0);
+}
+
 /** Called whenever the selection settles.
  *
  * With a whole graph selected, its actions. With ONE of its nodes selected, a single button
@@ -245,6 +253,10 @@ function selectedThread(inst) {
  * capability nobody can find is one that does not exist. Clicking a node is how you find out
  * it is part of something. */
 function offerGraphActions(inst) {
+  // Nothing selected means you are addressing the room, so the conversation goes back to the
+  // manager. Leaving it aimed at whoever you last clicked is how you end up asking one agent
+  // a question you meant for the team.
+  if (!inst.sel.size && W.sdChatAim) W.sdChatAim(null, 0);
   const t = selectedThread(inst);
   if (t) { graphActionsFor(inst, t.id); return; }
   clearGraphUI(inst);
@@ -437,6 +449,7 @@ async function pointerUp(inst, e) {
       else {
         inst._lastClick = { id: g.id, t: nowMs() };           // remember for a possible next-click double
         offerGraphActions(inst);                             // a click is also a selection
+        aimChat(inst, g.id, g.kind);                         // ...and aims the conversation
       }
       return;
     }

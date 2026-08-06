@@ -8,6 +8,7 @@ Every test here was written from a real finding in an audit of the routing paths
 """
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -168,3 +169,75 @@ def test_the_resume_pin_count_is_treated_as_the_number_it_is():
     js = dashboard_js()
     assert "typeof resume.pins === \"number\"" in js
     assert "pins.map((p)" not in js
+
+
+# ---- the agent register ---------------------------------------------------
+
+def test_the_register_answers_what_any_agent_is_doing(fresh_db):
+    """The question had no single answer: it was implied by a usage timestamp here, a task
+    status there, a log line somewhere else — and those implications disagree, because a
+    worker whose process died still reads as running."""
+    from app import agents
+    k = agents.key_for("lw", 2, 30)
+    agents.note(k, "building", "Fix the k8s reaper", name="Correctness", where="self-repair")
+    row = agents.get(k)
+    assert row["state"] == "building" and row["busy"] is True
+    assert row["what"] == "Fix the k8s reaper"
+    assert row["means"], "a state has to mean something a person can read"
+    assert [r["key"] for r in agents.roster()] == [k]
+    assert agents.summary()["busy"] == 1
+
+
+def test_a_claim_left_by_a_dead_process_expires(fresh_db):
+    """An entry is a CLAIM that work is in flight. Claims made by processes that then die
+    must not glow forever, and nothing has to remember to clean up after a crash — which is
+    the only kind of cleanup that works."""
+    import time as _t
+    from app import agents, db as _db
+    k = agents.key_for("lw", 1, 1)
+    agents.note(k, "thinking", "answering you")
+    rows = _db.kv_get(agents.KEY)
+    rows[k]["ts"] = _t.time() - 99999
+    _db.kv_set(agents.KEY, rows)
+    assert agents.get(k)["state"] == "idle" and agents.get(k)["stale"] is True
+
+
+def test_work_that_raises_does_not_leave_an_agent_thinking(fresh_db):
+    from app import agents
+    k = agents.key_for("lw", 1, 2)
+    with pytest.raises(ValueError):
+        with agents.working(k, "thinking", "a call that blows up"):
+            raise ValueError("boom")
+    assert agents.get(k)["busy"] is False
+
+
+def test_the_register_is_root_only(client, fresh_db):
+    from conftest import _signup
+    _signup(client, "nosy")
+    client.post("/api/login", json={"username": "nosy", "password": "hunter2pw"})
+    assert client.get("/api/logs/agents").status_code == 403
+
+
+def test_the_canvas_gets_activity_with_the_room(fresh_db):
+    """One kv get per repaint, so the canvas can ask without anybody thinking about cost."""
+    from app import agents
+    from app.lifeworld.world import World
+    w = World(id=4, name="w")
+    s = w.new_room("r", "freeplay")
+    h = w.spawn_human("A")
+    s.seat(h)
+    agents.note(agents.key_for("lw", 4, h.id), "thinking", "weighing it up")
+    view = s.view()
+    assert view["agents"][0]["activity"]["busy"] is True
+    assert view["agents"][0]["activity"]["what"] == "weighing it up"
+
+
+def test_a_bubble_says_what_an_agent_is_doing_not_what_it_said():
+    """Six bubbles of transcript on top of a graph is unreadable as a picture and redundant
+    with the panel, where the words can be scrolled and quoted — and it left no way to answer
+    the question a canvas is actually good at: which of these is working?"""
+    src = (Path(__file__).resolve().parents[1] / "dashboard/canvas2/index.js").read_text()
+    assert "function showActivity" in src and "function showSpeech" not in src
+    fn = src.split("function showActivity", 1)[1].split("\n}", 1)[0]
+    assert "act.busy" in fn, "a bubble must be reserved for an agent that is working"
+    assert "room.log" not in fn, "it must not be reading the transcript any more"

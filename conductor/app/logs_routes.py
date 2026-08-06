@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
-from . import logs, monitor
+from . import agents, logs, monitor
 from .routes import _root
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
@@ -88,3 +88,17 @@ def dismiss_notice(body: NoticeBody, request: Request) -> dict:
     because the fingerprint changes with it."""
     _root(request)
     return {"ok": True, "decision": monitor.decide(body.fp, "dismissed", body.note)}
+
+
+# --- the agent register: one place to ask what any agent is doing -------------------------
+
+@router.get("/agents")
+def list_agents(request: Request) -> dict:
+    """Every agent the platform has spawned, busiest first.
+
+    The question "is this one working or idle?" had no single answer before: it was implied
+    by a usage timestamp here, a task status there, a log line somewhere else — and those
+    implications disagree, because a worker whose process died still reads as running.
+    """
+    _root(request)
+    return {"agents": agents.roster(), "summary": agents.summary()}

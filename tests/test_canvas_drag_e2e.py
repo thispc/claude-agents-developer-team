@@ -243,16 +243,26 @@ def test_the_shape_tool_creates_a_collating_object_with_slots(server, page):
     assert props and (props[0]["slots"] or 0) >= 2, f"shape was not created with slots: {props}"
 
 
+def _say(page, text):
+    """Talk to the room. This is how a graph runs now — there is no Run button, because
+    running is what happens when you speak to someone in it."""
+    page.fill("#sdChatText", text)
+    page.click("#sdChatSend")
+    page.wait_for_timeout(1200)
+
+
 def test_running_a_beat_advances_time_for_free(server, page):
     c = server["client"]; wid, rid = _mk(c, "Play")
+    ids = []
     for n in ("A", "B"):
         hid = c.post(f"/api/lw/{wid}/human", json={"name": n}).json()["human"]["id"]
         c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": hid})
+        ids.append(hid)
+    c.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": ids[0], "b": ids[1]})
     _open_scene(page, wid, rid)
-    page.click("#sdStep")
-    page.wait_for_timeout(700)
+    _say(page, "what is everyone thinking?")
     log = c.get(f"/api/lw/{wid}/room/{rid}").json()["room"]["log"]
-    assert log, "running a beat produced no activity"
+    assert log, "talking to the room produced no activity"
     assert all(not e.get("billed") for e in log), "a deterministic beat billed a model call"
 
 
@@ -302,25 +312,34 @@ def test_from_cast_places_an_existing_agent(server, page):
     assert any(a["id"] == hid for a in after) and len(after) == before + 1
 
 
-def test_play_stops_at_the_cap(server, page):
-    c = server["client"]; wid, rid = _mk(c, "Cap")
-    for n in ("A", "B"):
-        h = c.post(f"/api/lw/{wid}/human", json={"name": n}).json()["human"]["id"]
-        c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+def test_there_is_no_scene_transport_any_more(server, page):
+    """Play / single-step / seconds-per-beat / a cap on beats is the vocabulary of a
+    simulation you WATCH. This is a team you talk to, and the two fought: nobody wants to set
+    a tick rate to ask their crew a question. The conversation panel replaced all of it."""
+    c = server["client"]; wid, rid = _mk(c, "NoTransport")
     _open_scene(page, wid, rid)
-    page.evaluate("() => { sdMax = 4; sdSpeed = 1; }")
-    page.click("#sdPlay"); page.wait_for_timeout(8000)
-    assert page.evaluate("() => sdPlaying") is False, "play did not stop at the cap"
-    assert page.evaluate("() => sdRun") == 4, "play did not run exactly cap beats"
+    for gone in ("#sdPlay", "#sdStep", "#sdSpeedRange", "#sdMaxSel", "#sdTime"):
+        assert page.query_selector(gone) is None, f"{gone} is still on the canvas"
+    # and with nothing connected, the panel says so instead of eating the sentence
+    assert page.evaluate("() => document.querySelector('#sdChatText').disabled") is True
+    assert page.query_selector("#sdChat") is not None, "the conversation panel is missing"
+    assert page.evaluate("() => !document.querySelector('#sdChat').classList.contains('closed')"), \
+        "it must be open by default — it is the primary control now"
 
 
 def test_the_activity_panel_lists_what_happened(server, page):
     c = server["client"]; wid, rid = _mk(c, "Act")
+    ids = []
     for n in ("A", "B"):
         h = c.post(f"/api/lw/{wid}/human", json={"name": n}).json()["human"]["id"]
         c.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": h})
+        ids.append(h)
+    c.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": ids[0], "b": ids[1]})
     _open_scene(page, wid, rid)
-    page.click("#sdStep"); page.wait_for_timeout(700)
+    # Address ONE agent: that is a round, the ordinary case. Addressing the manager is the
+    # heavier deliberation, and it opens the memo panel over this rail.
+    page.evaluate("([a, n]) => sdChatAim({id: a, name: n}, 1)", [ids[0], "A"])
+    _say(page, "go")
     page.click("#sdActBtn"); page.wait_for_selector(".sd-activity .sd-act-row", timeout=5000)
     assert page.eval_on_selector_all(".sd-act-row", "els => els.length") > 0
 

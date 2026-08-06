@@ -34,9 +34,11 @@ export function agentNode(a) {
   const R = SIZES.AGENT_R, seed = W.lwAvatarSeed(a), manager = W.lwIsManager(a);
   const rim = manager ? "#2C6A63" : W.lwAvatarColor(seed);
   const asleep = !!(a.usage && a.usage.asleep);
-  // Working on something right now. Not a lock — you can still talk to it — but you should
-  // be able to see that it is mid-task before you interrupt.
-  const busy = !!(a.usage && a.usage.busy) && !asleep;
+  // Working on something right now, according to the register — which knows about coding
+  // sessions and verifications, not only model calls, and which expires a claim left behind
+  // by a process that died. Falls back to the usage timestamp for any agent the register has
+  // not heard of yet.
+  const busy = !asleep && !!((a.activity && a.activity.busy) || (a.usage && a.usage.busy));
   const g = svgEl("g", { class: "lw2-token lw2-agent" + (manager ? " lw2-manager" : "")
     + (asleep ? " lw2-asleep" : "") + (busy ? " lw2-busy" : ""),
     "data-id": String(a.id), "data-kind": "agent" });

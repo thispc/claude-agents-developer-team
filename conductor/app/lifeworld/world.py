@@ -138,6 +138,9 @@ class World:
         if self._complete is None:
             return None
         import json
+        from .. import agents as reg
+        reg.note(self.agent_key(human), "speaking", f"stating its position on {topic[:60]}",
+                 name=human.name, where=f"world {self.id}", kind="agent")
         p = _persona(human)
         sys = (f"You are {human.name}. Your defining traits: {json.dumps(p['traits'])}; what you most "
                f"want: {p['wants'] or 'a good outcome'}. State YOUR OWN position on the TOPIC in 1-2 "
@@ -155,6 +158,8 @@ class World:
             return text
         except Exception:
             return None
+        finally:
+            reg.done(self.agent_key(human))
 
     async def host_plan(self, cfg: dict, ring, rulebook: str, transcript: str,
                         devils_advocate: bool = False, want_unanimous: bool = False,
@@ -297,14 +302,25 @@ class World:
         except Exception:
             return None
 
+    def agent_key(self, human: Human) -> str:
+        from ..agents import key_for
+        return key_for("lw", self.id, human.id)
+
     async def appraise(self, human: Human, signal: Signal, ctx: dict, free: bool = False) -> Packet:
         from . import appraise as appr
         # `free` forces Tier 0 even in Live mode — used for the conversation BROADCAST (a listener
         # absorbing an utterance) so a round never spends beyond the manager's single mediation call.
         if (not free) and self._complete is not None and self.flags_for(human).on("emotions"):
-            packet = await appr.model(human, signal, ctx, settings=self._settings,
-                                      complete=self._complete, model_name=self.model_for(human),
-                                      max_tokens=self._utter_tokens, rules=self._scene_rules)
+            # The one place a lifeworld agent genuinely THINKS, so the one place worth telling
+            # the register about. A context manager because a call that raises must not leave
+            # the agent claiming to be mid-thought.
+            from .. import agents as reg
+            with reg.working(self.agent_key(human), "thinking",
+                             str(signal.text() or "")[:120], name=human.name,
+                             where=f"world {self.id}", kind="agent"):
+                packet = await appr.model(human, signal, ctx, settings=self._settings,
+                                          complete=self._complete, model_name=self.model_for(human),
+                                          max_tokens=self._utter_tokens, rules=self._scene_rules)
             if getattr(packet, "spent", 0):
                 human.note_spend()               # a real model-use counts against this agent's session
         else:
