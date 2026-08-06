@@ -2604,7 +2604,10 @@ async function fillTeamPick() {
     const r = await api("/api/lw");
     const worlds = r.worlds || [];
     for (const w of worlds) {
-      const rooms = (await api(`/api/lw/${w.id}`)).world?.rooms || [];
+      // `rooms` sits at the TOP of the payload, not under `world` — reading the wrong level
+      // silently produced an empty list, so the picker offered no teams at all and the whole
+      // feature looked unimplemented.
+      const rooms = (await api(`/api/lw/${w.id}`)).rooms || [];
       for (const room of rooms) {
         const o = document.createElement("option");
         o.value = `${w.id}:${room.id}`;

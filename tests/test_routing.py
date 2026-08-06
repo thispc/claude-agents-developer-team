@@ -437,3 +437,24 @@ def test_the_knowledge_base_is_seeded_from_sprints_that_already_ran(fresh_db):
     hits = asyncio.run(knowledge.recall("global", "extracting a router out of routes.py", k=1))
     assert hits and "too big" in hits[0]["says"]
     assert asyncio.run(knowledge.backfill_from_sprints()) == 0, "it must run once"
+
+
+def test_the_team_picker_reads_rooms_from_the_right_level():
+    """`rooms` sits at the TOP of the world payload, not under `world`. Reading the wrong
+    level produced an empty list silently, so the picker offered no teams at all and the
+    whole feature looked unimplemented — found only by opening the wizard for real."""
+    from conftest import dashboard_js
+    js = dashboard_js()
+    fn = js.split("async function fillTeamPick", 1)[1].split("\n}", 1)[0]
+    assert ".rooms || []" in fn and ".world?.rooms" not in fn
+
+
+def test_a_world_payload_really_does_put_rooms_at_the_top(root_client, fresh_db):
+    """Pinned against the server, so the client and the shape cannot drift apart again."""
+    from app.lifeworld import store
+    w = store.create(1, "w")
+    w.new_room("a team", "freeplay")
+    store.save(w)
+    body = root_client.get(f"/api/lw/{w.id}").json()
+    assert "rooms" in body and body["rooms"], "rooms moved; fillTeamPick reads the top level"
+    assert "rooms" not in (body.get("world") or {})
