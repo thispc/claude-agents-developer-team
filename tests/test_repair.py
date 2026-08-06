@@ -1157,3 +1157,16 @@ def test_a_dashboard_javascript_error_becomes_a_log_row(client, fresh_db, monkey
                                            "stack": "at rpHtml", "url": "#/improve"})
     row = next(r for r in logs.rows() if r["event"] == "dashboard_error")
     assert "not a function" in row["msg"] and row["level"] == "error"
+
+
+def test_a_zombie_that_has_been_killed_stops_being_reported(fresh_db, monkeypatch):
+    """A live zombie heartbeats every tick; a dead one stops. Reporting a problem that has
+    already been solved is how a monitor loses the right to be believed."""
+    from app import logs, monitor
+    monkeypatch.setattr(logs, "ECHO", False)
+    old = time.time() - monitor.ZOMBIE_FRESH_S - 60
+    logs.log("lifecycle", "lease_held_elsewhere", "standing down", level="warn", holder=999)
+    db.kv_set(logs.RING_KEY, [{**logs.rows()[-1], "ts": old}])
+    assert not [n for n in monitor.scan() if n["kind"] == "zombie"]
+    logs.log("lifecycle", "lease_held_elsewhere", "standing down now", level="warn", holder=999)
+    assert [n for n in monitor.scan() if n["kind"] == "zombie"]

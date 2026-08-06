@@ -89,8 +89,16 @@ def _rule_sandbox(rows: list[dict]) -> list[dict]:
         action="pause_repair")]
 
 
+# A live zombie heartbeats every tick; a dead one stops. Anything older than this is a
+# problem that has already been solved, and reporting it is how a monitor loses its
+# credibility — the whole promise of deriving on read is that what you see is still true.
+ZOMBIE_FRESH_S = 300
+
+
 def _rule_zombie(rows: list[dict]) -> list[dict]:
-    hits = [r for r in rows if r.get("event") == "lease_held_elsewhere"]
+    fresh = time.time() - ZOMBIE_FRESH_S
+    hits = [r for r in rows if r.get("event") == "lease_held_elsewhere"
+            and float(r.get("ts", 0)) >= fresh]
     if not hits:
         return []
     holder = hits[-1].get("holder")
