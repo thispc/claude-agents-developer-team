@@ -1244,6 +1244,51 @@ function benchHtml(tasks) {
   </div>`;
 }
 
+// ---- the command tab's building blocks, shared with the Devteam screen ----------------
+// One crew of agents will drive projects AND the platform's own repair after the handoff,
+// so both screens must speak one visual language: the same attention card, the same ask
+// card, the same agent cards in the same lanes. These build the HTML only — each screen
+// wires its own buttons.
+function uiAttnCard(label, text, buttonsHtml) {
+  return `<div class="attn-card">
+      <div class="bl">${label}</div>
+      <div class="qtext">${escapeHtml(text)}</div>
+      ${buttonsHtml ? `<div class="qbtns">${buttonsHtml}</div>` : ""}
+    </div>`;
+}
+
+function uiAskCard(o) {
+  return `<div class="ask-card ${o.cls || "decision"}">
+      <div class="bl">${o.icon || "👔"} ${o.head}</div>
+      <div class="qtext">${escapeHtml(o.text)}</div>
+      ${o.note ? `<div class="qnote">${o.note}</div>` : ""}
+      ${o.buttonsHtml ? `<div class="qbtns">${o.buttonsHtml}</div>` : ""}
+      ${o.replyHtml ? `<div class="qreply">${o.replyHtml}</div>` : ""}
+    </div>`;
+}
+
+function uiAgentCard(o) {
+  return `<div class="agent ${o.cls || ""}"${o.data ? ` data-task="${o.data}"` : ""}>
+      <div class="top">
+        <span class="role" title="${escapeHtml(o.roleTitle || "")}">${o.roleHtml}</span>
+        <span class="st">${o.statusWord}</span>
+      </div>
+      <div class="title">${escapeHtml(o.title)}</div>
+      <div class="doing">${escapeHtml(o.doing)}</div>
+      ${o.extraHtml || ""}
+      <div class="deps">${o.metaHtml || ""}</div>
+    </div>`;
+}
+
+function uiLane(label, count, note, cardsHtml) {
+  return `<div class="group">
+      <div class="group-head"><span class="glabel">${label}</span>
+        <span class="gcount">${count}</span>
+        ${note ? `<span class="gnote">${note}</span>` : ""}</div>
+      <div class="agents">${cardsHtml}</div>
+    </div>`;
+}
+
 function renderCommand(p) {
   const el = $("#command");
   if (!el || el.hidden) return;
@@ -1254,12 +1299,10 @@ function renderCommand(p) {
   const mode = p.autonomy === "autonomous" ? "full autonomy" : "checks with you";
 
   // "Needs attention" must state the actual story, not just colour a badge.
-  const attnHtml = (["review", "failed"].includes(p.status) && p.summary) ? `
-    <div class="attn-card">
-      <div class="bl">❗ Needs your attention</div>
-      <div class="qtext">${escapeHtml(p.summary)}</div>
-      <div class="qbtns"><button data-attn="fix">Tell the manager to fix it</button></div>
-    </div>` : "";
+  const attnHtml = (["review", "failed"].includes(p.status) && p.summary)
+    ? uiAttnCard("❗ Needs your attention", p.summary,
+                 `<button data-attn="fix">Tell the manager to fix it</button>`)
+    : "";
 
   // How the moment is framed depends on what sort of moment it is. An interview
   // before any work starts is not a problem to be unblocked, and calling it "your
@@ -1273,20 +1316,14 @@ function renderCommand(p) {
     decision: { icon: "👔", head: "Your manager needs a decision", note: "" },
   };
   const frame = ASK_FRAME[pendingQ && pendingQ.topic] || ASK_FRAME.decision;
-  const askHtml = pendingQ ? `
-    <div class="ask-card ${pendingQ.topic || "decision"}">
-      <div class="bl">${frame.icon} ${frame.head}</div>
-      <div class="qtext">${escapeHtml(pendingQ.text)}</div>
-      ${frame.note ? `<div class="qnote">${frame.note}</div>` : ""}
-      <div class="qbtns">
-        ${(pendingQ.options || []).map((o, i) =>
-          `<button data-qopt="${i}">${escapeHtml(optText(o))}</button>`).join("")}
-      </div>
-      <div class="qreply">
-        <input id="askReply" placeholder="…or tell the manager what to do in your own words">
-        <button class="primary" data-qopt="send">Send</button>
-      </div>
-    </div>` : "";
+  const askHtml = pendingQ ? uiAskCard({
+    cls: pendingQ.topic || "decision", icon: frame.icon, head: frame.head,
+    text: pendingQ.text, note: frame.note,
+    buttonsHtml: (pendingQ.options || []).map((o, i) =>
+      `<button data-qopt="${i}">${escapeHtml(optText(o))}</button>`).join(""),
+    replyHtml: `<input id="askReply" placeholder="…or tell the manager what to do in your own words">
+        <button class="primary" data-qopt="send">Send</button>`,
+  }) : "";
 
   const bubbleHtml = (label, text, cls) => text
     ? `<div class="bubble ${cls || ""}"><div class="bl">${label}</div>${escapeHtml(trim(text, 420))}</div>` : "";
@@ -1319,20 +1356,16 @@ function renderCommand(p) {
         ? pretty(hired.model === "lead" ? "claude-sonnet-5" : "claude-haiku-4-5") + " (planned)"
         : "—";
     }
-    return `<div class="agent ${t.status}" data-task="${t.id}">
-      <div class="top">
-        <span class="role" title="${escapeHtml(t.role)}">${wrapRole(t.role)}</span>
-        <span class="st">${STATUS_WORD[t.status] || t.status}</span>
-      </div>
-      <div class="title">${escapeHtml(t.title)}</div>
-      <div class="doing">${escapeHtml(trim(doing, 150))}</div>
-      ${(t.rivals || []).length ? `<div class="rivals">🥊 contest: ${
+    return uiAgentCard({
+      cls: t.status, data: t.id, roleHtml: wrapRole(t.role), roleTitle: t.role,
+      statusWord: STATUS_WORD[t.status] || t.status, title: t.title, doing: trim(doing, 150),
+      extraHtml: (t.rivals || []).length ? `<div class="rivals">🥊 contest: ${
         t.rivals.map((r) => `<span class="rival ${r.status}">#${r.idx} ${
           escapeHtml((r.model || "").replace("claude-", ""))} · ${r.status}</span>`).join("")
-      }</div>` : ""}
-      <div class="deps">🧠 ${escapeHtml(modelLabel)}${t.attempts > 1 ? ` · attempt ${t.attempts}` : ""}
-        ${deps.length ? ` · after ${depLabels(deps).join(", ")}` : ""}</div>
-    </div>`;
+      }</div>` : "",
+      metaHtml: `🧠 ${escapeHtml(modelLabel)}${t.attempts > 1 ? ` · attempt ${t.attempts}` : ""}
+        ${deps.length ? ` · after ${depLabels(deps).join(", ")}` : ""}`,
+    });
   };
 
   const GROUPS = [
@@ -1360,17 +1393,12 @@ function renderCommand(p) {
       return { text: extra > 0 ? `waiting for ${shown} +${extra} more` : `waiting for ${shown}`,
                full: "waiting for " + names.join(", ") };
     };
-    return `<div class="group">
-      <div class="group-head"><span class="glabel">${label}</span>
-        <span class="gcount">${inGroup.length}</span>
-        ${note ? `<span class="gnote">${note}</span>` : ""}</div>
-      <div class="agents">${inGroup.map((t) => {
-        const bn = key === "blocked" ? blockedNote(t) : "";
-        return card(t).replace('<div class="deps">',
-          bn ? `<div class="blocked-note" title="${escapeHtml(bn.full)}">⏳ ${
-            escapeHtml(bn.text)}</div><div class="deps">` : '<div class="deps">');
-      }).join("")}</div>
-    </div>`;
+    return uiLane(label, inGroup.length, note, inGroup.map((t) => {
+      const bn = key === "blocked" ? blockedNote(t) : "";
+      return card(t).replace('<div class="deps">',
+        bn ? `<div class="blocked-note" title="${escapeHtml(bn.full)}">⏳ ${
+          escapeHtml(bn.text)}</div><div class="deps">` : '<div class="deps">');
+    }).join(""));
   }).join("");
 
   el.innerHTML = `

@@ -1613,6 +1613,6 @@ def status() -> dict:
             "factors": factors(), "sprint": _typed_sprint(sprint(n)),
             "queue": db.kv_get("repair:queue") or [],
             "backlog": [_typed(t) for t in backlog().get("tasks", [])],
-            "world": team(), "head": selfops.head(),
+            "world": team(), "head": selfops.head(), "code": selfops.code_currency(),
             "last_error": db.kv_get("repair:last_error"),
             "supervised": bool(tuning.get("repair_supervised"))}

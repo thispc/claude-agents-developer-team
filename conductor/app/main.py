@@ -21,6 +21,10 @@ async def lifespan(app: FastAPI):
     knowledge.init()
     loop = asyncio.get_event_loop()
     bus.set_loop(loop)
+    # Photograph HEAD now, not lazily — code_currency() compares against this forever
+    # after, and a lazy first call would miss any commit that landed in between.
+    from . import selfops
+    selfops.mark_boot()
     # Every never-die background loop, so shutdown can actually end them (see below).
     background: list[asyncio.Task] = []
     config.WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)

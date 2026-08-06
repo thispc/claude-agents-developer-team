@@ -2698,6 +2698,10 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .rp-card-h .dim { font-weight: 400; font-size: 12px; }
 .rp-link { margin-left: auto; font-size: 12px; color: var(--accent); text-decoration: none; }
 .rp-head-card { border-left: 4px solid var(--line); }
+/* The Command tab borrows the projects chain/lane/card language (ui* builders); these two
+   rules are the only devteam-specific dressing on top of it. */
+.rp-chain { align-items: stretch; gap: 12px; margin-bottom: 14px; }
+.rp-qbtns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .rp-head-card.rp-live { border-left-color: var(--accent); }
 .rp-switchrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .rp-phase { font-size: 13px; color: var(--dim); }

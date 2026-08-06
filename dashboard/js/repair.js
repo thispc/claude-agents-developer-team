@@ -54,7 +54,9 @@ async function rpRefresh(force) {
   const sig = JSON.stringify([d.enabled, d.state, d.meters && d.meters.s5h, d.meters && d.meters.w7d,
     d.meters && d.meters.util && [d.meters.util.owner_tok, d.meters.util.repair_tok, d.meters.util.contended],
     rpTab,
-    d.factors, d.sprint && d.sprint.tasks && d.sprint.tasks.map((t) => t.status), (d.queue || []).length]);
+    d.factors, d.sprint && d.sprint.tasks && d.sprint.tasks.map((t) => t.status), (d.queue || []).length,
+    d.code && [d.code.head, d.code.needs_restart, d.code.needs_reload],
+    d.notices && [d.notices.total, d.notices.critical]]);
   if (!force && el.dataset.sig === sig) return;
   el.dataset.sig = sig;
   el.innerHTML = rpHtml(d);
@@ -468,8 +470,74 @@ function rpActivityPanel() {
   </div>`;
 }
 
-function rpCommandPanel() {
+function rpCommandPanel(d) {
+  // The same visual language as a project's Command tab — the shared ui* builders from
+  // projects.js — because after the handoff one kind of crew drives both screens, and the
+  // person should learn ONE way to read "who is working, who needs me, what happened".
+  const code = d.code || {};
+  // The devteam's one step a project never has: its output is merged CODE, and the running
+  // app does not run it until restarted (conductor/) or reloaded (dashboard-only).
+  const updateHtml = code.needs_restart
+    ? uiAttnCard("⬆️ Update available",
+        `The app is running code from ${code.behind} landed change(s) ago. Restart to run what the crew shipped.`,
+        `<button data-rp-update>⟳ Update &amp; restart the app</button>`)
+    : code.needs_reload
+      ? uiAttnCard("⬆️ Fresh dashboard landed",
+          "Only UI files changed since this page loaded — reloading it is enough.",
+          `<button data-rp-reload>⟳ Reload the page</button>`)
+      : "";
+  const nn = d.notices || {};
+  const askHtml = nn.total ? uiAskCard({
+    icon: "🛰️", head: "The monitor needs a decision",
+    text: `${nn.total} notice${nn.total === 1 ? "" : "s"} open${nn.critical ? " — one is critical" : ""}. Each proposes one concrete action; approving runs it.`,
+    buttonsHtml: `<button data-rp-gonotices>Review the notices</button>`,
+  }) : "";
+
+  const tasks = ((d.sprint || {}).tasks || []);
+  const phase = (d.state || {}).phase || "";
+  const WORD = { pending: phase === "verify" ? "Checking" : phase === "build" ? "Working" : "Queued up",
+                 green: "In review", landed: "Done", queued: "Waiting for you",
+                 failed: "Failed", aborted: "Stopped" };
+  const factorName = (f) => escapeHtml((f || "crew").replace(/-/g, " "));
+  const cardOf = (t) => uiAgentCard({
+    cls: t.status === "landed" ? "done" : t.status === "pending" ? "running" : t.status,
+    roleHtml: factorName(t.factor), roleTitle: t.factor || "",
+    statusWord: WORD[t.status] || t.status, title: t.title,
+    doing: trim(t.evidence || t.error || (t.verification && t.verification.headline)
+                || (t.status === "pending" ? "In this sprint's plan." : ""), 150),
+    metaHtml: `${rpTag(t)}${t.attempts > 1 ? ` · attempt ${t.attempts}` : ""}${
+      t.sent_back ? " · sent back once by a reviewer" : ""}`,
+  });
+  const qs = d.queue_state || {};
+  const qCard = (q) => {
+    const st = qs[q.branch] || { ok: true };
+    return uiAgentCard({
+      cls: "review", roleHtml: "finished change", roleTitle: q.branch,
+      statusWord: "Waiting for you", title: q.title,
+      doing: st.ok ? "Green and ready to land."
+                   : `${st.why} — ${st.fix}.`,
+      metaHtml: `s${q.sprint_no || "?"}`,
+      extraHtml: `<div class="rp-qbtns">
+        ${st.remedy === "rebuild" ? `<button class="rp-mini" data-rebuild="${escapeHtml(q.branch)}">⟳ Rebuild onto today's main &amp; re-test</button>` : ""}
+        <button class="rp-mini" data-approve="${escapeHtml(q.branch)}"${st.ok ? "" : ` disabled title="${escapeHtml(st.why + " — " + st.fix)}"`}>✓ Approve &amp; land</button>
+        <button class="rp-mini danger" data-discard="${escapeHtml(q.branch)}">✕ Discard</button></div>`,
+    });
+  };
+  const lanes = [
+    ["⚡ Working right now", tasks.filter((t) => t.status === "pending").map(cardOf),
+     "the current sprint, one task at a time"],
+    ["🔍 Waiting for you", (d.queue || []).map(qCard),
+     "finished green work that needs your approve or discard"],
+    ["✅ Finished this sprint", tasks.filter((t) => t.status === "landed").map(cardOf), ""],
+    ["✕ Failed", tasks.filter((t) => ["failed", "aborted"].includes(t.status)).map(cardOf),
+     "the board records why"],
+  ].map(([label, cards, note]) => cards.length ? uiLane(label, cards.length, note, cards.join("")) : "")
+   .join("");
+
   return `
+  ${updateHtml}${askHtml}
+  ${lanes ? `<div class="chain rp-chain">${lanes}</div>`
+          : `<p class="dim">no sprint running — flip the switch, or file a ticket below</p>`}
   <div class="rp-card">
     <div class="rp-card-h">Point the crew at something specific <span class="dim">a hand-written ticket, routed through the projects flow</span></div>
     <div class="rough-row">
@@ -503,7 +571,7 @@ function rpHtml(d) {
   const panels = { notices: rpNoticesPanel(d), agents: rpAgentsPanel(d),
                    crew: rpCrewPanel(d, m), board: rpBoardPanel(d),
                    activity: rpActivityPanel(),
-                   usage: rpUsagePanel(d, m), command: rpCommandPanel() };
+                   usage: rpUsagePanel(d, m), command: rpCommandPanel(d) };
 
   return `
   <div class="rp-card rp-head-card${d.enabled && d.state.phase !== "sleeping" ? " rp-live" : ""}">
@@ -560,6 +628,16 @@ function rpWire(d) {
     catch (e) { toast(e.message); }
     rpRefresh(true);
   });
+  el.querySelectorAll("[data-rp-update]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true; b.textContent = "restarting…";
+    try { await api("/api/repair/restart", { method: "POST" });
+          waitForRestart("Updating to the latest landed code…"); }
+    catch (e) { toast(e.message); b.disabled = false; b.textContent = "⟳ Update & restart the app"; }
+  }));
+  el.querySelectorAll("[data-rp-reload]").forEach((b) => b.addEventListener("click", () => location.reload()));
+  el.querySelectorAll("[data-rp-gonotices]").forEach((b) => b.addEventListener("click", () => {
+    rpTab = "notices"; rpRefresh(true);
+  }));
   el.querySelectorAll("[data-approve]").forEach((b) => b.addEventListener("click", async () => {
     try { await api("/api/repair/queue/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ branch: b.dataset.approve }) }); toast("Landed."); }
     catch (e) { toast(`Could not land: ${e.message}`); }

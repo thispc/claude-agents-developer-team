@@ -88,6 +88,44 @@ def head() -> dict[str, str]:
     }
 
 
+_BOOT_SHA: str | None = None
+_CURRENCY: dict[str, Any] = {"val": None, "ts": 0.0}
+
+
+def mark_boot() -> str:
+    """Photograph HEAD at process start (called from main's lifespan). The crew lands code
+    on main while this process keeps running whatever it imported at boot — this sha is the
+    only honest record of which code that was."""
+    global _BOOT_SHA
+    if _BOOT_SHA is None:
+        _BOOT_SHA = _sh("git", "rev-parse", "HEAD").stdout.strip()
+    return _BOOT_SHA
+
+
+def code_currency() -> dict[str, Any]:
+    """Is the running process current with main? A landed conductor/worker change needs a
+    RESTART to take effect; a dashboard-only change needs a page RELOAD (files are served
+    from disk). Nothing on the Improve screen said either, so approved code sat unused and
+    looked exactly like an approve button that does nothing. Cached 10s — status() is polled."""
+    boot = mark_boot()
+    now = time.time()
+    if _CURRENCY["val"] is not None and now - _CURRENCY["ts"] < 10:
+        return _CURRENCY["val"]
+    head = _sh("git", "rev-parse", "HEAD").stdout.strip()
+    if not boot or not head or head == boot:
+        val = {"boot": boot[:8], "head": (head or boot)[:8], "behind": 0,
+               "needs_restart": False, "needs_reload": False, "files": []}
+    else:
+        files = [f for f in _sh("git", "diff", "--name-only", boot, head).stdout.splitlines() if f]
+        n = _sh("git", "rev-list", "--count", f"{boot}..{head}").stdout.strip()
+        val = {"boot": boot[:8], "head": head[:8], "behind": int(n) if n.isdigit() else 1,
+               "needs_restart": any(f.startswith(("conductor/", "worker/")) for f in files),
+               "needs_reload": any(f.startswith("dashboard/") for f in files),
+               "files": files[:40]}
+    _CURRENCY.update(val=val, ts=now)
+    return val
+
+
 def find_project() -> int:
     """The platform's own project row if it exists — 0 if nobody has filed a ticket yet.
     Separate from `ensure_project` because a read (does it exist?) must not create one."""

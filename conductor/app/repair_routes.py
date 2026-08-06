@@ -143,7 +143,10 @@ async def repair_approve(body: BranchBody, request: Request) -> dict:
         rec["landed"] += 1
         rec["landed_files"] = sorted(set(rec.get("landed_files", []) + out.get("files", [])))
         repair.save_sprint(rec)
-    return {"landed_sha": out["sha"]}
+    files = out.get("files") or []
+    return {"landed_sha": out["sha"], "files": files,
+            # The UI's cue to offer the restart right away, without waiting for the poll.
+            "needs_restart": any(f.startswith(("conductor/", "worker/")) for f in files)}
 
 
 @router.post("/queue/rebuild")
