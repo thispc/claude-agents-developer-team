@@ -273,6 +273,21 @@ def test_a_recovered_phase_clears_the_stale_error_banner(fresh_db):
     assert not db.kv_get("repair:last_error")
 
 
+def test_the_cap_is_a_ceiling_not_a_starting_gun(fresh_db):
+    """Live overshoot (16/14): headroom asked 'is there ANY room' before a deliberation that
+    costs ~8 calls. It must ask whether the NEXT phase fits."""
+    now = time.time()
+    cap = int(tuning.get("repair_session_cap"))
+    plan_cost = repair.phase_cost("plan")
+    assert plan_cost >= len(repair.enabled_factors()), "a plan costs at least one call per agent"
+    # room for a build, not for a plan
+    db.kv_set("repair:ledger", [{"ts": now - 60, "kind": "build", "model": "m", "usd": 0,
+                                 "n": cap - plan_cost + 1}])
+    assert repair.headroom(now, need=1)[0] is True
+    ok, reason, wake = repair.headroom(now, need=plan_cost)
+    assert not ok and wake > now, "a plan that would blow the cap must wait"
+
+
 def test_headroom_min_blocks_a_sprint_start(fresh_db):
     now = time.time()
     cap = int(tuning.get("repair_session_cap"))

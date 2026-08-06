@@ -198,8 +198,18 @@ def meters(now: float | None = None) -> dict:
             "cooldowns": cools, "model": model}
 
 
-def headroom(now: float | None = None) -> tuple[bool, str, float]:
-    """(ok, reason, wake_ts) — the manager's sleep decision, in one place."""
+def phase_cost(phase: str) -> int:
+    """Model calls the next phase will spend. A deliberation is the expensive one — one call
+    per factor-agent for the independent opening round, a host plan per later round, and the
+    closing memo — so asking only 'is there any room left' let a plan blow past the cap."""
+    if phase == "plan":
+        return len(enabled_factors()) + max(0, int(tuning.get("repair_plan_rounds")) - 1) + 1
+    return 1                                        # scout, build: one session each
+
+
+def headroom(now: float | None = None, need: int = 0) -> tuple[bool, str, float]:
+    """(ok, reason, wake_ts) — the manager's sleep decision, in one place. `need` is what the
+    next phase will cost, so the cap is a real ceiling rather than a starting gun."""
     now = now or time.time()
     m = meters(now)
     if m["cooldowns"]:
@@ -207,7 +217,7 @@ def headroom(now: float | None = None) -> tuple[bool, str, float]:
         return False, f"{model} is cooling down (limit hit)", now + left
     if m["w7d"]["used"] >= m["w7d"]["cap"]:
         return False, "weekly session cap reached", m["w7d"]["wake"]
-    if m["s5h"]["cap"] - m["s5h"]["used"] < max(0, int(tuning.get("repair_headroom_min"))):
+    if m["s5h"]["cap"] - m["s5h"]["used"] < max(need, int(tuning.get("repair_headroom_min"))):
         wake = m["s5h"]["wake"] or (now + 1800)
         return False, "session window nearly spent", wake
     return True, "", 0.0
@@ -352,7 +362,8 @@ async def tick() -> None:
 async def advance(st: dict) -> None:
     phase = st["phase"]
     if phase == "idle":
-        ok, reason, wake = headroom()
+        # a sprint that must scout+plan needs room for the whole plan, not just the scout
+        ok, reason, wake = headroom(need=1 if backlog_fresh() else phase_cost("plan") + 1)
         if not ok:
             return _sleep(reason, wake)
         n = int(db.kv_get("repair:seq") or 0) + 1
@@ -451,6 +462,9 @@ PLAN_EXTRACT_SYSTEM = (
 
 
 async def _phase_plan(st: dict, rec: dict) -> None:
+    ok, reason, wake = headroom(need=phase_cost("plan"))
+    if not ok:
+        return _sleep(reason, wake, resume="plan")
     n_tasks = max(1, int(tuning.get("repair_backlog_size")))    # plan a BACKLOG, not one sprint
     memo = None
     try:
@@ -544,7 +558,7 @@ async def _phase_build(st: dict, rec: dict) -> None:
         save_sprint(rec)
         set_state(task_idx=st["task_idx"] + 1)
         return
-    ok, reason, wake = headroom()
+    ok, reason, wake = headroom(need=phase_cost("build"))
     if not ok:
         return _sleep(reason, wake, resume="build")      # come back to THIS task, not a new sprint
     t["status"] = "building"
