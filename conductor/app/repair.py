@@ -284,11 +284,12 @@ def headroom(now: float | None = None, need: int = 0) -> tuple[bool, str, float]
         return False, why, wake
     if m["w7d"]["used"] >= m["w7d"]["cap"]:
         return False, "weekly session cap reached", m["w7d"]["wake"]
-    # The 5-hour SESSION COUNT is the fallback, not the rule. Where the SDK reports cost, the
-    # measured window above is a better answer to "is there quota left" than a hand-set number
-    # of calls — and letting the counter veto it is what put the crew to sleep for hours with
-    # the subscription sitting completely idle. With no cost signal at all, it is all we have.
-    if m["util"]["used_usd"] <= 0 and \
+    # The 5-hour SESSION COUNT is the fallback, not the rule. Where the SDK reports tokens,
+    # the measured window above is a better answer to "is there room left" than a hand-set
+    # number of calls — and letting the counter veto it is what put the crew to sleep for
+    # hours beside a completely idle subscription. With no token signal at all, it is all
+    # we have.
+    if m["util"]["used_tok"] <= 0 and \
             m["s5h"]["cap"] - m["s5h"]["used"] < max(need, int(tuning.get("repair_headroom_min"))):
         wake = m["s5h"]["wake"] or (now + 1800)
         return False, "session window nearly spent", wake
@@ -429,8 +430,14 @@ async def tick() -> None:
         # A headroom sleep is a GUESS at when the window rolls — if the meters recover sooner
         # (or a cooldown expires), wake now rather than sitting out a stale wake time. A pause
         # between sprints is deliberate, so it waits out its clock.
-        early = st.get("sleep_kind", "headroom") != "pause" and headroom()[0]
+        ok, why, wake = headroom()
+        early = st.get("sleep_kind", "headroom") != "pause" and ok
         if not early and time.time() < (st.get("sleep_until") or 0):
+            # Still asleep — but say WHY it is still asleep, not why it fell asleep. The
+            # reason is written once and then never revisited, so the banner could read
+            # "used its share of this window" beside a meter showing the window 100% idle.
+            if why and why != st.get("sleep_reason") and st.get("sleep_kind") != "pause":
+                set_state(sleep_reason=why, sleep_until=max(wake, time.time() + TICK_SECONDS))
             return
         st = set_state(phase=st.get("resume_phase") or "idle", sleep_until=0,
                        sleep_reason="", sleep_kind="", resume_phase="")
@@ -504,6 +511,11 @@ def _rate_limited(err: str) -> bool:
 
 
 async def _phase_scout(st: dict, rec: dict) -> None:
+    """Survey the repo in ONE read-only session and come back with candidate improvements,
+    one per enabled factor. Budget-aware by construction: it samples rather than reads
+    everything, because a scout that spends its whole turn allowance exploring has nothing
+    left to report. Offline it produces a deterministic empty digest and the sprint still
+    completes, free."""
     if not _live():
         rec["scout"] = {"digest": "(offline — no credentials; sprint runs deterministically)",
                         "candidates": []}
@@ -551,6 +563,10 @@ PLAN_EXTRACT_SYSTEM = (
 
 
 async def _phase_plan(st: dict, rec: dict) -> None:
+    """The crew deliberates, and the decision memo IS the plan. One bounded round per
+    configured round plus one opening call per agent, then a single extraction call turns
+    the memo into concrete tasks. Plans several sprints ahead into the backlog: planning is
+    the expensive phase, so it is amortised rather than repeated every sprint."""
     ok, reason, wake = headroom(need=phase_cost("plan"))
     if not ok:
         return _sleep(reason, wake, resume="plan")
@@ -647,6 +663,9 @@ def _task(st: dict, rec: dict) -> dict | None:
 
 
 async def _phase_build(st: dict, rec: dict) -> None:
+    """One coding session per task, in a disposable git worktree, tracked as a cancellable
+    task so the abort button means something. The engine commits, not the model. A session
+    that dies on turns is marked too big and is never retried — only test failures are."""
     global CURRENT_BUILD
     t = _task(st, rec)
     if t is None:
@@ -704,6 +723,9 @@ async def _phase_build(st: dict, rec: dict) -> None:
 
 
 async def _phase_verify(st: dict, rec: dict) -> None:
+    """Run the platform's OWN full test suite inside the worktree — the same gates a human's
+    change must pass, including all the repo's self-protecting ones. Red once buys a retry
+    with the failures as evidence; red twice fails the task and the branch is discarded."""
     t = _task(st, rec)
     if t is None or not t.get("worktree"):
         set_state(phase="build")
@@ -741,6 +763,10 @@ async def _phase_verify(st: dict, rec: dict) -> None:
 
 
 async def _phase_land(st: dict, rec: dict) -> None:
+    """Squash-merge the green branch to main, so one task is one commit and one commit is one
+    `git revert` handle. Refuses if the diff touches a protected path, and queues for review
+    instead of landing when the live tree is dirty (that work is the owner's) or when
+    supervised mode is on."""
     t = _task(st, rec)
     if t is None:
         set_state(phase="retro")
@@ -776,6 +802,9 @@ async def _phase_land(st: dict, rec: dict) -> None:
 
 
 async def _phase_retro(st: dict, rec: dict) -> None:
+    """Close the sprint: a one-line record of what landed and what did not, then either
+    restart the server (when backend files changed, so the platform runs what it just wrote)
+    or rest until the next sprint is due."""
     rec["finished_at"] = time.time()
     if not rec.get("retro"):
         rec["retro"] = (f"sprint {rec['no']}: {rec['landed']} landed, {rec['failed']} failed, "

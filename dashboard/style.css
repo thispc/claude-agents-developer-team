@@ -2803,3 +2803,25 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .rp-board-memo { font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; }
 .rp-board-pos { display: flex; flex-direction: column; gap: 7px; }
 .rp-board-pos .rp-msg { max-width: 100%; }
+
+/* ── the Improve screen's tabs ────────────────────────────────────────────────
+   One long column meant the usage meters, the board, the feed and the ticket form all
+   competed for the same first screen. Every panel stays in the DOM (hidden, not removed) so
+   switching is instant and a half-typed ticket survives a tab change. */
+.rp-tabs { display: flex; gap: 4px; align-items: center; margin: 14px 0 12px;
+  border-bottom: 1px solid var(--line); }
+.rp-tab { background: none; border: none; border-bottom: 2px solid transparent; color: var(--dim);
+  font: inherit; font-size: 13.5px; font-weight: 600; padding: 8px 14px; cursor: pointer;
+  margin-bottom: -1px; }
+.rp-tab:hover { color: var(--text); }
+.rp-tab.on { color: var(--accent); border-bottom-color: var(--accent); }
+.rp-tabnote { margin-left: auto; font-size: 11.5px; color: var(--faint); padding-right: 4px; }
+.rp-act-tall { max-height: 62vh; }
+.rp-usage-note { margin: 10px 0 0; max-width: 74ch; }
+.rp-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.rp-table th { text-align: left; font-size: 11px; font-family: var(--mono); font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.05em; color: var(--faint);
+  padding: 0 8px 6px 0; border-bottom: 1px solid var(--line); }
+.rp-table td { padding: 6px 8px 6px 0; border-bottom: 1px dashed var(--line-soft); }
+.rp-table tr:last-child td { border-bottom: none; }
+.rp-table .rp-num { text-align: right; font-family: var(--mono); }

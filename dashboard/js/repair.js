@@ -5,6 +5,9 @@
 
 let rpTimer = null;
 let rpChatOpen = false;
+// Which tab is open. Module-level, because the status poll re-renders #self every few seconds
+// and a tab that reset itself to "Crew" mid-read would be unusable.
+let rpTab = "crew";
 
 async function renderSelf() {
   rpEnsureBoard();
@@ -46,7 +49,8 @@ async function rpRefresh(force) {
   }
   const el = $("#self");
   const sig = JSON.stringify([d.enabled, d.state, d.meters && d.meters.s5h, d.meters && d.meters.w7d,
-    d.meters && d.meters.util && [d.meters.util.owner_usd, d.meters.util.repair_usd, d.meters.util.contended],
+    d.meters && d.meters.util && [d.meters.util.owner_tok, d.meters.util.repair_tok, d.meters.util.contended],
+    rpTab,
     d.factors, d.sprint && d.sprint.tasks && d.sprint.tasks.map((t) => t.status), (d.queue || []).length]);
   if (!force && el.dataset.sig === sig) return;
   el.dataset.sig = sig;
@@ -77,89 +81,67 @@ function rpBar(m) {
   return `<span class="rp-bar"><span class="rp-bar-fill" style="width:${Math.round(frac * 100)}%;background:${color}"></span></span>`;
 }
 
+/** Tokens, the way a person reads them. 3018222 is not a number anybody parses at a
+ * glance; "3.0M" is. */
+function rpTok(n) {
+  n = Number(n) || 0;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`;
+  if (n >= 1000) return `${Math.round(n / 1000)}k`;
+  return String(n);
+}
+
+function rpAgo(s) {
+  if (!s || s >= 1e8) return "";
+  if (s < 90) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  return `${Math.round(s / 3600)}h ago`;
+}
+
 /** Utilization — the signal the sleep decision actually turns on.
  *
- * The call counters below it are a backstop; THIS is the real question. The crew's allowance
- * is whatever quota you left unused in the rolling window, so the honest thing to show is a
- * single bar split between your work and the crew's, and a sentence saying which way the
- * manager is about to decide. */
+ * In TOKENS, never dollars: on a Max subscription there is no bill, so "$3.67" answers no
+ * question the owner has, while "18% of this window" is the same thing they can act on. One
+ * bar split between your work and the crew's, because the question is not how much each spent
+ * but how much of the window is left — and that only reads at a glance on a shared 100%. */
 function rpUtilHtml(u) {
   if (!u) return "";
   const pct = (v) => Math.max(0, Math.min(100, Math.round(v * 100)));
-  const mine = pct(u.owner_usd / Math.max(0.01, u.budget_usd));
-  const crew = pct(u.repair_usd / Math.max(0.01, u.budget_usd));
-  const quiet = u.quiet_s >= 1e8 ? "" :
-    u.quiet_s < 90 ? "just now" :
-    u.quiet_s < 3600 ? `${Math.round(u.quiet_s / 60)}m ago` : `${Math.round(u.quiet_s / 3600)}h ago`;
+  const mine = pct(u.owner_tok / Math.max(1, u.budget_tok));
+  const crew = pct(u.repair_tok / Math.max(1, u.budget_tok));
+  const quiet = rpAgo(u.quiet_s);
   const verdict = u.contended
-    ? `<span class="rp-cool">you are using the quota — the crew waits</span>`
-    : u.allowance_usd <= u.repair_usd
+    ? `<span class="rp-cool">you are using it — the crew waits</span>`
+    : u.allowance_tok <= u.repair_tok
       ? `<span class="rp-cool">the crew has used its share of this window</span>`
       : `<span class="rp-cool rp-backlog">${pct(u.idle_frac)}% idle — the crew may use it</span>`;
-  return `<div class="rp-meterrow"><span class="rp-meter-lb">quota (${u.window_h}h)</span>
-      <span class="rp-bar" title="your work ${mine}% · the crew ${crew}% of a $${u.budget_usd} window">
+  return `<div class="rp-meterrow"><span class="rp-meter-lb">window (${u.window_h}h)</span>
+      <span class="rp-bar" title="you ${mine}% · the crew ${crew}%">
         <span class="rp-bar-fill rp-you" style="width:${mine}%"></span>
         <span class="rp-bar-fill rp-crew" style="width:${crew}%;left:${mine}%"></span></span>
-      <span class="rp-meter-n">$${(u.used_usd || 0).toFixed(2)}/$${u.budget_usd}</span></div>
+      <span class="rp-meter-n">${rpTok(u.used_tok)} / ${rpTok(u.budget_tok)} tokens</span></div>
     <div class="rp-coolrow">${verdict}
-      <span class="dim">yours $${(u.owner_usd || 0).toFixed(2)}${quiet ? ` (last ${quiet})` : ""}
-        · crew $${(u.repair_usd || 0).toFixed(2)} of $${(u.allowance_usd || 0).toFixed(2)} allowed</span></div>`;
+      <span class="dim">you ${rpTok(u.owner_tok)}${quiet ? ` (last ${quiet})` : ""}
+        · crew ${rpTok(u.repair_tok)} of ${rpTok(u.allowance_tok)} allowed</span></div>`;
 }
 
-function rpHtml(d) {
-  const m = d.meters || { s5h: { used: 0, cap: 1 }, w7d: { used: 0, cap: 1 }, cooldowns: {}, team: [] };
-  const cools = Object.entries(m.cooldowns || {}).map(([mod, s]) =>
-    `<span class="rp-cool">${escapeHtml(mod.replace("claude-", ""))} cooling · ${Math.ceil(s / 60)}m</span>`).join("");
+// ---- the panels -----------------------------------------------------------
+
+const RP_TABS = [
+  { id: "crew", label: "Crew" },
+  { id: "board", label: "Board" },
+  { id: "activity", label: "Activity" },
+  { id: "usage", label: "Usage" },
+  { id: "command", label: "Command" },
+];
+
+function rpCrewPanel(d, m) {
   const factors = (d.factors || []).map((f) =>
     `<button class="rp-chip${f.enabled ? " on" : ""}" data-fid="${escapeHtml(f.id)}" title="${escapeHtml(f.brief)}">${escapeHtml(f.name)}</button>`).join("");
   const team = (m.team || []).map((a) => {
     const u = a.usage || {}; return `<span class="rp-mate${u.asleep ? " asleep" : ""}" title="${escapeHtml(a.factor)} · ${u.used || 0}/${u.cap || "?"} session uses">
       ${escapeHtml(a.name)}${u.asleep ? " 😴" : ""} ${rpBar({ used: u.used || 0, cap: u.cap || 1 })}</span>`;
   }).join("") || `<span class="dim">the crew forms when the first sprint starts</span>`;
-  const tasks = ((d.sprint && d.sprint.tasks) || []).map((t) => {
-    const icon = { pending: "○", building: "🔨", verifying: "🧪", green: "✓", landed: "✓", queued: "⏸", failed: "✕", aborted: "✕" }[t.status] || "○";
-    const extra = t.status === "landed" && t.landed_sha
-      ? ` <button class="rp-mini" data-revert="${escapeHtml(t.landed_sha)}">↩ revert</button>`
-      : (t.verification && t.verification.headline ? ` <span class="dim">${escapeHtml(trim(t.verification.headline, 60))}</span>` : "");
-    return `<div class="rp-task s-${escapeHtml(t.status)}"><span class="rp-task-ico">${icon}</span>
-      <span class="rp-task-t">[${escapeHtml(t.factor || "?")}] ${escapeHtml(t.title)}</span>${extra}</div>`;
-  }).join("") || (d.enabled
-    ? `<p class="dim">${escapeHtml({ scout: "scouting the repo — nothing planned yet",
-        plan: "the crew is deciding what to work on", idle: "waiting for quota" }[(d.state || {}).phase]
-        || "no tasks in this sprint yet")}</p>`
-    : `<p class="dim">no sprint yet — flip the switch</p>`);
-  const queue = (d.queue || []).map((q) =>
-    `<div class="rp-task s-queued"><span class="rp-task-ico">⏸</span>
-      <span class="rp-task-t">${escapeHtml(q.title)}${q.note ? ` <span class="dim">(${escapeHtml(q.note)})</span>` : ""}</span>
-      <button class="rp-mini" data-approve="${escapeHtml(q.branch)}">✓ approve</button>
-      <button class="rp-mini danger" data-discard="${escapeHtml(q.branch)}">✕ discard</button></div>`).join("");
-  const err = d.last_error && d.enabled
-    ? `<div class="rp-err">last error · ${escapeHtml(d.last_error.phase || "?")}: ${escapeHtml(trim(d.last_error.detail || "", 140))}</div>` : "";
-
   return `
-  <div class="rp-card rp-head-card${d.enabled && d.state.phase !== "sleeping" ? " rp-live" : ""}">
-    <div class="rp-switchrow">
-      <label class="seg rp-seg">
-        <input type="radio" name="rpOn" value="off" ${d.enabled ? "" : "checked"}><span>Off</span>
-      </label>
-      <label class="seg rp-seg">
-        <input type="radio" name="rpOn" value="on" ${d.enabled ? "checked" : ""}><span>Self-repairing</span>
-      </label>
-      <span class="rp-phase" id="repairPhase">${rpPhaseLine(d)}</span>
-      ${d.enabled ? `<button class="rp-mini danger" id="rpAbort" title="Abort the current task">■ abort task</button>` : ""}
-    </div>
-    ${err}
-  </div>
-
-  <div class="rp-card">
-    <div class="rp-card-h">Usage <span class="dim">the crew shares one subscription with you — it only spends what you are not</span></div>
-    ${rpUtilHtml(m.util)}
-    <div class="rp-meterrow"><span class="rp-meter-lb">calls (5h)</span>${rpBar(m.s5h)}<span class="rp-meter-n">${m.s5h.used}/${m.s5h.cap}${m.s5h.usd ? ` · $${m.s5h.usd.toFixed(2)}` : ""}</span></div>
-    <div class="rp-meterrow"><span class="rp-meter-lb">week</span>${rpBar(m.w7d)}<span class="rp-meter-n">${m.w7d.used}/${m.w7d.cap}${m.w7d.usd ? ` · $${m.w7d.usd.toFixed(2)}` : ""}</span></div>
-    ${cools ? `<div class="rp-coolrow">${cools}</div>` : ""}
-    ${(d.backlog || []).length ? `<div class="rp-coolrow"><span class="rp-cool rp-backlog">${(d.backlog || []).length} planned ahead — next sprints build without re-planning</span></div>` : ""}
-  </div>
-
   <div class="rp-card">
     <div class="rp-card-h">Factors <span class="dim">what the crew cares about — click to toggle</span></div>
     <div class="rp-chips" id="repairFactors">${factors}</div>
@@ -179,8 +161,28 @@ function rpHtml(d) {
       <form id="repairChatForm"><input id="repairChatText" placeholder="Message the manager…" autocomplete="off">
         <button class="rp-mini">Send</button></form>
     </div>
-  </div>
+  </div>`;
+}
 
+function rpBoardPanel(d) {
+  const tasks = ((d.sprint && d.sprint.tasks) || []).map((t) => {
+    const icon = { pending: "○", building: "🔨", verifying: "🧪", green: "✓", landed: "✓", queued: "⏸", failed: "✕", aborted: "✕" }[t.status] || "○";
+    const extra = t.status === "landed" && t.landed_sha
+      ? ` <button class="rp-mini" data-revert="${escapeHtml(t.landed_sha)}">↩ revert</button>`
+      : (t.verification && t.verification.headline ? ` <span class="dim">${escapeHtml(trim(t.verification.headline, 60))}</span>` : "");
+    return `<div class="rp-task s-${escapeHtml(t.status)}"><span class="rp-task-ico">${icon}</span>
+      <span class="rp-task-t">[${escapeHtml(t.factor || "?")}] ${escapeHtml(t.title)}</span>${extra}</div>`;
+  }).join("") || (d.enabled
+    ? `<p class="dim">${escapeHtml({ scout: "scouting the repo — nothing planned yet",
+        plan: "the crew is deciding what to work on", idle: "waiting for quota" }[(d.state || {}).phase]
+        || "no tasks in this sprint yet")}</p>`
+    : `<p class="dim">no sprint yet — flip the switch</p>`);
+  const queue = (d.queue || []).map((q) =>
+    `<div class="rp-task s-queued"><span class="rp-task-ico">⏸</span>
+      <span class="rp-task-t">${escapeHtml(q.title)}${q.note ? ` <span class="dim">(${escapeHtml(q.note)})</span>` : ""}</span>
+      <button class="rp-mini" data-approve="${escapeHtml(q.branch)}">✓ approve</button>
+      <button class="rp-mini danger" data-discard="${escapeHtml(q.branch)}">✕ discard</button></div>`).join("");
+  return `
   <div class="rp-card">
     <div class="rp-card-h">Sprint ${d.sprint ? d.sprint.no : "—"} <span class="dim">${d.sprint ? escapeHtml(d.sprint.retro || "") : ""}</span>
       ${d.sprint ? `<button class="rp-link" data-board="${d.sprint.no}">open the board ↗</button>` : ""}</div>
@@ -189,11 +191,56 @@ function rpHtml(d) {
   </div>
 
   <div class="rp-card">
-    <div class="rp-card-h">Activity <span class="dim">everything the crew does, as it does it</span>
-      <button class="rp-link" id="rpActReload">refresh</button></div>
-    <div id="repairActivity" class="rp-act"><p class="dim">…</p></div>
+    <div class="rp-card-h">Up next <span class="dim">the planned backlog — drained one sprint at a time</span></div>
+    <div id="repairBacklog">${(d.backlog || []).map((t) =>
+      `<div class="rp-task"><span class="rp-task-ico">·</span><span class="rp-task-t">[${escapeHtml(t.factor || "?")}] ${escapeHtml(t.title)}</span></div>`).join("")
+      || `<p class="dim">empty — the crew will scout and plan a fresh backlog next sprint</p>`}</div>
   </div>
 
+  <div class="rp-card">
+    <div class="rp-card-h">Every sprint <span class="dim">open one for its board</span></div>
+    <div id="repairHistory"><p class="dim">…</p></div>
+  </div>`;
+}
+
+function rpUsagePanel(d, m) {
+  const u = m.util || {};
+  const cools = Object.entries(m.cooldowns || {}).map(([mod, s]) =>
+    `<span class="rp-cool">${escapeHtml(mod.replace("claude-", ""))} cooling · ${Math.ceil(s / 60)}m</span>`).join("");
+  const WHO = { repair: "Self-repair", manager: "Project managers", worker: "Agents", studio: "Studio seats" };
+  const rows = Object.entries(u.by_source || {}).sort((a, b) => b[1].tok - a[1].tok).map(([k, v]) =>
+    `<tr><td>${escapeHtml(WHO[k] || k)}</td><td class="rp-num">${rpTok(v.tok)}</td>
+      <td class="rp-num dim">${rpTok(v.cache)}</td><td class="rp-num dim">${v.calls}</td></tr>`).join("")
+    || `<tr><td colspan="4" class="dim">nothing used this window</td></tr>`;
+  const resets = u.resets_at ? new Date(u.resets_at * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
+  return `
+  <div class="rp-card">
+    <div class="rp-card-h">This window <span class="dim">one subscription, shared — the crew only spends what you are not</span></div>
+    ${rpUtilHtml(u)}
+    ${cools ? `<div class="rp-coolrow">${cools}</div>` : ""}
+    <p class="hint rp-usage-note">Counted in input+output tokens. Cache reads are shown apart because a
+      single build reads millions of them and would drown everything else.${resets ? ` This window rolls at ${escapeHtml(resets)}.` : ""}</p>
+  </div>
+
+  <div class="rp-card">
+    <div class="rp-card-h">Who used it</div>
+    <table class="rp-table"><thead><tr><th>source</th><th class="rp-num">tokens</th>
+      <th class="rp-num">cache</th><th class="rp-num">calls</th></tr></thead><tbody>${rows}</tbody></table>
+  </div>
+
+  <div class="rp-card">
+    <div class="rp-card-h">Session counters
+      <span class="dim">${(u.used_tok || 0) > 0 ? "not deciding anything right now" : "deciding, because nothing reported tokens this window"}</span></div>
+    <div class="rp-meterrow"><span class="rp-meter-lb">calls (5h)</span>${rpBar(m.s5h)}<span class="rp-meter-n">${m.s5h.used}/${m.s5h.cap}</span></div>
+    <div class="rp-meterrow"><span class="rp-meter-lb">week</span>${rpBar(m.w7d)}<span class="rp-meter-n">${m.w7d.used}/${m.w7d.cap}</span></div>
+    <p class="hint rp-usage-note">A crude count of sessions, kept only for a machine whose SDK
+      reports no token counts at all. The moment real tokens are measured this stops being
+      consulted — a hand-set number of calls is a worse answer than a measurement.</p>
+  </div>`;
+}
+
+function rpCommandPanel() {
+  return `
   <div class="rp-card">
     <div class="rp-card-h">Point the crew at something specific <span class="dim">a hand-written ticket, routed through the projects flow</span></div>
     <div class="rough-row">
@@ -212,19 +259,47 @@ function rpHtml(d) {
       <div id="triageBox" class="hint"></div>
       <div id="selfErr" class="form-error"></div>
     </form>
-  </div>
-
-  <div class="rp-card">
-    <div class="rp-card-h">Up next <span class="dim">the planned backlog — drained one sprint at a time</span></div>
-    <div id="repairBacklog">${(d.backlog || []).map((t) =>
-      `<div class="rp-task"><span class="rp-task-ico">·</span><span class="rp-task-t">[${escapeHtml(t.factor || "?")}] ${escapeHtml(t.title)}</span></div>`).join("")
-      || `<p class="dim">empty — the crew will scout and plan a fresh backlog next sprint</p>`}</div>
-  </div>
-
-  <div class="rp-card">
-    <div class="rp-card-h">History</div>
-    <div id="repairHistory"><p class="dim">…</p></div>
   </div>`;
+}
+
+function rpHtml(d) {
+  const m = d.meters || { s5h: { used: 0, cap: 1 }, w7d: { used: 0, cap: 1 }, cooldowns: {}, team: [], util: null };
+  const err = d.last_error && d.enabled
+    ? `<div class="rp-err">last error · ${escapeHtml(d.last_error.phase || "?")}: ${escapeHtml(trim(d.last_error.detail || "", 140))}</div>` : "";
+  const u = m.util || {};
+  // One line of context on the tab strip, so switching tabs never hides the two facts that
+  // decide everything: what the crew is doing, and whether it is allowed to.
+  const badge = u.budget_tok
+    ? `<span class="rp-tabnote">${Math.round((u.frac || 0) * 100)}% of this window used</span>` : "";
+  const panels = { crew: rpCrewPanel(d, m), board: rpBoardPanel(d),
+                   activity: `<div class="rp-card">
+    <div class="rp-card-h">Activity <span class="dim">everything the crew does, as it does it</span>
+      <button class="rp-link" id="rpActReload">refresh</button></div>
+    <div id="repairActivity" class="rp-act rp-act-tall"><p class="dim">…</p></div>
+  </div>`,
+                   usage: rpUsagePanel(d, m), command: rpCommandPanel() };
+
+  return `
+  <div class="rp-card rp-head-card${d.enabled && d.state.phase !== "sleeping" ? " rp-live" : ""}">
+    <div class="rp-switchrow">
+      <label class="seg rp-seg">
+        <input type="radio" name="rpOn" value="off" ${d.enabled ? "" : "checked"}><span>Off</span>
+      </label>
+      <label class="seg rp-seg">
+        <input type="radio" name="rpOn" value="on" ${d.enabled ? "checked" : ""}><span>Self-repairing</span>
+      </label>
+      <span class="rp-phase" id="repairPhase">${rpPhaseLine(d)}</span>
+      ${d.enabled ? `<button class="rp-mini danger" id="rpAbort" title="Abort the current task">■ abort task</button>` : ""}
+    </div>
+    ${err}
+  </div>
+
+  <div class="rp-tabs" role="tablist">
+    ${RP_TABS.map((t) => `<button class="rp-tab${t.id === rpTab ? " on" : ""}" role="tab"
+      aria-selected="${t.id === rpTab}" data-tab="${t.id}">${escapeHtml(t.label)}</button>`).join("")}
+    ${badge}
+  </div>
+  ${RP_TABS.map((t) => `<div class="rp-panel" data-panel="${t.id}"${t.id === rpTab ? "" : " hidden"}>${panels[t.id]}</div>`).join("")}`;
 }
 
 // ---- wiring ---------------------------------------------------------------
@@ -348,6 +423,19 @@ function rpWire(d) {
     b.addEventListener("click", () => rpBoard(b.dataset.board)));
   const areload = $("#rpActReload");
   if (areload) areload.addEventListener("click", rpActivity);
+
+  // Tabs. Every panel is in the DOM and inactive ones are `hidden`, so switching is instant,
+  // form state survives, and nothing has to be re-fetched to look at it again.
+  el.querySelectorAll("[data-tab]").forEach((b) => b.addEventListener("click", () => {
+    rpTab = b.dataset.tab;
+    el.querySelectorAll("[data-tab]").forEach((x) => {
+      x.classList.toggle("on", x.dataset.tab === rpTab);
+      x.setAttribute("aria-selected", String(x.dataset.tab === rpTab));
+    });
+    el.querySelectorAll("[data-panel]").forEach((p) => { p.hidden = p.dataset.panel !== rpTab; });
+    const act = $("#repairActivity");
+    if (rpTab === "activity" && act) act.scrollTop = act.scrollHeight;
+  }));
 
   rpHistory();
   rpActivity();

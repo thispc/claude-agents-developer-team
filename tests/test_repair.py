@@ -4,6 +4,7 @@ model calls (a monkeypatched provider raises if anything tries to spend)."""
 
 import asyncio
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -502,7 +503,7 @@ def test_the_crew_yields_while_you_are_using_the_quota(fresh_db, no_spend):
     now = time.time()
     ok, _, _ = repair.headroom(now)
     assert ok, "an idle box must let the crew work"
-    usage.note("manager", "claude-opus-5", usd=0.4, ts=now - 30)
+    usage.note("manager", "claude-opus-5", tok=4000, ts=now - 30)
     ok, why, wake = repair.headroom(now)
     assert not ok and "your own work" in why
     assert wake > now, "a yield must name a time to check back"
@@ -514,7 +515,7 @@ def test_the_crew_does_not_yield_to_its_own_spending(fresh_db, no_spend):
     would put itself to sleep forever, one tick after starting."""
     from app import usage
     now = time.time()
-    usage.note("repair", "claude-sonnet-5", usd=2.0, ts=now - 10)
+    usage.note("repair", "claude-sonnet-5", tok=20000, ts=now - 10)
     ok, why, _ = repair.headroom(now)
     assert ok, f"the crew slept because of its own spend: {why}"
 
@@ -530,12 +531,12 @@ def test_attribution_follows_the_caller_not_the_call_site(fresh_db):
 def test_your_spending_shrinks_the_crews_allowance(fresh_db):
     from app import usage
     now = time.time()
-    budget = float(tuning.get("usage_budget_usd"))
+    budget = int(tuning.get("usage_budget_tokens"))
     share = float(tuning.get("repair_idle_share"))
-    assert usage.snapshot(now)["allowance_usd"] == pytest.approx(budget * share, rel=1e-3)
-    usage.note("worker", "claude-sonnet-5", usd=budget * share, ts=now - 60)
+    assert usage.snapshot(now)["allowance_tok"] == int(budget * share)
+    usage.note("worker", "claude-sonnet-5", tok=int(budget * share), ts=now - 60)
     u = usage.snapshot(now)
-    assert u["allowance_usd"] == 0, "the owner's work must take the room back"
+    assert u["allowance_tok"] == 0, "the owner's work must take the room back"
     assert u["idle_frac"] < 1.0
 
 
@@ -543,7 +544,7 @@ def test_a_quiet_hour_stops_counting_as_contention(fresh_db, no_spend):
     from app import usage
     now = time.time()
     quiet = int(tuning.get("repair_yield_quiet_s"))
-    usage.note("manager", "claude-opus-5", usd=0.01, ts=now - quiet - 60)
+    usage.note("manager", "claude-opus-5", tok=500, ts=now - quiet - 60)
     ok, why, _ = repair.headroom(now)
     assert ok, f"the crew must claim genuinely idle quota: {why}"
     assert usage.snapshot(now)["contended"] is False
@@ -627,12 +628,12 @@ def test_the_call_counter_is_a_fallback_not_a_veto(fresh_db, no_spend):
     ok, why, _ = repair.headroom(now)
     assert not ok and "session window" in why, "with no cost signal the counter still rules"
     # now the same box, but the SDK is reporting cost and the window is plainly idle
-    usage.note("repair", "claude-sonnet-5", usd=0.02, ts=now - 60)
+    usage.note("repair", "claude-sonnet-5", tok=2000, ts=now - 60)
     ok, why, _ = repair.headroom(now)
     assert ok, f"a measured-idle window must beat the proxy: {why}"
     # ...and a measured-FULL window still stops it
     usage.note("repair", "claude-sonnet-5",
-               usd=float(tuning.get("usage_budget_usd")) * float(tuning.get("repair_idle_share")),
+               tok=int(int(tuning.get("usage_budget_tokens")) * float(tuning.get("repair_idle_share"))),
                ts=now - 60)
     ok, why, _ = repair.headroom(now)
     assert not ok and "share of this window" in why
@@ -647,9 +648,10 @@ def test_the_crews_own_history_reaches_the_shared_meter_once(fresh_db):
     db.kv_set("repair:ledger", [{"ts": now - 60, "kind": "build", "model": "m", "usd": 1.25, "n": 1},
                                 {"ts": now - 30, "kind": "plan", "model": "m", "usd": 0, "n": 8}])
     assert usage.backfill_repair() == 1, "only rows with a cost are worth importing"
-    assert usage.snapshot(now)["repair_usd"] == pytest.approx(1.25)
+    assert usage.snapshot(now)["calls"] == 1, "imported as calls — those rows carry no tokens"
+    assert usage.snapshot(now)["repair_tok"] == 0, "an honest zero beats an invented number"
     assert usage.backfill_repair() == 0
-    assert usage.snapshot(now)["repair_usd"] == pytest.approx(1.25), "must not double-count"
+    assert usage.snapshot(now)["calls"] == 1, "must not double-count"
 
 
 def test_a_sprints_provider_calls_are_billed_to_the_crew(fresh_db, no_spend, monkeypatch):
@@ -761,3 +763,115 @@ def test_the_process_that_owns_the_port_owns_the_engine(fresh_db, no_spend):
     assert db.kv_get("repair:lease")["pid"] == os.getpid()
     src = Path(__file__).resolve().parents[1].joinpath("conductor/app/main.py").read_text()
     assert "repair.claim_lease()" in src, "startup must claim it, or the fix is theoretical"
+
+
+# --------------------------------------------------------------------------
+# the screen: tabs, and tokens instead of dollars
+# --------------------------------------------------------------------------
+
+def test_usage_is_reported_in_tokens_not_dollars(fresh_db):
+    """The owner is on a Max subscription: there is no bill, so a dollar figure answers no
+    question they have. Tokens are what the limit is made of."""
+    from app import usage
+    now = time.time()
+    usage.note("manager", "claude-opus-5", tok=12_000, cache=900_000, usd=1.5, ts=now - 30)
+    u = usage.snapshot(now)
+    assert u["owner_tok"] == 12_000
+    assert u["cache_tok"] == 900_000, "cache is counted, but apart"
+    assert u["used_tok"] == 12_000, "cache must not inflate the number the meter runs on"
+    assert u["by_source"]["manager"] == {"tok": 12_000, "cache": 900_000, "calls": 1}
+
+
+def test_a_result_message_is_split_into_work_and_cache(fresh_db):
+    from app import usage
+
+    class R:
+        total_cost_usd = 0.5
+        usage = {"input_tokens": 900, "output_tokens": 100,
+                 "cache_read_input_tokens": 3_000_000, "cache_creation_input_tokens": 20_000}
+    usage.note_result("repair", "claude-sonnet-5", R())
+    row = usage.rows()[-1]
+    assert row["tok"] == 1000 and row["cache"] == 3_020_000
+
+
+def test_a_worker_reports_its_tokens_home(client, fresh_db):
+    """The conductor meters the whole box; a worker that reports only a dollar figure leaves
+    the crew guessing at how much of the window a human's task just used."""
+    src = Path(__file__).resolve().parents[1].joinpath("worker/worker.py").read_text()
+    assert '"tokens": SESSION_TOKENS["tok"]' in src and "def note_tokens" in src
+    from app import routes
+    assert "tokens" in routes.WorkerReport.model_fields
+    assert routes.WorkerReport.model_fields["tokens"].default == 0, "an older worker must still report"
+
+
+def test_the_screen_is_tabbed_and_every_panel_stays_in_the_dom():
+    js = dashboard_js()
+    tabs = js.split("const RP_TABS = [", 1)[1].split("];", 1)[0]
+    for t in ("crew", "board", "activity", "usage", "command"):
+        assert f'id: "{t}"' in tabs, f"no {t} tab"
+    assert 'data-tab="${t.id}"' in js and 'data-panel="${t.id}"' in js
+    assert "let rpTab" in js, "the open tab must survive the status poll"
+    # panels are hidden, not dropped: a half-typed ticket has to survive a tab change
+    assert 'p.hidden = p.dataset.panel !== rpTab' in js
+    # and the pinned ticket form still exists no matter which tab is open
+    for pin in ('id="roughIssue"', 'id="refineBtn"', 'name="sprints"'):
+        assert pin in js
+
+
+def test_the_screen_shows_no_dollar_figures():
+    """Root asked for this directly: dollars mean nothing on a subscription."""
+    js = dashboard_js()
+    panel = js.split("function rpUtilHtml", 1)[1].split("function rpCommandPanel", 1)[0]
+    assert "usd" not in panel, "the Improve screen must not talk in dollars"
+    assert "rpTok(" in panel and "tokens" in panel
+
+
+def test_rows_from_before_the_work_cache_split_count_as_zero_tokens(fresh_db):
+    """Their `tokens` field summed every kind, so one build's 3M cache reads inside it pinned
+    the meter at 100% and put the crew to sleep on a fiction."""
+    from app import usage
+    now = time.time()
+    db.kv_set(usage.LEDGER_KEY, [{"ts": now - 60, "source": "repair", "model": "m",
+                                  "usd": 1.7, "tokens": 3_018_222, "calls": 1}])
+    u = usage.snapshot(now)
+    assert u["used_tok"] == 0 and u["frac"] == 0
+    assert u["calls"] == 1, "still visible as a call — that is what the backstop counts"
+
+
+def test_the_self_repair_doc_is_generated_from_the_code_and_current():
+    """Hand-written architecture docs rot silently: the sentence stays true-sounding while the
+    constant it describes changes underneath. This one is read out of the modules, and this
+    test is what makes forgetting to regenerate impossible."""
+    import subprocess
+    root = Path(__file__).resolve().parents[1]
+    r = subprocess.run([sys.executable, "tools/gen_selfrepair_doc.py", "--check"],
+                       cwd=root, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    doc = (root / "docs" / "SELF_REPAIR.md").read_text()
+    assert doc.startswith("<!-- GENERATED"), "it must say it is generated, or someone will edit it"
+    # the things most likely to drift are all present
+    for must in ("## The phases", "## When it sleeps", "## Knobs", "## HTTP",
+                 "usage_budget_tokens", "/api/repair/activity", "repair:lease"):
+        assert must in doc, f"the doc lost {must}"
+
+
+def test_the_backstop_says_whether_it_is_actually_deciding():
+    """18/14 shown next to a meter reading 0% is alarming and, when tokens are being measured,
+    means nothing at all. The card has to say which of the two it is."""
+    js = dashboard_js()
+    assert "not deciding anything right now" in js
+    assert "deciding, because nothing reported tokens this window" in js
+
+
+def test_a_sleeping_engine_keeps_its_reason_current(fresh_db, no_spend):
+    """The reason was written when it fell asleep and never revisited, so the banner could
+    read 'used its share of this window' beside a meter showing the window 100% idle."""
+    repair.toggle(True)
+    repair._sleep("self-repair has used its share of this window", time.time() + 3600)
+    # the real reason now is the session counter, not the share
+    cap = int(tuning.get("repair_session_cap"))
+    db.kv_set("repair:ledger", [{"ts": time.time(), "kind": "build", "model": "m", "usd": 0, "n": cap}])
+    asyncio.run(repair.tick())
+    st = repair.state()
+    assert st["phase"] == "sleeping"
+    assert "session window" in st["sleep_reason"], f"stale reason: {st['sleep_reason']}"

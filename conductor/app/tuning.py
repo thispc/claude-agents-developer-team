@@ -289,13 +289,15 @@ KNOBS: dict[str, tuple[Any, type, str, str]] = {
         "because that is the session window Claude subscriptions reset on — "
         "measuring over a different span would produce a meter that reads full "
         "when the real quota has already rolled, or empty just before a wall."),
-    "usage_budget_usd": (
-        20.0, float, "USAGE_BUDGET_USD",
-        "What one window's worth of quota is treated as being worth, in the SDK's "
-        "API-equivalent pricing. A subscription exposes no token budget, so this "
-        "is the conversion between 'cost reported per session' and 'fraction of "
-        "the window consumed'. Raise it if the crew sleeps while quota is clearly "
-        "left; lower it if it keeps running into real rate limits."),
+    "usage_budget_tokens": (
+        1_000_000, int, "USAGE_BUDGET_TOKENS",
+        "Input+output tokens one window is treated as holding — the denominator "
+        "for every percentage on the Improve screen. A subscription publishes no "
+        "token budget, so this is a dial you set by observation, not a fact we can "
+        "read: raise it if the crew sleeps while the plan clearly has room, lower "
+        "it if it keeps meeting real rate limits (which override it anyway). Cache "
+        "reads are counted separately and deliberately excluded — one build reads "
+        "millions of them, and folding those in would make any budget meaningless."),
     "repair_idle_share": (
         0.6, float, "REPAIR_IDLE_SHARE",
         "The most of one window self-repair may take when the box is otherwise "

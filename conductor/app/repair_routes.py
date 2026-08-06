@@ -38,30 +38,38 @@ class ShaBody(BaseModel):
 
 @router.get("/status")
 def repair_status(request: Request) -> dict:
+    """Everything the Improve screen renders, in one payload: the button, the phase, the
+    token meters, the factors, the crew, the current sprint, the queue and the backlog."""
     _root(request)
     return repair.status()
 
 
 @router.post("/toggle")
 def repair_toggle(body: ToggleBody, request: Request) -> dict:
+    """THE BUTTON. On means the crew sprints on this repository until told otherwise."""
     _root(request)
     return {"enabled": repair.toggle(body.on)}
 
 
 @router.post("/factors")
 def repair_factors(body: FactorsBody, request: Request) -> dict:
+    """Turn a factor on or off, or add one of your own. A factor is a lens the crew looks
+    through, and each enabled one is a seat at the sprint-planning table."""
     _root(request)
     return {"factors": repair.set_factors(body.set, body.add, body.remove)}
 
 
 @router.get("/ledger")
 def repair_ledger(request: Request) -> dict:
+    """The crew's own call counter and the meters derived from it — the backstop used when
+    nothing reports real token counts."""
     _root(request)
     return {"meters": repair.meters(), "entries": (db.kv_get("repair:ledger") or [])[-100:]}
 
 
 @router.get("/sprints")
 def repair_sprints(request: Request, limit: int = 20) -> dict:
+    """Every sprint, oldest first: enough of each to list it. Open one for its full board."""
     _root(request)
     rows = sorted(db.kv_prefix("repair:sprint:").values(), key=lambda r: r.get("no", 0))
     return {"sprints": rows[-max(1, min(limit, 100)):]}
@@ -91,6 +99,8 @@ def repair_activity(request: Request, after: int = 0, limit: int = 120) -> dict:
 
 @router.post("/chat")
 async def repair_chat(body: ChatText, request: Request) -> dict:
+    """Say something to the crew's hidden manager, which answers with the graph in front of
+    it — the same mediator that runs the deliberations."""
     _root(request)
     info = repair.ensure_team()
     if not info:
@@ -109,6 +119,8 @@ async def repair_chat(body: ChatText, request: Request) -> dict:
 
 @router.post("/queue/approve")
 async def repair_approve(body: BranchBody, request: Request) -> dict:
+    """Land a branch waiting in the review queue (supervised mode, or a build that finished
+    while your own tree was dirty)."""
     _root(request)
     q = db.kv_get("repair:queue") or []
     item = next((x for x in q if x["branch"] == body.branch), None)
@@ -132,6 +144,7 @@ async def repair_approve(body: BranchBody, request: Request) -> dict:
 
 @router.post("/queue/discard")
 def repair_discard(body: BranchBody, request: Request) -> dict:
+    """Throw a queued branch away, worktree and all."""
     _root(request)
     q = db.kv_get("repair:queue") or []
     item = next((x for x in q if x["branch"] == body.branch), None)
@@ -144,6 +157,7 @@ def repair_discard(body: BranchBody, request: Request) -> dict:
 
 @router.post("/revert")
 def repair_revert(body: ShaBody, request: Request) -> dict:
+    """Undo a landed change. One task is one squashed commit, so this is one `git revert`."""
     _root(request)
     out = rb.revert(body.sha)
     if not out.get("ok"):
@@ -153,5 +167,6 @@ def repair_revert(body: ShaBody, request: Request) -> dict:
 
 @router.post("/abort")
 async def repair_abort(request: Request) -> dict:
+    """Stop the task being built right now and clean up after it. The crew carries on."""
     _root(request)
     return {"ok": await repair.abort()}

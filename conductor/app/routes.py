@@ -144,6 +144,10 @@ class WorkerReport(BaseModel):
     status: str  # pushed | failed
     report: str
     cost_usd: float = 0
+    # Tokens the worker's session actually consumed. Optional: an older worker binary
+    # reports no tokens rather than failing, and its row then counts as calls only.
+    tokens: int = 0
+    cache_tokens: int = 0
     contender_id: int = 0
     verification: str = ""      # JSON, produced by the worker process not the model
 
@@ -2460,7 +2464,8 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
     task = db.get_task(body.task_id)
     # Worker sessions draw on the same subscription quota the self-repair crew watches, so
     # they are metered here — once, before the branchy paths below each bill the project.
-    usage.note("worker", (task or {}).get("model") or "", body.cost_usd)
+    usage.note("worker", (task or {}).get("model") or "", tok=body.tokens,
+               cache=body.cache_tokens, usd=body.cost_usd)
 
     # A rival attempt reports into its own row; the task only advances once every
     # rival is in, and then it goes to the manager to judge — not straight to a PR.

@@ -90,9 +90,27 @@ def emit(kind: str, payload: str) -> None:
 CONTENDER_ID = int(os.environ.get("CONTENDER_ID", "0") or 0)
 
 
+# What this session actually consumed. The conductor meters the box's whole subscription in
+# TOKENS (see conductor/app/usage.py) — a worker that reports only a dollar figure leaves the
+# self-repair crew guessing at how much of the window a human's task just used.
+SESSION_TOKENS = {"tok": 0, "cache": 0}
+
+
+def note_tokens(message) -> None:
+    """Accumulate an SDK ResultMessage's token counts. Input+output and cache are kept apart:
+    cache reads run to millions and would drown the number that matters."""
+    u = getattr(message, "usage", None) or {}
+    if isinstance(u, dict):
+        SESSION_TOKENS["tok"] += int(u.get("input_tokens") or 0) + int(u.get("output_tokens") or 0)
+        SESSION_TOKENS["cache"] += (int(u.get("cache_read_input_tokens") or 0)
+                                    + int(u.get("cache_creation_input_tokens") or 0))
+
+
 def report(status: str, text: str, cost: float, verification: dict | None = None) -> None:
     post("/internal/report", {"project_id": PROJECT_ID, "task_id": TASK_ID,
                               "status": status, "report": text[:12000], "cost_usd": cost,
+                              "tokens": SESSION_TOKENS["tok"],
+                              "cache_tokens": SESSION_TOKENS["cache"],
                               "contender_id": CONTENDER_ID,
                               "verification": json.dumps(verification or {})})
 
@@ -487,6 +505,7 @@ async def run_claude_session(system_prompt: str, repo_dir: Path) -> tuple[str, f
                         emit("tool_use", f"{block.name}: {summary}")
             elif isinstance(message, ResultMessage):
                 cost = message.total_cost_usd or 0.0
+                note_tokens(message)
     except Exception as e:
         error = str(e)
     return last_text, cost, error

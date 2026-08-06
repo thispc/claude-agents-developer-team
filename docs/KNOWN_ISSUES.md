@@ -81,15 +81,16 @@ That turns a silent mis-parse into a message naming the fix.
 
 ---
 
-## 5. Rate-limit cooldowns are forgotten on restart
+## 5. [FIXED] Rate-limit cooldowns are forgotten on restart
 
-**Why:** `launcher.COOLDOWN` is a module-level dict. A restart clears it, so the
-next dispatch goes straight back to the model that just rate-limited us, and
-the fallback logic re-learns the hard way.
+**Why:** `launcher.COOLDOWN` was a module-level dict. A restart cleared it, so
+the next dispatch went straight back to the model that just rate-limited us,
+and the fallback logic re-learned the hard way.
 
-**Fix:** persist it — a small `model_cooldown(model, until_ts)` table, read on
-startup and written in `note_rate_limit`. Expired rows are ignored, so no
-cleanup job is needed.
+**Fix:** persisted via the `model_cooldown(model, until_ts, reason)` table —
+`launcher.load_cooldowns()` reads it into `COOLDOWN` on startup, and
+`launcher.note_rate_limit()` writes through `db.set_cooldown()`. Expired rows
+are dropped on read by `db.load_cooldowns()`, so no cleanup job is needed.
 
 ---
 
