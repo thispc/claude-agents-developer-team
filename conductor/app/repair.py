@@ -376,7 +376,7 @@ def ensure_team():
     want = sorted(f["id"] for f in fs)
     info = team()
     if (info and info.get("factor_ids") == want and info.get("personas") == TEAM_PERSONAS
-            and store.load(info["world_id"])):
+            and _team_room_alive(info)):
         return info
     u = auth.get_user_by_name(auth.ROOT_USERNAME)
     if not u or not fs:
@@ -386,6 +386,15 @@ def ensure_team():
         w = store.load(info["world_id"])
     if w is None:
         w = store.create(u["id"], "devteam IT crew")
+    # Before materialising a fresh seating, look for one that already exists. The kv record
+    # is only a POINTER, and it can lose a race the world file wins (two servers once each
+    # saved their own idea of this world) — after which the record names a room that is
+    # nowhere on disk while the real crew sits alive in another. Rebuilding then would
+    # orphan everything keyed to the living humans' ids (the knowledge rows above all).
+    # Adopting the surviving room keeps the ids, so the crew keeps what it has learned.
+    adopted = _adopt_crew_room(w, fs, want)
+    if adopted:
+        return adopted
     # What the crew has EARNED must survive a re-seat. Toggling one factor rebuilds the
     # scene, and until now that quietly threw away the manager conversation, the deliberation
     # memos, and — since agents learn — every association each specialist had proved. A
@@ -436,6 +445,40 @@ def ensure_team():
     db.kv_set("repair:world", info)
     bus.emit(0, None, "repair", "repair_team_ready", {"world_id": w.id, "agents": len(fs)})
     return info
+
+
+def _team_room_alive(info: dict) -> bool:
+    """The freshness check used to trust the pointer if the WORLD loaded; a deleted or
+    never-persisted room then 404'd the canvas and silently un-staffed every build (the
+    factor→agent ids resolve to nobody) while the check kept saying fine."""
+    try:
+        from .lifeworld import store
+        w = store.load(info["world_id"])
+        return bool(w and w.scene(info.get("room_id")) is not None)
+    except Exception:
+        return False
+
+
+def _adopt_crew_room(w, fs: list[dict], want: list[str]) -> dict | None:
+    """If some scene in this world already seats exactly the crew's personas (matched by
+    NAME — ids are whatever history left), point the record at it instead of rebuilding."""
+    names = {f["name"] for f in fs}
+    for s in w.scenes.values():
+        players = list(s.players())
+        if {h.name for h in players} != names or not s.threads:
+            continue
+        by_name = {h.name: h.id for h in players}
+        info = {"world_id": w.id, "room_id": s.id, "personas": TEAM_PERSONAS,
+                "thread_id": s.threads[0]["id"] if s.threads else 0,
+                "agents": {f["id"]: by_name[f["name"]] for f in fs},
+                "factor_ids": want}
+        db.kv_set("repair:world", info)
+        logs.info("lifecycle", "crew_room_adopted",
+                  f"the team record pointed at a dead room — adopted surviving room {s.id}",
+                  room=s.id, world=w.id)
+        bus.emit(0, None, "repair", "repair_team_ready", {"world_id": w.id, "agents": len(fs)})
+        return info
+    return None
 
 
 def _tidy_crew_world(w, keep_room: int) -> int:

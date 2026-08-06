@@ -379,3 +379,27 @@ def test_the_reviewer_sees_the_actual_diff_not_only_the_stat(fresh_db):
     src = inspect.getsource(repair._review_green)
     assert '"diff", "main...HEAD"' in src, "the review material must include the real diff"
     assert '"--stat"' in src, "and keep the stat as the summary"
+
+
+def test_a_dead_room_pointer_heals_by_adoption_not_rebuild(fresh_db, monkeypatch):
+    """The kv record is only a pointer, and it can lose a race the world file wins (two
+    servers each saved their own idea of the world). Rebuilding on a dead pointer would
+    re-seat new human ids and orphan every knowledge row keyed to the living ones — the
+    crew's proven lessons above all. Adoption keeps the ids."""
+    _root_user()
+    info = repair.ensure_team()
+    assert info and repair._team_room_alive(info)
+    w, s = repair._crew_world()
+    old_ids = sorted(h.id for h in s.players())
+    # Corrupt the pointer the way the race did: a room that is nowhere on disk.
+    bad = dict(info, room_id=info["room_id"] + 900,
+               agents={k: v + 900 for k, v in info["agents"].items()})
+    db.kv_set("repair:world", bad)
+    assert repair._specialist("correctness")[1] is None, "the corruption must really un-staff"
+    healed = repair.ensure_team()
+    assert healed["room_id"] == info["room_id"], "must adopt the surviving room, not build anew"
+    w2, s2 = repair._crew_world()
+    assert sorted(h.id for h in s2.players()) == old_ids, "adoption must keep the human ids"
+    assert repair._specialist("correctness")[1] is not None
+    from app import logs
+    assert any(r["event"] == "crew_room_adopted" for r in logs.rows())
