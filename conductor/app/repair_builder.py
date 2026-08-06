@@ -173,6 +173,10 @@ async def build(task: dict, sprint_no: int, settings: dict, wt: Path | None = No
     branch = task.get("branch") or f"repair/s{sprint_no}-{task['slug']}"
     if wt is None:
         wt = worktree_add(branch, f"s{sprint_no}-{task['slug']}")
+    # Stamp the task with what now exists on disk BEFORE the session can throw — the engine
+    # holds this same dict and cleans up by it. Without this, a build that dies (max turns,
+    # rate limit) leaves an orphaned branch + worktree nobody knows the name of.
+    task["branch"], task["worktree"] = branch, str(wt)
     brief = (f"TASK ({task.get('factor', 'improvement')}): {task['title']}\n\n{task.get('brief', '')}\n"
              + (f"\nACCEPTANCE:\n- " + "\n- ".join(task["acceptance"]) if task.get("acceptance") else "")
              + (f"\nPREVIOUS ATTEMPT'S TEST FAILURES (fix these):\n{task.get('evidence', '')}" if task.get("evidence") else ""))

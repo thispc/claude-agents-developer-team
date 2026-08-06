@@ -159,6 +159,42 @@ def test_a_headroom_sleep_wakes_early_but_a_pause_waits_it_out(fresh_db, no_spen
     assert repair.state()["phase"] == "sleeping", "a deliberate pause must wait out its clock"
 
 
+def test_a_mid_sprint_sleep_resumes_its_phase_instead_of_restarting_the_sprint(fresh_db, no_spend):
+    """Sprint 3's worst bug: sleeping before a build and waking at 'idle' started a NEW sprint
+    over the planned one — re-scouting and throwing away work already paid for."""
+    repair.toggle(True)
+    repair.set_state(sprint_no=7, task_idx=1)
+    repair._sleep("session window nearly spent", time.time() + 9999, resume="build")
+    assert repair.state()["resume_phase"] == "build"
+    seen = {}
+    async def capture(st):                            # stop at the wake — advance() is separate
+        seen.update(st)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(repair, "advance", capture)
+    try:
+        asyncio.run(repair.tick())                    # headroom fine → wakes
+    finally:
+        monkeypatch.undo()
+    assert seen["phase"] == "build", "must resume the phase it slept in, not restart the sprint"
+    assert seen["sprint_no"] == 7 and seen["task_idx"] == 1
+
+
+def test_a_failed_build_leaves_no_orphan_branch(fresh_db, tmp_repo, monkeypatch):
+    """Sprint 3 orphaned repair/s3-unify-modal-ui-on-inlinedrawer: build() created the branch,
+    the session then died on max turns, and the engine never learned the name to clean up."""
+    async def die(*a, **k):
+        raise RuntimeError("Reached maximum number of turns (50)")
+    monkeypatch.setattr(rb, "_run_sdk", die)
+    task = {"slug": "big-refactor", "title": "Too big", "brief": "", "acceptance": []}
+    with pytest.raises(RuntimeError):
+        asyncio.run(rb.build(task, 3, {}))
+    assert task["branch"] == "repair/s3-big-refactor" and task["worktree"], "task must know what exists on disk"
+    rb.discard(task["branch"], task["worktree"])     # …so the engine's cleanup can work
+    out = subprocess.run(["git", "branch", "--list", "repair/*"], cwd=tmp_repo,
+                         capture_output=True, text=True).stdout.strip()
+    assert out == "", f"orphaned branch left behind: {out}"
+
+
 def test_a_recovered_phase_clears_the_stale_error_banner(fresh_db):
     db.kv_set("repair:last_error", {"ts": 1, "phase": "scout", "detail": "old news"})
     repair._clear_error()

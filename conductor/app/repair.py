@@ -180,10 +180,13 @@ def headroom(now: float | None = None) -> tuple[bool, str, float]:
     return True, "", 0.0
 
 
-def _sleep(reason: str, until: float, kind: str = "headroom") -> None:
+def _sleep(reason: str, until: float, kind: str = "headroom", resume: str = "idle") -> None:
     """kind: 'headroom' (wakes early the moment the window rolls enough) | 'cooldown' (a real
-    provider wake time — wait it out) | 'pause' (the deliberate breath between sprints)."""
-    set_state(phase="sleeping", sleep_until=until, sleep_reason=reason, sleep_kind=kind)
+    provider wake time — wait it out) | 'pause' (the deliberate breath between sprints).
+    `resume` is the phase to return to: sleeping mid-sprint and waking at 'idle' would start a
+    NEW sprint over the top of the planned one, throwing away work already paid for."""
+    set_state(phase="sleeping", sleep_until=until, sleep_reason=reason, sleep_kind=kind,
+              resume_phase=resume)
     bus.emit(0, None, "repair", "repair_sleeping", {"reason": reason, "until": until, "kind": kind})
 
 
@@ -306,7 +309,8 @@ async def tick() -> None:
         early = st.get("sleep_kind", "headroom") != "pause" and headroom()[0]
         if not early and time.time() < (st.get("sleep_until") or 0):
             return
-        st = set_state(phase="idle", sleep_until=0, sleep_reason="", sleep_kind="")
+        st = set_state(phase=st.get("resume_phase") or "idle", sleep_until=0,
+                       sleep_reason="", sleep_kind="", resume_phase="")
     if st["phase"] == "restarting":                 # we came back up — the restart happened
         st = set_state(phase="idle")
     await advance(st)
@@ -348,7 +352,8 @@ def _rate_limited(err: str) -> bool:
     if launcher.looks_rate_limited(err):
         launcher.note_rate_limit(str(tuning.get("repair_builder_model")), err)
         ok, reason, wake = headroom()
-        _sleep(reason or "provider limit hit", wake or time.time() + 300, kind="cooldown")
+        _sleep(reason or "provider limit hit", wake or time.time() + 300, kind="cooldown",
+               resume=state().get("phase") if state().get("phase") != "sleeping" else "idle")
         return True
     return False
 
@@ -391,7 +396,10 @@ def _tasks_from_candidates(cands: list[dict], n: int) -> list[dict]:
 
 
 PLAN_EXTRACT_SYSTEM = (
-    "You turn a sprint-planning memo into build tasks. Return ONLY a JSON array of "
+    "You turn a sprint-planning memo into build tasks. Each task must be finishable by ONE "
+    "focused engineer in roughly 30 tool calls — a narrow, surgical change to a handful of "
+    "files. Split or shrink anything broader (a repo-wide refactor is not a task, it is a "
+    "programme; take its first slice instead). Return ONLY a JSON array of "
     '{"title": <short imperative>, "factor": <factor id>, "brief": <2-4 sentences of exactly '
     'what to change and where>, "acceptance": [<checkable outcomes>]} — at most N items, '
     "highest value first.")
@@ -480,7 +488,7 @@ async def _phase_build(st: dict, rec: dict) -> None:
         return
     ok, reason, wake = headroom()
     if not ok:
-        return _sleep(reason, wake)
+        return _sleep(reason, wake, resume="build")      # come back to THIS task, not a new sprint
     t["status"] = "building"
     t["attempts"] += 1
     save_sprint(rec)
