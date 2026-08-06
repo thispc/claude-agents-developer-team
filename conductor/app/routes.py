@@ -562,14 +562,19 @@ def kill_agent(task_id: int, request: Request) -> dict:
 
 # --- plan mode: the round table -------------------------------------------
 
-def owned_table(table_id: int, request: Request) -> dict:
+def _owned(request: Request, getter, obj_id: int, label: str, *, allow_root: bool = False) -> dict:
+    """Fetch a row by id and 404 unless it belongs to the caller — the one
+    fetch-or-404-and-check-ownership shape every scoped resource (round table,
+    Studio agent, scene, artifact def) needs."""
     u = current_user(request)
-    t = db.get_table(table_id)
-    if not t:
-        raise HTTPException(404, "no such round table")
-    if not u["is_root"] and t["owner_id"] != u["id"]:
-        raise HTTPException(404, "no such round table")
-    return t
+    row = getter(obj_id)
+    if not row or (row["owner_id"] != u["id"] and not (allow_root and u["is_root"])):
+        raise HTTPException(404, f"no such {label}")
+    return row
+
+
+def owned_table(table_id: int, request: Request) -> dict:
+    return _owned(request, db.get_table, table_id, "round table", allow_root=True)
 
 
 @router.get("/api/providers")
@@ -901,11 +906,7 @@ def _own_home(request: Request, home_id: int) -> dict:
     """The agent, if it belongs to the caller. A Studio is private to its owner —
     an agent must never be listed for, edited by, or deployed by anyone else, the
     same scoping the round table already enforces."""
-    u = current_user(request)
-    a = db.get_home_agent(home_id)
-    if not a or a["owner_id"] != u["id"]:
-        raise HTTPException(404, "no such agent in your Studio")
-    return a
+    return _owned(request, db.get_home_agent, home_id, "agent in your Studio")
 
 
 @router.get("/api/home")
@@ -1031,11 +1032,7 @@ class TalkBody(BaseModel):
 def _own_scene(request: Request, scene_id: int) -> dict:
     """The scene, if it belongs to the caller. A scene is private to its owner, the
     same scoping the Studio and the round table enforce."""
-    u = current_user(request)
-    s = db.get_scene(scene_id)
-    if not s or s["owner_id"] != u["id"]:
-        raise HTTPException(404, "no such scene of yours")
-    return s
+    return _owned(request, db.get_scene, scene_id, "scene of yours")
 
 
 @router.get("/api/scene")
@@ -1178,11 +1175,7 @@ class PlaceArtifact(BaseModel):
 
 
 def _own_def(request: Request, def_id: int) -> dict:
-    u = current_user(request)
-    d = db.get_artifact_def(def_id)
-    if not d or d["owner_id"] != u["id"]:
-        raise HTTPException(404, "no such artifact in your library")
-    return d
+    return _owned(request, db.get_artifact_def, def_id, "artifact in your library")
 
 
 @router.get("/api/artifacts")
