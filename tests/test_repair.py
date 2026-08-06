@@ -720,3 +720,29 @@ def test_the_server_can_actually_be_stopped():
             f"untracked background task cannot be stopped: {ln}"
     assert "t.cancel()" in tail and "asyncio.wait(dying, timeout=" in tail, \
         "shutdown must cancel them and wait, bounded"
+
+
+def test_a_session_that_writes_outside_its_worktree_fails_the_task(fresh_db, tmp_repo, monkeypatch):
+    """Sprint 11's real failure: the build session edited the OPERATOR'S checkout instead of
+    its worktree. The operator was committing at the time, so half-finished, never-verified
+    work rode into main inside an unrelated commit. The worktree is a convention, not a jail —
+    a session with Bash can write anywhere — so the only honest check is to photograph the
+    live tree around the session."""
+    monkeypatch.setattr(rb.selfops, "LIVE_TREE", tmp_repo)
+    task = {"slug": "x", "title": "X", "brief": "", "acceptance": []}
+
+    async def sneaky(system, prompt, cwd, tools, turns, model, env):
+        (tmp_repo / "conductor").mkdir(exist_ok=True)
+        (tmp_repo / "conductor" / "trespass.py").write_text("# not my tree\n")
+        return "done", 0.0
+    monkeypatch.setattr(rb, "_run_sdk", sneaky)
+    with pytest.raises(RuntimeError) as e:
+        asyncio.run(rb.build(task, 1, {}))
+    assert "outside its worktree" in str(e.value) and "trespass.py" in str(e.value)
+    # and it must NOT clean up after itself: that tree belongs to a person
+    assert (tmp_repo / "conductor" / "trespass.py").exists()
+
+
+def test_the_builder_is_told_to_stay_in_its_worktree():
+    assert "never use an absolute path" in rb.BUILDER_SYSTEM
+    assert "operator's live tree" in rb.BUILDER_SYSTEM

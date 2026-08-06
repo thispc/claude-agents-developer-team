@@ -160,7 +160,11 @@ def discard(branch: str, wt: str | Path | None) -> None:
 
 BUILDER_SYSTEM = (
     "You are a senior engineer on the platform's own IT crew, working in a disposable git "
-    "worktree of the devteam repo. Make the SMALLEST correct change that completes the task. "
+    "worktree of the devteam repo. EVERY path you read or write is RELATIVE to your working "
+    "directory: never use an absolute path, never cd out of it, and never touch the checkout "
+    "this worktree was made from — that is the operator's live tree, they are working in it "
+    "right now, and edits there land in whatever they commit next. "
+    "Make the SMALLEST correct change that completes the task. "
     "Ground rules: never touch devteam.db, any .env file, workspaces/, previews/, deployments/, "
     "deploy secrets, or .devteam-deploy.json; the app must still import; the dashboard stays "
     "build-free (no new dependencies, no CDN); keep the repo's comment style; the FULL test "
@@ -178,6 +182,7 @@ async def build(task: dict, sprint_no: int, settings: dict, wt: Path | None = No
     # holds this same dict and cleans up by it. Without this, a build that dies (max turns,
     # rate limit) leaves an orphaned branch + worktree nobody knows the name of.
     task["branch"], task["worktree"] = branch, str(wt)
+    before = _live_fingerprint()
     brief = (f"TASK ({task.get('factor', 'improvement')}): {task['title']}\n\n{task.get('brief', '')}\n"
              + (f"\nACCEPTANCE:\n- " + "\n- ".join(task["acceptance"]) if task.get("acceptance") else "")
              + (f"\nPREVIOUS ATTEMPT'S TEST FAILURES (fix these):\n{task.get('evidence', '')}" if task.get("evidence") else ""))
@@ -185,11 +190,48 @@ async def build(task: dict, sprint_no: int, settings: dict, wt: Path | None = No
                             ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
                             int(tuning.get("repair_max_turns")),
                             str(tuning.get("repair_builder_model")), _cred_env(settings))
+    stray = _escaped(before)
+    if stray:
+        # Sprint 11 did exactly this: the session edited the OPERATOR'S checkout instead of its
+        # worktree, and since the operator was committing at the time, half-finished unverified
+        # work rode into main inside an unrelated commit. Fail loudly and name the files. We do
+        # NOT revert them — that tree belongs to a person who may have their own work in it.
+        raise RuntimeError(
+            "the session wrote outside its worktree, into the live checkout: "
+            + ", ".join(stray[:6]) + (" …" if len(stray) > 6 else "")
+            + " — nothing was reverted; check `git status` before committing")
     _git("add", "-A", cwd=wt)
     r = _git("commit", "-m", f"repair s{sprint_no}: {task['title']}", cwd=wt, check=False)
     if r.returncode != 0 and "nothing to commit" in (r.stdout + r.stderr):
         raise RuntimeError("the session changed nothing")
     return {"branch": branch, "worktree": str(wt), "usd": usd}
+
+
+def _live_fingerprint() -> dict[str, str]:
+    """What the operator's own checkout looks like right now: path -> porcelain status code.
+
+    The worktree is the sandbox, but nothing enforces it — a session with Bash can write
+    anywhere. So we photograph the live tree before the session and compare after; that is
+    the only honest way to find out whether the sandbox held."""
+    out: dict[str, str] = {}
+    try:
+        # -uall: plain --porcelain collapses new files into "conductor/", and the operator
+        # needs to know WHICH file appeared in their tree, not which directory.
+        r = _git("status", "--porcelain", "-uall", check=False)
+        for ln in r.stdout.splitlines():
+            if len(ln) > 3:
+                out[ln[3:].strip()] = ln[:2]
+    except Exception:
+        pass
+    return out
+
+
+def _escaped(before: dict[str, str]) -> list[str]:
+    """Paths in the live tree the session changed. `.repair/` is ours and is gitignored, so
+    anything listed here is genuinely outside the sandbox."""
+    after = _live_fingerprint()
+    return sorted(p for p, code in after.items()
+                  if not p.startswith(".repair/") and before.get(p) != code)
 
 
 def protected_violation(wt: str | Path) -> str | None:
