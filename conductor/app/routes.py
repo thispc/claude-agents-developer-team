@@ -1402,6 +1402,9 @@ async def client_error(body: ClientError, request: Request) -> dict:
     until a human happened to click it.
     """
     u = auth.user_for_token(request.cookies.get("devteam_session"))
+    from . import logs
+    logs.error("http", "dashboard_error", body.message[:300],
+               page=body.url[:120], user=(u or {}).get("username", "anonymous"))
     return await notify.report_error(
         "dashboard error", f"{body.message}\n{body.stack[:1200]}",
         {"page": body.url[:200], "user": (u or {}).get("username", "anonymous")})

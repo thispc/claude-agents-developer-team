@@ -138,20 +138,20 @@ def log(cat: str, event: str, msg: str = "", level: str = "info",
     return row
 
 
-def debug(cat: str, event: str, msg: str = "", **f) -> dict:
-    return log(cat, event, msg, "debug", **f)
+def debug(cat: str, event: str, msg: str = "", dedupe_s: int = 0, **f) -> dict:
+    return log(cat, event, msg, "debug", dedupe_s, **f)
 
 
-def info(cat: str, event: str, msg: str = "", **f) -> dict:
-    return log(cat, event, msg, "info", **f)
+def info(cat: str, event: str, msg: str = "", dedupe_s: int = 0, **f) -> dict:
+    return log(cat, event, msg, "info", dedupe_s, **f)
 
 
-def warn(cat: str, event: str, msg: str = "", **f) -> dict:
-    return log(cat, event, msg, "warn", **f)
+def warn(cat: str, event: str, msg: str = "", dedupe_s: int = 0, **f) -> dict:
+    return log(cat, event, msg, "warn", dedupe_s, **f)
 
 
-def error(cat: str, event: str, msg: str = "", **f) -> dict:
-    return log(cat, event, msg, "error", **f)
+def error(cat: str, event: str, msg: str = "", dedupe_s: int = 0, **f) -> dict:
+    return log(cat, event, msg, "error", dedupe_s, **f)
 
 
 def rows(errors_only: bool = False) -> list[dict]:

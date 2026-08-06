@@ -1015,3 +1015,145 @@ def test_log_timestamps_do_not_wrap():
     every row in a view whose whole point is scanning a lot of them."""
     js = dashboard_js()
     assert 'hourCycle: "h23"' in js
+
+
+# --------------------------------------------------------------------------
+# the monitor: notices, proposals, approval
+# --------------------------------------------------------------------------
+
+def test_a_notice_carries_its_evidence_and_a_proposal(fresh_db, monkeypatch):
+    from app import logs, monitor
+    monkeypatch.setattr(logs, "ECHO", False)
+    logs.error("sandbox", "escape", "wrote into the live checkout", files="conductor/app/deploy.py")
+    ns = monitor.scan()
+    n = next(x for x in ns if x["kind"] == "sandbox")
+    assert n["severity"] == "critical"
+    assert "deploy.py" in n["detail"], "a notice has to name the thing it is about"
+    assert n["evidence"] and n["evidence"][0]["event"] == "escape"
+    assert n["action"] == "pause_repair", "and offer the obvious next move"
+
+
+def test_a_notice_that_stops_applying_stops_being_reported(fresh_db, monkeypatch):
+    """Derived on read, like project blockers: nothing to clean up, and the list can never
+    show a problem that has already gone away."""
+    from app import logs, monitor
+    monkeypatch.setattr(logs, "ECHO", False)
+    logs.error("sandbox", "escape", "wrote outside", files="x.py")
+    assert any(n["kind"] == "sandbox" for n in monitor.scan())
+    db.kv_set(logs.RING_KEY, [])
+    assert not any(n["kind"] == "sandbox" for n in monitor.scan())
+
+
+def test_dismissing_a_notice_silences_that_one_only(fresh_db, monkeypatch):
+    from app import logs, monitor
+    monkeypatch.setattr(logs, "ECHO", False)
+    logs.error("sandbox", "escape", "wrote outside", files="x.py")
+    logs.error("http", "boom", "something else broke")
+    n = next(x for x in monitor.scan() if x["kind"] == "sandbox")
+    monitor.decide(n["fp"], "dismissed")
+    kinds = {x["kind"] for x in monitor.scan()}
+    assert "sandbox" not in kinds and "errors" in kinds
+    assert any(x["kind"] == "sandbox" for x in monitor.scan(include_decided=True))
+
+
+def test_approving_a_proposal_actually_does_the_thing(fresh_db, no_spend, monkeypatch):
+    """The whole point: a proposal you can act on without going to read the code. And the
+    blast radius is knowable — ACTIONS is the complete list of what Approve can do."""
+    from app import logs, monitor
+    monkeypatch.setattr(logs, "ECHO", False)
+    repair.toggle(True)
+    logs.error("sandbox", "escape", "wrote outside", files="x.py")
+    n = next(x for x in monitor.scan() if x["kind"] == "sandbox")
+    out = asyncio.run(monitor.approve(n["fp"]))
+    assert out["ok"] and repair.enabled() is False, "approval must actually pause it"
+    assert monitor.decisions()[n["fp"]]["state"] == "approved"
+    assert set(monitor.ACTIONS) == {"pause_repair", "set_knob", "abort_task"}, \
+        "a new action is a deliberate widening of what Approve can do"
+
+
+def test_nothing_acts_without_approval(fresh_db, no_spend, monkeypatch):
+    from app import logs, monitor
+    monkeypatch.setattr(logs, "ECHO", False)
+    repair.toggle(True)
+    logs.error("sandbox", "escape", "wrote outside", files="x.py")
+    monitor.scan(); monitor.scan(); monitor.summary()
+    assert repair.enabled() is True, "scanning must never change anything"
+
+
+def test_a_broken_rule_cannot_blind_the_others(fresh_db, monkeypatch):
+    from app import logs, monitor
+    monkeypatch.setattr(logs, "ECHO", False)
+
+    def boom(_rows):
+        raise ValueError("bad rule")
+    monkeypatch.setattr(monitor, "RULES", [boom] + list(monitor.RULES))
+    logs.error("http", "boom", "something broke")
+    assert any(n["kind"] == "errors" for n in monitor.scan())
+
+
+def test_the_notice_endpoints_are_root_gated(client):
+    from conftest import _signup
+    _signup(client, "peeker")
+    client.post("/api/login", json={"username": "peeker", "password": "hunter2pw"})
+    assert client.get("/api/logs/notices").status_code == 403
+    assert client.post("/api/logs/notices/approve", json={"fp": "x"}).status_code == 403
+    assert client.post("/api/logs/notices/dismiss", json={"fp": "x"}).status_code == 403
+
+
+def test_the_screen_shows_notices_shipped_work_and_your_tickets():
+    js = dashboard_js()
+    assert 'id: "notices"' in js and "rpNoticesPanel" in js and "/api/logs/notices" in js
+    assert "data-approve-fp" in js and "data-dismiss-fp" in js
+    # self-repair lands commits, not PRs — the screen has to link the thing that exists
+    assert 'gitWebUrl(repo, "commit"' in js and 'kind === "commit"' in dashboard_js()
+    assert "repairTickets" in js and "data-open-project" in js
+
+
+def test_the_chat_shows_its_history_without_spending(fresh_db):
+    """It started hidden and empty, so it read as a dead input box: you typed, waited, and
+    had no way to tell whether anything was happening. An empty POST returns the log."""
+    js = dashboard_js()
+    assert "rpChatHistory" in js and "rpRenderChat" in js
+    from app.lifeworld.scene import Scene
+    import inspect
+    src = inspect.getsource(Scene.chat)
+    assert "if not text:" in src and "return {\"chat\"" in src
+
+
+def test_the_stale_banner_offers_a_button_not_a_wrong_command():
+    """It ended with a command for a port this setup stopped using — the one instruction on
+    screen was wrong, which is worse than no instruction."""
+    js = dashboard_js()
+    assert "--port 8000" not in js, "the wrong command is back"
+    assert 'id="staleRestart"' in js and "/api/repair/restart" in js
+
+
+def test_every_api_failure_lands_in_the_pipeline(client, fresh_db, monkeypatch):
+    """A 500 used to exist only as a stack trace in whatever terminal the server was started
+    from, and a 4xx did not exist at all. One middleware means no handler has to remember."""
+    from app import logs
+    monkeypatch.setattr(logs, "ECHO", False)
+    logs._LAST.clear()
+    db.kv_set(logs.RING_KEY, [])
+    client.get("/api/repair/status")                       # 401/403 — nobody is logged in
+    events = {(r["cat"], r["event"]) for r in logs.rows()}
+    assert ("auth", "refused") in events, f"nothing recorded the refusal: {events}"
+    # ...and successes are NOT logged: an access log is a different thing, and twelve real
+    # failures buried under ten thousand 200s is how logs become unreadable
+    from conftest import login
+    login(client, "root", "testpass")
+    db.kv_set(logs.RING_KEY, [])
+    client.get("/api/repair/status")
+    assert not [r for r in logs.rows() if r["cat"] == "http"], "a 200 must be silent"
+
+
+def test_a_dashboard_javascript_error_becomes_a_log_row(client, fresh_db, monkeypatch):
+    from app import logs
+    from conftest import login
+    monkeypatch.setattr(logs, "ECHO", False)
+    login(client, "root", "testpass")
+    db.kv_set(logs.RING_KEY, [])
+    client.post("/api/client-error", json={"message": "x is not a function",
+                                           "stack": "at rpHtml", "url": "#/improve"})
+    row = next(r for r in logs.rows() if r["event"] == "dashboard_error")
+    assert "not a function" in row["msg"] and row["level"] == "error"

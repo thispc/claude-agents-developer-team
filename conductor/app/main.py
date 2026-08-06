@@ -100,6 +100,34 @@ app = FastAPI(title="devteam conductor", lifespan=lifespan)
 
 
 @app.middleware("http")
+async def _log_failures(request, call_next):
+    """Every API failure goes through here, so no handler has to remember to log its own.
+
+    A 500 used to exist only as a stack trace in whatever terminal the server was started
+    from; a 4xx did not exist at all. Both are now rows anyone can search, and both are what
+    the monitor turns into notices. Successes are deliberately NOT logged — an access log is
+    a different thing, uvicorn already writes one, and burying twelve real failures under
+    ten thousand 200s is how logs become unreadable.
+    """
+    try:
+        resp = await call_next(request)
+    except Exception as e:
+        logs.error("http", "request_crashed", f"{request.method} {request.url.path}: {e}",
+                   path=request.url.path, method=request.method, kind=type(e).__name__)
+        raise
+    if resp.status_code >= 500:
+        logs.error("http", "server_error", f"{request.method} {request.url.path}",
+                   path=request.url.path, status=resp.status_code, dedupe_s=60)
+    elif resp.status_code in (401, 403):
+        logs.log("auth", "refused", f"{request.method} {request.url.path}", level="warn",
+                 path=request.url.path, status=resp.status_code, dedupe_s=300)
+    elif resp.status_code >= 400:
+        logs.log("http", "client_error", f"{request.method} {request.url.path}", level="warn",
+                 path=request.url.path, status=resp.status_code, dedupe_s=120)
+    return resp
+
+
+@app.middleware("http")
 async def _preview_host(request, call_next):
     """A request on a preview host (p<id>.<PREVIEW_HOST>) is a request FOR that
     project's running app, not for the dashboard — reverse-proxy it. Every other

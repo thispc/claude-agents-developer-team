@@ -130,12 +130,77 @@ function rpUtilHtml(u) {
 // ---- the panels -----------------------------------------------------------
 
 const RP_TABS = [
+  { id: "notices", label: "Notices" },
   { id: "crew", label: "Crew" },
   { id: "board", label: "Board" },
   { id: "activity", label: "Activity" },
   { id: "usage", label: "Usage" },
   { id: "command", label: "Command" },
 ];
+
+/** The monitoring inbox: what the logs add up to, and what to do about it.
+ *
+ * Projects have blockers — "why is this not moving?" — and self-repair had nothing of the
+ * kind: the answer lived in 3000 log rows nobody reads. Each notice carries its evidence and,
+ * where there is an obvious next move, a proposal. The proposal is never taken on its own;
+ * Approve is the whole point of the screen. */
+function rpNoticesPanel(d) {
+  return `
+  <div class="rp-card">
+    <div class="rp-card-h">Needs you <span class="dim">what the platform noticed about itself</span>
+      <button class="rp-link" id="rpNoticesReload">refresh</button></div>
+    <div id="repairNotices"><p class="dim">…</p></div>
+  </div>`;
+}
+
+function rpNoticeHtml(n) {
+  const when = n.since ? new Date(n.since * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }) : "";
+  const ev = (n.evidence || []).map((e) =>
+    `<div class="rp-actline quiet"><span class="rp-lcat">${escapeHtml(e.cat || "")}/${escapeHtml(e.event || "")}</span>
+      <span>${escapeHtml(trim(String(e.msg || ""), 150))}</span></div>`).join("");
+  const decided = (n.decision || {}).state;
+  return `<div class="rp-notice s-${escapeHtml(n.severity)}${decided ? " decided" : ""}">
+    <div class="rp-notice-h">
+      <span class="rp-sev ${escapeHtml(n.severity)}">${escapeHtml(n.severity)}</span>
+      <b>${escapeHtml(n.title)}</b>
+      ${n.count > 1 ? `<span class="dim">×${n.count}</span>` : ""}
+      <span class="dim rp-notice-when">${escapeHtml(when)}</span>
+    </div>
+    <div class="rp-notice-b">${escapeHtml(n.detail)}</div>
+    ${n.proposal ? `<div class="rp-proposal"><b>Proposal</b> ${escapeHtml(n.proposal)}</div>` : ""}
+    ${decided ? `<div class="rp-notice-b dim">${escapeHtml(decided)}${(n.decision.note ? " — " + n.decision.note : "")}</div>` : `
+    <div class="rp-notice-actions">
+      <button class="rp-mini" data-approve-fp="${escapeHtml(n.fp)}">${n.action ? "✓ Approve" : "✓ Got it"}</button>
+      <button class="rp-mini" data-dismiss-fp="${escapeHtml(n.fp)}">Dismiss</button>
+    </div>`}
+    ${ev ? `<details class="rp-evidence"><summary>evidence</summary>${ev}</details>` : ""}
+  </div>`;
+}
+
+async function rpNotices() {
+  const el = $("#repairNotices"); if (!el) return;
+  try {
+    const r = await api("/api/logs/notices");
+    el.innerHTML = (r.notices || []).map(rpNoticeHtml).join("")
+      || `<p class="dim">Nothing needs you. The platform has been behaving.</p>`;
+    el.querySelectorAll("[data-approve-fp]").forEach((b) => b.addEventListener("click", async () => {
+      b.disabled = true;
+      try {
+        const out = await api("/api/logs/notices/approve", { method: "POST",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fp: b.dataset.approveFp }) });
+        toast(out.did ? `Done — ${out.did}` : (out.reason || "done"));
+      } catch (e) { toast(e.message); }
+      rpNotices(); rpRefresh(true);
+    }));
+    el.querySelectorAll("[data-dismiss-fp]").forEach((b) => b.addEventListener("click", async () => {
+      try {
+        await api("/api/logs/notices/dismiss", { method: "POST",
+          headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fp: b.dataset.dismissFp }) });
+      } catch (e) { toast(e.message); }
+      rpNotices();
+    }));
+  } catch (e) { el.innerHTML = `<p class="dim">${escapeHtml(e.message)}</p>`; }
+}
 
 function rpCrewPanel(d, m) {
   const factors = (d.factors || []).map((f) =>
@@ -160,8 +225,8 @@ function rpCrewPanel(d, m) {
       ${d.world ? `<a class="rp-link" href="#/studio">Open in Studio ↗</a>` : ""}</div>
     <div class="rp-team" id="repairTeam">${team}</div>
     <div class="rp-chat" id="repairChat">
-      <div class="rp-chat-log" id="repairChatLog"${rpChatOpen ? "" : " hidden"}></div>
-      <form id="repairChatForm"><input id="repairChatText" placeholder="Message the manager…" autocomplete="off">
+      <div class="rp-chat-log" id="repairChatLog"><p class="dim">…</p></div>
+      <form id="repairChatForm"><input id="repairChatText" placeholder="Ask the manager anything — what it is working on, why it slept…" autocomplete="off">
         <button class="rp-mini">Send</button></form>
     </div>
   </div>`;
@@ -198,6 +263,31 @@ function rpBoardPanel(d) {
     <div id="repairBacklog">${(d.backlog || []).map((t) =>
       `<div class="rp-task"><span class="rp-task-ico">·</span><span class="rp-task-t">[${escapeHtml(t.factor || "?")}] ${escapeHtml(t.title)}</span></div>`).join("")
       || `<p class="dim">empty — the crew will scout and plan a fresh backlog next sprint</p>`}</div>
+  </div>
+
+  <div class="rp-card">
+    <div class="rp-card-h">Shipped <span class="dim">self-repair lands on main, so a commit is the reviewable unit — there are no pull requests to wait on</span></div>
+    <div id="repairLanded">${(d.landed || []).map((L) => {
+      const when = L.at ? new Date(L.at * 1000).toLocaleDateString([], { month: "short", day: "numeric" }) : "";
+      const repo = (d.head || {}).repo || "";
+      const href = repo ? gitWebUrl(repo, "commit", L.sha) : "";
+      return `<div class="rp-task"><span class="rp-task-ico">✓</span>
+        <span class="rp-task-t">[${escapeHtml(L.factor || "?")}] ${escapeHtml(L.title)}</span>
+        <span class="dim">s${L.sprint} · ${escapeHtml(when)}</span>
+        ${href ? `<a class="rp-link" href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(L.sha.slice(0, 8))} ↗</a>`
+               : `<code class="dim">${escapeHtml(L.sha.slice(0, 8))}</code>`}
+        <button class="rp-mini" data-revert="${escapeHtml(L.sha)}">↩ revert</button></div>`;
+    }).join("") || `<p class="dim">nothing landed yet</p>`}</div>
+  </div>
+
+  <div class="rp-card">
+    <div class="rp-card-h">Your tickets <span class="dim">what you handed the crew from Command — these run as ordinary projects</span></div>
+    <div id="repairTickets">${(d.tickets || []).map((t) =>
+      `<div class="rp-task s-${escapeHtml(t.status || "")}"><span class="rp-task-ico">·</span>
+        <span class="rp-task-t">#${t.seq} ${escapeHtml(t.title)}</span>
+        <span class="dim">${escapeHtml(t.status || "")}</span>
+        <button class="rp-mini" data-open-project="${t.project_id}">open ↗</button></div>`).join("")
+      || `<p class="dim">none yet — the Command tab files them</p>`}</div>
   </div>
 
   <div class="rp-card">
@@ -303,7 +393,7 @@ function rpHtml(d) {
   // decide everything: what the crew is doing, and whether it is allowed to.
   const badge = u.budget_tok
     ? `<span class="rp-tabnote">${Math.round((u.frac || 0) * 100)}% of this window used</span>` : "";
-  const panels = { crew: rpCrewPanel(d, m), board: rpBoardPanel(d),
+  const panels = { notices: rpNoticesPanel(d), crew: rpCrewPanel(d, m), board: rpBoardPanel(d),
                    activity: rpActivityPanel(),
                    usage: rpUsagePanel(d, m), command: rpCommandPanel() };
 
@@ -323,8 +413,12 @@ function rpHtml(d) {
   </div>
 
   <div class="rp-tabs" role="tablist">
-    ${RP_TABS.map((t) => `<button class="rp-tab${t.id === rpTab ? " on" : ""}" role="tab"
-      aria-selected="${t.id === rpTab}" data-tab="${t.id}">${escapeHtml(t.label)}</button>`).join("")}
+    ${RP_TABS.map((t) => {
+      const nn = t.id === "notices" ? (d.notices || {}) : null;
+      const dot = nn && nn.total ? `<span class="rp-dot${nn.critical ? " bad" : ""}">${nn.total}</span>` : "";
+      return `<button class="rp-tab${t.id === rpTab ? " on" : ""}" role="tab"
+        aria-selected="${t.id === rpTab}" data-tab="${t.id}">${escapeHtml(t.label)}${dot}</button>`;
+    }).join("")}
     ${badge}
   </div>
   ${RP_TABS.map((t) => `<div class="rp-panel" data-panel="${t.id}"${t.id === rpTab ? "" : " hidden"}>${panels[t.id]}</div>`).join("")}`;
@@ -376,7 +470,10 @@ function rpWire(d) {
     rpRefresh(true);
   }));
 
-  // the manager chat
+  // The chat had no history and started hidden, so it looked like a dead input box: you
+  // typed, waited, and had no way to tell whether anything was happening. It now shows the
+  // conversation as soon as the tab opens.
+  rpChatHistory();
   const cform = $("#repairChatForm");
   if (cform) cform.addEventListener("submit", async (ev) => {
     ev.preventDefault();
@@ -387,9 +484,10 @@ function rpWire(d) {
     log.scrollTop = log.scrollHeight;
     try {
       const r = await api("/api/repair/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
-      const last = (r.chat || []).slice(-1)[0];
-      log.lastElementChild.outerHTML = `<div class="rp-msg them">${escapeHtml(last ? last.text : "…")}</div>`;
-    } catch (e) { log.lastElementChild.outerHTML = `<div class="rp-msg them">${escapeHtml(e.message)}</div>`; }
+      rpRenderChat(r.chat || []);
+    } catch (e) {
+      log.lastElementChild.outerHTML = `<div class="rp-msg them err">${escapeHtml(e.message)}</div>`;
+    }
     log.scrollTop = log.scrollHeight;
   });
 
@@ -451,6 +549,10 @@ function rpWire(d) {
     b.addEventListener("click", () => rpBoard(b.dataset.board)));
   const areload = $("#rpActReload");
   if (areload) areload.addEventListener("click", rpActivity);
+  const nreload = $("#rpNoticesReload");
+  if (nreload) nreload.addEventListener("click", rpNotices);
+  el.querySelectorAll("[data-open-project]").forEach((b) => b.addEventListener("click", () =>
+    openProject(Number(b.dataset.openProject), "board")));
   el.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => {
     rpActView = b.dataset.view;
     el.querySelectorAll("[data-view]").forEach((x) => x.classList.toggle("on", x.dataset.view === rpActView));
@@ -489,6 +591,25 @@ function rpWire(d) {
 
   rpHistory();
   rpActivity();
+  rpNotices();
+}
+
+function rpRenderChat(chat) {
+  const log = $("#repairChatLog"); if (!log) return;
+  log.innerHTML = (chat || []).slice(-40).map((m) =>
+    `<div class="rp-msg ${m.role === "user" ? "me" : "them"}">${escapeHtml(m.text || "")}</div>`).join("")
+    || `<p class="dim">Nothing said yet. The manager knows the sprint board, the crew and why it last slept.</p>`;
+  log.scrollTop = log.scrollHeight;
+}
+
+/** The conversation so far, read without spending anything: an empty POST returns the log. */
+async function rpChatHistory() {
+  const log = $("#repairChatLog"); if (!log) return;
+  try {
+    const r = await api("/api/repair/chat", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "" }) });
+    rpRenderChat(r.chat || []);
+  } catch (e) { log.innerHTML = `<p class="dim">${escapeHtml(e.message)}</p>`; }
 }
 
 async function rpHistory() {

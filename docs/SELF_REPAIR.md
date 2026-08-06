@@ -150,6 +150,7 @@ A log row is `{ts, level, cat, event, msg, …fields}`. `event` is a stable slug
 | POST | /api/repair/queue/discard | Throw a queued branch away, worktree and all. |
 | POST | /api/repair/revert | Undo a landed change. One task is one squashed commit, so this is one `git revert`. |
 | POST | /api/repair/abort | Stop the task being built right now and clean up after it. The crew carries on. |
+| POST | /api/repair/restart | Restart the server on the code currently on disk. |
 
 ## Knobs
 

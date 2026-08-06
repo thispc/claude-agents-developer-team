@@ -35,6 +35,9 @@ function gitWebUrl(repo, kind, value) {
   if (kind === "issue") return `${gitWeb}/${repo}/issues/${value}`;
   if (kind === "pr") return `${gitWeb}/${repo}/${gitProvider === "gitea" ? "pulls" : "pull"}/${value}`;
   if (kind === "branch") return `${gitWeb}/${repo}/${gitProvider === "gitea" ? "src/branch" : "tree"}/${value}`;
+  // Self-repair squash-merges to main, so what it produces is a COMMIT, not a pull request —
+  // and until this existed there was no way to click through to anything it had shipped.
+  if (kind === "commit") return `${gitWeb}/${repo}/commit/${value}`;
   return `${gitWeb}/${repo}`;
 }
 
@@ -257,11 +260,27 @@ function showStaleBanner() {
   // Written for someone who did not build this. The first version said "the
   // dashboard files on disk changed after the conductor started" — true, and
   // meaningless unless you already knew what it meant.
+  // The command here was for a port this setup stopped using, so the one instruction on the
+  // banner was wrong — and being told to run something that does not apply is worse than
+  // being told nothing. Root can just press the button; anyone else gets the command.
   el.innerHTML = `<b>The app is half-updated.</b> This page has newer code than the
     server behind it, so some things may look empty or do nothing — that is not a
-    real fault. Restarting the server fixes it:
-    <code>PYTHONPATH=conductor .venv/bin/uvicorn app.main:app --port 8000</code>`;
+    real fault. Restart the server to fix it:
+    <button class="rp-mini" id="staleRestart">⟳ Restart now</button>
+    <code>./run-local.sh</code>`;
   document.body.prepend(el);
+  const btn = $("#staleRestart");
+  if (btn) btn.addEventListener("click", async () => {
+    btn.disabled = true; btn.textContent = "restarting…";
+    try {
+      await api("/api/repair/restart", { method: "POST" });
+      if (typeof waitForRestart === "function") waitForRestart();
+      else setTimeout(() => location.reload(), 4000);
+    } catch (e) {
+      btn.disabled = false; btn.textContent = "⟳ Restart now";
+      if (typeof toast === "function") toast(e.message);
+    }
+  });
 }
 
 // A JavaScript error was only ever visible to someone with DevTools open —

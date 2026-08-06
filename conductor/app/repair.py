@@ -946,12 +946,43 @@ async def loop() -> None:
         await asyncio.sleep(TICK_SECONDS)
 
 
+def landed(limit: int = 30) -> list[dict]:
+    """Everything the crew has actually shipped, newest first. One task is one squashed
+    commit, so this is the honest answer to "what has it done to my repo" — self-repair
+    lands on main rather than opening pull requests, and the commit IS the reviewable unit."""
+    out = []
+    for rec in sorted(db.kv_prefix("repair:sprint:").values(),
+                      key=lambda r: r.get("no", 0), reverse=True):
+        for t in rec.get("tasks", []):
+            if t.get("landed_sha"):
+                out.append({"sha": t["landed_sha"], "title": t.get("title", ""),
+                            "factor": t.get("factor", ""), "sprint": rec.get("no"),
+                            "at": rec.get("finished_at") or rec.get("started_at") or 0})
+    return out[:limit]
+
+
+def tickets(limit: int = 12) -> list[dict]:
+    """Work you handed the crew from the Command tab. Those become ordinary projects — which
+    is right, they are ordinary work — but that also meant they vanished from this screen the
+    moment they were filed, with no way back to them."""
+    from . import selfops
+    try:
+        pid = selfops.find_project()
+        rows = [] if not pid else db.list_tasks(pid)
+        return [{"id": t["id"], "seq": t.get("seq"), "title": t.get("title", ""),
+                 "status": t.get("status"), "sprint": t.get("sprint"),
+                 "project_id": pid} for t in rows][-limit:][::-1]
+    except Exception:
+        return []
+
+
 def status() -> dict:
     """Everything the Repair screen renders, in one payload."""
-    from . import selfops
+    from . import monitor, selfops
     st = state()
     n = st.get("sprint_no") or int(db.kv_get("repair:seq") or 0)
     return {"enabled": enabled(), "state": st, "meters": {**meters(), "team": team_usage()},
+            "notices": monitor.summary(), "landed": landed(), "tickets": tickets(),
             "factors": factors(), "sprint": sprint(n), "queue": db.kv_get("repair:queue") or [],
             "backlog": backlog().get("tasks", []),
             "world": team(), "head": selfops.head(),

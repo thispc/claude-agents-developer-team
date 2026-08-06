@@ -83,14 +83,25 @@ def head() -> dict[str, str]:
         "subject": _sh("git", "log", "-1", "--pretty=%s").stdout.strip(),
         "branch": _sh("git", "rev-parse", "--abbrev-ref", "HEAD").stdout.strip(),
         "dirty": "yes" if _sh("git", "status", "--porcelain").stdout.strip() else "no",
+        # So the dashboard can link a landed commit to the git host without a second call.
+        "repo": self_repo(),
     }
+
+
+def find_project() -> int:
+    """The platform's own project row if it exists — 0 if nobody has filed a ticket yet.
+    Separate from `ensure_project` because a read (does it exist?) must not create one."""
+    for p in db.list_projects():
+        if p["is_self"]:
+            return p["id"]
+    return 0
 
 
 def ensure_project(owner_id: int) -> int:
     """The platform's own project row — created once, reused forever."""
-    for p in db.list_projects():
-        if p["is_self"]:
-            return p["id"]
+    existing = find_project()
+    if existing:
+        return existing
     pid = db.create_project(
         SELF_PROJECT_NAME,
         "This is the devteam platform itself. Issues raised here are defects and "

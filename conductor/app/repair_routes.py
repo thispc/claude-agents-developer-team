@@ -170,3 +170,21 @@ async def repair_abort(request: Request) -> dict:
     """Stop the task being built right now and clean up after it. The crew carries on."""
     _root(request)
     return {"ok": await repair.abort()}
+
+
+@router.post("/restart")
+async def repair_restart(request: Request) -> dict:
+    """Restart the server on the code currently on disk.
+
+    Edit the dashboard while the conductor is running and the page runs ahead of the API,
+    which looks exactly like a broken feature — an empty panel, a button that does nothing.
+    The banner that reports it used to end with a command for a port this setup no longer
+    uses, so the one instruction on screen was wrong. Now it is a button. `restart_process`
+    execs in place, keeping the pid and whatever supervises it.
+    """
+    _root(request)
+    from . import logs, selfops
+    logs.info("lifecycle", "restart_requested", "root asked for a restart from the dashboard")
+    import asyncio
+    asyncio.get_event_loop().call_later(0.3, selfops.restart_process)
+    return {"ok": True, "restarting": True}
