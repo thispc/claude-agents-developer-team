@@ -58,20 +58,14 @@
   border: 6px solid transparent; border-top-color: #fff; border-bottom: 0;
 }
 @keyframes lw2-pop { from { transform: translateY(4px) scale(0.96); opacity: 0; } to { transform: none; opacity: 1; } }
-@media (prefers-color-scheme: dark) {
-  .lw2-bubble { background: #26302c; color: #e7ece9; border-color: rgba(120, 200, 175, 0.28); }
-  .lw2-bubble::after { border-top-color: #26302c; }
-}
 
 /* gesture cursors win over element cursors while a gesture owns the pointer */
 .lw2-host.lw2-panning, .lw2-host.lw2-panning * { cursor: grabbing !important; }
 .lw2-host.lw2-dragging, .lw2-host.lw2-dragging * { cursor: grabbing !important; }
 .lw2-host.lw2-connecting, .lw2-host.lw2-connecting * { cursor: crosshair !important; }
 
-@media (prefers-color-scheme: dark) {
-  .lw2-host { background:
-    radial-gradient(circle at 1px 1px, rgba(120, 200, 175, 0.10) 1px, transparent 0) 0 0 / 26px 26px,
-    #1a1e1c; }
-  .lw2-label { fill: #e7ece9; }
-  .lw2-deck .lw2-label, .lw2-tile .lw2-label, .lw2-table .lw2-label { fill: #c7cec9; }
-}
+/* NO dark-mode override. These were the dashboard's only prefers-color-scheme rules: on a
+   dark OS the canvas alone went near-black inside an app whose header, panels and toolbars
+   have exactly one light theme — and every dark-tinted element (the rgba(0,0,0,.13) usage
+   tracks, un-overridden fills) vanished into it. The canvas stays paper until the whole
+   app grows a dark theme together. */
