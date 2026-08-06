@@ -129,16 +129,20 @@ def test_re_aiming_an_existing_arrow_actually_changes_it(fresh_db):
 
 # ---- talking to one agent, mid-task ---------------------------------------
 
-def test_a_question_is_never_answered_by_a_reflex(fresh_db):
-    """A habit matches on {kind, tone, from_trusted} and nothing else, so an agent that had
-    listened to a few rounds held a reflex for exactly the shape a user's question arrived
-    in — and replied with the raw appraisal string "say (i=0.30)"."""
+def test_a_question_gets_an_answer_not_a_stage_direction(fresh_db):
+    """An appraisal returns a Packet — a state delta whose one-line action text is a beat in
+    a scene, not an answer to a person. Routing a question through it is why talking to an
+    agent read like stage directions. Asking is its own act and gets its own prompt."""
     from pathlib import Path
-    from app.lifeworld import scene as smod
+    from app.lifeworld import scene as smod, world as wmod
     src = Path(smod.__file__).read_text()
     reply = src.split("async def _agent_reply", 1)[1].split("\n    async def", 1)[0]
-    assert 'kind="ask"' in reply, "a question must not arrive shaped like overheard chatter"
-    assert "packet.tier == 1" in reply, "and a reflex's internals must never reach a person"
+    assert "self.world.agent_reply(" in reply, "live replies must come from the agent's model"
+    assert 'kind="ask"' in reply, "and it must still PERCEIVE the question — that moves state"
+    wsrc = Path(wmod.__file__).read_text()
+    fn = wsrc.split("async def agent_reply", 1)[1].split("\n    async def", 1)[0]
+    assert "no stage directions" in fn
+    assert "recalled" in fn, "a familiar question should be answered from experience"
 
 
 def test_the_world_is_locked_across_a_load_and_save(fresh_db):

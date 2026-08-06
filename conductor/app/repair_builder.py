@@ -179,7 +179,12 @@ BUILDER_SYSTEM = (
     "deploy secrets, or .devteam-deploy.json; the app must still import; the dashboard stays "
     "build-free (no new dependencies, no CDN); keep the repo's comment style; the FULL test "
     "suite must pass — run the relevant tests yourself before finishing. Do not commit — the "
-    "engine commits for you.")
+    "engine commits for you.\n"
+    "IF THE TASK IS BIGGER THAN ONE SESSION, do not attempt all of it. Ten of the last "
+    "eighteen failures were sessions that ran out of turns with nothing to show, which costs "
+    "the same as finishing and delivers nothing. Pick the smallest coherent FIRST SLICE that "
+    "leaves the tree green, do that, and end your last message with 'NEXT: <what remains>'. "
+    "A landed slice plus an honest note beats an ambitious diff that never lands.")
 
 
 async def build(task: dict, sprint_no: int, settings: dict, wt: Path | None = None) -> dict:

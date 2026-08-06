@@ -268,9 +268,34 @@ function sdChatHtml() {
 }
 
 /** Who you are talking to, and through which graph. Selecting a token aims the panel. */
-function sdChatAim(agent, threadId) {
+async function sdChatAim(agent, threadId) {
+  const before = sdChatTo ? String(sdChatTo.id) : "manager";
   sdChatTo = agent ? { kind: "agent", id: agent.id, name: agent.name, threadId, data: agent } : null;
+  const after = sdChatTo ? String(sdChatTo.id) : "manager";
   sdChatPaint();
+  // Each peer has its OWN conversation on the server; the panel had one log element that was
+  // never reloaded, so switching from an agent to the manager showed you the agent's messages
+  // under the manager's name. Load whose conversation you are actually in.
+  if (before !== after) await sdChatLoad();
+}
+
+/** The conversation with whoever is currently aimed at. Free: an empty message returns the
+ * log without spending anything. */
+async function sdChatLoad() {
+  const log = $("#sdChatLog"); if (!log) return;
+  const tid = (sdChatTo && sdChatTo.threadId) || sdFirstThreadId();
+  if (!tid) { log.innerHTML = ""; return; }
+  log.innerHTML = `<p class="dim">…</p>`;
+  try {
+    const to = sdChatTo ? String(sdChatTo.id) : "manager";
+    const r = await api(`/api/lw/${lwWorldId}/room/${lwRoomId}/thread/${tid}/chat`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to, text: "" }) });
+    log.innerHTML = (r.chat || []).slice(-40).map((m) =>
+      `<div class="rp-msg ${m.role === "user" ? "me" : "them"}">${escapeHtml(m.text || "")}</div>`).join("")
+      || `<p class="dim">nothing said yet</p>`;
+    log.scrollTop = log.scrollHeight;
+  } catch (e) { log.innerHTML = `<p class="dim">${escapeHtml(reportCaught(e, "sdChatLoad"))}</p>`; }
 }
 
 function sdChatPaint() {

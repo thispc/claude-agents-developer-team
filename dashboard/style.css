@@ -3093,3 +3093,20 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .rp-agent-state { font-family: var(--mono); font-size: 11px; color: var(--dim); min-width: 92px; }
 .rp-agent-what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rp-agentlogs { margin-bottom: 12px; }
+
+/* ── asking the knowledge base in your own words ─────────────────────────────
+   The list above is what an agent knows keyed by exact signature; this reaches the same
+   store the way the agent does — by describing a situation. */
+.ag-ask { display: flex; gap: 6px; margin: 10px 0; }
+.ag-ask input { flex: 1; min-width: 0; padding: var(--ctl-pad-y-tight) var(--ctl-pad-x-tight);
+  border: 1px solid var(--line); border-radius: var(--ctl-radius); background: var(--card-2);
+  color: var(--text); font-size: 12.5px; }
+.ag-hit { border-left: 3px solid var(--accent); padding: 7px 10px; margin-bottom: 8px;
+  background: var(--card-2); border-radius: 0 9px 9px 0; }
+.ag-hit-says { font-size: 12.5px; line-height: 1.45; }
+.ag-hit-cue { font-size: 11.5px; margin-top: 3px; }
+.ag-hit-why { margin-top: 5px; display: flex; gap: 5px; flex-wrap: wrap; }
+.ag-hit-backend { font-size: 11px; margin-top: 6px; }
+/* a signature is a key, not prose — it must never push the panel wider than the column */
+.lw-as-sig { overflow-wrap: anywhere; }
+.lw-as { flex-wrap: wrap; }

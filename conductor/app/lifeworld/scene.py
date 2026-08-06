@@ -501,20 +501,29 @@ class Scene:
     async def _agent_reply(self, agent: Human, text: str) -> str:
         if agent.asleep():
             return f"({agent.name} is resting — out of model quota for now)"
-        # kind="ask", not "say". A compiled habit matches on {kind, tone, from_trusted} and
-        # nothing else, so an agent that has listened to a few rounds holds a reflex for
-        # exactly the shape a user's question used to arrive in — and answered it with the
-        # raw debug string "say (i=0.30)" instead of thinking. A question is its own kind of
-        # event and must not collide with overheard chatter.
-        packet = await self.deliver(
+        # Live: a real answer on the agent's own model. An appraisal returns a Packet — a
+        # state delta whose one-line action text is a beat in a scene, not an answer to a
+        # person — which is why talking to an agent used to read like stage directions.
+        if self.world.is_live():
+            from .decisions import signature
+            known = agent.decisions.recall(signature(text))
+            said = await self.world.agent_reply(
+                agent, text, self._thread_transcript([agent]),
+                recalled={"says": known.says, "confidence": known.confidence,
+                          "seen": known.evidence} if known else None)
+            if said:
+                # It still PERCEIVES the question — that is what moves its state and memory —
+                # but the words you get back are the ones it actually composed.
+                await self.deliver(
+                    Signal(kind="ask", from_id=None, sense="hearing", intensity=0.6, stakes=0.6,
+                           payload={"text": text, "tone": "neutral"}, domain=self.domain), agent)
+                return said[:600]
+        # Offline, or the model was unreachable: a persona-flavoured line, never an
+        # appraisal's internals.
+        await self.deliver(
             Signal(kind="ask", from_id=None, sense="hearing", intensity=0.6, stakes=0.6,
                    payload={"text": text, "tone": "neutral"}, domain=self.domain), agent)
-        reply = (packet.action or {}).get("text") or packet.understood
-        # A reflex has no words worth showing a person; fall back to the persona line rather
-        # than surfacing an appraisal's internals.
-        if not self.world.is_live() or packet.tier == 1 or not str(reply or "").strip():
-            reply = self._free_line(agent, text)
-        return str(reply or "…")[:600]
+        return str(self._free_line(agent, text) or "…")[:600]
 
     async def _manager_reply(self, thread: dict, ring: list[Human], convo: list) -> str:
         cfg = thread.get("manager", {}) or {}

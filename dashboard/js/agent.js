@@ -178,6 +178,11 @@ function agKnowledgeHtml(d) {
   return `
     <div class="ag-ins-head"><b>What it knows</b>
       <span class="dim">recalled before it thinks — a hit costs nothing</span></div>
+    <form class="ag-ask" id="agAsk">
+      <input id="agAskText" placeholder="Describe a situation — what would it recall?" autocomplete="off">
+      <button class="rp-mini">Ask</button>
+    </form>
+    <div id="agAskOut"></div>
     ${rows.length ? `<div class="lw-assoc">${rows.map((a) => `
       <button class="lw-as${a.confidence >= 0.5 && a.evidence >= 2 ? " live" : " weak"}"
               data-agsig="${escapeHtml(String((a.from_decisions || [])[0] || 0))}">
@@ -243,7 +248,43 @@ function agWire() {
   if (back) back.onclick = () => agLeave();
 }
 
+/** Ask the knowledge base what this agent would recall, in the agent's own words.
+ *
+ * The list above is what it knows keyed by exact signature; this is the same store reached
+ * the way an agent reaches it — by describing a situation. It is the honest demo of the
+ * claim: type a problem in your words and see whether experience comes back. */
+function agWireAsk() {
+  const form = $("#agAsk"); if (!form) return;
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const q = ($("#agAskText").value || "").trim();
+    const out = $("#agAskOut"); if (!q || !out) return;
+    out.innerHTML = `<p class="dim">looking…</p>`;
+    try {
+      const owner = `lw:${lwWorldId}:${agId}`;
+      const r = await api("/api/logs/knowledge/search", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ owner, query: q, k: 4 }) });
+      const hits = r.hits || [];
+      out.innerHTML = hits.length ? `<div class="ag-hits">${hits.map((h) => `
+        <div class="ag-hit">
+          <div class="ag-hit-says">${escapeHtml(h.says)}</div>
+          <div class="ag-hit-cue dim">when: ${escapeHtml(trim(h.cue, 110))}</div>
+          <div class="ag-hit-why">
+            <span class="rp-lf">score ${h.score}</span>
+            ${(h.why.matched || []).map((t) => `<span class="rp-lf">${escapeHtml(t)}</span>`).join(" ")}
+            <span class="rp-lf">${h.evidence ? `${Math.round(h.confidence * 100)}% over ${h.evidence}` : "unproven"}</span>
+          </div>
+        </div>`).join("")}</div>
+        <p class="dim ag-hit-backend">matched by ${escapeHtml(r.backend || "")}</p>`
+        : `<p class="dim">Nothing it knows is close to that — which is the right answer when
+           it has not met the situation. A store that always replies cannot be trusted when it does.</p>`;
+    } catch (e) { out.innerHTML = `<p class="dim">${escapeHtml(reportCaught(e, "agAsk"))}</p>`; }
+  });
+}
+
 function agWireInspect() {
+  agWireAsk();
   const close = $("#agInsClose");
   if (close) close.addEventListener("click", () => {
     agSel = 0;

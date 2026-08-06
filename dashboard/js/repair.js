@@ -417,14 +417,23 @@ function rpUsagePanel(d, m) {
       <th class="rp-num">cache</th><th class="rp-num">calls</th></tr></thead><tbody>${rows}</tbody></table>
   </div>
 
-  <div class="rp-card">
-    <div class="rp-card-h">Session counters
-      <span class="dim">${(u.used_tok || 0) > 0 ? "not deciding anything right now" : "deciding, because nothing reported tokens this window"}</span></div>
+  ${(u.used_tok || 0) > 0 ? "" : `<div class="rp-card">
+    <div class="rp-card-h">Session counters <span class="dim">deciding, because nothing reported tokens this window</span></div>
     <div class="rp-meterrow"><span class="rp-meter-lb">calls (5h)</span>${rpBar(m.s5h)}<span class="rp-meter-n">${m.s5h.used}/${m.s5h.cap}</span></div>
     <div class="rp-meterrow"><span class="rp-meter-lb">week</span>${rpBar(m.w7d)}<span class="rp-meter-n">${m.w7d.used}/${m.w7d.cap}</span></div>
     <p class="hint rp-usage-note">A crude count of sessions, kept only for a machine whose SDK
-      reports no token counts at all. The moment real tokens are measured this stops being
-      consulted — a hand-set number of calls is a worse answer than a measurement.</p>
+      reports no token counts at all. It is shown ONLY while it is actually the thing deciding —
+      a red 34/14 sitting beside a plan with plenty left is not information, it is alarm.</p>
+  </div>`}
+  <div class="rp-card">
+    <div class="rp-card-h">What this is <span class="dim">and what it is not</span></div>
+    <p class="hint rp-usage-note">These are the tokens THIS PLATFORM spent, measured from what
+      the SDK reports per session — the crew's work, your projects, your Studio agents. It is
+      not your Claude account's usage: anything you do in an editor, a browser or another tool
+      is invisible here, so a plugin that watches your account will always show more. The
+      budget is a dial you set (<code>usage_budget_tokens</code>), not a limit read from
+      Anthropic — there is no endpoint that reports one. It exists so the crew can decide when
+      to stand back, and the only unarguable signal is a real rate limit, which overrides it.</p>
   </div>`;
 }
 

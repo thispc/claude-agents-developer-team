@@ -2250,6 +2250,24 @@ function lwLayoutDag(nodes) {
     if (!rows.has(d)) rows.set(d, []);
     rows.get(d).push(n);
   }
+  // Most decisions have no parent — an agent reacting to unrelated things all day is a
+  // FOREST, not a tree, and drawing seventeen roots in one row produced a horizontal ribbon
+  // that ran off the panel and looked nothing like a graph. Unparented nodes wrap onto their
+  // own rows above the tree, in time order, so the shape of the day is visible at a glance
+  // and the actual lineages still hang downward from it.
+  const PER_ROW = 6;
+  const roots = rows.get(0) || [];
+  if (roots.length > PER_ROW) {
+    const wrapped = [];
+    for (let i = 0; i < roots.length; i += PER_ROW) wrapped.push(roots.slice(i, i + PER_ROW));
+    rows.delete(0);
+    const shifted = new Map();
+    for (const [d, list] of rows) shifted.set(d + wrapped.length - 1, list);
+    wrapped.forEach((list, i) => shifted.set(i, list));
+    rows.clear();
+    for (const [d, list] of shifted) rows.set(d, list);
+    for (const [d, list] of rows) for (const n of list) depth.set(n.id, d);
+  }
   const COL = 132, ROW = 66, PAD = 26;
   const pos = new Map();
   for (const [d, row] of [...rows.entries()].sort((a, b) => a[0] - b[0])) {

@@ -240,6 +240,48 @@ class World:
             self.host_error = f"{type(e).__name__}: {str(e)[:160]}"
             return None
 
+    async def agent_reply(self, human: Human, question: str, transcript: str = "",
+                          recalled: dict | None = None) -> str | None:
+        """A direct answer, in this agent's own voice — ONE bounded call on its own model.
+
+        A question used to be routed through `appraise`, which returns a Packet: a state
+        delta with a one-line `action.text` meant to be a beat in a scene, not an answer to a
+        person. That is why talking to an agent produced replies that read like stage
+        directions. Asking is its own act and deserves its own prompt.
+        """
+        if self._complete is None:
+            return None
+        import json
+        from .. import agents as reg
+        p = _persona(human)
+        sys = (f"You are {human.name}. Traits: {json.dumps(p['traits'])}; you most want "
+               f"{p['wants']}. {human.narrative or ''}\n"
+               "Answer the question you are asked, in character, in 1-3 sentences. Be concrete "
+               "and useful — you are a colleague being asked something, not a character in a "
+               "play. Plain text only, no stage directions.")
+        if recalled and recalled.get("says"):
+            # What it already knows goes in the prompt, so a familiar question is answered
+            # from experience rather than reasoned out again from nothing.
+            sys += (f"\nYou have met something like this before and concluded: "
+                    f"{recalled['says']!r} (held up {recalled.get('confidence', 0)} of the time"
+                    f" across {recalled.get('seen', 0)}). Use it if it applies; say so if it does not.")
+        prompt = (f"{'RECENT TALK:' + chr(10) + transcript[:600] + chr(10) if transcript else ''}"
+                  f"QUESTION: {question}\nYour answer:")
+        reg.note(self.agent_key(human), "thinking", f"answering: {question[:70]}",
+                 name=human.name, where=f"world {self.id}", kind="agent")
+        try:
+            raw = await self._complete("anthropic", self.model_for(human), sys, prompt,
+                                       self._settings, max_tokens=300)
+            text = (raw or "").strip()[:600]
+            if not text:
+                return None
+            human.note_spend()
+            return text
+        except Exception:
+            return None
+        finally:
+            reg.done(self.agent_key(human))
+
     async def host_memo(self, cfg: dict, ring, rulebook: str, transcript: str) -> dict | None:
         """The manager's closing synthesis — ONE bounded call that turns a finished deliberation
         into the DECISION MEMO: each agent's final position, the live dissent, a recommendation.

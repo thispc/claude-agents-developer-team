@@ -325,10 +325,13 @@ KNOBS: dict[str, tuple[Any, type, str, str]] = {
         "fixes get reverted more often than they save, and a revert costs a "
         "whole sprint."),
     "repair_max_turns": (
-        50, int, "REPAIR_MAX_TURNS",
-        "Turn cap on one build session. A fix that needs more turns than this "
-        "is a redesign wearing a fix's clothes — fail it and let the crew "
-        "re-scope next sprint."),
+        80, int, "REPAIR_MAX_TURNS",
+        "Turn cap on one build session. Measured, not guessed: at 50, ten of "
+        "eighteen failures across 33 sprints were sessions that hit the cap with "
+        "nothing to show — which costs a whole session and delivers zero. Raised "
+        "to 80, and the builder is now told to land a first slice rather than "
+        "attempt everything, because a landed slice beats an ambitious diff that "
+        "never lands."),
     "repair_scout_max_turns": (
         40, int, "REPAIR_SCOUT_MAX_TURNS",
         "Turn cap on the read-only survey session. Scouting is browsing, not "

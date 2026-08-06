@@ -875,12 +875,20 @@ def test_the_self_repair_doc_is_generated_from_the_code_and_current():
         assert must in doc, f"the doc lost {must}"
 
 
-def test_the_backstop_says_whether_it_is_actually_deciding():
-    """18/14 shown next to a meter reading 0% is alarming and, when tokens are being measured,
-    means nothing at all. The card has to say which of the two it is."""
+def test_the_backstop_is_hidden_when_it_decides_nothing():
+    """A red 34/14 sitting beside a plan with plenty left is not information, it is alarm.
+    The counters appear only while they are the thing actually deciding."""
     js = dashboard_js()
-    assert "not deciding anything right now" in js
+    assert '${(u.used_tok || 0) > 0 ? "" : `<div class="rp-card">' in js
     assert "deciding, because nothing reported tokens this window" in js
+
+
+def test_the_usage_screen_says_whose_usage_it_is():
+    """Root compared it against a plugin that watches their Claude account and reasonably
+    asked what this number even is. It is what THIS platform spent — not the account."""
+    js = dashboard_js()
+    assert "not your Claude account's usage" in js
+    assert "usage_budget_tokens" in js and "no endpoint that reports one" in js
 
 
 def test_a_sleeping_engine_keeps_its_reason_current(fresh_db, no_spend):
