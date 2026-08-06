@@ -913,6 +913,7 @@ function route() {
   }
   if (location.hash.startsWith("#/studio")) { openStudio(true); return; }
   if (location.hash.startsWith("#/teams")) { openStudio(true); return; }   // its name now
+  if (location.hash.startsWith("#/devteam")) { openDevteam(true); return; }
   {
     const sc = location.hash.match(/^#\/scenes(?:\/([\w-]+))?/);
     if (sc) { openScenes(true, sc[1] || null); return; }

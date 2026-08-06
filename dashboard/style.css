@@ -3111,3 +3111,12 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 /* a signature is a key, not prose — it must never push the panel wider than the column */
 .lw-as-sig { overflow-wrap: anywhere; }
 .lw-as { flex-wrap: wrap; }
+
+/* ── the devteam's canvas ────────────────────────────────────────────────────
+   The one control this team needs that yours do not: the way to its console. Seeing the
+   arrangement is the point of the door; the sprint board is what the arrangement produced. */
+.sd-devbar { position: absolute; top: 12px; left: 12px; z-index: 5; display: flex;
+  gap: 10px; align-items: center; padding: 8px 12px; border-radius: 12px;
+  background: var(--card); border: 1px solid var(--line); box-shadow: 0 4px 14px rgba(0,0,0,.08); }
+.sd-devbar b { font-size: 13px; }
+.sd-devbar .dim { font-size: 11.5px; }

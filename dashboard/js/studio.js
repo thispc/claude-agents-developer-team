@@ -96,7 +96,52 @@ function showLifeworld() {
 // ============================================================================
 let sdTau = 0;
 
+/** Open the devteam's own team — the six perspectives that work on this platform.
+ *
+ * Hiding the crew from the Teams list was right (it is not a team you assembled, and nobody
+ * should reorganise it by accident from a list of their own) but it left the canvas
+ * unreachable: the door said Devteam and led to a console, and the actual team — the ring of
+ * six, the arrows, the manager — could not be looked at from anywhere. The door now opens the
+ * TEAM, and the console is a button on it. Seeing the arrangement is the point; the sprint
+ * board is what it produced.
+ */
+async function openDevteam(skipHash) {
+  hideScreens("#lifeworld");
+  const lw = $("#lifeworld"); if (lw) lw.hidden = false;
+  if (!skipHash) setHash("#/devteam");
+  let info = null;
+  try { info = (await api("/api/repair/status")).world; } catch (e) { /* below */ }
+  if (!info || !info.world_id) {
+    $("#lwStage").innerHTML = `<p class="empty">The devteam has not formed yet — turn
+      self-repair on once and its crew is built.
+      <button class="rp-mini" onclick="openSelfRepair()">Open the console</button></p>`;
+    return;
+  }
+  lwWorldId = info.world_id;
+  lwDevteam = true;
+  await lwOpenScene(info.room_id);
+  sdDevteamBar();
+}
+
+/** The one control the devteam's canvas needs that a normal team does not: the way to its
+ * console — sprints, notices, usage, the manual ticket. */
+function sdDevteamBar() {
+  if ($("#sdDevBar")) return;
+  const wrap = $("#lwCanvasWrap"); if (!wrap) return;
+  wrap.insertAdjacentHTML("afterbegin",
+    `<div class="sd-devbar" id="sdDevBar">
+       <b>Devteam</b>
+       <span class="dim">the six perspectives that work on this platform</span>
+       <button class="rp-mini" id="sdDevConsole">Sprints, notices &amp; usage →</button>
+     </div>`);
+  const b = $("#sdDevConsole");
+  if (b) b.addEventListener("click", () => openSelfRepair());
+}
+
+let lwDevteam = false;      // the open world is the crew's, not one of yours
+
 async function lwEnterStudio() {
+  lwDevteam = false;
   let worlds = [];
   try { worlds = (await api("/api/lw")).worlds || []; }
   catch (e) { $("#lwStage").innerHTML = `<p class="empty">Could not open the Studio: ${escapeHtml(e.message || String(e))}</p>`; return; }

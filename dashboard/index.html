@@ -162,7 +162,7 @@
      The colour system is the same one, including the rule that brick means a human
      is involved. -->
 <!-- The Studio — one workspace, three tabs. Agents is the canvas of teammates;
-     Scenes are generic settings the owner names and seats agents in (the
+     Teams are groups the owner names and seats agents in (the
      cards/deck/pot are CODE that runs deterministically and every model call
      is billed); Artifacts is the prop shelf of reusable objects placed into scenes. -->
 <section id="studio" hidden>
@@ -195,7 +195,7 @@
     <div class="studio-detail" id="studioDetail" hidden></div>
   </div>
 
-  <!-- Scenes: generic settings the owner names, with seated agents acting in them -->
+  <!-- Teams: groups the owner names, with seated agents working in them -->
   <div class="studio-tabpanel" id="tabScenes" hidden>
     <div class="scene-stage" id="sceneStage"></div>
     <div class="studio-detail" id="sceneDetail" hidden></div>
@@ -210,7 +210,7 @@
 
 <!-- The Studio — one full-screen canvas is the hero. The thin bar carries only what you
      need across every scene: back home, the editable scene title, an autosave indicator,
-     a Scenes dropdown (your saved canvases), the Cast (all agents grouped by scene), and
+     a Teams dropdown (your saved canvases), the Cast (all agents grouped by team), and
      the Live/Deterministic toggle. Everything else — the toolbox, the time transport, the
      rules — floats over the canvas itself. No tabs, no worlds/rooms vocabulary. -->
 <section id="lifeworld" hidden>
@@ -221,7 +221,7 @@
     <span class="sd-save" id="sdSave" title="Everything saves automatically as you work"></span>
     <div class="studio-spacer"></div>
     <div class="sd-scenes-wrap">
-      <button class="sd-chip" id="sdScenesBtn" aria-haspopup="true" aria-expanded="false">🎞 Scenes ▾</button>
+      <button class="sd-chip" id="sdScenesBtn" aria-haspopup="true" aria-expanded="false">👥 Teams ▾</button>
       <div class="sd-menu" id="sdScenesMenu" hidden></div>
     </div>
     <button class="sd-chip" id="sdActBtn" title="What happened, beat by beat">📋 Activity</button>

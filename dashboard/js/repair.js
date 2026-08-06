@@ -290,7 +290,7 @@ function rpCrewPanel(d, m) {
 
   <div class="rp-card">
     <div class="rp-card-h">The crew <span class="dim">one specialist per factor + a hidden manager</span>
-      ${d.world ? `<a class="rp-link" href="#/studio">Open in Studio ↗</a>` : ""}</div>
+      ${d.world ? `<button class="rp-link" id="rpOpenTeam">See the team ↗</button>` : ""}</div>
     <div class="rp-team" id="repairTeam">${team}</div>
     <div class="rp-chat" id="repairChat">
       <div class="rp-chat-log" id="repairChatLog"><p class="dim">…</p></div>
@@ -666,6 +666,8 @@ function rpWire(d) {
     b.addEventListener("click", () => rpBoard(b.dataset.board)));
   const areload = $("#rpActReload");
   if (areload) areload.addEventListener("click", rpActivity);
+  const openTeam = $("#rpOpenTeam");
+  if (openTeam) openTeam.addEventListener("click", () => openDevteam());
   const nreload = $("#rpNoticesReload");
   if (nreload) nreload.addEventListener("click", rpNotices);
   const areload2 = $("#rpAgentsReload");

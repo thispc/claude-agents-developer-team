@@ -2471,7 +2471,9 @@ $("#homeLink").addEventListener("click", () => showHome());
 $("#homeLink").style.cursor = "pointer";
 $("#modeBuild").addEventListener("click", openDialog);
 $("#modeStudio").addEventListener("click", () => openStudio());
-$("#modeImprove").addEventListener("click", () => openSelfRepair());
+// The Devteam door opens the TEAM — the six perspectives, the arrows, the manager. Its
+// console (sprints, notices, usage) is a button on that canvas.
+$("#modeImprove").addEventListener("click", () => openDevteam());
 $("#selfBackBtn").addEventListener("click", () => showHome());
 $("#planBackBtn").addEventListener("click", () => {
   clearInterval(tablePoll); $("#plan").hidden = true; showHome();

@@ -340,3 +340,18 @@ def test_the_landing_doors_say_what_is_behind_them():
     html = (Path(__file__).resolve().parents[1] / "dashboard/index.html").read_text()
     for name in (">Projects<", ">Teams<", ">Devteam<"):
         assert name in html, f"the landing page has no {name} door"
+
+
+def test_the_devteam_door_opens_the_team_not_the_console():
+    """Hiding the crew from the Teams list was right, but it left the canvas unreachable: the
+    door said Devteam and led to a console, and the actual team — the ring of six, the arrows,
+    the manager — could not be looked at from anywhere. Seeing the arrangement is the point of
+    the door; the sprint board is what the arrangement produced."""
+    from conftest import dashboard_js
+    js = dashboard_js()
+    assert "async function openDevteam" in js
+    assert '$("#modeImprove").addEventListener("click", () => openDevteam())' in js
+    assert 'startsWith("#/devteam")' in js, "it needs an address of its own"
+    # ...and the console is a button ON that canvas, with a way back
+    assert "sdDevteamBar" in js and "Sprints, notices" in js
+    assert 'id="rpOpenTeam"' in js, "the console must lead back to the team"
