@@ -1351,8 +1351,15 @@ async def _review_green(task: dict, rec: dict) -> dict | None:
     try:
         from .lifeworld import store
         from .lifeworld.threads import members_of
-        diff = rb._git("diff", "--stat", "main...HEAD",
-                       cwd=Path(task["worktree"]), check=False).stdout[-1200:]
+        # The stat AND a bounded slice of the real diff. The gate's first live reviewer sent
+        # a change back with "need the actual diff to verify" — file names and line counts
+        # cannot show whether error handling was fixed or merely relocated, and a reviewer
+        # that cannot see the change can only ever complain about not seeing it.
+        stat = rb._git("diff", "--stat", "main...HEAD",
+                       cwd=Path(task["worktree"]), check=False).stdout[-800:]
+        body = rb._git("diff", "main...HEAD",
+                       cwd=Path(task["worktree"]), check=False).stdout[:3500]
+        diff = f"{stat}\n{body}"
         head = ((task.get("verification") or {}).get("headline") or "")[:200]
         accept = "; ".join(str(a) for a in (task.get("acceptance") or []))[:400]
         q = (f"Your teammate finished a change and the full suite is GREEN. Task: "

@@ -317,3 +317,65 @@ def test_the_new_knobs_carry_their_rationales(fresh_db):
         assert len(tuning.KNOBS[name][3]) > 80, f"{name} has no real rationale"
     assert tuning.KNOBS["repair_review"][0] is True, "owner chose review-on"
     assert set(repair.SESSION_KINDS) >= {"consult", "review"}, "the meters must count them"
+
+
+# --------------------------------------------------------------------------
+# lessons from the first live sprint (41): the defence, and the visible diff
+# --------------------------------------------------------------------------
+
+def test_standing_by_a_reviewed_change_is_not_death(fresh_db, tmp_repo, monkeypatch):
+    """Sprint 41, live: green build → send-back → the rebuild examined the feedback,
+    concluded the change was already right, wrote nothing — and the engine failed the task,
+    discarding green work. A branch that already holds commits plus a builder that stands by
+    them is a defence, not a dead session. The suite ahead stays the hard gate."""
+    _root_user(); _go_live(monkeypatch)
+    from app import providers
+    fake, calls = _counting_complete(
+        ["SEND_BACK: prove the error handling is fixed, not relocated"])
+    monkeypatch.setattr(providers, "complete", fake)
+    prompts = []
+
+    async def run():
+        tuning.set("repair_review", True)
+        tuning.set("repair_tasks_per_sprint", 1)
+        writes = {"n": 0}
+
+        async def fake_sdk(system_prompt, prompt, cwd, tools, max_turns, model, env, **kw):
+            prompts.append({"system": system_prompt})
+            writes["n"] += 1
+            if writes["n"] == 1:                       # first build makes the change...
+                (Path(cwd) / "fixed.txt").write_text("the fix\n")
+            return "I stand by the change; the handler is genuinely fixed.", 0.0
+        monkeypatch.setattr(rb, "_run_sdk", fake_sdk)   # ...the rebuild writes NOTHING
+
+        async def fake_verify(wt):
+            return {"ran": True, "ok": True, "headline": "green", "failures": []}
+        monkeypatch.setattr(rb, "verify", fake_verify)
+        repair.save_backlog({"ts": time.time(), "digest": "d", "tasks": [_task()]})
+        repair.toggle(True)
+        st = repair.state()
+        if st.get("phase") == "sleeping":
+            repair.set_state(phase="idle", sleep_until=0, sleep_reason="", sleep_kind="")
+        for _ in range(24):
+            await repair.tick()
+            if repair.state()["phase"] == "sleeping":
+                break
+        repair.toggle(False)
+        return repair.sprint(int(db.kv_get("repair:seq") or 0))
+    rec = asyncio.run(run())
+    t = rec["tasks"][0]
+    assert t["status"] == "landed", (t.get("status"), t.get("error"))
+    assert t.get("sent_back") is True
+    assert len(prompts) == 2, "the rebuild must actually have run"
+    from app import logs
+    assert any(r["event"] == "stood_by_change" for r in logs.rows()), \
+        "the defence must be on the record, not silent"
+
+
+def test_the_reviewer_sees_the_actual_diff_not_only_the_stat(fresh_db):
+    """Sprint 41's reviewer sent the change back with 'need the actual diff to verify' —
+    because I only gave it file names and line counts."""
+    import inspect
+    src = inspect.getsource(repair._review_green)
+    assert '"diff", "main...HEAD"' in src, "the review material must include the real diff"
+    assert '"--stat"' in src, "and keep the stat as the summary"

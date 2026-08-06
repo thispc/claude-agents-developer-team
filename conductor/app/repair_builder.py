@@ -293,6 +293,17 @@ async def build(task: dict, sprint_no: int, settings: dict, wt: Path | None = No
     _git("add", "-A", cwd=wt)
     r = _git("commit", "-m", f"repair s{sprint_no}: {task['title']}", cwd=wt, check=False)
     if r.returncode != 0 and "nothing to commit" in (r.stdout + r.stderr):
+        # On a FIRST build, no changes is a dead session. On a retry, the branch may already
+        # hold green work — and a session that read the feedback, examined its own change and
+        # stood by it will legitimately write nothing. Failing that threw away landed-ready
+        # work on the review gate's first live outing: the builder's defence was treated as
+        # death. The suite ahead is still the hard gate either way.
+        prior = _git("rev-list", "--count", "main..HEAD", cwd=wt, check=False).stdout.strip()
+        if prior.isdigit() and int(prior) > 0:
+            logs.info("session", "stood_by_change",
+                      f"the session changed nothing but the branch holds {prior} commit(s) — "
+                      "treating it as the builder standing by its work", task=task["title"])
+            return {"branch": branch, "worktree": str(wt), "usd": usd, "stood_by": True}
         raise RuntimeError("the session changed nothing")
     return {"branch": branch, "worktree": str(wt), "usd": usd}
 
