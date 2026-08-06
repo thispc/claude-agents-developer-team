@@ -2880,3 +2880,18 @@ label > .hint, .field-hint { margin-top: calc(var(--field-gap) * -0.5); }
 .rp-dot.bad { background: var(--bad); color: #fff; }
 .rp-msg.err { border-color: var(--bad); color: var(--bad); }
 #staleRestart { margin: 0 8px; }
+
+/* ── work types and priorities ───────────────────────────────────────────────
+   "7 things done" tells you nothing. Four bugs, one of them P1, two features and an idea
+   is a status. Colour carries the type; the priority chip only shouts when it is P1. */
+.rp-tag { font-size: 10.5px; font-family: var(--mono); padding: 2px 7px; border-radius: 6px;
+  background: var(--soft); color: var(--dim); flex: none; margin-right: 5px; }
+.rp-tag.t-bug { background: var(--bad-soft, rgba(178,59,59,0.1)); color: var(--bad); }
+.rp-tag.t-feature { background: var(--accent-soft); color: var(--accent); }
+.rp-tag.t-refactor { background: var(--warn-soft); color: #8a6a1f; }
+.rp-tag.p-p1 { background: var(--bad); color: #fff; font-weight: 700; }
+.rp-tag.p-p3 { opacity: 0.55; }
+/* The story feed borrows the projects feed's own classes (.ev), so the two screens read
+   the same way; only the spacing is set here. */
+.rp-act .ev { margin-bottom: 6px; }
+.rp-act .ev.chatter { opacity: 0.65; }

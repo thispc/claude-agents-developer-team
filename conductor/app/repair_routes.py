@@ -142,6 +142,37 @@ async def repair_approve(body: BranchBody, request: Request) -> dict:
     return {"landed_sha": out["sha"]}
 
 
+@router.post("/queue/rebuild")
+async def repair_rebuild(body: BranchBody, request: Request) -> dict:
+    """Rebase a stale queued branch onto today's main and re-run the suite on it.
+
+    "main moved since this branch was cut" was a dead end: the work was finished and green,
+    and the only offer on screen was to discard it. Re-verifying after the rebase is not
+    optional — green against yesterday's main is not evidence about today's.
+    """
+    _root(request)
+    from . import logs
+    q = db.kv_get("repair:queue") or []
+    item = next((x for x in q if x["branch"] == body.branch), None)
+    if not item:
+        raise HTTPException(404, "no such queued branch")
+    out = rb.rebuild(item["branch"], item.get("worktree"))
+    if not out.get("ok"):
+        logs.warn("git", "rebuild_failed", f"{item['title']} — {out.get('reason')}",
+                  branch=item["branch"])
+        raise HTTPException(409, out.get("reason", "could not rebuild"))
+    res = await rb.verify(out["worktree"])
+    logs.log("verify", "suite_green" if res.get("ok") else "suite_red",
+             f"after rebuild: {item['title']}", level="info" if res.get("ok") else "warn",
+             branch=item["branch"])
+    for x in q:
+        if x["branch"] == body.branch:
+            x["verification"] = res
+            x["note"] = "" if res.get("ok") else f"still red after rebuild: {res.get('headline', '')}"
+    db.kv_set("repair:queue", q)
+    return {"ok": True, "verified": res.get("ok", False), "headline": res.get("headline", "")}
+
+
 @router.post("/queue/discard")
 def repair_discard(body: BranchBody, request: Request) -> dict:
     """Throw a queued branch away, worktree and all."""

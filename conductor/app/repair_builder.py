@@ -267,6 +267,40 @@ async def verify(wt: str | Path) -> dict:
     return await asyncio.to_thread(w.run_verification, Path(wt))
 
 
+def landable(branch: str) -> dict:
+    """Can this branch land RIGHT NOW, and if not, what would fix it — asked without doing
+    anything. The queue used to offer Approve unconditionally, so pressing it was the only
+    way to discover that the answer was no, and the failure arrived as a toast that vanished.
+    Same two gates `land` enforces, in the same order."""
+    if _git("status", "--porcelain").stdout.strip():
+        return {"ok": False, "why": "your own tree has uncommitted changes",
+                "fix": "commit or stash your work, then approve", "remedy": ""}
+    if _git("merge-base", "--is-ancestor", "main", branch, check=False).returncode != 0:
+        return {"ok": False, "why": "main moved on since this branch was cut",
+                "fix": "rebuild it onto today's main and re-run the suite",
+                "remedy": "rebuild"}
+    return {"ok": True, "why": "", "fix": "", "remedy": ""}
+
+
+def rebuild(branch: str, wt: str | Path | None) -> dict:
+    """Bring a stale branch onto today's main so it can land.
+
+    A branch cut yesterday is not wrong, it is just behind — and "needs a rebuild" with no
+    way to rebuild it is a dead end. Rebase rather than merge, so the branch stays ONE commit
+    and landing stays one squash and one revert handle. A conflict is reported, not guessed
+    at: that is a decision for whoever wrote the conflicting code.
+    """
+    wtp = Path(wt) if wt else None
+    if not wtp or not wtp.exists():
+        return {"ok": False, "reason": "its worktree is gone — discard it and let the crew redo the task"}
+    _try_git("rebase", "--abort", cwd=wtp)
+    r = _git("rebase", "main", cwd=wtp, check=False)
+    if r.returncode != 0:
+        _try_git("rebase", "--abort", cwd=wtp)
+        return {"ok": False, "reason": f"conflicts with main: {(r.stderr or r.stdout)[:200]}"}
+    return {"ok": True, "branch": branch, "worktree": str(wtp)}
+
+
 def land(branch: str, title: str) -> dict:
     """Squash-merge a green branch into the live tree's main. Refuses on a dirty tree (the
     owner may be mid-edit) — the engine queues instead. One commit → one revert handle."""

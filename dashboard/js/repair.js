@@ -232,6 +232,29 @@ function rpCrewPanel(d, m) {
   </div>`;
 }
 
+// What kind of change, and how much it matters — two different questions that one
+// undifferentiated list was answering as neither. "7 things" tells you nothing; "4 bugs, one
+// of them P1, 2 features and an idea" is a status you can act on.
+const RP_TYPE = { bug: "🐞", feature: "✨", refactor: "♻️", chore: "🧹", idea: "💡" };
+
+function rpTag(t) {
+  if (!t || !t.type) return "";
+  const p = t.priority || "";
+  return `<span class="rp-tag t-${escapeHtml(t.type)}" title="${escapeHtml(t.type)}">${RP_TYPE[t.type] || ""} ${escapeHtml(t.type)}</span>${
+    p ? `<span class="rp-tag p-${escapeHtml(p)}">${escapeHtml(p.toUpperCase())}</span>` : ""}`;
+}
+
+/** "4 bugs · 2 features · 1 idea" — the shape of a pile of work, at a glance. */
+function rpMix(tasks) {
+  const by = {};
+  for (const t of tasks || []) if (t.type) by[t.type] = (by[t.type] || 0) + 1;
+  const p1 = (tasks || []).filter((t) => t.priority === "p1").length;
+  const parts = Object.entries(by).sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `${n} ${k}${n > 1 && k !== "chore" ? "s" : ""}`);
+  if (p1) parts.push(`${p1} at P1`);
+  return parts.join(" · ");
+}
+
 function rpBoardPanel(d) {
   const tasks = ((d.sprint && d.sprint.tasks) || []).map((t) => {
     const icon = { pending: "○", building: "🔨", verifying: "🧪", green: "✓", landed: "✓", queued: "⏸", failed: "✕", aborted: "✕" }[t.status] || "○";
@@ -239,17 +262,22 @@ function rpBoardPanel(d) {
       ? ` <button class="rp-mini" data-revert="${escapeHtml(t.landed_sha)}">↩ revert</button>`
       : (t.verification && t.verification.headline ? ` <span class="dim">${escapeHtml(trim(t.verification.headline, 60))}</span>` : "");
     return `<div class="rp-task s-${escapeHtml(t.status)}"><span class="rp-task-ico">${icon}</span>
-      <span class="rp-task-t">[${escapeHtml(t.factor || "?")}] ${escapeHtml(t.title)}</span>${extra}</div>`;
+      ${rpTag(t)}<span class="rp-task-t">${escapeHtml(t.title)}</span>
+      <span class="dim">${escapeHtml(t.factor || "")}</span>${extra}</div>`;
   }).join("") || (d.enabled
     ? `<p class="dim">${escapeHtml({ scout: "scouting the repo — nothing planned yet",
         plan: "the crew is deciding what to work on", idle: "waiting for quota" }[(d.state || {}).phase]
         || "no tasks in this sprint yet")}</p>`
     : `<p class="dim">no sprint yet — flip the switch</p>`);
-  const queue = (d.queue || []).map((q) =>
-    `<div class="rp-task s-queued"><span class="rp-task-ico">⏸</span>
-      <span class="rp-task-t">${escapeHtml(q.title)}${q.note ? ` <span class="dim">(${escapeHtml(q.note)})</span>` : ""}</span>
-      <button class="rp-mini" data-approve="${escapeHtml(q.branch)}">✓ approve</button>
-      <button class="rp-mini danger" data-discard="${escapeHtml(q.branch)}">✕ discard</button></div>`).join("");
+  const queue = (d.queue || []).map((q) => {
+    const st = (d.queue_state || {})[q.branch] || { ok: true };
+    return `<div class="rp-task s-queued"><span class="rp-task-ico">⏸</span>
+      <span class="rp-task-t">${escapeHtml(q.title)}</span>
+      ${st.ok ? "" : `<span class="rp-cool">${escapeHtml(st.why)} — ${escapeHtml(st.fix)}</span>`}
+      <button class="rp-mini" data-approve="${escapeHtml(q.branch)}"${st.ok ? "" : " disabled"}>✓ approve</button>
+      ${st.remedy === "rebuild" ? `<button class="rp-mini" data-rebuild="${escapeHtml(q.branch)}">⟳ rebuild onto main</button>` : ""}
+      <button class="rp-mini danger" data-discard="${escapeHtml(q.branch)}">✕ discard</button></div>`;
+  }).join("");
   return `
   <div class="rp-card">
     <div class="rp-card-h">Sprint ${d.sprint ? d.sprint.no : "—"} <span class="dim">${d.sprint ? escapeHtml(d.sprint.retro || "") : ""}</span>
@@ -259,20 +287,22 @@ function rpBoardPanel(d) {
   </div>
 
   <div class="rp-card">
-    <div class="rp-card-h">Up next <span class="dim">the planned backlog — drained one sprint at a time</span></div>
+    <div class="rp-card-h">Up next <span class="dim">${escapeHtml(rpMix(d.backlog) || "the planned backlog")} — drained one sprint at a time</span></div>
     <div id="repairBacklog">${(d.backlog || []).map((t) =>
-      `<div class="rp-task"><span class="rp-task-ico">·</span><span class="rp-task-t">[${escapeHtml(t.factor || "?")}] ${escapeHtml(t.title)}</span></div>`).join("")
+      `<div class="rp-task"><span class="rp-task-ico">·</span>${rpTag(t)}
+        <span class="rp-task-t">${escapeHtml(t.title)}</span>
+        <span class="dim">${escapeHtml(t.factor || "")}</span></div>`).join("")
       || `<p class="dim">empty — the crew will scout and plan a fresh backlog next sprint</p>`}</div>
   </div>
 
   <div class="rp-card">
-    <div class="rp-card-h">Shipped <span class="dim">self-repair lands on main, so a commit is the reviewable unit — there are no pull requests to wait on</span></div>
+    <div class="rp-card-h">Shipped <span class="dim">${escapeHtml(rpMix(d.landed))} — landed on main, so a commit is the reviewable unit; there are no pull requests to wait on</span></div>
     <div id="repairLanded">${(d.landed || []).map((L) => {
       const when = L.at ? new Date(L.at * 1000).toLocaleDateString([], { month: "short", day: "numeric" }) : "";
       const repo = (d.head || {}).repo || "";
       const href = repo ? gitWebUrl(repo, "commit", L.sha) : "";
-      return `<div class="rp-task"><span class="rp-task-ico">✓</span>
-        <span class="rp-task-t">[${escapeHtml(L.factor || "?")}] ${escapeHtml(L.title)}</span>
+      return `<div class="rp-task"><span class="rp-task-ico">✓</span>${rpTag(L)}
+        <span class="rp-task-t">${escapeHtml(L.title)}</span>
         <span class="dim">s${L.sprint} · ${escapeHtml(when)}</span>
         ${href ? `<a class="rp-link" href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(L.sha.slice(0, 8))} ↗</a>`
                : `<code class="dim">${escapeHtml(L.sha.slice(0, 8))}</code>`}
@@ -455,6 +485,15 @@ function rpWire(d) {
   el.querySelectorAll("[data-approve]").forEach((b) => b.addEventListener("click", async () => {
     try { await api("/api/repair/queue/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ branch: b.dataset.approve }) }); toast("Landed."); }
     catch (e) { toast(`Could not land: ${e.message}`); }
+    rpRefresh(true);
+  }));
+  el.querySelectorAll("[data-rebuild]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true; b.textContent = "rebuilding + re-running the suite…";
+    try {
+      const r = await api("/api/repair/queue/rebuild", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ branch: b.dataset.rebuild }) });
+      toast(r.verified ? "Rebuilt onto main and still green — approve it now."
+                       : `Rebuilt, but the suite is red: ${r.headline || "see the board"}`);
+    } catch (e) { toast(`Could not rebuild: ${e.message}`); }
     rpRefresh(true);
   }));
   el.querySelectorAll("[data-discard]").forEach((b) => b.addEventListener("click", async () => {
@@ -696,41 +735,75 @@ async function rpBoard(no) {
 const RP_ACT = {
   repair_toggled: (p) => (p.on ? "the crew clocked in" : "the crew clocked off"),
   repair_team_ready: (p) => `crew formed — ${p.agents} specialists`,
-  repair_sprint_started: (p) => `sprint ${p.sprint} started${p.from_backlog ? " (from the backlog)" : ""}`,
-  repair_scouted: (p) => `scouted the repo — ${p.candidates ?? "?"} candidates`,
-  repair_deliberated: (p) => `the crew agreed a plan${p.positions ? ` (${p.positions.length} positions)` : ""}`,
+  repair_sprint_started: (p) => `Sprint ${p.sprint} started${p.from_backlog ? " from the backlog" : ""}`,
+  repair_scouted: (p) => `scouted the repo — ${p.candidates ?? "?"} candidates found`,
+  repair_deliberated: (p) => `the crew agreed a plan${p.positions ? ` — ${p.positions.length} positions` : ""}`,
   repair_planned: (p) => `planned ${p.tasks} task${p.tasks === 1 ? "" : "s"}`,
   repair_building: (p) => `building: ${p.task}`,
-  repair_landed: (p) => `landed: ${p.task} (${String(p.sha || "").slice(0, 8)})`,
-  repair_queued: (p) => `queued for review: ${p.task}${p.why ? ` — ${p.why}` : ""}`,
+  repair_landed: (p) => `landed: ${p.task}`,
+  repair_queued: (p) => `queued for your review: ${p.task}${p.why ? ` — ${p.why}` : ""}`,
   repair_task_failed: (p) => `failed: ${p.task}${p.why ? ` — ${p.why}` : ""}`,
-  repair_sprint_done: (p) => `sprint ${p.sprint} done — ${p.landed || 0} landed, ${p.failed || 0} failed`,
+  repair_sprint_done: (p) => `Sprint ${p.sprint} done — ${p.landed || 0} landed, ${p.failed || 0} failed`,
   repair_sleeping: (p) => `sleeping — ${p.reason}`,
   repair_restarting: () => "restarting to apply landed changes",
-  repair_aborted: () => "task aborted by you",
+  repair_aborted: () => "you aborted the task in flight",
   engine_error: (p) => `engine error — ${p.detail}`,
+};
+
+// The look the projects feed already earned: a coloured left edge for WHO, an uppercase
+// source line, and outcomes weighted differently from narration. Before this, "landed a fix"
+// and a worker musing about a file looked equally important — which means neither did.
+const RP_EV_CLASS = {
+  repair_landed: "outcome good", repair_sprint_done: "outcome good",
+  repair_task_failed: "outcome bad", engine_error: "error",
+  repair_queued: "decision", repair_sleeping: "ratelimit",
+  repair_toggled: "decision", repair_aborted: "decision",
+  repair_restarting: "system", repair_team_ready: "manager",
+  repair_deliberated: "manager", repair_planned: "manager",
+  repair_sprint_started: "manager", repair_scouted: "manager",
+  repair_building: "worker",
+};
+
+const RP_EV_WHO = {
+  repair_deliberated: "🧠 The crew", repair_planned: "👔 Manager", repair_scouted: "🔎 Scout",
+  repair_sprint_started: "👔 Manager", repair_team_ready: "👔 Manager",
+  repair_building: "🛠 Builder", repair_landed: "🛠 Builder", repair_task_failed: "🛠 Builder",
+  repair_sleeping: "👔 Manager", repair_sprint_done: "👔 Manager", repair_queued: "👔 Manager",
+  repair_toggled: "🫵 You", repair_aborted: "🫵 You", engine_error: "⚙️ Engine",
+  repair_restarting: "⚙️ Engine",
 };
 
 function rpActText(e) {
   let p = e.payload;
   try { p = typeof p === "string" ? JSON.parse(p) : (p || {}); } catch { p = { detail: String(p) }; }
   const fn = RP_ACT[e.kind];
-  return fn ? String(fn(p))
-    : `${e.kind.replace(/^verify_/, "verify · ")}: ${typeof p === "object" ? (p.detail || p.text || JSON.stringify(p)) : p}`;
+  if (fn) return String(fn(p));
+  if (e.kind.startsWith("verify_")) {
+    const body = typeof p === "object" ? (p.detail || p.text || JSON.stringify(p)) : String(p);
+    return `${e.kind.replace("verify_", "")}: ${body}`;
+  }
+  return `${e.kind}: ${typeof p === "object" ? JSON.stringify(p) : p}`;
 }
 
+/** One beat, in the same visual language as a project's feed. */
 function rpActLine(e, n = 1) {
-  const quiet = !RP_ACT[e.kind];
-  const when = e.ts ? new Date(e.ts * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "";
-  return `<div class="rp-actline${quiet ? " quiet" : ""}"><span class="rp-actwhen">${escapeHtml(when)}</span>
-    <span>${escapeHtml(trim(rpActText(e), 220))}${n > 1 ? ` <span class="dim">×${n}</span>` : ""}</span></div>`;
+  let p = e.payload;
+  try { p = typeof p === "string" ? JSON.parse(p) : (p || {}); } catch { p = {}; }
+  const verify = e.kind.startsWith("verify_");
+  const cls = RP_EV_CLASS[e.kind] || (verify ? "worker chatter" : "system");
+  const who = RP_EV_WHO[e.kind] || (verify ? "🧪 Verifier" : "⚙️ Engine");
+  const when = e.ts ? new Date(e.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }) : "";
+  const sha = p && p.sha ? String(p.sha).slice(0, 8) : "";
+  return `<div class="ev ${cls}">
+    <div class="src">${escapeHtml(who)} · ${escapeHtml(e.kind.replace(/^repair_/, ""))} · ${escapeHtml(when)}${n > 1 ? ` · ×${n}` : ""}</div>
+    ${escapeHtml(trim(rpActText(e), 400))}${sha ? ` <code>${escapeHtml(sha)}</code>` : ""}</div>`;
 }
 
 /** Consecutive identical beats collapse to one line with a count.
  *
- * A sleeping engine used to emit the same sentence every twenty seconds; the engine no
- * longer does that, but months of it are already in the log and any future repeat would
- * push everything interesting off the screen the same way. */
+ * A sleeping engine used to emit the same sentence every twenty seconds; it no longer does,
+ * but months of that are already in the log and any future repeat would push everything
+ * interesting off the screen the same way. */
 function rpCollapse(events) {
   const out = [];
   for (const e of events) {
@@ -739,23 +812,6 @@ function rpCollapse(events) {
     out.push({ e, text: rpActText(e), n: 1 });
   }
   return out;
-}
-
-const RP_LOGCOL = { debug: "quiet", info: "", warn: "warnline", error: "errline" };
-
-function rpLogLine(r) {
-  // 24-hour, because "12:07:37 PM" does not fit the column and wrapped onto two lines —
-  // and an operational log is one of the few places nobody wants am/pm anyway.
-  const when = r.ts ? new Date(r.ts * 1000).toLocaleTimeString([], {
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }) : "";
-  const skip = { ts: 1, level: 1, cat: 1, event: 1, msg: 1, repeats: 1 };
-  const fields = Object.entries(r).filter(([k, v]) => !skip[k] && v !== null && v !== "")
-    .map(([k, v]) => `<span class="rp-lf">${escapeHtml(k)}=${escapeHtml(trim(String(v), 70))}</span>`).join(" ");
-  return `<div class="rp-actline ${RP_LOGCOL[r.level] || ""}">
-    <span class="rp-actwhen">${escapeHtml(when)}</span>
-    <span class="rp-lcat">${escapeHtml(r.cat)}/${escapeHtml(r.event)}</span>
-    <span>${escapeHtml(trim(String(r.msg || ""), 200))}${r.repeats > 1
-      ? ` <span class="dim">×${r.repeats}</span>` : ""} ${fields}</span></div>`;
 }
 
 async function rpActivity() {

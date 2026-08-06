@@ -1170,3 +1170,89 @@ def test_a_zombie_that_has_been_killed_stops_being_reported(fresh_db, monkeypatc
     assert not [n for n in monitor.scan() if n["kind"] == "zombie"]
     logs.log("lifecycle", "lease_held_elsewhere", "standing down now", level="warn", holder=999)
     assert [n for n in monitor.scan() if n["kind"] == "zombie"]
+
+
+# --------------------------------------------------------------------------
+# what kind of work it is, and how much it matters
+# --------------------------------------------------------------------------
+
+def test_work_is_classified_by_kind_and_priority(fresh_db):
+    """"the crew did 7 things" tells you nothing; "4 bugs, one at P1, 2 features and an idea"
+    is a status you can act on."""
+    assert set(repair.TASK_TYPES) == {"bug", "feature", "refactor", "chore", "idea"}
+    assert set(repair.PRIORITIES) == {"p1", "p2", "p3"}
+    assert repair.classify("Port allocation has a check-then-bind race")[0] == "bug"
+    assert repair.classify("Migration list swallows real failures")[0] == "bug"
+    assert repair.classify("Add a token meter to the usage screen")[0] == "feature"
+    assert repair.classify("github.com links hardcoded — extract one helper")[0] == "refactor"
+    assert repair.classify("Delete six stray dumps from the repo root")[0] == "chore"
+    # p1 is reserved for the genuinely urgent, or the word stops meaning anything
+    assert repair.classify("deploy_local runs unsandboxed code")[1] == "p1"
+    assert repair.classify("Add a token meter")[1] != "p1"
+
+
+def test_the_models_own_labels_win_over_the_guess(fresh_db):
+    """The heuristic exists for offline sprints and older rows. When the planner says what a
+    task is, that is better information than keyword matching and must not be overwritten."""
+    t = repair._typed({"title": "Delete stray files", "type": "feature", "priority": "p1"})
+    assert (t["type"], t["priority"]) == ("feature", "p1")
+    t2 = repair._typed({"title": "Delete stray files", "type": "nonsense", "priority": "p9"})
+    assert t2["type"] in repair.TASK_TYPES and t2["priority"] in repair.PRIORITIES
+
+
+def test_rows_from_before_the_taxonomy_are_labelled_on_read(fresh_db):
+    """Existing sprints and backlogs have no type. Showing them as one grey blob would make
+    the whole categorisation useless on the only data anyone actually has."""
+    db.kv_set("repair:sprint:1", {"no": 1, "tasks": [{"title": "Fix a race", "status": "landed",
+                                                      "landed_sha": "abc1234"}]})
+    db.kv_set("repair:seq", 1)
+    s = repair.status()
+    assert s["sprint"]["tasks"][0]["type"] == "bug"
+    assert s["landed"][0]["priority"] in repair.PRIORITIES
+
+
+def test_the_screen_shows_what_kind_of_work_each_thing_is():
+    js = dashboard_js()
+    assert "function rpTag" in js and "function rpMix" in js
+    assert "RP_TYPE" in js and "rp-tag t-${" in js and "rp-tag p-${" in js
+    for kind in ("bug", "feature", "refactor", "chore", "idea"):
+        assert f"{kind}:" in js.split("const RP_TYPE = {", 1)[1].split("}", 1)[0]
+    # and the stylesheet has to actually colour them, or the tag is decoration
+    css = (Path(__file__).resolve().parents[1] / "dashboard" / "style.css").read_text()
+    for cls in (".rp-tag.t-bug", ".rp-tag.t-feature", ".rp-tag.p-p1"):
+        assert cls in css, f"{cls} has no style"
+
+
+# --------------------------------------------------------------------------
+# the review queue tells the truth before you press
+# --------------------------------------------------------------------------
+
+def test_the_queue_says_whether_approve_can_work(fresh_db, tmp_repo, monkeypatch):
+    """Root pressed Approve because a notice said to, and got a toast that vanished:
+    "live tree has uncommitted changes". Pressing it was the only way to find out."""
+    monkeypatch.setattr(rb.selfops, "LIVE_TREE", tmp_repo)
+    (tmp_repo / "dirty.txt").write_text("mine\n")
+    st = rb.landable("main")
+    assert st["ok"] is False and "uncommitted" in st["why"]
+    assert "commit or stash" in st["fix"], "a refusal has to say what would clear it"
+
+
+def test_a_stale_branch_can_be_rebuilt_instead_of_binned(fresh_db, tmp_repo, monkeypatch):
+    """"main moved since this branch was cut" was a dead end: the work was finished and green,
+    and the only offer on screen was to discard it."""
+    monkeypatch.setattr(rb.selfops, "LIVE_TREE", tmp_repo)
+    src = Path(rb.__file__).read_text()
+    assert "def rebuild(" in src and 'rebase' in src
+    assert '"remedy": "rebuild"' in src, "the refusal must name its own remedy"
+    js = dashboard_js()
+    assert "data-rebuild" in js and "/api/repair/queue/rebuild" in js
+    assert 'st.ok ? "" : " disabled"' in js, "Approve must not be offered when it cannot work"
+
+
+def test_the_story_feed_uses_the_same_visual_language_as_a_project():
+    """It was flat grey lines; a project's feed has a coloured edge for who spoke and weighs
+    outcomes differently from narration. Reusing .ev means both screens read the same way."""
+    js = dashboard_js()
+    assert "RP_EV_CLASS" in js and "RP_EV_WHO" in js
+    assert '`<div class="ev ${cls}">' in js and '<div class="src">' in js
+    assert "outcome good" in js and "outcome bad" in js

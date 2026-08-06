@@ -147,6 +147,7 @@ A log row is `{ts, level, cat, event, msg, …fields}`. `event` is a stable slug
 | GET | /api/repair/activity | The crew's own event stream. Every phase transition already goes to the bus under project 0 — this is what makes it visible on the Improve screen instead of only in the terminal the server happens to be running in. |
 | POST | /api/repair/chat | Say something to the crew's hidden manager, which answers with the graph in front of it — the same mediator that runs the deliberations. |
 | POST | /api/repair/queue/approve | Land a branch waiting in the review queue (supervised mode, or a build that finished while your own tree was dirty). |
+| POST | /api/repair/queue/rebuild | Rebase a stale queued branch onto today's main and re-run the suite on it. |
 | POST | /api/repair/queue/discard | Throw a queued branch away, worktree and all. |
 | POST | /api/repair/revert | Undo a landed change. One task is one squashed commit, so this is one `git revert`. |
 | POST | /api/repair/abort | Stop the task being built right now and clean up after it. The crew carries on. |

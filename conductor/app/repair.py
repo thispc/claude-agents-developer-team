@@ -560,17 +560,72 @@ def _tasks_from_candidates(cands: list[dict], n: int) -> list[dict]:
                     "brief": f"{c['why']}\nLikely files: {', '.join(c.get('files') or [])}",
                     "acceptance": [], "branch": "", "status": "pending", "worktree": None,
                     "verification": None, "landed_sha": None, "attempts": 0, "evidence": ""})
-    return out
+    return [_typed(t) for t in out]
 
+
+# What KIND of change this is, and how much it matters. Two different questions that were
+# being answered by one undifferentiated list: "the crew did 7 things" tells you nothing,
+# while "4 bugs (one P1), 2 features, an idea" is a status you can act on. Kept to five types
+# a person would actually use — a taxonomy nobody can apply consistently is worse than none.
+TASK_TYPES = {
+    "bug":      "something behaves wrong, or could",
+    "feature":  "something the platform could not do before",
+    "refactor": "the same behaviour, in a shape that is easier to live with",
+    "chore":    "upkeep — deletions, renames, dependency and config work",
+    "idea":     "worth trying, not yet worth committing to",
+}
+PRIORITIES = {"p1": "drop everything", "p2": "this sprint", "p3": "when there is room"}
 
 PLAN_EXTRACT_SYSTEM = (
     "You turn a sprint-planning memo into build tasks. Each task must be finishable by ONE "
     "focused engineer in roughly 30 tool calls — a narrow, surgical change to a handful of "
     "files. Split or shrink anything broader (a repo-wide refactor is not a task, it is a "
     "programme; take its first slice instead). Return ONLY a JSON array of "
-    '{"title": <short imperative>, "factor": <factor id>, "brief": <2-4 sentences of exactly '
+    '{"title": <short imperative>, "factor": <factor id>, "type": <bug|feature|refactor|'
+    'chore|idea>, "priority": <p1|p2|p3>, "brief": <2-4 sentences of exactly '
     'what to change and where>, "acceptance": [<checkable outcomes>]} — at most N items, '
-    "highest value first.")
+    "highest value first. Be honest about type and priority: p1 means the platform is "
+    "broken or losing data for someone right now, and most work is not p1.")
+
+
+def classify(title: str, brief: str = "", factor: str = "") -> tuple[str, str]:
+    """(type, priority) from the words, for when the model did not say.
+
+    A deterministic fallback rather than a default of "chore/p3": offline sprints, older
+    backlog rows and any model that ignores the schema all still get a sensible label, and
+    the board stays readable instead of showing one grey blob. Deliberately shallow — it
+    reads like the guess it is, and the model's own answer always wins.
+    """
+    t = f"{title} {brief}".lower()
+    if any(w in t for w in ("race", "crash", "leak", "wrong", "broken", "fails", "bug",
+                            "silently", "never reconcil", "orphan", "stale", "unsandboxed",
+                            "swallow", "hides", "blanket except", "loses", "double")):
+        kind = "bug"
+    elif any(w in t for w in ("add ", "support ", "introduce", "expose", "surface ", "show ")):
+        kind = "feature"
+    elif any(w in t for w in ("extract", "dedupe", "one helper", "reuse", "consolidat",
+                              "rename", "simplif")):
+        kind = "refactor"
+    elif any(w in t for w in ("delete", "remove", "clean up", "tidy", "upgrade", "bump")):
+        kind = "chore"
+    else:
+        kind = "idea" if factor == "" else "chore"
+    if kind == "bug" and any(w in t for w in ("data loss", "credential", "secret", "unsandboxed",
+                                              "security", "corrupt", "cannot start")):
+        return kind, "p1"
+    return kind, {"bug": "p2", "feature": "p3", "refactor": "p3", "chore": "p3", "idea": "p3"}[kind]
+
+
+def _typed(task: dict) -> dict:
+    """Stamp a task with a type and priority, trusting the model when it gave usable ones."""
+    kind = str(task.get("type") or "").lower().strip()
+    prio = str(task.get("priority") or "").lower().strip()
+    if kind not in TASK_TYPES or prio not in PRIORITIES:
+        gk, gp = classify(task.get("title", ""), task.get("brief", ""), task.get("factor", ""))
+        kind = kind if kind in TASK_TYPES else gk
+        prio = prio if prio in PRIORITIES else gp
+    task["type"], task["priority"] = kind, prio
+    return task
 
 
 async def _phase_plan(st: dict, rec: dict) -> None:
@@ -638,13 +693,15 @@ async def _phase_plan(st: dict, rec: dict) -> None:
             arr = rb._json_block(raw, "[", "]") or []
             for t in arr[:n_tasks]:
                 if isinstance(t, dict) and str(t.get("title", "")).strip():
-                    tasks.append({"slug": _slug(str(t["title"])), "title": str(t["title"])[:140],
+                    tasks.append(_typed({
+                                  "type": t.get("type"), "priority": t.get("priority"),
+                                  "slug": _slug(str(t["title"])), "title": str(t["title"])[:140],
                                   "factor": str(t.get("factor", ""))[:24],
                                   "brief": str(t.get("brief", ""))[:800],
                                   "acceptance": [str(a)[:200] for a in (t.get("acceptance") or [])][:6],
                                   "branch": "", "status": "pending", "worktree": None,
                                   "verification": None, "landed_sha": None, "attempts": 0,
-                                  "evidence": ""})
+                                  "evidence": ""}))
         except Exception as e:
             if _rate_limited(str(e)):
                 rec["memo"] = memo
@@ -976,15 +1033,25 @@ def tickets(limit: int = 12) -> list[dict]:
         return []
 
 
+def _typed_sprint(rec: dict | None) -> dict | None:
+    if rec:
+        rec["tasks"] = [_typed(t) for t in rec.get("tasks", [])]
+    return rec
+
+
 def status() -> dict:
     """Everything the Repair screen renders, in one payload."""
     from . import monitor, selfops
     st = state()
     n = st.get("sprint_no") or int(db.kv_get("repair:seq") or 0)
     return {"enabled": enabled(), "state": st, "meters": {**meters(), "team": team_usage()},
-            "notices": monitor.summary(), "landed": landed(), "tickets": tickets(),
-            "factors": factors(), "sprint": sprint(n), "queue": db.kv_get("repair:queue") or [],
-            "backlog": backlog().get("tasks", []),
+            "notices": monitor.summary(), "landed": [_typed(t) for t in landed()],
+            "tickets": tickets(), "types": TASK_TYPES, "priorities": PRIORITIES,
+            "queue_state": {q["branch"]: rb.landable(q["branch"])
+                            for q in (db.kv_get("repair:queue") or [])},
+            "factors": factors(), "sprint": _typed_sprint(sprint(n)),
+            "queue": db.kv_get("repair:queue") or [],
+            "backlog": [_typed(t) for t in backlog().get("tasks", [])],
             "world": team(), "head": selfops.head(),
             "last_error": db.kv_get("repair:last_error"),
             "supervised": bool(tuning.get("repair_supervised"))}
