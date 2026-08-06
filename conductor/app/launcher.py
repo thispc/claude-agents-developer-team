@@ -567,12 +567,20 @@ def _rows_of_live_tasks() -> list[dict]:
 
 
 def sweep_orphans() -> int:
-    """A worker cannot outlive the conductor that spawned it.
+    """A worker cannot outlive the conductor that spawned it — true for a local
+    subprocess, which is a child of this process and dies with it. So at startup,
+    under LocalLauncher, any task still marked running/queued is by definition a
+    ghost from a previous process. Left alone they show up forever as agents you
+    cannot kill, and as blockers promising a watchdog that will never come.
 
-    So at startup, any task still marked running/queued is by definition a ghost
-    from a previous process. Left alone they show up forever as agents you cannot
-    kill, and as blockers promising a watchdog that will never come.
+    A k8s worker is different: the Job belongs to the cluster, not the conductor
+    process, so it keeps running across a conductor restart. The blanket
+    "must be dead" assumption above would fail perfectly healthy work there, so
+    delegate to K8sLauncher.reap_orphans, which checks each task's Job before
+    deciding, instead of unconditionally failing everything queued/running.
     """
+    if config.LAUNCHER == "k8s":
+        return get_launcher().reap_orphans()
     n = 0
     for p in db.list_projects():
         for t in db.list_tasks(p["id"]):
@@ -640,6 +648,53 @@ class K8sLauncher:
         await asyncio.to_thread(
             self.batch.create_namespaced_job, namespace=config.K8S_NAMESPACE, body=job
         )
+
+    def job_status(self, task_id: int) -> str | None:
+        """The live state of this task's k8s Job, or None if no Job exists for it
+        (already garbage-collected by ttl_seconds_after_finished, or the task
+        predates k8s mode).
+
+        Used by reap_orphans to tell a still-running worker from a genuinely dead
+        one — the check LocalLauncher gets for free because a subprocess dies
+        with its parent, and a Job does not.
+        """
+        try:
+            jobs = self.batch.list_namespaced_job(
+                namespace=config.K8S_NAMESPACE, label_selector=f"task-id={task_id}")
+        except Exception:
+            return "unknown"      # can't reach the API — don't guess either way
+        if not jobs.items:
+            return None
+        status = jobs.items[0].status
+        if (status.succeeded or 0) > 0:
+            return "succeeded"
+        if (status.failed or 0) > 0:
+            return "failed"
+        return "active"           # running, or created but not yet scheduled
+
+    def reap_orphans(self) -> int:
+        """Boot-time reconciliation — the k8s analogue of LocalLauncher._reap.
+
+        _reap knows a subprocess is dead because it awaited the exit code itself.
+        Nothing here awaited the Job, so instead it asks the cluster: a task whose
+        Job is still active is left alone, and only a task whose Job is gone (or
+        finished without ever posting a report) is failed.
+        """
+        n = 0
+        for p in db.list_projects():
+            for t in db.list_tasks(p["id"]):
+                if t["status"] not in ("queued", "running"):
+                    continue
+                status = self.job_status(t["id"])
+                if status in ("active", "unknown"):
+                    continue       # still running, or we can't tell — leave it be
+                why = ("its k8s Job finished without ever reporting" if status else
+                       "its k8s Job no longer exists")
+                db.update_task(t["id"], status="failed",
+                               report=f"the conductor restarted and {why}; "
+                                      f"re-run the task to continue")
+                n += 1
+        return n
 
     def pod_logs(self, task_id: int, tail: int = 200) -> str:
         """Logs straight from the worker's pod (k8s mode)."""

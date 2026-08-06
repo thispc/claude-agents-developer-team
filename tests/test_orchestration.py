@@ -103,6 +103,68 @@ def test_sweep_orphans_fails_stuck_tasks(fresh_db):
     assert db.get_task(planned)["status"] == "planned"
 
 
+class _FakeJobStatus:
+    def __init__(self, succeeded=0, failed=0):
+        self.succeeded = succeeded
+        self.failed = failed
+
+
+class _FakeJob:
+    def __init__(self, succeeded=0, failed=0):
+        self.status = _FakeJobStatus(succeeded, failed)
+
+
+class _FakeJobList:
+    def __init__(self, items):
+        self.items = items
+
+
+class _FakeBatch:
+    """Stands in for kubernetes.client.BatchV1Api, keyed by the task-id label
+    the real Jobs carry (see K8sLauncher.launch)."""
+    def __init__(self, jobs_by_task):
+        self.jobs_by_task = jobs_by_task
+
+    def list_namespaced_job(self, namespace, label_selector):
+        task_id = int(label_selector.split("=")[1])
+        job = self.jobs_by_task.get(task_id)
+        return _FakeJobList([job] if job else [])
+
+
+def test_sweep_orphans_checks_live_k8s_jobs_before_failing_tasks(fresh_db, monkeypatch):
+    """On k8s a queued/running task can genuinely still be backed by a Job that
+    outlived the restart, so sweep_orphans must not fail it blind — but a task
+    whose Job is truly gone (or finished without ever reporting) still gets
+    failed, same as before."""
+    from app import config
+
+    p = make_project(status="running")
+    still_running = make_task(p, status="running")     # Job has no terminal count: active
+    finished_silently = make_task(p, status="queued")  # Job succeeded, no report ever posted
+    truly_orphaned = make_task(p, status="running")    # no Job at all
+
+    fake_batch = _FakeBatch({
+        still_running: _FakeJob(),                     # active
+        finished_silently: _FakeJob(succeeded=1),
+        # truly_orphaned: no entry — the Job is gone
+    })
+
+    def _fake_init(self):
+        self.batch = fake_batch
+        self.client = None
+
+    monkeypatch.setattr(config, "LAUNCHER", "k8s")
+    monkeypatch.setattr(launcher, "_launcher", None)
+    monkeypatch.setattr(launcher.K8sLauncher, "__init__", _fake_init)
+
+    n = launcher.sweep_orphans()
+
+    assert n == 2
+    assert db.get_task(still_running)["status"] == "running"       # left running
+    assert db.get_task(finished_silently)["status"] == "failed"    # job done, no report
+    assert db.get_task(truly_orphaned)["status"] == "failed"       # job gone
+
+
 def test_kill_task_marks_failed_and_clears_registry(fresh_db):
     p = make_project()
     t = make_task(p, status="running")

@@ -54,7 +54,9 @@ Every transition is written to `tasks.status`. Two things watch for lies:
   `running` with no update for `WORKER_STUCK_SECONDS` (default 30 min)
 - the **startup sweep** (`launcher.sweep_orphans`) fails everything still
   `queued`/`running` at boot, because a local worker is a child process and
-  cannot outlive the conductor
+  cannot outlive the conductor — on `LAUNCHER=k8s` it instead defers to
+  `K8sLauncher.reap_orphans`, which checks each task's Job before failing it,
+  since a Job outlives a conductor restart
 
 ### How the model is chosen
 

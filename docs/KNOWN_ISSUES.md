@@ -155,17 +155,20 @@ Confirmed by reading every file. Not yet fixed.
 
 ## 9. A k8s worker Job is never cleaned out of the live-agent registry
 
-`K8sLauncher` has no equivalent of `LocalLauncher._reap`, so nothing removes its
-`ACTIVE` entry when the Job finishes. Completed Jobs show as live agents forever,
-and a Job that dies without reporting never fails its task.
+`K8sLauncher` has no equivalent of `LocalLauncher._reap` running alongside a
+live Job, so nothing removes its `ACTIVE` entry once the Job finishes.
+Completed Jobs show as live agents forever, and a Job that dies without
+reporting never fails its task while the conductor stays up. Still open.
 
-Worse, `sweep_orphans` assumes "a worker cannot outlive the conductor" — true for
-a subprocess, **false for a Job owned by the cluster**. On k8s it will fail tasks
-whose Jobs are still genuinely running.
-
-**Fix:** a reconcile pass for k8s — list Jobs with `app=devteam-worker`, drop
-`ACTIVE` entries whose Job is gone, and fail tasks whose Job completed without a
-report. Make `sweep_orphans` skip tasks whose Job still exists when `LAUNCHER=k8s`.
+**[FIXED, boot only]** `sweep_orphans` used to assume "a worker cannot
+outlive the conductor" — true for a subprocess, **false for a Job owned by
+the cluster** — and would fail tasks at startup whose Jobs were still
+genuinely running. `K8sLauncher` now exposes `reap_orphans`/`job_status`,
+the k8s analogue of `_reap`: it queries each queued/running task's Job
+before deciding, and `sweep_orphans` defers to it when `LAUNCHER=k8s`
+instead of failing everything unconditionally. The runtime half above (a
+Job that finishes *while the conductor is up*) is unaffected — that still
+needs the reconcile-pass-plus-`ACTIVE`-cleanup fix described here.
 
 ## 10. [FIXED] "429" in a task's own report reroutes it forever
 
