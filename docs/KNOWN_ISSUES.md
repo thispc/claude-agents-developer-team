@@ -3,7 +3,7 @@
 **Status after the 2026-07-20 fix pass:** issues 4, 6, 8, 10, 11, 12, 13, 14,
 15, 16, 17 are fixed (see the commit "fix 11 known bugs…"), plus two new ones
 found by a security probe (suggest-team and model-health were anonymous — fixed).
-Still open: 2, 3, 5, 9 below. (8 fixed since — see below.)
+Still open: 2, 3, 9 below. (8 fixed since — see below.)
 
 Bugs found and confirmed but **not fixed**, worst first. Each one says what
 actually happens, why, and the concrete fix.
