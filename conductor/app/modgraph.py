@@ -521,10 +521,14 @@ def _node_for_module(mod: str, by_key: dict[str, list[str]]) -> str:
     return ""
 
 
+# Leading whitespace is allowed on purpose: tests routinely import inside a test
+# function ("from app.routes import Settings" four spaces deep), and anchoring at
+# column 0 made every such suite invisible — the `routes` leaf sat at "no tests
+# mapped" while its group rolled up 22, because all its imports were indented.
 _IMPORT_RES = (
-    re.compile(r"^from app import ([\w ,]+)", re.M),
-    re.compile(r"^from app\.(\w+)", re.M),
-    re.compile(r"^import app\.(\w+)", re.M),
+    re.compile(r"^[ \t]*from app import ([\w ,]+)", re.M),
+    re.compile(r"^[ \t]*from app\.(\w+)", re.M),
+    re.compile(r"^[ \t]*import app\.(\w+)", re.M),
 )
 
 

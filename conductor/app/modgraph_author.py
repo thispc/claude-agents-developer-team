@@ -177,12 +177,23 @@ def _validated(obj: dict, man: dict, fs: list[dict]) -> tuple[list[dict], list[d
         edges.append({"src": src, "dst": dst, "edge_type": etype, "contract": contract})
 
     fids = {f["id"] for f in fs}
+    # The roster is given to the model as "id: Name — brief", and models answer
+    # with the NAME often enough that dropping those threw away real assignments.
+    # A name (or a differently-cased id) maps back to its id; only a value that
+    # matches nothing on the roster is discarded.
+    by_alias = {f["id"].lower(): f["id"] for f in fs}
+    by_alias.update({str(f.get("name") or "").strip().lower(): f["id"]
+                     for f in fs if str(f.get("name") or "").strip()})
+
+    def _fid(v: str) -> str:
+        return v if v in fids else by_alias.get(v.strip().lower(), "")
+
     # Assignments land on LEAVES only: a group is worked through its children,
     # so a specialist pinned to a layer would be a specialist pinned to nothing.
     leaf_keys = {n["key"] for n in nodes
                  if n["node_type"] not in ("aim", "conclusion", "group")}
-    assigns = {str(k): str(v) for k, v in (obj.get("assignments") or {}).items()
-               if str(k) in leaf_keys and str(v) in fids}
+    assigns = {str(k): _fid(str(v)) for k, v in (obj.get("assignments") or {}).items()
+               if str(k) in leaf_keys and _fid(str(v))}
     return nodes, edges, assigns
 
 

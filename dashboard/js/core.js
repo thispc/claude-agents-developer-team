@@ -8,6 +8,10 @@ const $ = (s) => document.querySelector(s);
 const SCREENS = ["#home", "main", "#plan", "#studio", "#scenes", "#lifeworld",
                  "#aboutPage", "#selfPage", "#agentPage", "#graphScreen"];
 function hideScreens(except) {
+  // Hiding the graph screen must also DESTROY its instance (its timers, its
+  // listeners) — close() is idempotent, so every opener that hides screens gets
+  // that teardown for free instead of each remembering it separately.
+  if (except !== "#graphScreen" && window.ModuleGraph) window.ModuleGraph.close();
   for (const sel of SCREENS) {
     if (sel === except) continue;
     const e = document.querySelector(sel);
@@ -415,12 +419,9 @@ function renderHome(projects) {
 }
 
 async function openSelfRepair(skipHash) {
-  $("#home").hidden = true; $("main").hidden = true;
-  const pl = $("#plan"); if (pl) pl.hidden = true;
-  const ab = $("#aboutPage"); if (ab) ab.hidden = true;
-  const scn = $("#scenes"); if (scn) scn.hidden = true;
-  const lw = $("#lifeworld"); if (lw) lw.hidden = true;
-  const agp = $("#agentPage"); if (agp) agp.hidden = true;
+  // hideScreens covers the WHOLE SCREENS list — hand-picked hide lines are how
+  // a newer screen (the graph was the latest) stays visible under this one.
+  hideScreens("#selfPage");
   $("#projectBar").hidden = true;
   $("#selfPage").hidden = false;
   if (!skipHash) setHash("#/improve");
@@ -429,11 +430,7 @@ async function openSelfRepair(skipHash) {
 }
 
 function openAbout(skipHash) {
-  $("#home").hidden = true; $("main").hidden = true;
-  const pl = $("#plan"); if (pl) pl.hidden = true;
-  const sp = $("#selfPage"); if (sp) sp.hidden = true;
-  const scn = $("#scenes"); if (scn) scn.hidden = true;
-  const lw = $("#lifeworld"); if (lw) lw.hidden = true;
+  hideScreens("#aboutPage");
   $("#projectBar").hidden = true;
   $("#aboutPage").hidden = false;
   if (!skipHash) setHash("#/about");
@@ -480,12 +477,7 @@ function openModuleGraph(skipHash) {
 }
 
 function openProject(id, view, skipHash) {
-  const sp = $("#selfPage"); if (sp) sp.hidden = true;
-  const ab = $("#aboutPage"); if (ab) ab.hidden = true;
-  const st = $("#studio"); if (st) st.hidden = true;
-  const scn = $("#scenes"); if (scn) scn.hidden = true;
-  const lw = $("#lifeworld"); if (lw) lw.hidden = true;
-  $("#home").hidden = true;
+  hideScreens("main");
   $("main").hidden = false;
   $("#projectBar").hidden = false;
   if (typeof projSrc !== "undefined" && projSrc) projSrc.leave();   // back from Devteam HQ

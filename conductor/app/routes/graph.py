@@ -76,6 +76,34 @@ def _crew_snapshot() -> dict:
         return {}
 
 
+def _known_models() -> set[str]:
+    """The model ids config accepts — the provider catalog's undated ids. The same
+    set rides in the payloads, so the UI select and this validator cannot drift."""
+    return {m["id"] for p in providers.PROVIDERS.values() for m in p["models"]}
+
+
+def _agent_names() -> dict[int, str]:
+    """{living human id: specialist name} via the crew record — best-effort, so an
+    assigned node shows WHO works it, not a bare integer."""
+    from .. import repair
+    try:
+        info = repair.team() or {}
+        by_factor = {f["id"]: f["name"] for f in repair.factors()}
+        return {int(hid): by_factor.get(fid, fid)
+                for fid, hid in (info.get("agents") or {}).items() if hid}
+    except Exception:
+        return {}
+
+
+def _agent_out(a: dict | None, names: dict[int, str]) -> dict | None:
+    """The assignment as the payload's agent dict, or None when unassigned."""
+    if not a or not (a.get("agent_id") or a.get("home_id")):
+        return None
+    hid = a.get("agent_id") or a.get("home_id")
+    return {"agent_id": a.get("agent_id"), "home_id": a.get("home_id"),
+            "name": names.get(int(hid), "")}
+
+
 def _activity(nodes: list[dict], st: dict) -> dict[str, list[dict]]:
     """Which nodes the crew is touching RIGHT NOW: in-flight sprint tasks, their
     file mentions prefix-matched to each node's boundary manifest. The highlight
@@ -129,6 +157,7 @@ def graph_self(request: Request) -> dict:
     health = ("critical" if notices.get("critical") else
               "attention" if notices.get("warning") else
               "ok" if st else "unknown")
+    names = _agent_names()
     node_out = []
     for n in nodes:
         a = modgraph.get_assign(pid, n["key"]) or {}
@@ -155,8 +184,7 @@ def graph_self(request: Request) -> dict:
             "spec": n["spec"], "join_mode": n["join_mode"], "tags": n["tags"],
             "paths": n["paths"],
             "config": {"model": a.get("model") or "", "autonomy": a.get("autonomy") or ""},
-            "agent": ({"agent_id": a.get("agent_id"), "home_id": a.get("home_id")}
-                      if a.get("agent_id") or a.get("home_id") else None),
+            "agent": _agent_out(a, names),
             "tests": counts,
             "activity": act,
         })
@@ -164,6 +192,7 @@ def graph_self(request: Request) -> dict:
         "plan": {"id": pid, "version": plan["version"], "kind": plan["kind"],
                  "status": plan["status"], "authored_by": plan["authored_by"],
                  "notes": plan["notes"], "created_at": plan["created_at"]},
+        "models": sorted(_known_models()),
         "nodes": node_out,
         "edges": [{"src": e["src_key"], "dst": e["dst_key"], "edge_type": e["edge_type"],
                    "contract": e["contract"], "contract_test": e["contract_test"]}
@@ -248,8 +277,8 @@ def graph_self_node(key: str, request: Request) -> dict:
                   for e in modgraph.edges(pid) if key in (e["src_key"], e["dst_key"])],
         "config": {"model": (a or {}).get("model") or "",
                    "autonomy": (a or {}).get("autonomy") or ""},
-        "agent": {"agent_id": (a or {}).get("agent_id"),
-                  "home_id": (a or {}).get("home_id")} if a else None,
+        "models": sorted(_known_models()),
+        "agent": _agent_out(a, _agent_names()),
     }
 
 
@@ -264,9 +293,13 @@ def graph_self_node_config(key: str, body: NodeConfig, request: Request) -> dict
         raise HTTPException(404, f"no node '{key}' in the active plan")
     if body.model is not None:
         model = body.model.strip()
-        known = {m["id"] for p in providers.PROVIDERS.values() for m in p["models"]}
+        known = _known_models()
         if model and model not in known:
-            raise HTTPException(400, f"unknown model '{model}'")
+            # Say what WOULD work: dated ids ("claude-haiku-4-5-20251001") are the
+            # first thing people paste, and a bare "unknown" teaches them nothing.
+            raise HTTPException(
+                400, f"unknown model '{model}' — valid: "
+                     f"{', '.join(sorted(known))}, or '' for the default")
     if body.autonomy is not None and body.autonomy not in ("", "supervised", "autonomous"):
         raise HTTPException(400, f"unknown autonomy '{body.autonomy}'")
     a = modgraph.set_assign(pid, key,

@@ -189,6 +189,29 @@ def test_the_seeds_top_level_edges_are_exactly_the_derivation(fresh_db):
             f"{e['src']}→{e['dst']} mixes the two levels"
 
 
+def test_every_leaf_shows_its_real_suites_routes_included(fresh_db):
+    """The live defect: the `routes` leaf claimed "no tests mapped" while its
+    group rolled up 22, because the import parser anchored at column 0 and every
+    routes import in the tests is INDENTED (inside a test function). Every leaf
+    whose module the tests exercise must show its suites — routes by name,
+    because routes is where it was caught lying."""
+    pid = _seeded(fresh_db)
+    routes_suites = [t for t in modgraph.tests(pid, "routes") if t["kind"] == "suite"]
+    assert routes_suites, "the routes leaf must map its real suites in the seed"
+
+    # the mechanic itself, pinned on a synthetic source: indented imports count
+    src = ("def test_x():\n"
+           "    from app.routes import Settings\n"
+           "    from app import shell\n")
+    mods: set[str] = set()
+    for m in modgraph._IMPORT_RES[0].findall(src):
+        mods.update(name.strip().split(" as ")[0].strip() for name in m.split(","))
+    for pat in modgraph._IMPORT_RES[1:]:
+        mods.update(pat.findall(src))
+    assert {"routes", "shell"} <= mods, \
+        "an import four spaces deep is still an import — the parser must see it"
+
+
 # --------------------------------------------------------------------------
 # immutability: drift makes a NEW version; nothing edits history
 # --------------------------------------------------------------------------
@@ -388,8 +411,16 @@ def test_the_graph_surface_is_an_operator_power(client, make_user):
 def test_config_validates_the_model_and_layout_merges(root_client):
     from app import providers
     known = sorted(m["id"] for p in providers.PROVIDERS.values() for m in p["models"])
-    r = root_client.post("/api/graph/self/node/db/config", json={"model": "not-a-model"})
+    # A dated id is the first thing people paste ("claude-haiku-4-5-20251001",
+    # observed live) — the refusal must TEACH: every valid option, in the detail.
+    r = root_client.post("/api/graph/self/node/db/config",
+                         json={"model": "claude-haiku-4-5-20251001"})
     assert r.status_code == 400
+    for m in known:
+        assert m in r.json()["detail"], "the 400 must say the valid options"
+    # ...and the payloads carry the same set, so the UI select cannot drift
+    assert root_client.get("/api/graph/self").json()["models"] == known
+    assert root_client.get("/api/graph/self/node/db").json()["models"] == known
     r = root_client.post("/api/graph/self/node/db/config",
                          json={"model": known[0], "autonomy": "supervised"})
     assert r.status_code == 200 and r.json()["config"]["model"] == known[0]

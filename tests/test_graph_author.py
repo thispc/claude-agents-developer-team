@@ -257,6 +257,53 @@ def test_a_parent_that_is_not_a_group_is_cleared(fresh_db, monkeypatch):
         "the union must follow the children that actually remain"
 
 
+def test_assignments_by_factor_name_map_back_to_ids(fresh_db, monkeypatch):
+    """Validator loosening, pinned: the roster is shown to the model as
+    "id: Name — brief", and it answers with the NAME often enough that dropping
+    those threw away real assignments. A name (or a differently-cased id) maps
+    back to its id; a value matching nothing on the roster still dies."""
+    _root_user(); _go_live(monkeypatch)
+    modgraph.init(); modgraph.seed_self_graph()
+    info = repair.ensure_team()
+    reply = json.loads(_author_reply())
+    reply["assignments"] = {"engine": "Correctness",       # the display name
+                            "memory": "REUSABILITY",       # a shouted id
+                            "core": "Speed"}               # on a group: still discarded
+    from app import providers
+    fake, _calls = _author_fake(json.dumps(reply))
+    monkeypatch.setattr(providers, "complete", fake)
+    pid = asyncio.run(modgraph_author.author_self_plan())
+    assert modgraph.get_assign(pid, "engine")["agent_id"] == info["agents"]["correctness"]
+    assert modgraph.get_assign(pid, "memory")["agent_id"] == info["agents"]["reusability"]
+    assert modgraph.get_assign(pid, "core") is None, \
+        "leaves-only still holds — a name that maps is not a licence to staff a layer"
+
+    # junk is junk: a value on nobody's roster is discarded, not guessed at
+    # (the spec is reworded so the answer differs — an identical answer would be
+    # the no-op path and never re-write assignments at all)
+    reply["assignments"] = {"engine": "not-a-lens"}
+    reply["modules"][2]["spec"] = "the repair engine and its builder, reworded"
+    fake2, _c2 = _author_fake(json.dumps(reply))
+    monkeypatch.setattr(providers, "complete", fake2)
+    pid2 = asyncio.run(modgraph_author.author_self_plan())
+    assert pid2 != pid, "the reworded answer must be a new version"
+    assert modgraph.get_assign(pid2, "engine") is None
+
+
+def test_a_seat_completion_offers_no_tools_at_all():
+    """The replan-409 root cause, pinned at source: with only disallowed_tools the
+    CLI still advertised its remaining built-ins and the box's own MCP servers,
+    and the model sometimes spent its single turn on a tool call — dying as
+    error_max_turns instead of answering. tools=[] plus strict_mcp_config makes
+    "one bounded completion" structural, not a hope."""
+    from app import providers
+    src = inspect.getsource(providers._anthropic)
+    assert "max_turns=1" in src
+    assert "tools=[]" in src, "a seat must advertise NO tools"
+    assert "strict_mcp_config=True" in src, \
+        "the box's own MCP config must never leak into a seat"
+
+
 def test_offline_authors_nothing(fresh_db, monkeypatch):
     """The runs-offline-free invariant: no credentials -> None, zero calls, zero
     writes, the seed stays in charge, no staleness stamp is minted."""

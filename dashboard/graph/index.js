@@ -57,6 +57,7 @@ const DEVTEAM_GRAPH_SRC = {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(cfg) }),
   inspect: (key) => W.api(`/api/graph/self/node/${encodeURIComponent(key)}`),
+  replan: () => W.api("/api/graph/self/replan", { method: "POST" }),
 };
 const SOURCES = { self: DEVTEAM_GRAPH_SRC };
 
@@ -310,7 +311,10 @@ function targetViewFor(i, level) {
  * a pasted link all mean the same thing. route() → openModuleGraph → open → navTo. */
 function drillTo(i, key) {
   hideTip(i);
-  location.hash = key ? "#/graph/" + encodeURIComponent(key) : "#/graph";
+  const want = key ? "#/graph/" + encodeURIComponent(key) : "#/graph";
+  // Never rewrite an already-correct hash: assigning it again mints a duplicate
+  // history entry, and the first browser-back then appears to do nothing.
+  if (location.hash !== want) location.hash = want;
 }
 
 /** The level transition, frame by frame: (1) the outgoing cards bow out — every
@@ -377,9 +381,14 @@ function paint(i, data) {
   i.hostRect = i.host.getBoundingClientRect();
   i.byKey = new Map((data.nodes || []).map((n) => [String(n.key), n]));
   const planId = data.plan && data.plan.id;
-  // a replan can dissolve the group being viewed — fall back to the architecture
-  // (and let the hash follow; route() lands on navTo(null), already a no-op here)
-  if (i.level && !levelNodes(data, i.level).length) { i.level = null; location.hash = "#/graph"; }
+  // A replan can dissolve the group being viewed — fall back to the architecture.
+  // REPLACE the history entry rather than pushing one: `location.hash =` here
+  // re-entered route() and stacked a second entry per drill, which is what made
+  // the first browser-back leave the hash where it already was.
+  if (i.level && !levelNodes(data, i.level).length) {
+    i.level = null;
+    if (location.hash !== "#/graph") history.replaceState(null, "", "#/graph");
+  }
   const counts = {};
   for (const n of data.nodes || []) {
     const p = String(n.parent_key || "");
@@ -743,33 +752,33 @@ function addSel(i, k) { const t = i.nodes.get(k); if (t) { t.g.classList.add("gr
 function setSel(i, k) { clearSel(i); addSel(i, k); }
 function reselect(i) { const keep = [...i.sel].filter((k) => i.nodes.has(k)); i.sel.clear(); keep.forEach((k) => addSel(i, k)); }
 
-/** The selection settled: one node → its light card (groups get their own, with
- * the union-verify); the conclusion → its card; nothing → the how-to. The full
- * inspector only ever opens on a double-click — and on a group, a double-click
- * IS the microscope. */
+/** The selection settled: ONE panel, always complete. A single click on any
+ * module or group opens the full side panel (agent, spec, tests, wiring, trace,
+ * steering); the conclusion keeps its health card; nothing → the how-to.
+ * Double-click has exactly ONE meaning left: the microscope into a group. */
 function selectionChanged(i) {
-  i.inspectKey = null;
   if (i.sel.size === 1) {
     const key = [...i.sel][0];
     const t = i.nodes.get(key);
-    if (t && t.data.node_type === "conclusion") asideConclusion(i);
-    else if (t && t.data.node_type === "group") asideGroup(i, key);
-    else asideLight(i, key);
+    if (t && t.data.node_type === "conclusion") { i.inspectKey = null; asideConclusion(i); }
+    else openPanel(i, key);
   } else if (i.sel.size > 1) {
+    i.inspectKey = null;
     i.aside.innerHTML = `<p class="dim">${i.sel.size} modules selected — drag to arrange them together.</p>`;
   } else {
+    i.inspectKey = null;
     asideDefault(i);
   }
 }
 
-// ---- the aside (this screen's own inspector/action host) ------------------------
+// ---- the aside (this screen's own panel/action host) ----------------------------
 function asideDefault(i) {
   i.aside.innerHTML = `<div class="gr-tip">
-    <p class="dim">Click a module for its card; <b>double-click</b> opens the inspector.
-    Double-click a <b>group</b> (or its ⊕) to dive inside; <kbd>Esc</kbd> or the
-    breadcrumb climbs back out. Drag to arrange — positions stick. Scroll to zoom,
-    hold space to pan, <kbd>f</kbd> frames everything, double-click empty space to
-    re-frame. Hover a wire to read its contract.</p></div>`;
+    <p class="dim"><b>Click</b> a module — everything about it (its agent, spec,
+    tests, wiring, steering) opens here. <b>Double-click</b> a <b>group</b> (or its
+    ⊕) to dive inside; <kbd>Esc</kbd> or the breadcrumb climbs back out. Drag to
+    arrange — positions stick. Scroll to zoom, hold space to pan, <kbd>f</kbd>
+    frames everything. Hover a wire to read its contract.</p></div>`;
 }
 
 function testsLine(tests) {
@@ -781,66 +790,27 @@ function testsLine(tests) {
   return s;
 }
 
-function asideLight(i, key) {
-  const t = i.nodes.get(key);
-  if (!t) { asideDefault(i); return; }
-  const n = t.data;
-  const act = (n.activity || [])[0];
-  const agent = n.agent ? String(n.agent.agent_id ?? n.agent.home_id ?? "") : "";
-  i.aside.innerHTML = `
-    <div class="gr-light">
-      <div class="gr-light-head">
-        <span class="gr-light-glyph">${GLYPH[n.node_type] || GLYPH.code}</span>
-        <div><b>${esc(n.title || n.key)}</b><div class="dim">${esc(n.node_type)} · ${esc(n.key)}</div></div>
-      </div>
-      ${(n.tags || []).length ? `<div class="gr-tags">${n.tags.map((g) => `<span class="gr-tag">${esc(g)}</span>`).join("")}</div>` : ""}
-      <p class="gr-testline">${testsLine(n.tests)}</p>
-      ${agent ? `<p class="dim">agent: <b>${esc(agent)}</b></p>` : ""}
-      ${act ? `<p class="gr-actline">● ${esc(act.task || act.what || "working")}</p>` : ""}
-      <p class="dim gr-hint">double-click the node for spec, tests, trace &amp; config</p>
-    </div>`;
-}
-
-/** A group's light card: rolled-up numbers, the dive, and "Verify group" — the
- * backend runs the union of every child's affected set. */
-function asideGroup(i, key) {
-  const t = i.nodes.get(key);
-  if (!t) { asideDefault(i); return; }
-  const n = t.data;
-  const kids = Number(n.children) || 0;
-  const act = (n.activity || [])[0];
-  i.aside.innerHTML = `
-    <div class="gr-light">
-      <div class="gr-light-head">
-        <span class="gr-light-glyph">${GLYPH.group}</span>
-        <div><b>${esc(n.title || n.key)}</b><div class="dim">group · ${esc(n.key)} · ${kids} module${kids === 1 ? "" : "s"}</div></div>
-      </div>
-      ${(n.tags || []).length ? `<div class="gr-tags">${n.tags.map((g) => `<span class="gr-tag">${esc(g)}</span>`).join("")}</div>` : ""}
-      <p class="gr-testline">${testsLine(n.tests)}</p>
-      ${act ? `<p class="gr-actline">● ${esc(act.task || act.what || "working")}</p>` : ""}
-      <div class="gr-actions">
-        <button class="primary" id="grGroupOpen">⊕ Open group</button>
-        <button id="grGroupVerify">▶ Verify group</button>
-        <span class="dim" id="grVerifyOut"></span>
-      </div>
-      <p class="dim gr-hint">double-click the card (or press Enter) to dive in</p>
-    </div>`;
-  const ob = i.aside.querySelector("#grGroupOpen");
-  if (ob) ob.onclick = () => drillTo(i, key);
-  const vb = i.aside.querySelector("#grGroupVerify");
-  if (vb) vb.onclick = async () => {
-    const out = i.aside.querySelector("#grVerifyOut");
-    vb.disabled = true;
-    if (out) out.textContent = "running the union of the children's tests…";
-    try {
-      const r = await i.src.verify(key);
-      if (out) out.textContent = (r.ok ? "✓ " : "✕ ") + (r.headline || "");
-    } catch (e) {
-      if (out) out.textContent = (e && e.message) || String(e);
-    }
-    vb.disabled = false;
-    if (inst === i) scheduleRefetch(i);
-  };
+/** The agent row — FRONT AND CENTER, right under the title. A leaf shows its
+ * specialist (avatar initial + name) or an honest "Unassigned" with the one
+ * action that fixes it: asking the manager to author the plan. A group is
+ * staffed through its children, and says so instead of pretending. */
+function agentRow(i, n, d) {
+  if (n.node_type === "group") {
+    return `<div class="gr-agent-row gr-agent-grp"><span class="gr-agent-avatar">🗂</span>
+      <div class="dim">a group is staffed through its modules — agents live on the leaves inside</div></div>`;
+  }
+  const a = d.agent;
+  if (a) {
+    const name = String(a.name || "").trim() || `agent #${a.agent_id ?? a.home_id}`;
+    return `<div class="gr-agent-row">
+      <span class="gr-agent-avatar">${esc((name.trim()[0] || "?").toUpperCase())}</span>
+      <div><b>${esc(name)}</b><div class="dim">the specialist working this module</div></div></div>`;
+  }
+  return `<div class="gr-agent-row gr-agent-none">
+    <span class="gr-agent-avatar">?</span>
+    <div><b>Unassigned</b> — the manager staffs modules when it authors the plan
+      <div class="gr-actions"><button class="rp-mini" id="grStaff">Have the manager plan now</button>
+      <span class="dim" id="grStaffOut"></span></div></div></div>`;
 }
 
 function asideConclusion(i) {
@@ -858,9 +828,13 @@ function asideConclusion(i) {
   if (b) b.onclick = () => { location.hash = "#/hq"; };
 }
 
-async function openInspector(i, key) {
+/** THE panel: one side panel with everything, opened by a SINGLE click on any
+ * module or group. There is no lighter card behind it and no second tier — what
+ * you see is always complete: agent first, then spec, tests, wiring, trace and
+ * steering. Groups add the dive and the union-verify. */
+async function openPanel(i, key) {
   const t = i.nodes.get(key);
-  if (!t) return;
+  if (!t) { asideDefault(i); return; }
   setSel(i, key);
   i.inspectKey = key;
   i.aside.innerHTML = `<p class="dim">reading ${esc(key)}…</p>`;
@@ -872,15 +846,26 @@ async function openInspector(i, key) {
     return;
   }
   if (inst !== i || i.inspectKey !== key) return;    // they moved on mid-fetch
-  renderInspector(i, key, d);
+  renderPanel(i, key, d);
 }
 
-const MODELS = ["", "claude-sonnet-5", "claude-opus-4-8", "claude-fable-5", "claude-haiku-4-5"];
+// Fallback only — the live option list rides in the payload (d.models), so the
+// select can never drift from what the server's validator accepts.
+const MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-fable-5", "claude-haiku-4-5"];
 
-function renderInspector(i, key, d) {
+function renderPanel(i, key, d) {
   const n = d.node || {};
   const cfg = d.config || {};
-  const testRows = (d.tests || []).map((tt) => `
+  const live = (i.byKey && i.byKey.get(key)) || {};
+  const isGroup = n.node_type === "group";
+  const act = ((live.activity || [])[0]);
+  const models = ["", ...(Array.isArray(d.models) && d.models.length ? d.models : MODELS)];
+  // A group's suite rows live on its leaves; its rolled-up counts ride on the
+  // graph payload node — show those, never a lying "no tests mapped".
+  const testRows = isGroup
+    ? `<p class="gr-testline">${testsLine(live.tests)}</p>
+       <p class="dim">per-file results live on each module inside — dive in to see them</p>`
+    : (d.tests || []).map((tt) => `
     <div class="gr-test gr-test-${esc(tt.status)}">
       <span class="gr-test-dot"></span><code>${esc(tt.path)}</code>
       <span class="dim">${esc(tt.kind)} · ${esc(tt.status)}</span>
@@ -902,9 +887,12 @@ function renderInspector(i, key, d) {
     <div class="gr-inspect">
       <div class="gr-light-head">
         <span class="gr-light-glyph">${GLYPH[n.node_type] || GLYPH.code}</span>
-        <div><b>${esc(n.title || key)}</b><div class="dim">${esc(n.node_type || "")} · ${esc(key)}</div></div>
+        <div><b>${esc(n.title || key)}</b><div class="dim">${esc(n.node_type || "")} · ${esc(key)}${
+          isGroup ? ` · ${Number(live.children) || 0} modules` : ""}</div></div>
         <button class="rp-link gr-close" id="grInsClose">close</button>
       </div>
+      ${agentRow(i, n, d)}
+      ${act ? `<p class="gr-actline">● ${esc(act.task || act.what || "working")}</p>` : ""}
       ${n.spec ? `<p class="gr-spec">${esc(n.spec)}</p>` : ""}
       ${(n.tags || []).length ? `<div class="gr-tags">${n.tags.map((g) => `<span class="gr-tag">${esc(g)}</span>`).join("")}</div>` : ""}
       <div class="gr-sec"><div class="gr-sec-h">Tests <span class="dim">advisory — red informs, never blocks</span></div>${testRows}</div>
@@ -912,7 +900,7 @@ function renderInspector(i, key, d) {
       <div class="gr-sec"><div class="gr-sec-h">Trace</div>${traceRows}</div>
       <div class="gr-sec"><div class="gr-sec-h">Steering</div>
         <label class="gr-cfg">model
-          <select id="grCfgModel">${MODELS.map((mm) =>
+          <select id="grCfgModel">${models.map((mm) =>
             `<option value="${esc(mm)}"${mm === (cfg.model || "") ? " selected" : ""}>${mm ? esc(mm) : "default"}</option>`).join("")}</select>
         </label>
         <label class="gr-cfg">autonomy
@@ -920,15 +908,36 @@ function renderInspector(i, key, d) {
             `<option value="${a}"${a === (cfg.autonomy || "") ? " selected" : ""}>${a || "default"}</option>`).join("")}</select>
         </label>
       </div>
-      <div class="gr-actions"><button class="primary" id="grVerify">▶ Verify now</button>
+      <div class="gr-actions">
+        ${isGroup ? `<button class="primary" id="grGroupOpen">⊕ Open group</button>` : ""}
+        <button${isGroup ? "" : ` class="primary"`} id="grVerify">▶ Verify${isGroup ? " group" : " now"}</button>
         <span class="dim" id="grVerifyOut"></span></div>
     </div>`;
-  wireInspector(i, key);
+  wirePanel(i, key, isGroup);
 }
 
-function wireInspector(i, key) {
+function wirePanel(i, key, isGroup) {
   const closeBtn = i.aside.querySelector("#grInsClose");
   if (closeBtn) closeBtn.onclick = () => { i.inspectKey = null; clearSel(i); asideDefault(i); };
+  const ob = i.aside.querySelector("#grGroupOpen");
+  if (ob) ob.onclick = () => drillTo(i, key);
+  const staff = i.aside.querySelector("#grStaff");
+  if (staff) staff.onclick = async () => {          // "Have the manager plan now"
+    const out = i.aside.querySelector("#grStaffOut");
+    staff.disabled = true;
+    if (out) out.textContent = "asking the manager to author the plan…";
+    try {
+      const r = await i.src.replan();
+      if (out) out.textContent = `✓ plan v${(r.plan || {}).version} by ${(r.plan || {}).authored_by}`;
+    } catch (e) {
+      if (out) out.textContent = (e && e.message) || String(e);
+      staff.disabled = false;
+      return;
+    }
+    if (inst !== i) return;
+    await refetch(i);                          // the new plan repaints the stage
+    if (i.inspectKey === key && i.nodes.has(key)) openPanel(i, key);
+  };
   const send = async (cfg) => {
     try { await i.src.setConfig(key, cfg); W.toast && W.toast("Saved"); }
     catch (e) { W.toast && W.toast((e && e.message) || String(e)); }
@@ -941,7 +950,8 @@ function wireInspector(i, key) {
   if (vBtn) vBtn.onclick = async () => {
     const out = i.aside.querySelector("#grVerifyOut");
     vBtn.disabled = true;
-    if (out) out.textContent = "running the affected tests…";
+    if (out) out.textContent = isGroup
+      ? "running the union of the children's tests…" : "running the affected tests…";
     try {
       const r = await i.src.verify(key);
       if (out) out.textContent = (r.ok ? "✓ " : "✕ ") + (r.headline || "");
@@ -951,7 +961,7 @@ function wireInspector(i, key) {
     vBtn.disabled = false;
     if (inst !== i) return;
     await refetch(i);                          // rings repaint from the recorded truth
-    if (i.inspectKey === key) openInspector(i, key);
+    if (i.inspectKey === key) openPanel(i, key);
   };
 }
 
@@ -1104,8 +1114,10 @@ async function pointerUp(i, e) {
       if (g.maybeDouble) {
         i._lastClick = null;
         const t = i.nodes.get(g.key);
-        if (t && t.data.node_type === "group") drillTo(i, g.key);   // the microscope
-        else openInspector(i, g.key);
+        // Double-click keeps exactly ONE meaning: the microscope into a group.
+        // On a leaf it opens the same single panel a click already gives.
+        if (t && t.data.node_type === "group") drillTo(i, g.key);
+        else selectionChanged(i);
       } else {
         i._lastClick = { key: g.key, t: nowMs() };
         selectionChanged(i);
@@ -1166,7 +1178,7 @@ function keyDown(i, e) {
     const key = [...i.sel][0];
     const t = i.nodes.get(key);
     if (t && t.data.node_type === "group") drillTo(i, key);
-    else openInspector(i, key);
+    else openPanel(i, key);
   }
 }
 

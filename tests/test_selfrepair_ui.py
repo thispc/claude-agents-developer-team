@@ -64,9 +64,12 @@ def test_self_repair_is_a_page_not_a_tab_on_someone_elses_project():
 
 
 def test_opening_a_project_hides_the_self_repair_page():
+    """Through the shared helper, not a hand-picked hide line: hideScreens covers
+    the whole SCREENS list, and #selfPage must be on it."""
     js = dashboard_js()
     block = js.split("function openProject(", 1)[1][:300]
-    assert '$("#selfPage")' in block and "hidden = true" in block
+    assert "hideScreens(" in block
+    assert '"#selfPage"' in js.split("const SCREENS = [", 1)[1].split("];", 1)[0]
 
 
 # ---- the ticket is refined before anyone works on it ----------------------

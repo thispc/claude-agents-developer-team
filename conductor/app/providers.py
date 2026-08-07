@@ -332,7 +332,14 @@ async def _anthropic(model: str, system: str, prompt: str, settings: dict,
     text = ""
     async for msg in query(prompt=prompt, options=ClaudeAgentOptions(
             system_prompt=system, model=model, max_turns=1,
-            # a seat reasons and writes; it must not touch the filesystem
+            # A seat reasons and writes; it gets NO tools at all. `disallowed_tools`
+            # alone was not that: the CLI still advertised its remaining built-ins
+            # and every MCP server from the box's own user config — and a model that
+            # spends its single turn on a tool call (observed live: the graph
+            # replan burned turn 1 on ToolSearch) dies as error_max_turns instead
+            # of answering. tools=[] plus strict_mcp_config makes "one bounded
+            # completion" structural rather than a hope.
+            tools=[], strict_mcp_config=True,
             disallowed_tools=["Bash", "Write", "Edit", "Read", "Task", "TodoWrite",
                               "Glob", "Grep", "WebFetch", "WebSearch"],
             permission_mode="bypassPermissions", env=env)):

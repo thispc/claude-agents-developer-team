@@ -56,10 +56,8 @@ const PERSONA_PRESETS = [
 ];
 
 async function openPlan() {
-  $("#home").hidden = true; $("main").hidden = true; $("#plan").hidden = false;
-  { const ab = $("#aboutPage"); if (ab) ab.hidden = true; }
-  { const scn = $("#scenes"); if (scn) scn.hidden = true; }
-  { const lw = $("#lifeworld"); if (lw) lw.hidden = true; }
+  hideScreens("#plan");
+  $("#plan").hidden = false;
   $("#projectBar").hidden = true;
   $("#planSetup").hidden = false; $("#planStage").hidden = true;
   $("#blueprintPanel").hidden = true;
@@ -841,10 +839,10 @@ const DEVTEAM_SRC = {
 /** Devteam HQ — the crew, rendered by the project screen. Same view a project gets;
  * the truth underneath is the sprints/queue/monitor machinery. */
 function openDevteamHQ(view, skipHash) {
-  const sp = $("#selfPage"); if (sp) sp.hidden = true;
-  const lw = $("#lifeworld"); if (lw) lw.hidden = true;
-  const st = $("#studio"); if (st) st.hidden = true;
-  $("#home").hidden = true;
+  // hideScreens, not a hand-picked list: this function predates #graphScreen,
+  // and backing out of the graph left it painted over HQ because nothing here
+  // knew the newest screen existed. hideScreens also closes the graph instance.
+  hideScreens("main");
   $("main").hidden = false;
   projSrc = DEVTEAM_SRC;
   currentProject = "devteam";

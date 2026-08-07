@@ -119,6 +119,21 @@
 }
 .gr-failtext { color: var(--gr-bad); }
 .gr-actline { color: var(--gr-accent); font-weight: 550; }
+/* the agent row — first thing under the title, because "who works this" is the
+   first question the panel exists to answer */
+.gr-agent-row {
+  display: flex; align-items: center; gap: 10px; margin: 10px 0 4px;
+  padding: 8px 10px; border: 1px solid var(--gr-line); border-radius: 10px;
+  background: var(--gr-btn);
+}
+.gr-agent-avatar {
+  flex: none; width: 28px; height: 28px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: 700 13px var(--ui); background: var(--gr-mgr); color: var(--gr-card);
+}
+.gr-agent-none .gr-agent-avatar { background: var(--gr-line); color: var(--gr-dim); }
+.gr-agent-grp .gr-agent-avatar { background: transparent; font-size: 16px; }
+.gr-agent-row .gr-actions { margin-top: 6px; }
 .gr-hint { margin-top: 10px; }
 .gr-spec { margin: 8px 0 12px; line-height: 1.45; }
 .gr-sec { margin: 14px 0; padding-top: 10px; border-top: 1px solid var(--gr-line); }

@@ -37,7 +37,9 @@ function trim(s, n) {
 }
 
 function agentInitial(agent) {
-  const name = String((agent && (agent.agent_id ?? agent.home_id)) ?? "");
+  // The payload carries the specialist's NAME when the crew record knows it —
+  // "C" for Correctness reads as a person; "4" (a bare row id) read as a bug.
+  const name = String((agent && (agent.name || agent.agent_id || agent.home_id)) || "");
   return (name.trim()[0] || "?").toUpperCase();
 }
 

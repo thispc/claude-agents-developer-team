@@ -174,13 +174,77 @@ def test_node_cards_are_svg_only_and_titles_go_through_textcontent():
 # the source seam: renderers stay source-agnostic
 # --------------------------------------------------------------------------
 
-def test_the_graph_src_seam_exists_with_the_five_verbs():
+def test_the_graph_src_seam_exists_with_the_six_verbs():
     mod = _read("graph/index.js")
     assert "DEVTEAM_GRAPH_SRC" in mod
     seam = mod.split("DEVTEAM_GRAPH_SRC = {", 1)[1].split("};", 1)[0]
-    for verb in ("fetch:", "verify:", "saveLayout:", "setConfig:", "inspect:"):
+    for verb in ("fetch:", "verify:", "saveLayout:", "setConfig:", "inspect:", "replan:"):
         assert verb in seam, f"the seam lost its {verb.rstrip(':')} verb"
     assert "/api/graph/self" in seam
+
+
+# --------------------------------------------------------------------------
+# the ONE panel: a single click opens everything, agent front and center
+# --------------------------------------------------------------------------
+
+def test_single_click_opens_the_one_full_panel():
+    """The owner's verdict on the two-tier aside ("double click ui is very clunky
+    and don't know what i need"): ONE panel, opened by a SINGLE click, always
+    complete — the lighter card tier is gone by name."""
+    mod = _read("graph/index.js")
+    assert "function openPanel" in mod and "function renderPanel" in mod
+    for gone in ("asideLight", "asideGroup", "openInspector", "renderInspector"):
+        assert gone not in mod, f"the two-tier aside is back ({gone})"
+    body = mod.split("function selectionChanged(", 1)[1].split("\nfunction ", 1)[0]
+    assert "openPanel(i, key)" in body, "a single click must open the full panel"
+
+
+def test_the_panel_puts_the_agent_front_and_center():
+    """"i didnt see the assigned agent": the agent row renders directly under the
+    panel's title — the specialist's name when assigned, and when unassigned an
+    honest sentence plus the ONE action that fixes it (the manager replan)."""
+    mod = _read("graph/index.js")
+    assert "function agentRow" in mod
+    rp = mod.split("function renderPanel(", 1)[1].split("\nfunction ", 1)[0]
+    assert "${agentRow(" in rp, "the panel must render the agent row"
+    assert "the specialist working this module" in mod
+    assert "the manager staffs modules when it authors the plan" in mod, \
+        "the unassigned fallback must say WHO assigns and WHEN"
+    assert "Have the manager plan now" in mod
+    assert "i.src.replan()" in mod, "the unassigned button must call the replan verb"
+
+
+def test_double_click_keeps_exactly_one_meaning():
+    """Drill, groups only. On a leaf a double-click opens the same single panel a
+    click already gives — no inspector hiding behind a second gesture."""
+    mod = _read("graph/index.js")
+    up = mod.split("async function pointerUp(", 1)[1].split("\nfunction ", 1)[0]
+    dbl = up.split("if (g.maybeDouble)", 1)[1].split("} else {", 1)[0]
+    assert "drillTo(i, g.key)" in dbl, "double-click on a group is the microscope"
+    assert "selectionChanged(i)" in dbl, \
+        "a leaf double-click must land on the same panel as a click"
+
+
+def test_the_model_select_rides_the_servers_own_option_list():
+    """The config-400 lesson: a hardcoded option list drifts from what the server
+    validates. The payload carries the valid ids; the select builds from them;
+    and a rejected model is told what WOULD have worked."""
+    mod = _read("graph/index.js")
+    assert "d.models" in mod, "the select must prefer the payload's option list"
+    py = (REPO / "conductor" / "app" / "routes" / "graph.py").read_text()
+    assert "_known_models" in py
+    assert '"models": sorted(_known_models())' in py, \
+        "both graph payloads must carry the valid model ids"
+    assert "valid: " in py, "the 400 detail must SAY the valid options"
+
+
+def test_node_cards_chip_the_assigned_agent():
+    """The chip on the card itself is the at-a-glance answer to "who works this";
+    it prefers the specialist's NAME over a bare row id."""
+    nodes = _read("graph/nodes.js")
+    assert "if (n.agent)" in nodes, "the chip renders when the payload has agent"
+    assert "agentInitial" in nodes
+    assert "agent.name" in nodes, "the chip must prefer the specialist's name"
 
 
 # --------------------------------------------------------------------------
