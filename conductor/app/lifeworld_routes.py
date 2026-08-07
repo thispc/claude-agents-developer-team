@@ -17,7 +17,7 @@ from . import auth, providers, tuning
 from .lifeworld import store, authoring
 from .lifeworld.artifact import Deck, Prop
 from .lifeworld.scene import ROOM_TYPES
-from .routes import current_user
+from .guards import current_user
 
 router = APIRouter(prefix="/api/lw", tags=["lifeworld"])
 

@@ -13,18 +13,19 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+LIB_JS = (ROOT / "dashboard" / "js" / "lib.js").read_text()
 PROJECTS_JS = (ROOT / "dashboard" / "js" / "projects.js").read_text()
 REPAIR_JS = (ROOT / "dashboard" / "js" / "repair.js").read_text()
 
 
 # ---- the shared builders --------------------------------------------------------------
 
-def test_projects_defines_the_shared_builders_and_uses_them_itself():
-    """The builders live in projects.js (loaded before repair.js — order is load-bearing)
+def test_lib_defines_the_shared_builders_and_the_project_screen_uses_them():
+    """The builders live in lib.js (loaded before every consumer — order is load-bearing)
     and renderCommand itself must render through them, or 'shared' would be a fiction."""
     for fn in ("function uiAttnCard(", "function uiAskCard(", "function uiAgentCard(",
                "function uiLane("):
-        assert fn in PROJECTS_JS, f"missing shared builder: {fn}"
+        assert fn in LIB_JS, f"missing shared builder: {fn}"
     body = PROJECTS_JS.split("function renderCommand", 1)[1].split("\nfunction ", 1)[0]
     for used in ("uiAttnCard(", "uiAskCard(", "uiAgentCard(", "uiLane("):
         assert used in body, f"renderCommand must build with {used}"

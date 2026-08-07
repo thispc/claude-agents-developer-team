@@ -40,7 +40,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import bus, config, db, provider, rollout
+from . import bus, config, db, provider, rollout, shell
 
 # Next to the workspaces, which means ON THE VOLUME in a container. It used to
 # default under the repo root — /app/deployments — which is ephemeral: every
@@ -332,22 +332,9 @@ def checkout(project_id: int, branch: str = "") -> tuple[bool, str]:
 
 
 def _wait_healthy(port: int, proc: subprocess.Popen, path: str) -> tuple[bool, str]:
-    """Poll until the app answers, or it dies, or we run out of patience."""
-    import httpx
-
-    deadline = time.time() + BOOT_TIMEOUT
-    last = ""
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            return False, f"the app exited immediately with code {proc.returncode}"
-        try:
-            r = httpx.get(f"http://127.0.0.1:{port}{path}", timeout=3)
-            # Any HTTP answer means the server is listening; 404 on / is fine.
-            return True, f"responding on port {port} (HTTP {r.status_code})"
-        except Exception as e:
-            last = str(e)
-        time.sleep(1)
-    return False, f"no response on port {port} within {BOOT_TIMEOUT}s ({last[:120]})"
+    """Poll until the app answers, or it dies, or we run out of patience.
+    Any HTTP answer means the server is listening; 404 on / is fine."""
+    return shell.wait_healthy(port, proc, path=path, timeout=BOOT_TIMEOUT)
 
 
 def stop(project_id: int, branch: str = "") -> str:

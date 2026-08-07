@@ -1,4 +1,4 @@
-// studio-legacy.js — LEGACY QUARANTINE — the retired round-table Studio, Scenes and Artifact-shelf machinery. Still exports shared helpers the live Studio reuses (sigil/figure language, studioMenu, drawer chrome); do not grow this file.
+// studio-legacy.js — LEGACY QUARANTINE — the retired round-table Studio, Scenes and Artifact-shelf machinery. The shared helpers the live Studio reuses (sigil/figure language, studioMenu, chips) moved to js/lib.js; do not grow this file.
 // Split from the old monolithic app.js (order preserved; classic scripts share one global scope; index.html defines load order).
 
 // ============================================================================
@@ -21,19 +21,6 @@ function studioPositions() {
 function saveStudioPos(id, x, y) {
   const p = studioPositions(); p[id] = { x, y };
   localStorage.setItem("studio-pos", JSON.stringify(p));
-}
-
-// A deterministic sigil from the name: same name → same emblem forever, so a
-// teammate looks the same everywhere. Two conic wedges seeded from a hash, tinted
-// within the agent's provider hue — generative geometry, never stock avatar art.
-function sigil(name, provider) {
-  let h = 0;
-  for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  const a = h % 360, b = (h >> 3) % 360;
-  const tint = { anthropic: 18, openai: 158, google: 214 }[provider] ?? 220;
-  return `conic-gradient(from ${a}deg at 40% 40%, `
-       + `hsl(${tint} 45% 62%) 0deg, hsl(${(tint + 40) % 360} 40% 55%) ${120 + b % 120}deg, `
-       + `hsl(${tint} 35% 48%) 360deg)`;
 }
 
 // The Studio is one section with three tabs (Agents / Scenes / Artifacts). This
@@ -309,10 +296,6 @@ function composePersona(d) {
           d.elaboration.trim()].filter(Boolean).join(" ");
 }
 
-function chip(label, on, attr) {
-  return `<button class="sc-chip${on ? " on" : ""}" ${attr}>${escapeHtml(label)}</button>`;
-}
-
 function renderHirePanel() {
   const box = $("#studioDetail");
   const d = hireDraft;
@@ -416,28 +399,6 @@ $("#studioHire2") && $("#studioHire2").addEventListener("click", () => openHireP
 // The world is right-clickable. A menu on empty floor to bring someone in where
 // you clicked or to tidy the room; a menu on a person to talk, edit or bench them
 // (talk/scenes arrive in the next sprint and are shown as what is coming).
-function studioMenu(x, y, items) {
-  document.querySelectorAll(".ctx-menu").forEach((m) => m.remove());
-  const m = document.createElement("div");
-  m.className = "ctx-menu";
-  m.style.left = x + "px"; m.style.top = y + "px";
-  // Built with createElement + textContent, never innerHTML — a menu label can
-  // carry an agent's name, which is free text, and textContent cannot be an
-  // injection the way an interpolated innerHTML string can.
-  items.forEach((it) => {
-    if (it.sep) { const d = document.createElement("div"); d.className = "ctx-sep"; m.appendChild(d); return; }
-    const b = document.createElement("button");
-    b.className = "ctx-item" + (it.soon ? " soon" : "");
-    b.textContent = it.label;
-    if (it.soon) { b.disabled = true; const s = document.createElement("span"); s.textContent = "soon"; b.appendChild(s); }
-    else b.addEventListener("click", () => { m.remove(); it.act(); });
-    m.appendChild(b);
-  });
-  document.body.appendChild(m);
-  const close = (e) => { if (!m.contains(e.target)) { m.remove(); document.removeEventListener("pointerdown", close); } };
-  setTimeout(() => document.addEventListener("pointerdown", close), 0);
-}
-
 function studioFloorMenu(ev) {
   ev.preventDefault();
   const floor = $("#studioFloor").getBoundingClientRect();
@@ -479,15 +440,8 @@ let sceneHomeAgents = [];      // Studio agents, for provider lookup + seating
 const peekedHands = {};        // seatId -> your_hand (an agent's secret, revealed on request)
 let playingBack = false;
 
-const reduceMotion = () =>
-  window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const sceneSleep = (ms) => reduceMotion() ? Promise.resolve()
   : new Promise((r) => setTimeout(r, ms));
-
-function suitInfo(suit) {
-  const map = { s: "♠", h: "♥", d: "♦", c: "♣" };
-  return { glyph: map[suit] || "?", red: suit === "h" || suit === "d" };
-}
 
 // A card is code. Face-down looks like a card back; face-up shows rank + suit,
 // red for hearts/diamonds. aid, when present, makes the card flippable (owner tool).

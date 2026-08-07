@@ -15,31 +15,31 @@ import asyncio
 import json
 from typing import Any
 
-from .. import db
+from . import ports
 from .config import Flags
 from .world import World
 
 
 def create(owner_id: int, name: str, preset: str = "sandbox") -> World:
     w = World(name=name, flags=Flags.preset(preset))
-    wid = db.create_lw_world(owner_id, name, "{}")
+    wid = ports.db().create_lw_world(owner_id, name, "{}")
     w.id = wid
     save(w)
     return w
 
 
 def owns(owner_id: int, world_id: int) -> bool:
-    row = db.get_lw_world(world_id)
+    row = ports.db().get_lw_world(world_id)
     return bool(row and row["owner_id"] == owner_id)
 
 
 def load(world_id: int, *, live: bool = False, settings: dict | None = None) -> World | None:
-    row = db.get_lw_world(world_id)
+    row = ports.db().get_lw_world(world_id)
     if not row:
         return None
     runtime: dict[str, Any] = {}
     if live:
-        from .. import providers, tuning
+        providers, tuning = ports.providers(), ports.tuning()
         runtime = {"complete": providers.complete, "settings": settings or {},
                    "model_name": tuning.get("scene_default_model"),
                    "utter_tokens": int(tuning.get("scene_utterance_max_tokens"))}
@@ -49,15 +49,15 @@ def load(world_id: int, *, live: bool = False, settings: dict | None = None) -> 
 
 
 def save(world: World) -> None:
-    db.update_lw_world(world.id, json.dumps(world.to_dict()), name=world.name)
+    ports.db().update_lw_world(world.id, json.dumps(world.to_dict()), name=world.name)
 
 
 def listing(owner_id: int) -> list[dict]:
-    return db.list_lw_worlds(owner_id)
+    return ports.db().list_lw_worlds(owner_id)
 
 
 def delete(world_id: int) -> None:
-    db.delete_lw_world(world_id)
+    ports.db().delete_lw_world(world_id)
 
 
 # One lock per world, so a load→await→save cycle cannot be interleaved with another.

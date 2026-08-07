@@ -11,7 +11,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from . import config, db, github_client
+from . import config, db, github_client, shell
 
 PREVIEW_DIR = Path(config._env("PREVIEW_DIR", str(config.ROOT / "previews")))
 # Build OUTPUT first, source last.
@@ -54,7 +54,8 @@ def preview_root(project_id: int) -> Path | None:
 
 
 def _sh(*cmd: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    # No timeout: an npm install + build of a real project legitimately takes minutes.
+    return shell.sh(*cmd, cwd=cwd, timeout=None)
 
 
 def _build_if_needed(dest) -> tuple[bool, str]:

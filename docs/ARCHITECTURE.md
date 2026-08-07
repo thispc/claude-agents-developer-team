@@ -5,6 +5,56 @@ disagree, the code is right and this file is a bug.
 
 ---
 
+## The whole system on one diagram
+
+After the 2026-08 modularization this is the load-bearing shape; every arrow is real
+(imports for the backend, load order + calls for the frontend).
+
+```mermaid
+flowchart TB
+  subgraph FE["dashboard/ — classic scripts, one global scope, order load-bearing"]
+    core["core.js<br/>shell: auth · router · api · ws"] --> lib["lib.js<br/>utilities + design system<br/>(escapeHtml · trim · toast · ui* cards · markdown · avatars)"]
+    lib --> ops["ops.js<br/>deploy screens"] --> views["projects.js (work view + HQ seam)<br/>studio-legacy · studio · canvas1 · agent · repair"] --> boot["boot.js"]
+    c2["canvas2/ (ES modules)"] -. "window.* only" .-> lib
+  end
+
+  subgraph API["api layer"]
+    R["routes/ package<br/>one module per domain, base.py shared"]
+    LR["lifeworld_routes"]
+    RR["repair_routes"]
+    GR["logs_routes"]
+    G["guards.py — current_user · owned_* · _root"]
+    R --> G
+    LR --> G
+    RR --> G
+    GR --> G
+  end
+
+  subgraph DOM["domains"]
+    P["projects<br/>manager · scheduler · launcher · team · review"]
+    REP["repair (the crew)<br/>repair · repair_builder · monitor · selfops"]
+    LW["lifeworld substrate<br/>world (facade) · scene · human · decisions"]
+    PORTS["lifeworld/ports.py<br/>the substrate's ONE door upward"]
+    LW --> PORTS
+  end
+
+  subgraph K["kernel"]
+    KMOD["db · config · bus · auth · tuning · usage · logs · providers · shell (the ONE subprocess/git wrapper)"]
+  end
+
+  FE -->|"/api/*"| API
+  API --> DOM
+  DOM --> K
+  PORTS --> K
+  W["worker/ (separate process)"] -->|"/internal/*"| API
+```
+
+Three rules keep the diagram true: the substrate reaches the platform only through
+`ports.py`; every subprocess goes through `shell.py`; every router gets its guards from
+`guards.py`. The full refactor record is in `REFACTOR_PLAN.md`.
+
+---
+
 ## The one-paragraph version
 
 You describe an idea. A **manager** agent plans it as a DAG of tasks and hires a
@@ -122,7 +172,7 @@ belongs to the project it claims.
 | `config.py` | Every env var, with defaults. `DB_PATH` is anchored to the repo root |
 | `db.py` | SQLite schema + all queries. Tables: projects, tasks, events, inbox, contenders |
 | `auth.py` | Users, sessions, per-user credential storage (PBKDF2) |
-| `routes.py` | Every HTTP route and the WebSocket. `owned_project`/`owned_task` are the authorization gates |
+| `routes/` | Every HTTP route and the WebSocket, one module per domain on a shared router. The authorization gates (`owned_project`/`owned_task`/…) live in `guards.py` |
 | `bus.py` | In-memory pub/sub; every event is persisted *and* broadcast |
 | `manager.py` | The manager agent and its 13 tools |
 | `scheduler.py` | The token-free dispatch loop, PR opening, stall watchdog, status reconciliation |
@@ -142,7 +192,7 @@ belongs to the project it claims.
 | `agents/manager.md` | The manager's system prompt (disposition, workflow, rules) |
 | `agents/roles.json` | Built-in roles: model, max_parallel, fan-out policy |
 | `agents/{backend,frontend,tester}.md` | Built-in role prompts. Unknown roles get a generic one |
-| `dashboard/` | Vanilla JS, no build step. the client is `js/core.js` → `js/projects.js` → `js/studio-legacy.js` → `js/studio.js` → `js/canvas1.js` → `js/boot.js` (classic scripts, one global scope, loaded in `index.html` order) plus the `canvas2/` ES module |
+| `dashboard/` | Vanilla JS, no build step. the client is `js/core.js` → `js/lib.js` → `js/ops.js` → `js/projects.js` → `js/studio-legacy.js` → `js/studio.js` → `js/canvas1.js` → `js/agent.js` → `js/repair.js` → `js/boot.js` (classic scripts, one global scope, loaded in `index.html` order) plus the `canvas2/` ES module |
 | `deploy/` | Dockerfiles, k8s manifests, the kind rehearsal cluster |
 
 ---

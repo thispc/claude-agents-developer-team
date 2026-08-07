@@ -617,7 +617,8 @@ def test_the_per_teammate_view_is_actually_reachable(fresh_db):
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent
     js = dashboard_js()
-    routes = (root / "conductor" / "app" / "routes.py").read_text()
+    # the by-agent endpoints live in app/routes/projects.py since routes.py became a package
+    routes = (root / "conductor" / "app" / "routes" / "projects.py").read_text()
     assert '/by-agent' in routes
     assert "renderByAgent" in js and "/by-agent" in js
 

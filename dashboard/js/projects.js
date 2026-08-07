@@ -1,53 +1,40 @@
 // projects.js — LEGACY QUARANTINE — the original project workspace: self-repair, plan-mode round table, manager chat, command/DAG/artifacts/agents tabs, recruiting. Working, deliberately untouched; do not grow this file.
 // Split from the old monolithic app.js (order preserved; classic scripts share one global scope; index.html defines load order).
 
+// --- project vocabulary, moved out of js/core.js so the shell stays sign-in,
+// --- router, api and ws. core.js still reads STATUS_CLASS/STATUS_LABEL at
+// --- runtime (renderHome) — one global scope, and this file is evaluated long
+// --- before anything dispatches a route.
+const COLS = {
+  planned: ["planned"],
+  working: ["queued", "running"],
+  review: ["pushed", "review", "changes_requested", "failed"],  // failed needs attention, not "done"
+  done: ["done"],
+};
+
+const taskCost = (t) => (authMode === "subscription" ? "" : ` · $${t.cost_usd.toFixed(2)}`);
+
+const STATUS_CLASS = { done: "ok", failed: "bad", cancelled: "bad", review: "warn", hold: "warn", planning: "run", running: "run" };
+const STATUS_LABEL = { hold: "on hold — needs you", review: "in review",
+                       idle: "idle — nothing running", paused: "⏸ switched off" };
+
+// Tasks are stored under a globally-unique id but shown under a per-project
+// number (seq), so the boss's third project starts at #1 rather than #35.
+function seqOf(id) {
+  const t = lastTasks.find((x) => x.id === Number(id));
+  return t ? (t.seq || t.id) : id;
+}
+function idOfSeq(n) {
+  const t = lastTasks.find((x) => (x.seq || x.id) === Number(n));
+  return t ? t.id : Number(n);
+}
+function depLabels(deps) { return deps.map((d) => "#" + seqOf(d)); }
+
 // --- The platform working on itself. Root raises an issue against this repo,
 // --- the team fixes it on a branch, and root deploys the merged result.
 let selfInfo = null;
 
 // renderSelf() moved to js/repair.js — self-repair v2 owns the whole #selfPage screen now.
-
-// The server replaces its own process, so poll until it answers again.
-// MAX_TRIES * POLL_MS bounds the wait (2 minutes); the paragraph counts it
-// down so a long restart still reads as progress, not a hang.
-function waitForRestart(msg) {
-  const POLL_MS = 2000, MAX_TRIES = 60;
-  const el = $("#self");
-  el.innerHTML = `<div class="self-restart"><div class="spinner"></div>
-    <h2>${escapeHtml(msg)}</h2><p>Waiting for the platform to come back up… (up to ${MAX_TRIES * POLL_MS / 1000}s)</p></div>`;
-  const p = el.querySelector("p");
-  let tries = 0;
-  const t = setInterval(async () => {
-    tries++;
-    try {
-      const r = await fetch("/api/me", { credentials: "same-origin" });
-      if (r.ok) { clearInterval(t); location.reload(); return; }
-    } catch { /* still down */ }
-    if (tries >= MAX_TRIES) { clearInterval(t);
-      p.textContent =
-        "It hasn't come back. Check the server logs — the previous commit is recorded for rollback.";
-    } else {
-      const remaining = (MAX_TRIES - tries) * POLL_MS / 1000;
-      p.textContent = `Waiting for the platform to come back up… (${remaining}s remaining)`;
-    }
-  }, POLL_MS);
-}
-
-// Brief, non-blocking confirmation of something that already happened —
-// or, with isError, a non-blocking error notice. Never blocks the page.
-function toast(msg, isError) {
-  let el = $("#toast");
-  if (!el) {
-    el = document.createElement("div");
-    el.id = "toast";
-    document.body.appendChild(el);
-  }
-  el.textContent = msg;
-  el.classList.toggle("error", !!isError);
-  el.classList.add("show");
-  clearTimeout(toast._t);
-  toast._t = setTimeout(() => el.classList.remove("show"), 4000);
-}
 
 // ===== PLAN MODE: the round table ==========================================
 // A circle of heterogeneous models argues an idea into a blueprint. The seating
@@ -594,14 +581,6 @@ function wrapRole(role) {
   return escapeHtml(String(role || "")).replace(/_/g, "_<wbr>");
 }
 
-function ago(ts) {
-  const m = Math.max(0, Math.round((Date.now() / 1000 - ts) / 60));
-  if (m < 1) return "just now";
-  if (m < 60) return `${m} min ago`;
-  const h = Math.round(m / 60);
-  return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
-}
-
 // --- Blockers: every current obstacle on this project, with the fix for each. ---
 let blockersSig = "";
 
@@ -982,20 +961,6 @@ async function refreshBoard() {
   }
 }
 
-function escapeHtml(s) {
-  if (s === null || s === undefined) return "";
-  if (typeof s !== "string") s = String(s);
-  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-}
-
-// Backticks in server-written copy were reaching the page as literal characters,
-// so advice read "a `test` script in package.json". Escape FIRST, then promote
-// the spans: doing it the other way round would let a backticked fragment carry
-// markup through the escape.
-function inlineCode(text) {
-  return escapeHtml(text).replace(/`([^`]+)`/g, "<code>$1</code>");
-}
-
 function renderEvent(e) {
   // HQ: the crew's events arrive on the same socket but carry no project id. Translate
   // them with the repair screen's own narrator so the live feed tells the sprint's story.
@@ -1119,25 +1084,6 @@ function connectWs() {
   ws.onclose = () => setTimeout(connectWs, 2000);
 }
 
-// --- push notifications -----------------------------------------------------
-function notify(title, body) {
-  try {
-    if (window.Notification && Notification.permission === "granted")
-      new Notification(title, { body, icon: "" });
-  } catch { /* not supported */ }
-}
-function notifyBoss(e) {
-  let q = "";
-  try { q = JSON.parse(e.payload).question || ""; } catch { /* */ }
-  notify("👔 Manager needs your decision", q.slice(0, 140));
-  // also flash the tab title until focused
-  const orig = document.title.replace(/^🔔 Needs you — /, "");
-  document.title = "🔔 Needs you — " + orig;
-  window.addEventListener("focus", function once() {
-    document.title = orig; window.removeEventListener("focus", once);
-  });
-}
-
 // --- boss controls ----------------------------------------------------------
 let currentQuestionId = null;
 
@@ -1241,8 +1187,6 @@ const STATUS_WORD = {
   planned: "waiting", queued: "starting", running: "working",
   pushed: "submitted", review: "in review", done: "done", failed: "needs attention",
 };
-
-function trim(s, n) { s = (s || "").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
 /** The delivery cycles, current one open and finished ones archived.
  *
@@ -1358,16 +1302,6 @@ function assemblingHtml(p, roster, thought) {
 // you want to pay for, not which of a dozen ids you prefer.
 let lastTeam = [];
 
-// A model the picker does not know about is still the model that is running, and
-// showing "server default" for it was a lie the card told confidently. Unknown
-// ids are displayed as themselves and offered as an option, so changing something
-// else never silently reassigns the manager.
-function modelName(id) {
-  if (!id) return "server default";
-  const known = MANAGER_MODELS.find((m) => m.id === id);
-  return known ? known.label.split(" — ")[0] : id;
-}
-
 function managerOptions(current) {
   const opts = MANAGER_MODELS.slice();
   if (current && !opts.some((m) => m.id === current)) {
@@ -1376,13 +1310,6 @@ function managerOptions(current) {
   return opts.map((m) => `<option value="${escapeHtml(m.id)}"${
     m.id === (current || "") ? " selected" : ""}>${escapeHtml(m.label)}</option>`).join("");
 }
-
-const MANAGER_MODELS = [
-  { id: "", label: "server default" },
-  { id: "claude-haiku-4-5", label: "Haiku — fastest, cheapest" },
-  { id: "claude-sonnet-5", label: "Sonnet — balanced" },
-  { id: "claude-opus-4-8", label: "Opus — most careful" },
-];
 
 // Everyone who has nothing on right now.
 //
@@ -1405,51 +1332,6 @@ function benchHtml(tasks) {
         <b>${escapeHtml(a.name)}</b> ${escapeHtml(a.role)}${
           a.tasks_done ? ` · ${a.tasks_done} done` : ""}</span>`).join("")}</div>
   </div>`;
-}
-
-// ---- the command tab's building blocks, shared with the Devteam screen ----------------
-// One crew of agents will drive projects AND the platform's own repair after the handoff,
-// so both screens must speak one visual language: the same attention card, the same ask
-// card, the same agent cards in the same lanes. These build the HTML only — each screen
-// wires its own buttons.
-function uiAttnCard(label, text, buttonsHtml) {
-  return `<div class="attn-card">
-      <div class="bl">${label}</div>
-      <div class="qtext">${escapeHtml(text)}</div>
-      ${buttonsHtml ? `<div class="qbtns">${buttonsHtml}</div>` : ""}
-    </div>`;
-}
-
-function uiAskCard(o) {
-  return `<div class="ask-card ${o.cls || "decision"}">
-      <div class="bl">${o.icon || "👔"} ${o.head}</div>
-      <div class="qtext">${escapeHtml(o.text)}</div>
-      ${o.note ? `<div class="qnote">${o.note}</div>` : ""}
-      ${o.buttonsHtml ? `<div class="qbtns">${o.buttonsHtml}</div>` : ""}
-      ${o.replyHtml ? `<div class="qreply">${o.replyHtml}</div>` : ""}
-    </div>`;
-}
-
-function uiAgentCard(o) {
-  return `<div class="agent ${o.cls || ""}"${o.data ? ` data-task="${o.data}"` : ""}>
-      <div class="top">
-        <span class="role" title="${escapeHtml(o.roleTitle || "")}">${o.roleHtml}</span>
-        <span class="st">${o.statusWord}</span>
-      </div>
-      <div class="title">${escapeHtml(o.title)}</div>
-      <div class="doing">${escapeHtml(o.doing)}</div>
-      ${o.extraHtml || ""}
-      <div class="deps">${o.metaHtml || ""}</div>
-    </div>`;
-}
-
-function uiLane(label, count, note, cardsHtml) {
-  return `<div class="group">
-      <div class="group-head"><span class="glabel">${label}</span>
-        <span class="gcount">${count}</span>
-        ${note ? `<span class="gnote">${note}</span>` : ""}</div>
-      <div class="agents">${cardsHtml}</div>
-    </div>`;
 }
 
 function renderCommand(p) {
@@ -1865,198 +1747,6 @@ async function loadProjectFiles() {
   box.querySelectorAll(".fopen").forEach((b) =>
     b.addEventListener("click", () => openProjectFile(b.dataset.path)));
 }
-
-// >>> markdown renderer -------------------------------------------------------
-// Hand-rolled, because the pod has neither npm nor guaranteed egress, and because
-// every byte below was written by an AI agent working in a repository nobody on
-// this side controls. Treat the document as hostile input aimed at the operator's
-// browser, not as content: it is the one place where a repo the team cloned gets
-// to put characters in front of a session that can start deployments.
-//
-// One rule keeps this honest, and it is mechanical rather than clever: markup is
-// only ever produced by the code in this section. Every fragment of the document
-// passes through escapeHtml before it is concatenated, and every URL passes
-// through mdSafeUrl before it becomes an href. There is no path where document
-// text reaches innerHTML unescaped, so raw <script>, <img onerror=…>, stray
-// quotes closing an attribute and so on are all the same, already-solved case.
-
-const MD_MAX_DEPTH = 8;   // "> > > > …" nested 20k deep is a stack overflow otherwise
-
-// An allowlist, not a "block javascript:" test, because the blocklist version
-// keeps losing: vbscript:, data:text/html;base64,…, and the endless spellings a
-// browser forgives while a regex does not. Anything not plainly a document link
-// is refused.
-const MD_SAFE_SCHEME = /^(?:https?:|mailto:)/i;
-
-function mdSafeUrl(raw) {
-  // Browsers skip leading and embedded whitespace and C0 controls while parsing a
-  // scheme, so "java\nscript:alert(1)" runs. Strip those before deciding, never
-  // after — deciding on the pretty version and emitting the raw one is the bug.
-  const u = String(raw == null ? "" : raw).replace(/[\u0000-\u0020\u007f]/g, "");
-  if (MD_SAFE_SCHEME.test(u)) return u;
-  if (/^\/\//.test(u)) return "";              // protocol-relative: inherits ours, goes anywhere
-  if (/^[^/?#]*:/.test(u)) return "";          // a colon before the first slash is a scheme we did not allow
-  return u;                                    // fragment, absolute or repo-relative path
-}
-
-function mdLink(url, label) {
-  const href = mdSafeUrl(url);
-  // A refused link is shown as refused rather than quietly turned into text: the
-  // operator is reviewing agent output, and "this document tried to link to
-  // javascript:" is exactly the thing they want to notice.
-  if (!href) return `<span class="md-blocked" title="link refused">${label} [blocked link]</span>`;
-  // noopener because target=_blank hands window.opener to whatever we just opened;
-  // nofollow because we are rendering somebody else's repo.
-  return `<a href="${href}" target="_blank" rel="noopener noreferrer nofollow">${label}</a>`;
-}
-
-function mdInline(s) {
-  // Code spans come out first and are never looked at again: ** inside backticks
-  // is a literal, and a span that has already been escaped cannot later be talked
-  // into being markup by a rule that runs after it.
-  return String(s == null ? "" : s).split(/(`+[^`]*?`+)/).map((part, i) => {
-    if (i % 2) return `<code>${escapeHtml(part.replace(/^`+|`+$/g, ""))}</code>`;
-    let t = escapeHtml(part);
-    // Images are rendered as links on purpose. Fetching a remote asset named by an
-    // untrusted document leaks the operator's address to whoever wrote the repo and
-    // makes the dashboard issue requests on their behalf; the caption and the URL
-    // carry the same information without doing that.
-    t = t.replace(/!\[([^\]]*)\]\(\s*([^()\s]*)[^)]*\)/g,
-                  (m, alt, url) => mdLink(url, `🖼 ${alt || url}`));
-    // The URL stops at the first space or bracket, so a title string — the classic
-    // place to smuggle attributes — is dropped rather than reproduced.
-    t = t.replace(/\[([^\]]*)\]\(\s*([^()\s]*)[^)]*\)/g,
-                  (m, txt, url) => mdLink(url, txt || url));
-    t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    t = t.replace(/__([^_]+)__/g, "<strong>$1</strong>");
-    t = t.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-    t = t.replace(/(^|[^\w`])_([^_\n]+)_(?![\w])/g, "$1<em>$2</em>");
-    t = t.replace(/~~([^~]+)~~/g, "<del>$1</del>");
-    return t;
-  }).join("");
-}
-
-// Info strings that are not a bare word become no class at all: the fence language
-// is attacker-chosen and would otherwise close the class attribute and open an
-// event handler.
-// Null-prototype because the key is the document's to choose: a plain object would
-// answer ```constructor and ```__proto__ with something truthy from the prototype.
-const MD_DIAGRAM = Object.assign(Object.create(null),
-  { mermaid: "mermaid", plantuml: "PlantUML", dot: "Graphviz", graphviz: "Graphviz" });
-
-function mdCodeBlock(lang, body) {
-  const tag = /^[\w+-]{1,20}$/.test(lang) ? lang.toLowerCase() : "";
-  const pre = `<pre class="md-code${tag ? " lang-" + tag : ""}"><code>${escapeHtml(body)}</code></pre>`;
-  const diagram = MD_DIAGRAM[tag];
-  if (!diagram) return pre;
-  // No diagram library is shipped and none is coming — see the top of this section.
-  // Drawing nothing while a heading promises a diagram reads as a broken page; the
-  // source with a label says what actually happened.
-  return `<figure class="md-figure"><figcaption>${escapeHtml(diagram)} diagram — `
-       + `source shown, not drawn</figcaption>${pre}</figure>`;
-}
-
-function mdCells(row) {
-  return row.replace(/^\s*\|/, "").replace(/\|\s*$/, "").split("|").map((c) => c.trim());
-}
-
-function renderMarkdown(src, depth) {
-  depth = depth || 0;
-  const text = String(src == null ? "" : src).replace(/\r\n?/g, "\n");
-  // Past the nesting ceiling we stop parsing and show what is left verbatim. Wrong
-  // shape beats a hung tab.
-  if (depth > MD_MAX_DEPTH) return `<pre class="md-code"><code>${escapeHtml(text)}</code></pre>`;
-  const lines = text.split("\n");
-  const out = [];
-  let i = 0;
-
-  while (i < lines.length) {
-    const line = lines[i];
-
-    const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
-    if (fence) {
-      // A ~~~ block ends at ~~~ only: a ``` line inside it is content, which is how
-      // a document showing markdown examples stays readable instead of exploding.
-      const close = fence[1][0] === "~" ? /^ {0,3}~{3,}\s*$/ : /^ {0,3}`{3,}\s*$/;
-      const body = [];
-      i++;
-      while (i < lines.length && !close.test(lines[i])) body.push(lines[i++]);
-      i++;   // step over the closing fence; an unterminated block simply runs to EOF
-      out.push(mdCodeBlock(fence[2].trim().split(/\s+/)[0] || "", body.join("\n")));
-      continue;
-    }
-
-    if (!line.trim()) { i++; continue; }
-
-    const h = /^ {0,3}(#{1,6})\s+(.*)$/.exec(line);
-    if (h) {
-      const n = h[1].length;
-      out.push(`<h${n}>${mdInline(h[2].replace(/\s+#+\s*$/, ""))}</h${n}>`);
-      i++; continue;
-    }
-
-    if (/^ {0,3}([-*_])\s*(?:\1\s*){2,}$/.test(line)) { out.push("<hr>"); i++; continue; }
-
-    if (/^ {0,3}>/.test(line)) {
-      const quoted = [];
-      while (i < lines.length && (/^ {0,3}>/.test(lines[i]) || (quoted.length && lines[i].trim())))
-        quoted.push(lines[i++].replace(/^ {0,3}> ?/, ""));
-      out.push(`<blockquote>${renderMarkdown(quoted.join("\n"), depth + 1)}</blockquote>`);
-      continue;
-    }
-
-    // A table is only a table if the row under the header is the separator; a line
-    // of prose containing a pipe is prose.
-    if (line.includes("|") && i + 1 < lines.length
-        && /^[\s|:-]+$/.test(lines[i + 1]) && /-/.test(lines[i + 1]) && lines[i + 1].includes("|")) {
-      const head = mdCells(line);
-      const align = mdCells(lines[i + 1]).map((c) =>
-        /^:-+:$/.test(c) ? "center" : /-+:$/.test(c) ? "right" : "");
-      i += 2;
-      const rows = [];
-      while (i < lines.length && lines[i].includes("|") && lines[i].trim()) rows.push(mdCells(lines[i++]));
-      const cell = (t, j, tag) => {
-        const a = align[j] ? ` class="md-${align[j]}"` : "";
-        return `<${tag}${a}>${mdInline(t)}</${tag}>`;
-      };
-      out.push(`<table class="md-table"><thead><tr>${head.map((c, j) => cell(c, j, "th")).join("")}`
-        + `</tr></thead><tbody>${rows.map((r) =>
-            `<tr>${r.map((c, j) => cell(c, j, "td")).join("")}</tr>`).join("")}</tbody></table>`);
-      continue;
-    }
-
-    const item = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/.exec(line);
-    if (item) {
-      const indent = item[1].length;
-      const ordered = /\d/.test(item[2]);
-      const items = [];
-      while (i < lines.length) {
-        const m = /^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$/.exec(lines[i]);
-        if (m && m[1].length <= indent && /\d/.test(m[2]) === ordered) {
-          items.push([m[3]]); i++;
-        } else if (items.length && lines[i].trim() && /^\s{2,}/.test(lines[i])) {
-          items[items.length - 1].push(lines[i].slice(indent + 2)); i++;   // nested block, dedented
-        } else break;
-      }
-      const body = items.map((parts) => parts.length === 1
-        ? mdInline(parts[0])
-        : renderMarkdown(parts.join("\n"), depth + 1));
-      out.push(`<${ordered ? "ol" : "ul"}>${body.map((b) => `<li>${b}</li>`).join("")}</${ordered ? "ol" : "ul"}>`);
-      continue;
-    }
-
-    const para = [];
-    while (i < lines.length && lines[i].trim() && !/^ {0,3}(#{1,6}\s|>|```|~~~)/.test(lines[i])
-           && !/^(\s*)([-*+]|\d{1,9}[.)])\s+/.test(lines[i])) para.push(lines[i++]);
-    // A paragraph reflows: hard-wrapped source must not become a wall of forced
-    // breaks. Only markdown's own line break — two trailing spaces — makes a <br>.
-    out.push("<p>" + para.map((l, n) =>
-      (n ? (/ {2,}$/.test(para[n - 1]) ? "<br>\n" : "\n") : "") + mdInline(l.replace(/\s+$/, ""))
-    ).join("") + "</p>");
-  }
-  return out.join("\n");
-}
-// <<< markdown renderer -------------------------------------------------------
 
 // Rendered as prose, as code, or as markdown — decided by extension, because the
 // alternative (sniffing the content) means a .py file whose docstring starts with

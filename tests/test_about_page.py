@@ -103,9 +103,10 @@ def _handbook() -> str:
 
 
 def test_the_endpoint_count_is_the_real_one():
-    routes = (Path(__file__).resolve().parent.parent
-              / "conductor" / "app" / "routes.py").read_text()
-    actual = routes.count("@router.")
+    # routes.py became the app/routes/ package; the endpoints it counted are now
+    # spread across the domain modules, so the count sums over every file in it.
+    pkg = Path(__file__).resolve().parent.parent / "conductor" / "app" / "routes"
+    actual = sum(f.read_text().count("@router.") for f in sorted(pkg.glob("*.py")))
     assert f"There are {actual}" in _handbook() or f"are {actual};" in _handbook(), \
         f"the handbook does not say {actual} endpoints"
 
@@ -113,8 +114,8 @@ def test_the_endpoint_count_is_the_real_one():
 def test_the_internal_door_really_has_three_requests_behind_it():
     """The page tells a reader that a teammate can do exactly three things. If a
     fourth is added, that sentence becomes a false security claim."""
-    routes = (Path(__file__).resolve().parent.parent
-              / "conductor" / "app" / "routes.py").read_text()
+    pkg = Path(__file__).resolve().parent.parent / "conductor" / "app" / "routes"
+    routes = "\n".join(f.read_text() for f in sorted(pkg.glob("*.py")))
     internal = routes.count('@router.get("/internal/') + routes.count('@router.post("/internal/')
     assert internal == 4, (
         f"{internal} internal endpoints exist; the About page and handbook both say "

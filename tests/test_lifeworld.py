@@ -292,10 +292,11 @@ def test_a_whole_world_round_trips_through_json():
 # --------------------------------------------------------------------------
 
 def test_the_engine_imports_no_provider_except_the_store_seam():
-    """The only file that may reach for providers is store.py, and only for the opt-in
-    live path. Every other module is provider-free by construction."""
+    """The only files that may reach for providers are ports.py (the substrate's one
+    door to the platform) and store.py, whose opt-in live path pulls the door open.
+    Every other module is provider-free by construction."""
     for f in LW.glob("*.py"):
-        if f.name in ("store.py", "__init__.py"):
+        if f.name in ("store.py", "ports.py", "__init__.py"):
             continue
         src = f.read_text()
         assert "import providers" not in src, f"{f.name} imports providers"

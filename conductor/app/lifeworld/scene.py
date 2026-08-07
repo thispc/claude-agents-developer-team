@@ -16,6 +16,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from . import ports
 from .human import Human
 from .types import Signal, Packet
 
@@ -43,8 +44,7 @@ ROOM_TYPES: dict[str, dict] = {
 def _activity_of(world_id: int, human_id: int) -> dict:
     """One row from the agent register, trimmed to what a canvas needs."""
     try:
-        from ..agents import get, key_for
-        a = get(key_for("lw", world_id, human_id))
+        a = ports.agent_get(ports.agent_key_for("lw", world_id, human_id))
         return {"state": a["state"], "busy": a["busy"], "what": a.get("what", ""),
                 "for_s": a.get("for_s", 0)}
     except Exception:
@@ -377,7 +377,7 @@ class Scene:
         own free stance — never dropped silently — and recorded, because a mediator quietly
         rewriting people is exactly the failure this is here to make visible.
         """
-        from ..knowledge import _tokens
+        _tokens = ports.knowledge_tokens
         says = [r for r in self.log if r.get("kind") == "say" and r.get("frm") is not None][-24:]
         if not says:
             return lines

@@ -100,6 +100,9 @@ def _useful(t: str) -> bool:
 # --- the local embedder: free, offline, deterministic ------------------------
 
 def _tokens(text: str) -> list[str]:
+    # Private by name, but the lifeworld substrate consumes this through its ports
+    # module (lifeworld/ports.knowledge_tokens) so leak-checks and recall agree on
+    # what a word is — do not rename without updating that door.
     return [t for t in _WORD.findall((text or "").lower())[:300] if _useful(t)][:200]
 
 

@@ -189,8 +189,9 @@ def test_an_ordinary_question_still_defaults_to_a_decision(fresh_db):
 
 def test_the_route_passes_the_topic_to_the_dashboard(fresh_db):
     from pathlib import Path
+    # get_pending_question lives in app/routes/boss.py since routes.py became a package
     src = (Path(__file__).resolve().parent.parent
-           / "conductor" / "app" / "routes.py").read_text()
+           / "conductor" / "app" / "routes" / "boss.py").read_text()
     assert '"topic": q.get("topic", "decision")' in src
     assert 'topic: q.topic || "decision"' in dashboard_js()
 

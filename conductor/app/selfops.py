@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import bus, config, db
+from . import bus, config, db, shell
 
 # Where this instance is running from — the tree a redeploy updates.
 LIVE_TREE = Path(__file__).resolve().parent.parent.parent
@@ -35,8 +35,8 @@ SELF_PROJECT_NAME = "devteam (this platform)"
 
 
 def _sh(*cmd: str, cwd: Path | None = None, timeout: int = 120) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=str(cwd or LIVE_TREE), capture_output=True,
-                          text=True, timeout=timeout)
+    # LIVE_TREE is resolved at call time, not bound here — tests repoint it.
+    return shell.sh(*cmd, cwd=cwd or LIVE_TREE, timeout=timeout)
 
 
 def _state() -> dict[str, Any]:

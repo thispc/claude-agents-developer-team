@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from . import db, repair
 from . import repair_builder as rb
-from .routes import _root
+from .guards import _root
 
 router = APIRouter(prefix="/api/repair", tags=["repair"])
 

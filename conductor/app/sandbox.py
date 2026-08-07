@@ -27,9 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-import httpx
-
-from . import config, db, selfops
+from . import config, db, selfops, shell
 
 SANDBOX_DIR = selfops.LIVE_TREE / ".sandbox"
 TREE = SANDBOX_DIR / "tree"
@@ -42,8 +40,7 @@ BOOT_TIMEOUT = 60
 
 
 def _sh(*cmd: str, cwd: Path | None = None, timeout: int = 120):
-    return subprocess.run(cmd, cwd=str(cwd or selfops.LIVE_TREE),
-                          capture_output=True, text=True, timeout=timeout)
+    return shell.sh(*cmd, cwd=cwd or selfops.LIVE_TREE, timeout=timeout)
 
 
 # Never copied into a sandbox: build output and dependency trees (huge, and
@@ -182,18 +179,10 @@ def _child_env(port: int) -> dict[str, str]:
 
 
 def _wait_healthy(port: int, proc: subprocess.Popen) -> tuple[bool, str]:
-    deadline = time.time() + BOOT_TIMEOUT
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            return False, f"the candidate exited immediately (code {proc.returncode})"
-        try:
-            r = httpx.get(f"http://127.0.0.1:{port}/api/health", timeout=3)
-            if r.status_code == 200:
-                return True, "healthy"
-        except Exception:
-            pass
-        time.sleep(1)
-    return False, f"no healthy response within {BOOT_TIMEOUT}s"
+    # A 200 from /api/health, nothing weaker: a candidate build of this platform
+    # must prove it works, not merely that something is listening on the port.
+    return shell.wait_healthy(port, proc, path="/api/health", timeout=BOOT_TIMEOUT,
+                              ok_status=200, subject="the candidate")
 
 
 def _safe_ref(ref: str) -> bool:

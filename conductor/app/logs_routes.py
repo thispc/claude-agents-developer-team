@@ -1,5 +1,5 @@
 """HTTP surface for the log pipeline — its own router, like the Lifeworld's and self-repair's,
-so the handbook's endpoint-count gate on routes.py keeps meaning what it says.
+so the handbook's endpoint-count gate on the routes package keeps meaning what it says.
 
 Root-gated in full. Logs are the most revealing surface a system has: they name file paths,
 model errors, branch names and the shape of the operator's own work, and none of that is a
@@ -12,7 +12,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from . import agents, knowledge, logs, monitor
-from .routes import _root
+from .guards import _root
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
 

@@ -1,102 +1,7 @@
-// canvas1.js — Figures (generated avatars/glyphs, shared with canvas v2 via window.*) + the Konva v1 canvas engine (fallback when CANVAS_V2=0), the create flow, context menus, speech bubbles, beats, and the person drawer.
+// canvas1.js — The Konva v1 canvas engine (fallback when CANVAS_V2=0), the create flow, context menus, speech bubbles, beats, and the person drawer. The figures (generated avatars/glyphs, shared with canvas v2 via window.*) live in js/lib.js.
 // Split from the old monolithic app.js (order preserved; classic scripts share one global scope; index.html defines load order).
 
-// ============================================================================
-// Figures — generated, not emoji. People wear deterministic "beam" avatars (a
-// face drawn from a hash of who they are, so everyone looks unique); objects wear
-// crisp vector glyphs. Both are pure SVG data-URIs: identical in the HTML palette
-// and on the Konva canvas, self-hosted, no assets, no external fetch. The avatar
-// maths is adapted from the MIT "boring-avatars" beam generator.
-// ============================================================================
-const LW_AV_PALETTES = [
-  ["#2E6E5B", "#8FC0A9", "#F6D6A8", "#E8896B", "#C05746"],
-  ["#3A6EA5", "#9DC3E6", "#F4E7C3", "#E0A96D", "#B5654B"],
-  ["#5B4B8A", "#B7A6E0", "#F3D2C1", "#EFA48B", "#8A5A83"],
-  ["#4C7A34", "#A7C957", "#F2E8CF", "#E9B44C", "#BC4B51"],
-  ["#1D6A70", "#63C7B2", "#F6E7B4", "#F2A15E", "#D46A6A"],
-];
-function lwHash(name) {
-  let h = 0; name = String(name || "?");
-  for (let i = 0; i < name.length; i++) { h = (h << 5) - h + name.charCodeAt(i); h |= 0; }
-  return Math.abs(h);
-}
-function lwAvDigit(n, k) { return Math.floor((n / Math.pow(10, k)) % 10); }
-function lwAvBool(n, k) { return (lwAvDigit(n, k) % 2) === 0; }
-function lwAvUnit(n, range, index) {
-  const v = n % range;
-  return (index && lwAvDigit(n, index) % 2 === 0) ? -v : v;
-}
-function lwAvContrast(hex) {
-  const c = hex.replace("#", "");
-  const r = parseInt(c.slice(0, 2), 16), g = parseInt(c.slice(2, 4), 16), b = parseInt(c.slice(4, 6), 16);
-  return (r * 0.299 + g * 0.587 + b * 0.114) > 150 ? "#22303a" : "#ffffff";
-}
-// The face a seed produces, and its SVG. S=36 canvas, masked to a circle.
-function lwAvatarSvg(seed, size) {
-  const n = lwHash(seed), S = 36, pal = LW_AV_PALETTES[n % LW_AV_PALETTES.length];
-  size = size || 40;
-  const wrap = pal[n % pal.length], bg = pal[(n + 13) % pal.length], face = lwAvContrast(wrap);
-  const preX = lwAvUnit(n, 10, 1), preY = lwAvUnit(n, 10, 2);
-  const wtx = preX < 5 ? preX + S / 9 : preX, wty = preY < 5 ? preY + S / 9 : preY;
-  const wrot = lwAvUnit(n, 360), wscale = 1 + lwAvUnit(n, S / 12) / 10;
-  const mouthOpen = lwAvBool(n, 2), eye = lwAvUnit(n, 5), mouth = lwAvUnit(n, 3);
-  const frot = lwAvUnit(n, 10, 3);
-  const ftx = wtx > S / 6 ? wtx / 2 : lwAvUnit(n, 8, 1), fty = wty > S / 6 ? wty / 2 : lwAvUnit(n, 7, 2);
-  const mid = S / 2, mid2 = "m" + (n % 1e6);
-  return `<svg viewBox="0 0 ${S} ${S}" width="${size}" height="${size}" fill="none" xmlns="http://www.w3.org/2000/svg">`
-    + `<mask id="${mid2}" maskUnits="userSpaceOnUse" x="0" y="0" width="${S}" height="${S}">`
-    + `<rect width="${S}" height="${S}" rx="${S * 2}" fill="#fff"/></mask>`
-    + `<g mask="url(#${mid2})"><rect width="${S}" height="${S}" fill="${bg}"/>`
-    + `<rect x="0" y="0" width="${S}" height="${S}" fill="${wrap}" `
-    + `transform="translate(${wtx} ${wty}) rotate(${wrot} ${mid} ${mid}) scale(${wscale})"/>`
-    + `<g transform="translate(${ftx} ${fty}) rotate(${frot} ${mid} ${mid})">`
-    + (mouthOpen
-      ? `<path d="M15 ${19 + mouth}c2 1 4 1 6 0" stroke="${face}" fill="none" stroke-linecap="round"/>`
-      : `<path d="M13,${19 + mouth} a1,0.75 0 0,0 10,0" fill="${face}"/>`)
-    + `<rect x="${14 - eye}" y="14" width="1.5" height="2" rx="1" fill="${face}"/>`
-    + `<rect x="${20 + eye}" y="14" width="1.5" height="2" rx="1" fill="${face}"/>`
-    + `</g></g></svg>`;
-}
-function lwAvatarColor(seed) { const n = lwHash(seed); return LW_AV_PALETTES[n % LW_AV_PALETTES.length][n % 5]; }
-function lwAvatarBg(seed) { const n = lwHash(seed); return LW_AV_PALETTES[n % LW_AV_PALETTES.length][(n + 13) % 5]; }
-function lwSvgUri(svg) { return "data:image/svg+xml," + encodeURIComponent(svg); }
-
-// The seed a token's face is drawn from: variant marker + who they are, so the
-// choice in the popover survives, but two people never collide.
-function lwAvatarSeed(a) {
-  const f = String((a && a.figure) || ""), id = (a && (a.name || ("soul#" + a.id))) || "soul";
-  if (f.startsWith("avm:")) return f.slice(4) + "|" + id;
-  if (f.startsWith("av:")) return f.slice(3) + "|" + id;
-  return id;
-}
-
-// ---- object vector glyphs (line icons; mono handled inline as a monogram) ----
-function lwObjGlyphSvg(key, size, color) {
-  size = size || 40; color = color || "#3a4a44";
-  const body = { stroke: color, "stroke-width": 1.7, fill: "none", "stroke-linejoin": "round", "stroke-linecap": "round" };
-  const attr = Object.entries(body).map(([k, v]) => `${k}="${v}"`).join(" ");
-  const paths = {
-    cards: `<rect x="4.5" y="7" width="10" height="13" rx="2" ${attr}/><rect x="9.5" y="4" width="10" height="13" rx="2" ${attr}/>`,
-    doc: `<path d="M7 3h7l4 4v14H7z" ${attr}/><path d="M14 3v4h4" ${attr}/><path d="M9.5 12h6M9.5 15.5h6" ${attr}/>`,
-    star: `<path d="M12 3.2l2.5 5.6 6.1.6-4.6 4 1.4 6-5.4-3.1-5.4 3.1 1.4-6-4.6-4 6.1-.6z" ${attr}/>`,
-    gem: `<path d="M6.5 4h11l3 5-8.5 11L3.5 9z" ${attr}/><path d="M3.5 9h17M9 4l-2 5 5 11 5-11-2-5" ${attr}/>`,
-    ring: `<circle cx="12" cy="12" r="8" ${attr}/><circle cx="12" cy="12" r="3.4" ${attr}/>`,
-  };
-  const inner = paths[key] || paths.ring;
-  return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">${inner}</svg>`;
-}
-
 // ---- dock: tools with vector icons + a keycap ------------------------------
-function lwToolIco(id) {
-  const a = `stroke="currentColor" stroke-width="1.8" fill="none" stroke-linejoin="round" stroke-linecap="round"`;
-  const g = {
-    select: `<path d="M5 3l6.5 15 2-6 6-2z" ${a}/>`,
-    agent: `<circle cx="12" cy="8.2" r="3.6" ${a}/><path d="M5.5 20c0-3.6 2.9-6.2 6.5-6.2s6.5 2.6 6.5 6.2" ${a}/>`,
-    artifact: `<rect x="5" y="5" width="14" height="14" rx="3.2" ${a}/><path d="M9.5 12h5" ${a}/>`,
-    shape: `<circle cx="12" cy="12" r="4.4" ${a}/><circle cx="12" cy="4.4" r="1.7" fill="currentColor" stroke="none"/><circle cx="18.8" cy="15.8" r="1.7" fill="currentColor" stroke="none"/><circle cx="5.2" cy="15.8" r="1.7" fill="currentColor" stroke="none"/>`,
-  };
-  return `<svg viewBox="0 0 24 24" width="20" height="20">${g[id] || g.select}</svg>`;
-}
 function lwDockHtml() {
   const tools = LW_TOOLS.map((t) =>
     `<button class="lw-tool${t.id === lwTool ? " on" : ""}" data-tool="${escapeHtml(t.id)}" title="${escapeHtml(t.label)} (${escapeHtml(t.key)})">
@@ -687,10 +592,6 @@ function lwDrawGrid() {
 }
 
 // ---- token builders (Konva groups; hitbox = the body shape) --------------
-function lwHue(name) {
-  let h = 0; for (const c of String(name || "?")) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return h % 360;
-}
 function lwIsManager(a) {
   return !!(a && (a.manager || a.role === "manager" || a.kind === "manager"
     || String(a.figure || "").startsWith("avm:") || a.figure === "👔"));

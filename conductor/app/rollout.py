@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import config
+from . import config, shell
 
 BUILD_TIMEOUT = int(config._env("IMAGE_BUILD_TIMEOUT", "3600"))
 CANARY_TIMEOUT = int(config._env("ROLLOUT_CANARY_TIMEOUT", "150"))
@@ -48,19 +48,10 @@ TERMINAL = ("ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff",
 
 def sh(*cmd: str, cwd: Path | None = None, stdin: str | None = None,
        timeout: int = 900) -> subprocess.CompletedProcess:
-    """Run a tool, treating "that tool isn't installed" as a failed run.
-
-    subprocess.run RAISES FileNotFoundError for a missing binary instead of
-    returning non-zero, and the conductor's own container has neither docker nor
-    kubectl — deliberately, so it cannot build or run arbitrary images as itself.
-    Every deployment call therefore became a 500 in the cluster: the page reported
-    that the server was broken when the honest answer is "that tool is not here".
-    """
-    try:
-        return subprocess.run(cmd, cwd=str(cwd) if cwd else None, input=stdin,
-                              capture_output=True, text=True, timeout=timeout)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        return subprocess.CompletedProcess(cmd, 127, "", f"{cmd[0]}: {e}")
+    """shell.sh with a higher ceiling: image builds and kubectl waits are
+    legitimately slow. The error contract — a missing binary is a failed run,
+    never an exception — was learned here and now lives in shell.sh."""
+    return shell.sh(*cmd, cwd=cwd, stdin=stdin, timeout=timeout)
 
 
 def safe_label(name: str) -> str:

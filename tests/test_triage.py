@@ -517,8 +517,9 @@ def test_staging_verify_refuses_to_vouch_for_a_build_staging_is_not_running():
 @pytest.mark.hostonly
 def test_an_instance_can_run_its_own_suite():
     from pathlib import Path
+    # self_verify lives in app/routes/selfhost.py since routes.py became a package
     src = (Path(__file__).resolve().parent.parent
-           / "conductor" / "app" / "routes.py").read_text()
+           / "conductor" / "app" / "routes" / "selfhost.py").read_text()
     assert '@router.post("/internal/self-verify")' in src
     body = src.split('def self_verify(')[1].split("\n@router")[0]
     assert "r.returncode == 0" in body, "still judging the suite by its prose"
@@ -532,7 +533,8 @@ def test_the_gate_judges_staging_by_an_exit_code():
     from pathlib import Path
     root = Path(__file__).resolve().parent.parent / "conductor" / "app"
     cloud_src = (root / "cloud.py").read_text()
-    routes = (root / "routes.py").read_text()
+    # self_verify's exit-code judgement lives in app/routes/selfhost.py now
+    routes = (root / "routes" / "selfhost.py").read_text()
     body = cloud_src.split("def staging_verify(")[1].split("\ndef ")[0]
     assert '" failed" not in' not in body
     assert 'd.get("ok")' in body

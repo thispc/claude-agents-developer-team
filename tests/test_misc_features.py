@@ -256,5 +256,6 @@ def test_code_is_not_reflowed_but_prose_is():
 def test_a_project_on_hold_can_be_restarted():
     """A project on hold whose manager died is waiting for an answer nothing is
     listening for — not restartable and not advanceable, i.e. stuck forever."""
-    src = (Path(config.__file__).resolve().parents[1] / "app" / "routes.py").read_text()
+    # restart_project moved to app/routes/projects.py when routes.py became a package
+    src = (Path(config.__file__).resolve().parents[1] / "app" / "routes" / "projects.py").read_text()
     assert '("failed", "review", "cancelled", "hold")' in src

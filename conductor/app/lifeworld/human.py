@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import ports
 from .entity import Being, register
 from .types import Packet, Signal
 from .psyche import Psyche
@@ -147,7 +148,7 @@ class Human(Being):
         never raises: an agent that cannot think because a lookup failed is worse than one
         that thinks without help."""
         try:
-            from .. import knowledge
+            knowledge = ports.knowledge()
             owner = world.agent_key(self) if hasattr(world, "agent_key") else ""
             if not owner:
                 return None
@@ -225,14 +226,14 @@ class Human(Being):
     @staticmethod
     def _session_params():
         try:                                    # runtime-tunable first (a spend door like any other)…
-            from .. import tuning
+            tuning = ports.tuning()
             return (max(1, int(tuning.get("agent_session_cap"))),
                     max(1, int(tuning.get("agent_session_window_s"))))
         except Exception:
             pass
         try:                                    # …env-only config next, hard defaults last
-            from ..config import AGENT_SESSION_CAP, AGENT_SESSION_WINDOW_S
-            return max(1, AGENT_SESSION_CAP), max(1, AGENT_SESSION_WINDOW_S)
+            cap, window = ports.session_caps()
+            return max(1, cap), max(1, window)
         except Exception:
             return 30, 5 * 3600
 

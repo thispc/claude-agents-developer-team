@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from . import ports
 from .config import Flags
 from .entity import Entity
 from .human import Human
@@ -138,7 +139,7 @@ class World:
         if self._complete is None:
             return None
         import json
-        from .. import agents as reg
+        reg = ports.agents()
         reg.note(self.agent_key(human), "speaking", f"stating its position on {topic[:60]}",
                  name=human.name, where=f"world {self.id}", kind="agent")
         p = _persona(human)
@@ -252,7 +253,7 @@ class World:
         if self._complete is None:
             return None
         import json
-        from .. import agents as reg
+        reg = ports.agents()
         p = _persona(human)
         sys = (f"You are {human.name}. Traits: {json.dumps(p['traits'])}; you most want "
                f"{p['wants']}. {human.narrative or ''}\n"
@@ -345,8 +346,7 @@ class World:
             return None
 
     def agent_key(self, human: Human) -> str:
-        from ..agents import key_for
-        return key_for("lw", self.id, human.id)
+        return ports.agent_key_for("lw", self.id, human.id)
 
     async def appraise(self, human: Human, signal: Signal, ctx: dict, free: bool = False) -> Packet:
         from . import appraise as appr
@@ -356,7 +356,7 @@ class World:
             # The one place a lifeworld agent genuinely THINKS, so the one place worth telling
             # the register about. A context manager because a call that raises must not leave
             # the agent claiming to be mid-thought.
-            from .. import agents as reg
+            reg = ports.agents()
             with reg.working(self.agent_key(human), "thinking",
                              str(signal.text() or "")[:120], name=human.name,
                              where=f"world {self.id}", kind="agent"):

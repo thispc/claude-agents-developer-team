@@ -853,6 +853,10 @@
 <!-- Classic scripts sharing one global scope; ORDER IS LOAD-BEARING (split from the old app.js
      in original order). tests/conftest.dashboard_js() derives concatenation order from here. -->
 <script src="js/core.js"></script>
+<!-- lib.js: utilities + the design system every screen shares; must load before every consumer -->
+<script src="js/lib.js"></script>
+<!-- ops.js: the deploy/ops screens, split out of core.js so core stays the shell -->
+<script src="js/ops.js"></script>
 <script src="js/projects.js"></script>
 <script src="js/studio-legacy.js"></script>
 <script src="js/studio.js"></script>

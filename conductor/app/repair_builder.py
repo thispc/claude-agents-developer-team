@@ -22,7 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import bus, config, logs, selfops, tuning
+from . import bus, config, logs, selfops, shell, tuning
 
 REPAIR_DIR_NAME = ".repair"
 
@@ -43,8 +43,9 @@ def repair_dir() -> Path:
 
 
 def _git(*args: str, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=str(cwd or live_tree()),
-                          capture_output=True, text=True, timeout=120, check=check)
+    # Kept under this name and signature (tests and repair.py reach for rb._git);
+    # live_tree() is resolved at call time so tests can repoint selfops.LIVE_TREE.
+    return shell.git(*args, cwd=cwd or live_tree(), check=check)
 
 
 def _try_git(*args: str, cwd: Path | None = None) -> None:
