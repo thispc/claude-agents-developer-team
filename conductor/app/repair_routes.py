@@ -44,6 +44,14 @@ def repair_status(request: Request) -> dict:
     return repair.status()
 
 
+@router.get("/as-project")
+def repair_as_project(request: Request) -> dict:
+    """The devteam shaped like a project payload — Devteam HQ renders it with the project
+    screen's own code. One view; the source of truth is the only thing that differs."""
+    _root(request)
+    return repair.as_project()
+
+
 @router.post("/toggle")
 def repair_toggle(body: ToggleBody, request: Request) -> dict:
     """THE BUTTON. On means the crew sprints on this repository until told otherwise."""

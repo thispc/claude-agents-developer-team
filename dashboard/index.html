@@ -511,7 +511,10 @@
         button; the crew scouts, deliberates, builds, verifies, lands — and sleeps when the
         model's limits say so.</p>
     </div>
-    <button id="selfBackBtn">← Home</button>
+    <div class="plan-head-btns">
+      <button class="primary" id="selfHqBtn" title="The crew rendered as a project — one view for every team">🏢 Devteam HQ</button>
+      <button id="selfBackBtn">← Home</button>
+    </div>
   </div>
   <div id="self"></div>
 </section>
@@ -527,6 +530,7 @@
       <button class="chip vchip" data-v="chat">💬 Manager<span id="chatUnread" hidden>0</span></button>
       <button class="chip vchip" data-v="blockers">🚧 Blockers<span id="blockerCount" hidden>0</span></button>
       <button class="chip vchip" data-v="notices">📋 Notices<span id="noticeCount" hidden>0</span></button>
+      <button class="chip vchip" data-v="usage" id="usageChip" hidden>📈 Usage</button>
       <div class="vspacer"></div>
       <button id="addTaskBtn" class="chip" title="Add a task yourself">+ Add task</button>
     </div>
@@ -546,6 +550,7 @@
       </form>
     </section>
     <section id="blockers" hidden></section>
+    <section id="usage" hidden></section>
     <section id="dag" hidden><svg id="dagSvg" xmlns="http://www.w3.org/2000/svg"></svg></section>
     <section id="board" hidden>
     <div class="col" data-col="planned"><h2>Planned</h2><div class="cards"></div></div>

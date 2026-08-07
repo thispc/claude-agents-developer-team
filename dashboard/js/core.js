@@ -827,6 +827,7 @@ function openProject(id, view, skipHash) {
   $("#home").hidden = true;
   $("main").hidden = false;
   $("#projectBar").hidden = false;
+  if (typeof projSrc !== "undefined" && projSrc) projSrc.leave();   // back from Devteam HQ
   currentProject = Number(id);
   // Must finish before selectProject sets .value, or the assignment lands on an
   // empty <select> and is silently dropped (the dropdown then shows the wrong project).
@@ -851,7 +852,7 @@ function switchView(view, skipHash) {
   document.querySelectorAll(".vchip").forEach((c) =>
     c.classList.toggle("active", c.dataset.v === view));
   for (const id of ["command", "board", "dag", "artifacts", "agents", "chat", "blockers",
-                    "notices", "self"])
+                    "notices", "usage", "self"])
     $("#" + id).hidden = id !== view;
   if (view === "dag") renderDag(lastTasks);
   if (view === "command" && lastProject) renderCommand(lastProject);
@@ -862,7 +863,9 @@ function switchView(view, skipHash) {
   if (view === "notices") { blockersSig = ""; renderBlockers(); }
   if (view === "self") renderSelf();
   if (!skipHash && currentProject)
-    setHash(`#/p/${currentProject}${view !== "command" ? "/" + view : ""}`);
+    setHash(currentProject === "devteam"
+      ? `#/hq${view !== "command" ? "/" + view : ""}`
+      : `#/p/${currentProject}${view !== "command" ? "/" + view : ""}`);
 }
 
 /** Put the live state on the doors.
@@ -921,6 +924,10 @@ function route() {
   if (location.hash.startsWith("#/lifeworld")) { openStudio(true); return; }   // legacy link
   if (location.hash.startsWith("#/about")) { openAbout(true); return; }
   if (location.hash.startsWith("#/improve")) { openSelfRepair(true); return; }
+  {
+    const hq = location.hash.match(/^#\/hq(?:\/(\w+))?/);
+    if (hq) { openDevteamHQ(hq[1] || "command", true); return; }
+  }
   {
     const ag = location.hash.match(/^#\/agent\/(\d+)(?:\/(\w+))?/);
     if (ag) { openAgentPage(Number(ag[1]), ag[2] || "now", true); return; }

@@ -602,6 +602,36 @@ function rpHtml(d) {
 
 // ---- wiring ---------------------------------------------------------------
 
+/** The review queue's buttons (approve / rebuild / discard), bindable on ANY container —
+ * the Improve screen's board and Devteam HQ's board both carry them. After acting it
+ * refreshes whichever screen it is actually on. */
+function rpWireQueue(el) {
+  const redo = () => {
+    if (typeof projSrc !== "undefined" && projSrc) refreshBoard();
+    else rpRefresh(true);
+  };
+  el.querySelectorAll("[data-approve]").forEach((b) => b.addEventListener("click", async () => {
+    try { await api("/api/repair/queue/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ branch: b.dataset.approve }) }); toast("Landed."); }
+    catch (e) { toast(`Could not land: ${e.message}`); }
+    redo();
+  }));
+  el.querySelectorAll("[data-rebuild]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true; b.textContent = "rebuilding + re-running the suite…";
+    try {
+      const r = await api("/api/repair/queue/rebuild", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ branch: b.dataset.rebuild }) });
+      toast(r.verified ? "Rebuilt onto main and still green — approve it now."
+                       : `Rebuilt, but the suite is red: ${r.headline || "see the board"}`);
+    } catch (e) { toast(`Could not rebuild: ${e.message}`); }
+    redo();
+  }));
+  el.querySelectorAll("[data-discard]").forEach((b) => b.addEventListener("click", async () => {
+    if (!confirm("Discard this change?")) return;
+    try { await api("/api/repair/queue/discard", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ branch: b.dataset.discard }) }); }
+    catch (e) { toast(e.message); }
+    redo();
+  }));
+}
+
 function rpWire(d) {
   const el = $("#self");
   el.querySelectorAll('input[name="rpOn"]').forEach((r) => r.addEventListener("change", async () => {
@@ -638,26 +668,7 @@ function rpWire(d) {
   el.querySelectorAll("[data-rp-gonotices]").forEach((b) => b.addEventListener("click", () => {
     rpTab = "notices"; rpRefresh(true);
   }));
-  el.querySelectorAll("[data-approve]").forEach((b) => b.addEventListener("click", async () => {
-    try { await api("/api/repair/queue/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ branch: b.dataset.approve }) }); toast("Landed."); }
-    catch (e) { toast(`Could not land: ${e.message}`); }
-    rpRefresh(true);
-  }));
-  el.querySelectorAll("[data-rebuild]").forEach((b) => b.addEventListener("click", async () => {
-    b.disabled = true; b.textContent = "rebuilding + re-running the suite…";
-    try {
-      const r = await api("/api/repair/queue/rebuild", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ branch: b.dataset.rebuild }) });
-      toast(r.verified ? "Rebuilt onto main and still green — approve it now."
-                       : `Rebuilt, but the suite is red: ${r.headline || "see the board"}`);
-    } catch (e) { toast(`Could not rebuild: ${e.message}`); }
-    rpRefresh(true);
-  }));
-  el.querySelectorAll("[data-discard]").forEach((b) => b.addEventListener("click", async () => {
-    if (!confirm("Discard this change?")) return;
-    try { await api("/api/repair/queue/discard", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ branch: b.dataset.discard }) }); }
-    catch (e) { toast(e.message); }
-    rpRefresh(true);
-  }));
+  rpWireQueue(el);
   el.querySelectorAll("[data-revert]").forEach((b) => b.addEventListener("click", async () => {
     if (!confirm("Revert this landed change?")) return;
     try { await api("/api/repair/revert", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sha: b.dataset.revert }) }); toast("Reverted."); }

@@ -509,6 +509,7 @@ function chatEvents() {
 function renderChat() {
   const el = $("#chatLog");
   if (!el || $("#chat").hidden) return;
+  if (projSrc) { projSrc.chatHistory(); return; }   // the crew manager keeps its own log
   const evs = chatEvents();
   const sig = evs.map((e) => e.id).join(",");
   if (sig === chatSig) return;
@@ -664,6 +665,7 @@ function renderNoticeList(el, notices) {
 }
 
 async function renderBlockers() {
+  if (projSrc) return;          // HQ's notices come from the monitor, via renderExtras
   const el = $("#blockers");
   const nel = $("#notices");
   if (!el || !currentProject) return;
@@ -754,16 +756,116 @@ function scheduleRefresh() {
   refreshTimer = setTimeout(() => { refreshTimer = null; refreshBoard(); }, 600);
 }
 
+// --- the source seam -------------------------------------------------------------------
+// The project screen is ONE view of "a team at work"; where its truth comes from is the
+// only thing allowed to vary. projSrc = null means the ordinary project endpoints; the
+// devteam sets DEVTEAM_SRC and the same renderers draw the crew instead. Nothing in the
+// renderers may branch on which — anything source-specific lives here.
+let projSrc = null;
+
+const DEVTEAM_SRC = {
+  board: () => api("/api/repair/as-project"),
+  question: async () => (lastProject && lastProject.question) || {},
+  answer: (qid, answer) => api(String(answer).startsWith("Approve")
+      ? "/api/logs/notices/approve" : "/api/logs/notices/dismiss",
+    { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fp: qid }) }),
+  chatSend: async (text) => {
+    await api("/api/repair/chat", { method: "POST",
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+    DEVTEAM_SRC.chatHistory();
+  },
+  chatHistory: async () => {
+    const log = $("#chatLog"); if (!log) return;
+    try {
+      const r = await api("/api/repair/chat", { method: "POST",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "" }) });
+      log.innerHTML = (r.chat || []).slice(-40).map((m) =>
+        `<div class="msg ${m.role === "user" ? "user" : "manager"}"><b>${
+          m.role === "user" ? "You" : "Manager"}</b> ${escapeHtml(m.text || "")}</div>`).join("")
+        || `<p class="dim">Nothing said yet. The manager knows the sprint board, the crew and why it last slept.</p>`;
+      log.scrollTop = log.scrollHeight;
+    } catch (e) { log.innerHTML = `<p class="err">${escapeHtml(e.message || String(e))}</p>`; }
+  },
+  showTask: () => { if (typeof rpTab !== "undefined") rpTab = "board"; openSelfRepair(); },
+  // The lanes/kanban stay generic; the three HQ-only sections render with the repair
+  // screen's OWN panels — the categorized board the owner asked to keep, above all.
+  renderExtras: (p) => {
+    const d = p.repair || {};
+    const board = $("#board");
+    if (board) {
+      board.innerHTML = `<div class="rp-hq">${rpBoardPanel(d)}</div>`;
+      if (typeof rpWireQueue === "function") rpWireQueue(board);
+    }
+    const notices = $("#notices");
+    if (notices) { notices.innerHTML = `<div class="rp-hq">${rpNoticesPanel(d)}</div>`; rpNotices(); }
+    const usage = $("#usage");
+    if (usage) usage.innerHTML =
+      `<div class="rp-hq">${rpUsagePanel(d, d.meters || { s5h: {}, w7d: {}, cooldowns: {}, team: [] })}</div>`;
+    const cmd = $("#command");
+    if (cmd && d.code && (d.code.needs_restart || d.code.needs_reload)) {
+      cmd.insertAdjacentHTML("afterbegin", d.code.needs_restart
+        ? uiAttnCard("⬆️ Update available",
+            `The app is running code from ${d.code.behind} landed change(s) ago.`,
+            `<button data-rp-update>⟳ Update &amp; restart the app</button>`)
+        : uiAttnCard("⬆️ Fresh dashboard landed", "Only UI files changed — reloading is enough.",
+            `<button data-rp-reload>⟳ Reload the page</button>`));
+      cmd.querySelectorAll("[data-rp-update]").forEach((b) => b.addEventListener("click", async () => {
+        b.disabled = true;
+        try { await api("/api/repair/restart", { method: "POST" });
+              waitForRestart("Updating to the latest landed code…"); }
+        catch (e) { toast(e.message); b.disabled = false; }
+      }));
+      cmd.querySelectorAll("[data-rp-reload]").forEach((b) =>
+        b.addEventListener("click", () => location.reload()));
+    }
+  },
+  leave: () => {
+    projSrc = null;
+    if (DEVTEAM_SRC._timer) { clearInterval(DEVTEAM_SRC._timer); DEVTEAM_SRC._timer = null; }
+    for (const sel of ['[data-v="dag"]', '[data-v="artifacts"]', '[data-v="blockers"]'])
+      { const c = document.querySelector(sel); if (c) c.hidden = false; }
+    const u = $("#usageChip"); if (u) u.hidden = true;
+  },
+};
+
+/** Devteam HQ — the crew, rendered by the project screen. Same view a project gets;
+ * the truth underneath is the sprints/queue/monitor machinery. */
+function openDevteamHQ(view, skipHash) {
+  const sp = $("#selfPage"); if (sp) sp.hidden = true;
+  const lw = $("#lifeworld"); if (lw) lw.hidden = true;
+  const st = $("#studio"); if (st) st.hidden = true;
+  $("#home").hidden = true;
+  $("main").hidden = false;
+  $("#projectBar").hidden = true;
+  projSrc = DEVTEAM_SRC;
+  currentProject = "devteam";
+  for (const sel of ['[data-v="dag"]', '[data-v="artifacts"]', '[data-v="blockers"]'])
+    { const c = document.querySelector(sel); if (c) c.hidden = true; }
+  const u = $("#usageChip"); if (u) u.hidden = false;
+  switchView(view || "command", true);
+  if (!skipHash) setHash("#/hq");
+  refreshBoard();
+  // The project page refreshes on project WS events; the crew's events are repair_* and
+  // arrive on the same socket but bypass that filter — a light poll keeps HQ honest.
+  if (!DEVTEAM_SRC._timer) DEVTEAM_SRC._timer = setInterval(() => {
+    if (projSrc && !$("main").hidden) refreshBoard();
+  }, 5000);
+}
+
 async function refreshBoard() {
   if (!currentProject) return;
   let p;
-  try { p = await api(`/api/projects/${currentProject}`); } catch { return; }
+  try { p = await (projSrc ? projSrc.board() : api(`/api/projects/${currentProject}`)); }
+  catch { return; }
   lastTasks = p.tasks;
   // The roster, which is not part of the project payload. Without it the command
   // view could only draw people who happened to have a task open, so six of the
   // eight teammates on a real run were invisible and the header counted TASKS
   // and called them team members.
-  try {
+  if (projSrc) {
+    try { lastTeam = JSON.parse(p.team || "[]"); } catch { lastTeam = []; }
+  } else try {
     const t = await api(`/api/projects/${currentProject}/team`);
     lastTeam = t.team || [];
   } catch { /* an older server has no roster; the view falls back to tasks */ }
@@ -810,11 +912,12 @@ async function refreshBoard() {
   badge.textContent = STATUS_LABEL[p.status] || p.status;
   badge.className = "badge " + (STATUS_CLASS[p.status] || "run");
   badge.title = p.summary || "";
-  $("#cancelBtn").hidden = ["done", "failed", "cancelled"].includes(p.status);
-  $("#restartBtn").hidden = !["failed", "review", "cancelled"].includes(p.status);
+  $("#cancelBtn").hidden = !!projSrc || ["done", "failed", "cancelled"].includes(p.status);
+  $("#restartBtn").hidden = !!projSrc || !["failed", "review", "cancelled"].includes(p.status);
     if (!$("#artifacts").hidden) renderArtifacts();
   if (!$("#agents").hidden) renderAgents();
   refreshQuestion();
+  if (projSrc) { projSrc.renderExtras(p); return; }   // HQ's board/notices/usage panels
   for (const [col, statuses] of Object.entries(COLS)) {
     const box = document.querySelector(`.col[data-col="${col}"] .cards`);
     box.innerHTML = "";
@@ -987,7 +1090,8 @@ let currentQuestionId = null;
 async function refreshQuestion() {
   if (!currentProject) return;
   let q;
-  try { q = await api(`/api/projects/${currentProject}/question`); } catch { return; }
+  try { q = await (projSrc ? projSrc.question() : api(`/api/projects/${currentProject}/question`)); }
+  catch { return; }
   if (!q.question) {
     currentQuestionId = null;
     pendingQ = null;
@@ -1004,7 +1108,8 @@ async function refreshQuestion() {
 
 async function answerQuestion(qid, answer) {
   if (!answer || !answer.trim()) return;
-  await api(`/api/questions/${qid}/answer`, {
+  if (projSrc) await projSrc.answer(qid, answer);
+  else await api(`/api/questions/${qid}/answer`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ answer }),
   });
@@ -1016,6 +1121,7 @@ async function answerQuestion(qid, answer) {
 // --- task detail panel ------------------------------------------------------
 let editTaskTarget = null;
 async function showTask(id) {
+  if (projSrc) { projSrc.showTask(id); return; }   // crew tasks live on the sprint board
   const t = lastTasks.find((x) => x.id === id);
   if (!t) return;
   editTaskTarget = id;
@@ -1095,6 +1201,9 @@ function trim(s, n) { s = (s || "").trim(); return s.length > n ? s.slice(0, n -
  * neither. Shown for one-sprint projects too: that is the common case, and "which of these
  * failed" is exactly as worth asking there. */
 function renderSprints(p) {
+  // HQ: the crew's sprint history is the Board tab's categorized view; this widget would
+  // draw the same tasks a second time with issue numbers they don't have.
+  if (projSrc) return "";
   const total = p.sprints ?? 1;
   if (!(p.tasks || []).length && total <= 1) return "";
   const cur = p.sprint ?? 1;
@@ -2210,7 +2319,8 @@ async function renderAgents() {
   if (el.hidden) return;
   let a;
   // Scope to the project you're looking at — otherwise other projects' agents show up here.
-  const scope = currentProject ? `?project_id=${currentProject}` : "";
+  // The devteam is not a project row; show the whole registry (its sessions live there).
+  const scope = currentProject && !projSrc ? `?project_id=${currentProject}` : "";
   try { a = await api("/api/agents" + scope); }
   catch (e) { el.innerHTML = `<div class="pane"><p class="err">${escapeHtml(e.message)}</p></div>`; return; }
 
@@ -2511,6 +2621,7 @@ $("#modeStudio").addEventListener("click", () => openStudio());
 // console (sprints, notices, usage) is a button on that canvas.
 $("#modeImprove").addEventListener("click", () => openDevteam());
 $("#selfBackBtn").addEventListener("click", () => showHome());
+{ const b = $("#selfHqBtn"); if (b) b.addEventListener("click", () => openDevteamHQ()); }
 $("#planBackBtn").addEventListener("click", () => {
   clearInterval(tablePoll); $("#plan").hidden = true; showHome();
 });
@@ -2535,6 +2646,7 @@ $("#chatForm").addEventListener("submit", async (ev) => {
   if (!text || !currentProject) return;
   inp.value = "";
   try {
+    if (projSrc) { await projSrc.chatSend(text); return; }
     await api(`/api/projects/${currentProject}/directive`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),

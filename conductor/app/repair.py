@@ -20,6 +20,7 @@ restart (including our own auto-restart after landing backend changes) resumes m
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import threading
 import time
@@ -1641,6 +1642,85 @@ def _typed_sprint(rec: dict | None) -> dict | None:
     if rec:
         rec["tasks"] = [_typed(t) for t in rec.get("tasks", [])]
     return rec
+
+
+def as_project() -> dict:
+    """The devteam shaped EXACTLY like a project payload, so Devteam HQ is the project
+    screen rendering a different truth — one view, two sources, zero forked renderers.
+
+    The mapping is meaning-first, not cosmetic: sprint tasks become task rows whose ROLE is
+    the specialist persona that owns them (the crew, not an ad-hoc spawn); the review queue
+    becomes tasks in review; the backlog is planned work; the monitor's top actionable
+    notice becomes the manager's pending question, so approving it IS answering the ask
+    card. The raw status() rides along under `repair` for the HQ-only tabs (board with its
+    categories, notices, usage)."""
+    from . import monitor
+    d = status()
+    fs = {f["id"]: f for f in d.get("factors") or []}
+
+    def name_of(fid: str) -> str:
+        return (fs.get(fid) or {}).get("name") or (fid or "crew").replace("-", " ").title()
+
+    model = str(tuning.get("repair_builder_model"))
+    sp = d.get("sprint") or {}
+    phase = (d.get("state") or {}).get("phase") or ""
+    tasks = []
+    for i, t in enumerate(sp.get("tasks") or []):
+        st = {"pending": "running" if phase in ("build", "verify") else "planned",
+              "landed": "done", "failed": "failed", "queued": "review"}.get(t.get("status"), "planned")
+        tasks.append({"id": f"s{sp.get('no', 0)}-{i}", "role": name_of(t.get("factor")),
+                      "title": t.get("title") or "", "description": t.get("brief") or "",
+                      "status": st, "attempts": int(t.get("attempts") or 1), "deps": "[]",
+                      "model": model, "type": t.get("type"), "priority": t.get("priority")})
+    qs = d.get("queue_state") or {}
+    for q in d.get("queue") or []:
+        st = qs.get(q.get("branch")) or {}
+        tasks.append({"id": f"q-{q.get('slug', '')}", "role": "finished change",
+                      "title": q.get("title") or "",
+                      "description": (f"{st.get('why')} — {st.get('fix')}" if not st.get("ok", True)
+                                      else "green and ready to land"),
+                      "status": "review", "attempts": 1, "deps": "[]",
+                      "model": model, "branch": q.get("branch")})
+    for i, t in enumerate(d.get("backlog") or []):
+        tasks.append({"id": f"b-{i}", "role": name_of(t.get("factor")),
+                      "title": t.get("title") or "", "description": t.get("brief") or "",
+                      "status": "planned", "attempts": 0, "deps": "[]",
+                      "model": model, "type": t.get("type"), "priority": t.get("priority")})
+    actionable = [n for n in monitor.scan() if n.get("action")]
+    question = None
+    if actionable:
+        n = actionable[0]
+        question = {"id": n["fp"], "topic": "decision",
+                    "question": f"{n['title']} — {n.get('proposal') or n.get('detail') or ''}",
+                    "options": [{"label": f"Approve — {n['action'].replace('_', ' ')}"},
+                                {"label": "Dismiss this notice"}]}
+    queue = d.get("queue") or []
+    crit = (d.get("notices") or {}).get("critical")
+    if not d.get("enabled"):
+        p_status, summary = "paused", "The crew is switched off."
+    elif queue or crit:
+        p_status = "review"
+        summary = (f"{len(queue)} finished change(s) wait for your approve or discard."
+                   if queue else "The monitor raised a critical notice.")
+    else:
+        p_status, summary = "running", (d.get("state") or {}).get("sleep_reason") or ""
+    roster = [{"role": f["name"], "model": model, "provider": "anthropic"}
+              for f in d.get("factors") or [] if f.get("enabled")]
+    m = (d.get("meters") or {}).get("s5h") or {}
+    info = team() or {}
+    return {"id": "devteam", "name": "Devteam — the IT crew", "status": p_status,
+            "summary": summary,
+            "brief": "Keeps this platform healthy: scouts, deliberates, builds, verifies "
+                     "and lands — in sprints, on its own repository.",
+            "team": json.dumps(roster), "tasks": tasks, "manager_model": model,
+            "autonomy": "autonomous", "cost_usd": 0.0, "budget_usd": 0.0,
+            "runs_used": m.get("used", 0), "max_runs": m.get("cap", 0),
+            "repo": (d.get("head") or {}).get("repo") or "",
+            "team_world": info.get("world_id"), "team_room": info.get("room_id"),
+            # sprints=1 on purpose: the project widget would paint one fabricated "SHIPPED"
+            # row per sprint number. The devteam's real history lives on the Board tab.
+            "sprint": 1, "sprints": 1,
+            "question": question, "repair": d}
 
 
 def status() -> dict:

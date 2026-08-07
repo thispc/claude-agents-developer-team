@@ -139,6 +139,7 @@ A log row is `{ts, level, cat, event, msg, …fields}`. `event` is a stable slug
 | method | path | what for |
 |---|---|---|
 | GET | /api/repair/status | Everything the Improve screen renders, in one payload: the button, the phase, the token meters, the factors, the crew, the current sprint, the queue and the backlog. |
+| GET | /api/repair/as-project | The devteam shaped like a project payload — Devteam HQ renders it with the project screen's own code. One view; the source of truth is the only thing that differs. |
 | POST | /api/repair/toggle | THE BUTTON. On means the crew sprints on this repository until told otherwise. |
 | POST | /api/repair/factors | Turn a factor on or off, or add one of your own. A factor is a lens the crew looks through, and each enabled one is a seat at the sprint-planning table. |
 | GET | /api/repair/ledger | The crew's own call counter and the meters derived from it — the backstop used when nothing reports real token counts. |

@@ -107,3 +107,45 @@ def test_approve_reports_whether_a_restart_is_due(fresh_db, monkeypatch, root_cl
     body = r.json()
     assert body["needs_restart"] is True
     assert body["files"] == ["conductor/app/x.py"]
+
+
+# ---- Devteam HQ: the project view rendering the crew ----------------------------------
+
+CORE_JS = (ROOT / "dashboard" / "js" / "core.js").read_text()
+STUDIO_JS = (ROOT / "dashboard" / "js" / "studio.js").read_text()
+
+
+def test_as_project_speaks_fluent_project(fresh_db, root_client):
+    """The adapter's whole contract: a payload the project screen can render without ONE
+    renderer knowing where it came from."""
+    r = root_client.get("/api/repair/as-project")
+    assert r.status_code == 200
+    p = r.json()
+    for key in ("id", "name", "status", "summary", "brief", "team", "tasks",
+                "manager_model", "autonomy", "repair"):
+        assert key in p, f"project payload must carry {key}"
+    assert p["id"] == "devteam"
+    ok_status = {"planned", "running", "review", "failed", "done", "paused"}
+    assert p["status"] in ok_status
+    for t in p["tasks"]:
+        assert t["status"] in ok_status, f"task status {t['status']} unknown to the board"
+        assert t["role"], "every task needs a specialist role"
+    import json as _json
+    roles = [m["role"] for m in _json.loads(p["team"])]
+    assert roles, "the crew must appear as the roster"
+
+
+def test_the_hq_seam_is_wired_everywhere_it_must_be():
+    """One seam (projSrc), consulted at every place the truth's source matters — and
+    nowhere else. A renderer that branches on devteam has forked the view again."""
+    assert "let projSrc = null" in PROJECTS_JS
+    assert "function openDevteamHQ(" in PROJECTS_JS
+    for seam in ("projSrc.board()", "projSrc.question()", "projSrc.answer(",
+                 "projSrc.chatSend(", "projSrc.showTask(", "projSrc.renderExtras("):
+        assert seam in PROJECTS_JS, f"missing seam use: {seam}"
+    # HQ's own tabs render with the repair screen's panels — the categorized board survives.
+    assert "rpBoardPanel(" in PROJECTS_JS and "rpUsagePanel(" in PROJECTS_JS
+    assert "#/hq" in CORE_JS, "the router must know the HQ hash"
+    assert "rpWireQueue(" in REPAIR_JS.split("function rpWire(", 1)[1], \
+        "the improve screen must reuse the shared queue wiring"
+    assert "openDevteamHQ()" in STUDIO_JS, "the canvas devbar must lead to HQ"

@@ -352,8 +352,10 @@ def test_the_devteam_door_opens_the_team_not_the_console():
     assert "async function openDevteam" in js
     assert '$("#modeImprove").addEventListener("click", () => openDevteam())' in js
     assert 'startsWith("#/devteam")' in js, "it needs an address of its own"
-    # ...and the console is a button ON that canvas, with a way back
-    assert "sdDevteamBar" in js and "Sprints, notices" in js
+    # ...and HQ (the crew rendered as a project) is a button ON that canvas, with the
+    # engine room one step further and a way back from the console to the team.
+    assert "sdDevteamBar" in js and "Devteam HQ" in js
+    assert "sdDevEngine" in js, "the engine room must stay reachable from the canvas"
     assert 'id="rpOpenTeam"' in js, "the console must lead back to the team"
 
 

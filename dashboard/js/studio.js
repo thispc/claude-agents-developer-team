@@ -132,10 +132,13 @@ function sdDevteamBar() {
     `<div class="sd-devbar" id="sdDevBar">
        <b>Devteam</b>
        <span class="dim">the six perspectives that work on this platform</span>
-       <button class="rp-mini" id="sdDevConsole">Sprints, notices &amp; usage →</button>
+       <button class="primary sd-hq" id="sdDevConsole">🏢 Devteam HQ →</button>
+       <button class="rp-mini" id="sdDevEngine" title="The engine room: factors, knobs, the raw console">⚙ engine room</button>
      </div>`);
   const b = $("#sdDevConsole");
-  if (b) b.addEventListener("click", () => openSelfRepair());
+  if (b) b.addEventListener("click", () => openDevteamHQ());
+  const e = $("#sdDevEngine");
+  if (e) e.addEventListener("click", () => openSelfRepair());
 }
 
 let lwDevteam = false;      // the open world is the crew's, not one of yours
