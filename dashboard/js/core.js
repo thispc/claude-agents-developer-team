@@ -476,7 +476,7 @@ function openModuleGraph(skipHash) {
   $("#projectBar").hidden = true;
   currentProject = null;
   if (!skipHash) setHash("#/graph");
-  window.ModuleGraph.open("self");
+  window.ModuleGraph.open("self", (location.hash.match(/^#\/graph\/([^/]+)/) || [])[1] || "");
 }
 
 function openProject(id, view, skipHash) {

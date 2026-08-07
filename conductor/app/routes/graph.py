@@ -106,7 +106,10 @@ def _test_counts(rows: list[dict]) -> dict:
 
 @router.get("/api/graph/self")
 def graph_self(request: Request) -> dict:
-    """The whole platform graph in one payload: the canvas's single read."""
+    """The whole platform graph in one payload: the canvas's single read. Both
+    levels ride in it — the canvas derives them client-side from parent_key —
+    and a GROUP node answers for its children: suite counts summed, activity
+    busy whenever any child is busy. Work itself only ever lands on leaves."""
     _gated(request)
     plan = _self_plan()
     pid = plan["id"]
@@ -116,7 +119,11 @@ def graph_self(request: Request) -> dict:
     for t in tests:
         by_node.setdefault(t["node_key"], []).append(t)
     st = _crew_snapshot()
-    activity = _activity(nodes, st)
+    activity = _activity([n for n in nodes if n["node_type"] != "group"], st)
+    kids_of: dict[str, list[str]] = {}
+    for n in nodes:
+        if n["parent_key"]:
+            kids_of.setdefault(n["parent_key"], []).append(n["key"])
     crew_state = st.get("state") or {}
     notices = st.get("notices") or {}
     health = ("critical" if notices.get("critical") else
@@ -125,15 +132,33 @@ def graph_self(request: Request) -> dict:
     node_out = []
     for n in nodes:
         a = modgraph.get_assign(pid, n["key"]) or {}
+        if n["node_type"] == "group":
+            # Rolled up, not stored: totals summed over the children, activity
+            # the dedup'd union of theirs — busy iff any child is busy.
+            kid_counts = [_test_counts(by_node.get(k, []))
+                          for k in kids_of.get(n["key"], [])]
+            counts = {f: sum(c[f] for c in kid_counts)
+                      for f in ("total", "passing", "failing", "advisory")}
+            act, seen = [], set()
+            for k in kids_of.get(n["key"], []):
+                for item in activity.get(k, []):
+                    sig = (item["task"], item["factor"])
+                    if sig not in seen:
+                        seen.add(sig)
+                        act.append(item)
+        else:
+            counts = _test_counts(by_node.get(n["key"], []))
+            act = activity.get(n["key"], [])
         node_out.append({
             "key": n["key"], "title": n["title"], "node_type": n["node_type"],
+            "parent_key": n["parent_key"],
             "spec": n["spec"], "join_mode": n["join_mode"], "tags": n["tags"],
             "paths": n["paths"],
             "config": {"model": a.get("model") or "", "autonomy": a.get("autonomy") or ""},
             "agent": ({"agent_id": a.get("agent_id"), "home_id": a.get("home_id")}
                       if a.get("agent_id") or a.get("home_id") else None),
-            "tests": _test_counts(by_node.get(n["key"], [])),
-            "activity": activity.get(n["key"], []),
+            "tests": counts,
+            "activity": act,
         })
     return {
         "plan": {"id": pid, "version": plan["version"], "kind": plan["kind"],

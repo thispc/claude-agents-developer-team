@@ -1,93 +1,301 @@
-/* Module graph — the #graphScreen canvas + its aside. Colours come ONLY from the
-   design system's variables (style.css:root); this file introduces no hex literals,
-   because the crew just finished consolidating the ones that had crept in. */
+/* Module graph — the #graphScreen canvas + its aside, in TWO owner-switchable
+   themes. Every colour in this file resolves through --gr-* custom properties
+   SCOPED TO #graphScreen, so nothing here can leak into the rest of the app.
+   The raw literals live ONLY in the two theme blocks below:
+
+     · blueprint (this screen's default) — a deep-ink HUD: faint dot grid,
+       vignette, glass cards with luminous borders, cyan/teal accents, amber
+       warnings; the aim a beacon, the conclusion a distinct terminal.
+     · paper — the app's own warm variables (var(--card) & friends), so the
+       graph can also dress like every other screen.
+
+   Motion discipline: transform/opacity only, all of it CSS (the single JS rAF
+   loop is the camera in index.js); every animation stands down under
+   prefers-reduced-motion at the bottom of this file. */
 
 #graphScreen { display: flex; flex-direction: column; height: calc(100vh - 54px); outline: none; }
 #graphScreen[hidden] { display: none; }
 
+/* ---- the two themes: nothing but variable values ---- */
+#graphScreen, #graphScreen[data-gtheme="blueprint"] {
+  --gr-bg: #0d1420;
+  --gr-grid: rgba(112, 164, 238, 0.10);
+  --gr-vignette: rgba(3, 7, 14, 0.52);
+  --gr-panel: rgba(14, 22, 36, 0.92);
+  --gr-glass: rgba(16, 26, 43, 0.72);
+  --gr-line: rgba(124, 164, 216, 0.16);
+  --gr-text: #d9e6f2;
+  --gr-dim: #8296ad;
+  --gr-accent: #55d6f0;
+  --gr-accent-soft: rgba(85, 214, 240, 0.13);
+  --gr-wire: #3fb6cf;
+  --gr-glow: rgba(85, 214, 240, 0.38);
+  --gr-good: #4fe0c0;
+  --gr-warn: #f2b34c;
+  --gr-bad: #ff7a70;
+  --gr-card: rgba(18, 29, 48, 0.78);
+  --gr-card-stroke: rgba(96, 190, 225, 0.30);
+  --gr-card-glow: rgba(45, 120, 170, 0.25);
+  --gr-aim-fill: rgba(85, 214, 240, 0.14);
+  --gr-conc-fill: rgba(79, 224, 192, 0.10);
+  --gr-group-stroke: rgba(142, 190, 252, 0.38);
+  --gr-btn: rgba(24, 37, 58, 0.9);
+  --gr-mgr: #2C6A63;
+}
+#graphScreen[data-gtheme="paper"] {
+  --gr-bg: #f4f2ec;
+  --gr-grid: rgba(46, 110, 91, 0.10);
+  --gr-vignette: transparent;
+  --gr-panel: var(--card);
+  --gr-glass: var(--card);
+  --gr-line: var(--line);
+  --gr-text: var(--text);
+  --gr-dim: var(--dim);
+  --gr-accent: var(--accent);
+  --gr-accent-soft: var(--accent-soft);
+  --gr-wire: var(--accent);
+  --gr-glow: var(--accent-soft);
+  --gr-good: var(--good);
+  --gr-warn: var(--warn);
+  --gr-bad: var(--bad);
+  --gr-card: var(--card);
+  --gr-card-stroke: var(--line);
+  --gr-card-glow: rgba(46, 110, 91, 0.10);
+  --gr-aim-fill: var(--accent-soft);
+  --gr-conc-fill: var(--good-soft);
+  --gr-group-stroke: var(--accent);
+  --gr-btn: var(--card-2);
+  --gr-mgr: var(--mgr);
+}
+
+/* ---- chrome: bar, stage, aside all read the theme ---- */
 .graph-bar {
   display: flex; align-items: center; gap: 14px; padding: 10px 20px;
-  border-bottom: 1px solid var(--line); background: var(--card);
+  border-bottom: 1px solid var(--gr-line); background: var(--gr-panel); color: var(--gr-text);
 }
 .graph-bar b { font-size: 15px; }
+.graph-bar .dim { color: var(--gr-dim); }
+.graph-bar button { background: var(--gr-btn); color: var(--gr-text); border-color: var(--gr-line); }
 .graph-body { flex: 1; display: flex; min-height: 0; }
-.graph-canvas { position: relative; flex: 1; min-width: 0; }
+
+/* The stage wraps the world host; the HUD chrome (breadcrumb, minimap, tooltip)
+   are its siblings so createWorld's host wipe can never take them. */
+.graph-stage { position: relative; flex: 1; min-width: 0; overflow: hidden; background: var(--gr-bg); }
+.graph-canvas { position: absolute; inset: 0; z-index: 1; }
+#graphScreen .lw2-host {                     /* the engine's own paper stays out of the way */
+  background:
+    radial-gradient(circle at 1px 1px, var(--gr-grid) 1px, transparent 0) 0 0 / 26px 26px,
+    var(--gr-bg);
+}
+.graph-stage::after {                        /* the vignette, above the world, under the HUD */
+  content: ""; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+  background: radial-gradient(120% 95% at 50% 42%, transparent 58%, var(--gr-vignette) 100%);
+}
+#graphScreen .lw2-marquee { fill: var(--gr-accent-soft); stroke: var(--gr-accent); }
+#graphScreen marker path { fill: var(--gr-wire); }
 
 /* ---- the aside: light card + inspector, this screen's own hosts ---- */
 #graphAside {
   width: 340px; flex: none; overflow-y: auto; padding: 14px 16px;
-  border-left: 1px solid var(--line); background: var(--card);
-  font-size: 13px; color: var(--text);
+  border-left: 1px solid var(--gr-line); background: var(--gr-panel);
+  font-size: 13px; color: var(--gr-text);
 }
-#graphAside .dim { color: var(--dim); }
-#graphAside .err { color: var(--bad); }
+#graphAside .dim { color: var(--gr-dim); }
+#graphAside .err { color: var(--gr-bad); }
+#graphAside button { background: var(--gr-btn); color: var(--gr-text); border-color: var(--gr-line); }
+#graphAside button.primary { background: var(--gr-accent); color: var(--gr-bg); border-color: var(--gr-accent); }
+#graphAside select { background: var(--gr-btn); color: var(--gr-text); border-color: var(--gr-line); }
+#graphAside kbd {
+  padding: 0 5px; border: 1px solid var(--gr-line); border-bottom-width: 2px;
+  border-radius: 4px; font-size: 11px; background: var(--gr-btn);
+}
 .gr-light-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
 .gr-light-glyph { font-size: 22px; line-height: 1.2; }
 .gr-close { margin-left: auto; }
 .gr-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
 .gr-tag {
   font-size: 11px; padding: 1px 8px; border-radius: 999px;
-  background: var(--accent-soft); color: var(--accent); border: 1px solid var(--line-soft);
+  background: var(--gr-accent-soft); color: var(--gr-accent); border: 1px solid var(--gr-line);
 }
-.gr-failtext { color: var(--bad); }
-.gr-actline { color: var(--accent); font-weight: 550; }
+.gr-failtext { color: var(--gr-bad); }
+.gr-actline { color: var(--gr-accent); font-weight: 550; }
 .gr-hint { margin-top: 10px; }
 .gr-spec { margin: 8px 0 12px; line-height: 1.45; }
-.gr-sec { margin: 14px 0; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.gr-sec { margin: 14px 0; padding-top: 10px; border-top: 1px solid var(--gr-line); }
 .gr-sec-h { font-weight: 650; margin-bottom: 6px; }
 .gr-test { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
 .gr-test code { font-family: var(--mono); font-size: 11.5px; }
-.gr-test-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; align-self: center; }
-.gr-test-passing .gr-test-dot { background: var(--good); }
-.gr-test-failing .gr-test-dot, .gr-test-error .gr-test-dot { background: var(--bad); }
+.gr-test-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gr-dim); flex: none; align-self: center; }
+.gr-test-passing .gr-test-dot { background: var(--gr-good); }
+.gr-test-failing .gr-test-dot, .gr-test-error .gr-test-dot { background: var(--gr-bad); }
 .gr-test-last { width: 100%; padding-left: 14px; font-size: 11.5px; }
 .gr-edge { margin: 5px 0; }
 .gr-contract { margin: 2px 0 0 10px; font-size: 11.5px; }
 .gr-contract code { font-family: var(--mono); }
 .gr-run { margin: 4px 0; font-size: 12px; }
-.gr-cfg { display: flex; align-items: center; gap: 8px; margin: 6px 0; color: var(--dim); }
+.gr-cfg { display: flex; align-items: center; gap: 8px; margin: 6px 0; color: var(--gr-dim); }
 .gr-cfg select { flex: 1; }
 .gr-actions { margin-top: 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.gr-health-ok { color: var(--good); }
-.gr-health-attention { color: var(--warn); }
-.gr-health-critical { color: var(--bad); }
-.gr-health-unknown { color: var(--dim); }
+.gr-health-ok { color: var(--gr-good); }
+.gr-health-attention { color: var(--gr-warn); }
+.gr-health-critical { color: var(--gr-bad); }
+.gr-health-unknown { color: var(--gr-dim); }
 
-/* ---- the nodes ---- */
+/* ---- the nodes: glass cards, luminous borders ---- */
 .gr-node { cursor: move; }
-.gr-card { fill: var(--card); stroke: var(--line); stroke-width: 1.5; }
-.gr-aim .gr-card { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
-.gr-conclusion .gr-card { fill: var(--good-soft); stroke: var(--good-border); stroke-width: 2; }
-.gr-title { font: 600 12.5px var(--ui); fill: var(--text); }
-.gr-sub { font: 11px var(--ui); fill: var(--dim); }
-.gr-glyph { font-size: 15px; }
-.gr-ring { stroke-width: 3; }
-.gr-ring-good { stroke: var(--good); }
-.gr-ring-bad { stroke: var(--bad); }
-.gr-ring-mixed { stroke: var(--warn); }
-.gr-ring-none { stroke: var(--line); }
-.gr-agent { fill: var(--mgr); }
-.gr-agent-i { font: 700 10px var(--ui); fill: var(--card); }
-.gr-node.gr-sel .gr-card { stroke: var(--accent); stroke-width: 3; }
-
-/* ---- the staged reveal: scale/opacity via a class, stepped by the module ---- */
+.gr-card {
+  fill: var(--gr-card); stroke: var(--gr-card-stroke); stroke-width: 1.5;
+}
 .gr-cardg {
   transform-box: fill-box; transform-origin: center;
-  transition: transform 0.35s ease, opacity 0.35s ease;
+  transition: transform 0.3s cubic-bezier(0.22, 0.9, 0.3, 1.2), opacity 0.3s ease, filter 0.25s ease;
+  filter: drop-shadow(0 2px 8px var(--gr-card-glow));
 }
+.gr-title { font: 600 12.5px var(--ui); fill: var(--gr-text); }
+.gr-sub { font: 11px var(--ui); fill: var(--gr-dim); }
+.gr-glyph { font-size: 15px; }
+.gr-ring { stroke-width: 3; }
+.gr-ring-good { stroke: var(--gr-good); }
+.gr-ring-bad { stroke: var(--gr-bad); }
+.gr-ring-mixed { stroke: var(--gr-warn); }
+.gr-ring-none { stroke: var(--gr-line); }
+.gr-agent { fill: var(--gr-mgr); }
+.gr-agent-i { font: 700 10px var(--ui); fill: var(--gr-card); }
+
+/* aim = the bright beacon this all points from; conclusion = the terminal */
+.gr-aim .gr-card { fill: var(--gr-aim-fill); stroke: var(--gr-accent); stroke-width: 2; }
+.gr-aim .gr-cardg { filter: drop-shadow(0 0 14px var(--gr-glow)); }
+.gr-aim .gr-title { font-size: 13.5px; }
+.gr-conclusion .gr-card { fill: var(--gr-conc-fill); stroke: var(--gr-good); stroke-width: 2; }
+.gr-conclusion .gr-cardg { filter: drop-shadow(0 0 10px var(--gr-conc-fill)); }
+
+/* group = the architecture tier: bigger glass, a luminous top rule, the ⊕ dive */
+.gr-group .gr-card { stroke: var(--gr-group-stroke); stroke-width: 1.5; }
+.gr-group .gr-title { font-size: 13.5px; }
+.gr-topline { fill: var(--gr-accent); opacity: 0.75; }
+.gr-drill-bg { fill: var(--gr-accent-soft); stroke: var(--gr-accent); stroke-width: 1.5; cursor: pointer; transition: fill 0.15s ease; }
+.gr-drill:hover .gr-drill-bg { fill: var(--gr-accent); }
+.gr-drill-t { font: 600 13px var(--ui); fill: var(--gr-accent); }
+.gr-drill:hover .gr-drill-t { fill: var(--gr-bg); }
+
+/* hover = lift: scale + glow intensify (composited transform/filter only) */
+.gr-node:hover .gr-cardg { transform: scale(1.03); filter: drop-shadow(0 0 12px var(--gr-glow)); }
+
+/* selection: the luminous ring plus ONE soft pulse when it lands */
+.gr-node.gr-sel .gr-card { stroke: var(--gr-accent); stroke-width: 3; }
+.gr-node.gr-sel .gr-cardg { animation: gr-pulse 0.5s ease-out 1; }
+@keyframes gr-pulse {
+  0% { filter: drop-shadow(0 0 2px var(--gr-glow)); }
+  45% { filter: drop-shadow(0 0 16px var(--gr-accent)); }
+  100% { filter: drop-shadow(0 0 6px var(--gr-glow)); }
+}
+
+/* ---- the staged reveal: scale/opacity via a class, stepped by the module ---- */
 .gr-node.gr-hidden { pointer-events: none; }
 .gr-node.gr-hidden .gr-cardg { transform: scale(0.6); opacity: 0; }
 
-/* ---- live activity: the glow on a node the crew is touching right now ---- */
-.gr-node.gr-busy .gr-card { stroke: var(--accent); stroke-width: 2.5; animation: gr-glow 1.5s ease-in-out infinite; }
+/* ---- the microscope: outgoing levels bow out, a drilled group BLOOMS ----
+   Both are inert to the pointer the moment they start leaving. */
+.gr-node.gr-exit { pointer-events: none; }
+.gr-node.gr-exit .gr-cardg {
+  transform: scale(0.82); opacity: 0;
+  transition: transform 0.24s cubic-bezier(0.5, 0, 0.8, 0.6), opacity 0.22s ease-in;
+}
+.gr-node.gr-zoombig { pointer-events: none; }
+.gr-node.gr-zoombig .gr-cardg {
+  transform: scale(2.6); opacity: 0;
+  transition: transform 0.46s cubic-bezier(0.2, 0.7, 0.2, 1), opacity 0.4s ease;
+}
+.gr-wire.gr-exit, .gr-portal.gr-exit { opacity: 0; transition: opacity 0.18s ease-in; pointer-events: none; }
+
+/* ---- wires: theme stroke, draw-in AFTER endpoints, live data flow ---- */
+.gr-wire .lw2-wire-vis { stroke: var(--gr-wire); }
+.gr-wire-contract .lw2-wire-vis { stroke-dasharray: 1.5 5; stroke-linecap: round; }
+.gr-wire-portal .lw2-wire-vis { opacity: 0.6; }
+/* the entrance: each wire sweeps itself in via stroke-dashoffset, staggered by
+   --gr-dd (set inline per wire), once per level reveal */
+.gr-wire.gr-draw .lw2-wire-vis {
+  stroke-dasharray: 640; stroke-dashoffset: 640;
+  animation: gr-drawin 0.5s cubic-bezier(0.25, 0.8, 0.35, 1) forwards;
+  animation-delay: var(--gr-dd, 0ms);
+}
+@keyframes gr-drawin { to { stroke-dashoffset: 0; } }
+/* live edge flow: either endpoint busy → a slow marching-dash shimmer */
+.gr-wire.gr-flow .lw2-wire-vis {
+  stroke: var(--gr-accent); stroke-dasharray: 7 9;
+  animation: gr-dashflow 1.1s linear infinite;
+}
+@keyframes gr-dashflow { to { stroke-dashoffset: -32; } }
+
+/* ---- live activity: breathing glow on a node the crew is touching now ---- */
+.gr-node.gr-busy .gr-card { stroke: var(--gr-accent); stroke-width: 2.5; }
+.gr-node.gr-busy .gr-cardg { animation: gr-glow 1.6s ease-in-out infinite; }
 @keyframes gr-glow {
-  0%, 100% { filter: drop-shadow(0 0 2px var(--accent-soft)); }
-  50% { filter: drop-shadow(0 0 9px var(--accent)); }
+  0%, 100% { filter: drop-shadow(0 0 2px var(--gr-glow)); }
+  50% { filter: drop-shadow(0 0 12px var(--gr-accent)); }
 }
 
-/* Reduced motion: no pulse, no entrance transition — state changes still happen,
-   they just appear instead of animating. */
+/* ---- portals: where a wire leaves the room ---- */
+.gr-portal { cursor: pointer; transition: opacity 0.3s ease; }
+.gr-portal.gr-hidden { opacity: 0; pointer-events: none; }
+.gr-portal-pill { fill: var(--gr-glass); stroke: var(--gr-line); stroke-width: 1.5; transition: stroke 0.15s ease; }
+.gr-portal:hover .gr-portal-pill { stroke: var(--gr-accent); }
+.gr-portal-t { font: 600 11.5px var(--ui); fill: var(--gr-dim); }
+.gr-portal:hover .gr-portal-t { fill: var(--gr-accent); }
+
+/* ---- the HUD: breadcrumb, minimap, edge tooltip (glass, above the vignette) ---- */
+.gr-crumb {
+  position: absolute; top: 12px; left: 14px; z-index: 3;
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 12px; border-radius: 999px;
+  background: var(--gr-panel); border: 1px solid var(--gr-line); color: var(--gr-text);
+  font-size: 12.5px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+.gr-crumb:empty { display: none; }
+.gr-crumb-up {
+  background: none; border: none; padding: 0; color: var(--gr-dim);
+  font: inherit; cursor: pointer;
+}
+.gr-crumb-up:hover { color: var(--gr-accent); background: none; }
+.gr-crumb-sep { color: var(--gr-dim); }
+.gr-crumb-here { font-weight: 650; color: var(--gr-accent); }
+
+.gr-mini {
+  position: absolute; right: 14px; bottom: 14px; z-index: 3;
+  border: 1px solid var(--gr-line); border-radius: 8px; overflow: hidden;
+  background: var(--gr-panel); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  line-height: 0; cursor: crosshair;
+}
+.gr-mini:empty { display: none; }
+.gr-mini-n { fill: var(--gr-dim); opacity: 0.55; }
+.gr-mini-aim, .gr-mini-group { fill: var(--gr-accent); opacity: 0.8; }
+.gr-mini-conclusion { fill: var(--gr-good); opacity: 0.8; }
+.gr-mini-view { stroke: var(--gr-accent); stroke-width: 1.5; }
+
+.gr-edge-tip {
+  position: absolute; top: 0; left: 0; z-index: 4; max-width: 340px;
+  padding: 8px 11px; border-radius: 10px; pointer-events: none;
+  background: var(--gr-panel); border: 1px solid var(--gr-line); color: var(--gr-text);
+  font-size: 12px; line-height: 1.45;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+  will-change: transform;
+}
+.gr-edge-tip[hidden] { display: none; }
+.gr-edge-tip b { display: block; }
+.gr-edge-tip-type { color: var(--gr-accent); font-size: 11px; }
+.gr-edge-tip code { display: block; margin-top: 4px; font: 11px var(--mono); word-break: break-all; color: var(--gr-dim); }
+.gr-edge-tip .dim { color: var(--gr-dim); }
+
+/* ---- reduced motion: every animation above collapses to its resting state.
+   State changes still HAPPEN — they appear instead of animating. ---- */
 @media (prefers-reduced-motion: reduce) {
-  .gr-node.gr-busy .gr-card { animation: none; filter: drop-shadow(0 0 4px var(--accent)); }
   .gr-cardg { transition: none; }
+  .gr-node:hover .gr-cardg { transform: none; }
+  .gr-node.gr-sel .gr-cardg { animation: none; }
+  .gr-node.gr-busy .gr-cardg { animation: none; filter: drop-shadow(0 0 4px var(--gr-accent)); }
+  .gr-node.gr-exit .gr-cardg, .gr-node.gr-zoombig .gr-cardg { transition: none; }
+  .gr-wire.gr-exit, .gr-portal.gr-exit, .gr-portal { transition: none; }
+  .gr-wire.gr-draw .lw2-wire-vis { animation: none; stroke-dasharray: none; stroke-dashoffset: 0; }
+  .gr-wire.gr-flow .lw2-wire-vis { animation: none; stroke-dasharray: none; }
 }

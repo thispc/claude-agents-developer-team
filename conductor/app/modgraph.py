@@ -2,11 +2,17 @@
 
 The platform's own code reads as one vibe-coded blob, and a blob cannot be improved a
 module at a time because nobody can say where one module ends. This store holds the
-alternative: a PLAN — aim node → module nodes → conclusion node — where each node carries
-its spec, its boundary manifest (paths), its test suite, and its own agent/model config,
-and each edge is TYPED and carries the contract the two sides actually honour. The graph
-is the work model, not a diagram of it: verification selects tests from it, the crew's
-live activity is matched onto it, and dispatch (phase V2) walks it.
+alternative: a PLAN — aim node → GROUP nodes (the architecture layers: backend,
+frontend, data, …) → their module children (parent_key names the group) → conclusion
+node — where each node carries its spec, its boundary manifest (paths), its test suite,
+and its own agent/model config, and each edge is TYPED and carries the contract the two
+sides actually honour. Two levels, like an architecture diagram you can zoom: the top
+shows aim + groups + conclusion with group-to-group edges DERIVED from their children's
+(derive_group_edges); clicking a group is the microscope into its modules. A group's
+paths are always the union of its children's, its tests and activity roll up, and work
+lands on LEAVES only. The graph is the work model, not a diagram of it: verification
+selects tests from it, the crew's live activity is matched onto it, and dispatch (phase
+V2) walks it.
 
 WHY PLANS ARE IMMUTABLE VERSIONS. A replan never edits rows — it writes a new plan and
 marks the old one superseded, the sprint_artifacts lesson again: a mutable plan makes
@@ -59,10 +65,10 @@ CREATE TABLE IF NOT EXISTS graph_nodes (
     plan_id    INTEGER NOT NULL,
     key        TEXT NOT NULL,                      -- stable across plan versions
     title      TEXT NOT NULL DEFAULT '',
-    node_type  TEXT NOT NULL DEFAULT 'code',       -- aim | code | research | data | conclusion
+    node_type  TEXT NOT NULL DEFAULT 'code',       -- aim | group | code | research | data | conclusion
     spec       TEXT NOT NULL DEFAULT '',           -- what this module IS, in prose
     join_mode  TEXT NOT NULL DEFAULT 'all_of',     -- all_of | any_of (how inputs settle)
-    parent_key TEXT NOT NULL DEFAULT '',           -- optional grouping
+    parent_key TEXT NOT NULL DEFAULT '',           -- '' = top level, else the owning group's key
     tags       TEXT NOT NULL DEFAULT '[]',         -- JSON, Nx-style
     paths      TEXT NOT NULL DEFAULT '[]',         -- JSON boundary manifest; dirs end in '/'
     UNIQUE(plan_id, key)
@@ -312,12 +318,22 @@ def save_positions(plan_id: int, pos: dict) -> dict:
 
 def affected_tests(plan_id: int, node_key: str) -> list[str]:
     """The files a change to this node obliges us to run: the node's own suite plus
-    the contract test of every edge the node touches, either end.
+    the contract test of every edge the node touches, either end. A GROUP node's
+    affected set is the union of its children's — verifying a layer means
+    verifying every module in it, nothing more and nothing less; test rows
+    themselves live on LEAVES only.
 
     Pure selection — reads rows, returns paths, runs nothing and no model. This is
     the Nx-style affected-only discipline: verifying `guards` should not cost a
     full-suite run, but it MUST cost every contract `guards` participates in,
     because the other side of an interface is exactly who a change here breaks."""
+    kids = [n["key"] for n in nodes(plan_id)
+            if node_key and n["parent_key"] == node_key]
+    if kids:
+        merged: set[str] = set()
+        for k in kids:
+            merged.update(affected_tests(plan_id, k))
+        return sorted(merged)
     out = {t["path"] for t in tests(plan_id, node_key) if t["kind"] == "suite"}
     for e in edges(plan_id):
         if node_key in (e["src_key"], e["dst_key"]) and e["contract_test"]:
@@ -381,6 +397,33 @@ _SELF_MODULES: list[tuple[str, str, str, list[str], list[str]]] = [
     ("canvas", "The canvas", "dashboard/canvas2/index.js",
      ["frontend"],
      ["dashboard/canvas2/", "dashboard/js/canvas1.js"]),
+]
+
+# The architecture layers — the TOP level of the two-level graph. key, title, one
+# honest sentence, tags, and which of the modules above are its children. A group
+# carries no boundary of its own: its paths are the UNION of its children's,
+# computed in _self_manifest so the top level can never drift from what the
+# modules underneath it actually cover.
+_SELF_GROUPS: list[tuple[str, str, str, list[str], list[str]]] = [
+    ("backend", "Backend",
+     "The HTTP surface and the machinery under it: routes, the ownership gates, "
+     "child processes, and the deterministic scheduling that dispatches work.",
+     ["backend"], ["routes", "guards", "shell", "orchestration"]),
+    ("frontend", "Frontend",
+     "Everything the browser runs: the dashboard shell, its views, and the canvas.",
+     ["frontend"], ["dash-core", "dash-views", "canvas"]),
+    ("data", "Data layer",
+     "Where facts live: the SQLite persistence helpers and the knowledge the "
+     "agents have banked.",
+     ["backend", "data"], ["db", "knowledge"]),
+    ("agents", "Agents",
+     "The beings that do the work: the hidden manager, the worker process, and "
+     "the lifeworld substrate they inhabit.",
+     ["backend", "agent"], ["manager", "worker", "lifeworld"]),
+    ("selfrepair", "Self-repair",
+     "The platform improving itself: the IT crew's engine and the self-watching "
+     "ops record it acts on.",
+     ["backend", "domain"], ["repair", "ops"]),
 ]
 
 # Typed cross-module edges with the REAL contracts the two sides honour today. The
@@ -521,20 +564,50 @@ def _tests_for_nodes(by_key: dict[str, list[str]]) -> dict[str, set[str]]:
     return out
 
 
+def derive_group_edges(child_edges: list[dict], parent_of: dict[str, str]) -> list[dict]:
+    """Top-level edges are COMPUTED, never curated: group A → group B iff any
+    child of A has an edge to any child of B (and A is not B — an edge inside
+    one layer is that layer's private business). The first qualifying child
+    edge in input order is the representative: its type, contract and contract
+    test ride up, so the top level shows a real rule, not a hollow arrow.
+    Pure — lists in, list out, no rows, no files, no model."""
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for e in child_edges:
+        ga, gb = parent_of.get(e["src"], ""), parent_of.get(e["dst"], "")
+        if not ga or not gb or ga == gb or (ga, gb) in seen:
+            continue
+        seen.add((ga, gb))
+        out.append({"src": ga, "dst": gb, "edge_type": e["edge_type"],
+                    "contract": e["contract"], "contract_test": e["contract_test"]})
+    return out
+
+
 def _self_manifest() -> dict:
-    """The whole seed graph as one comparable value: nodes and edges in a fixed
-    order, tests sorted. Idempotence is dict equality on this, nothing cleverer."""
+    """The whole seed graph as one comparable value — TWO LEVELS: aim → group
+    nodes (the architecture layers) → their module children → conclusion.
+    Nodes and edges in a fixed order, tests sorted. Idempotence is dict
+    equality on this, nothing cleverer."""
     by_key = {key: paths for key, _, _, _, paths in _SELF_MODULES}
+    parent_of = {child: gkey for gkey, _, _, _, children in _SELF_GROUPS
+                 for child in children}
     node_list: list[dict] = [{
         "key": "aim", "title": "devteam — a platform whose agent teams build software, "
                                "including this platform", "node_type": "aim",
-        "spec": "Decomposed into the modules below; each carries its own spec, boundary, "
-                "suite and agent. The aim is what every module exists in service of.",
+        "spec": "Decomposed into the layers below, each layer into its modules; every "
+                "module carries its own spec, boundary, suite and agent. The aim is "
+                "what every module exists in service of.",
         "join_mode": "all_of", "parent_key": "", "tags": [], "paths": []}]
+    for gkey, gtitle, gspec, gtags, children in _SELF_GROUPS:
+        node_list.append({"key": gkey, "title": gtitle, "node_type": "group",
+                          "spec": gspec, "join_mode": "all_of", "parent_key": "",
+                          "tags": gtags,
+                          "paths": sorted({p for c in children for p in by_key[c]})})
     for key, title, doc, tags, paths in _SELF_MODULES:
         node_list.append({"key": key, "title": title, "node_type": "code",
                           "spec": _first_para(doc), "join_mode": "all_of",
-                          "parent_key": "", "tags": tags, "paths": paths})
+                          "parent_key": parent_of.get(key, ""), "tags": tags,
+                          "paths": paths})
     node_list.append({
         "key": "conclusion", "title": "The running platform", "node_type": "conclusion",
         "spec": "The deliverable: this server, serving this dashboard, improving this "
@@ -543,25 +616,32 @@ def _self_manifest() -> dict:
         "join_mode": "all_of", "parent_key": "", "tags": [], "paths": []})
 
     tmap = _tests_for_nodes(by_key)
-    edge_list: list[dict] = []
-    for key, *_ in _SELF_MODULES:
-        edge_list.append({"src": "aim", "dst": key, "edge_type": "depends",
-                          "contract": {}, "contract_test": ""})
+    child_edges: list[dict] = []
     for src, dst, etype, contract in _SELF_EDGES:
         # A test that names both sides of an edge is that edge's contract test —
         # mechanically, first in sorted order when several qualify.
         both = sorted(p for p, keys in tmap.items() if src in keys and dst in keys)
-        edge_list.append({"src": src, "dst": dst, "edge_type": etype,
-                          "contract": contract, "contract_test": both[0] if both else ""})
-    for key, *_ in _SELF_MODULES:
-        edge_list.append({"src": key, "dst": "conclusion", "edge_type": "depends",
-                          "contract": {}, "contract_test": ""})
+        child_edges.append({"src": src, "dst": dst, "edge_type": etype,
+                            "contract": contract, "contract_test": both[0] if both else ""})
+    # The top level frames GROUPS: aim feeds every layer, every layer feeds the
+    # conclusion, and layer-to-layer edges are derived from their children's.
+    # Child edges stay as they are, within and across groups — the canvas clips
+    # by level, so both stories are told without either lying.
+    edge_list: list[dict] = (
+        [{"src": "aim", "dst": gkey, "edge_type": "depends",
+          "contract": {}, "contract_test": ""} for gkey, *_ in _SELF_GROUPS]
+        + derive_group_edges(child_edges, parent_of)
+        + child_edges
+        + [{"src": gkey, "dst": "conclusion", "edge_type": "depends",
+            "contract": {}, "contract_test": ""} for gkey, *_ in _SELF_GROUPS])
 
+    # Test rows live on LEAVES: contract rows come from child edges only — a
+    # group answers through its children's rollup, not through rows of its own.
     test_list = sorted(
         [{"node": key, "kind": "suite", "path": path}
          for path, keys in tmap.items() for key in keys] +
         [{"node": e["dst"], "kind": "contract", "path": e["contract_test"]}
-         for e in edge_list if e["contract_test"]],
+         for e in child_edges if e["contract_test"]],
         key=lambda t: (t["node"], t["kind"], t["path"]))
     # A file can qualify as a contract on the same node it suites; UNIQUE dedupes
     # rows, so dedupe the manifest the same way or equality would lie.

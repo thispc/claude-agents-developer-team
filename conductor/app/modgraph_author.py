@@ -5,8 +5,9 @@ MINE — a decomposition hardcoded by whoever wrote the seed table. The owner's
 correction stands: the graph must be TEAM-authored. So the crew's hidden manager
 — the same bounded mediator that hosts the sprint deliberation, not an SDK
 session with tools — reads the repo's real module inventory and its own roster,
-and authors the plan its specialists will work: regrouped, renamed, annotated,
-and ASSIGNED, one specialist per node.
+and authors the plan its specialists will work: two levels (architecture groups
+over leaf modules), regrouped, renamed, annotated, and ASSIGNED — one
+specialist per LEAF; a group is worked only through its children.
 
 WHY ONE BOUNDED CALL. The crew's whole spend discipline is that every model call
 is counted and none is open-ended (repair.py's meters, phase_cost, headroom).
@@ -39,28 +40,35 @@ import time
 from . import bus, config, db, logs, modgraph, providers, repair, tuning
 from . import repair_builder as rb
 
-NODE_TYPES = ("aim", "code", "research", "data", "conclusion")
+NODE_TYPES = ("aim", "group", "code", "research", "data", "conclusion")
 EDGE_TYPES = ("depends", "interface", "data", "artifact")
 
 AUTHOR_SYSTEM = (
     "You are the hidden manager of the devteam platform's own IT crew. You are handed the "
     "repository's REAL module inventory (every path exists; the specs are the modules' own "
     "docstrings), the plan currently on the wall, and your team roster. Author the module "
-    "plan YOUR team will work: you may regroup, rename, retitle and re-annotate modules as "
-    "you judge best, and you assign each module to the specialist whose lens fits it. "
-    "Return ONLY one JSON object, no prose:\n"
+    "plan YOUR team will work — TWO LEVELS, like an architecture diagram you can zoom: a "
+    "handful of `group` nodes (the layers: backend, frontend, data, …) at the top, and "
+    "every real module a child of exactly one group via `parent`. You may regroup, "
+    "rename, retitle and re-annotate modules as you judge best, and you assign each LEAF "
+    "module to the specialist whose lens fits it. Return ONLY one JSON object, no prose:\n"
     '{"modules": [{"key": <short stable slug>, "title": <short>, '
-    '"node_type": "aim"|"code"|"research"|"data"|"conclusion", '
+    '"node_type": "aim"|"group"|"code"|"research"|"data"|"conclusion", '
+    '"parent": <the owning group\'s key, leaf modules only>, '
     '"spec": <what the module IS, 1-3 sentences>, "join": "all_of"|"any_of", '
     '"tags": [<strings>], "paths": [<repo paths; directories end in "/">]}],\n'
     ' "edges": [{"src": <key>, "dst": <key>, '
     '"type": "depends"|"interface"|"data"|"artifact", '
     '"contract": {"rule": <the rule both sides honour>}}],\n'
-    ' "assignments": {<module key>: <factor id>}}\n'
-    "Rules: exactly one aim node and one conclusion node, both with empty paths; every "
-    "other node's paths may name ONLY files and directories from the inventory — never "
-    "invent a path; every assignment value must be one of the roster's factor ids; keep a "
-    "key stable when the module is the same thing as in the current plan.")
+    ' "assignments": {<LEAF module key>: <factor id>}}\n'
+    "Rules: exactly one aim node and one conclusion node, both with empty paths and no "
+    "parent; a group has no parent and its spec is one honest sentence about the layer — "
+    "leave a group's paths empty, they are computed server-side as the union of its "
+    "children's; a leaf's paths may name ONLY files and directories from the inventory — "
+    "never invent a path; edges may connect groups to groups and leaves to leaves (the "
+    "canvas clips by level); assignments go on LEAF modules only and every value must be "
+    "one of the roster's factor ids; keep a key stable when the module is the same thing "
+    "as in the current plan.")
 
 
 def _sig() -> list[str]:
@@ -106,16 +114,19 @@ def _validated(obj: dict, man: dict, fs: list[dict]) -> tuple[list[dict], list[d
         ntype = ntype if ntype in NODE_TYPES else "code"
         join = str(m.get("join") or "all_of")
         join = join if join in ("all_of", "any_of") else "all_of"
+        parent = re.sub(r"[^a-z0-9-]+", "-",
+                        str(m.get("parent") or "").lower()).strip("-")[:40]
         paths: list[str] = []
-        for p in (m.get("paths") or [])[:40]:
-            p = str(p).strip().lstrip("/")
-            if p and (config.ROOT / p).exists():
-                paths.append(p)
-            elif p:
-                dropped.append(f"{key}: {p}")
+        if ntype != "group":                # a group's paths are computed, below
+            for p in (m.get("paths") or [])[:40]:
+                p = str(p).strip().lstrip("/")
+                if p and (config.ROOT / p).exists():
+                    paths.append(p)
+                elif p:
+                    dropped.append(f"{key}: {p}")
         nodes.append({"key": key, "title": str(m.get("title") or key)[:140],
                       "node_type": ntype, "spec": str(m.get("spec") or "")[:600],
-                      "join_mode": join, "parent_key": "",
+                      "join_mode": join, "parent_key": parent,
                       "tags": [str(t)[:40] for t in (m.get("tags") or [])][:8],
                       "paths": paths})
     if dropped:
@@ -130,6 +141,22 @@ def _validated(obj: dict, man: dict, fs: list[dict]) -> tuple[list[dict], list[d
     if not any(n["node_type"] == "conclusion" for n in nodes):
         nodes.append(dict(man["nodes"][-1]))
     nodes.sort(key=lambda n: {"aim": 0, "conclusion": 2}.get(n["node_type"], 1))
+
+    # Two levels, held structurally: a parent must name a GROUP in this same
+    # answer — groups, the aim and the conclusion sit at the top themselves, and
+    # a parent pointing anywhere else flattens to top level rather than minting
+    # a hierarchy the canvas has no idea how to clip. A group's boundary is then
+    # COMPUTED — the union of its children's paths — because the one fact the
+    # top level must never drift from is what the modules under it cover.
+    group_keys = {n["key"] for n in nodes if n["node_type"] == "group"}
+    for n in nodes:
+        if n["node_type"] in ("aim", "conclusion", "group") \
+                or n["parent_key"] not in group_keys:
+            n["parent_key"] = ""
+    for g in nodes:
+        if g["node_type"] == "group":
+            g["paths"] = sorted({p for n in nodes
+                                 if n["parent_key"] == g["key"] for p in n["paths"]})
 
     keyset = {n["key"] for n in nodes}
     edges: list[dict] = []
@@ -150,8 +177,12 @@ def _validated(obj: dict, man: dict, fs: list[dict]) -> tuple[list[dict], list[d
         edges.append({"src": src, "dst": dst, "edge_type": etype, "contract": contract})
 
     fids = {f["id"] for f in fs}
+    # Assignments land on LEAVES only: a group is worked through its children,
+    # so a specialist pinned to a layer would be a specialist pinned to nothing.
+    leaf_keys = {n["key"] for n in nodes
+                 if n["node_type"] not in ("aim", "conclusion", "group")}
     assigns = {str(k): str(v) for k, v in (obj.get("assignments") or {}).items()
-               if str(k) in keyset and str(v) in fids}
+               if str(k) in leaf_keys and str(v) in fids}
     return nodes, edges, assigns
 
 
@@ -159,8 +190,11 @@ def _candidate_manifest(nodes: list[dict], edges: list[dict]) -> dict:
     """The would-be plan in modgraph._manifest_of's comparable shape, with the test
     mapping derived MECHANICALLY from the authored boundaries — the same parsed-
     imports discipline as the seed, filtered to keys this plan actually has. The
-    manager authors boundaries; it never authors which tests exist."""
-    by_key = {n["key"]: n["paths"] for n in nodes}
+    manager authors boundaries; it never authors which tests exist. LEAVES only:
+    a group's paths are the union of its children's, so letting it into the
+    mapping would swallow every suite its children should own — groups answer
+    through the payload's rollup instead."""
+    by_key = {n["key"]: n["paths"] for n in nodes if n["node_type"] != "group"}
     tmap = {path: keys & set(by_key)
             for path, keys in modgraph._tests_for_nodes(by_key).items()}
     tmap = {path: keys for path, keys in tmap.items() if keys}

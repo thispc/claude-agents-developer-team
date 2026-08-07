@@ -66,9 +66,31 @@ def test_the_seed_matches_reality(fresh_db):
     nodes = modgraph.nodes(pid)
     keys = [n["key"] for n in nodes]
     assert keys[0] == "aim" and keys[-1] == "conclusion"
-    assert set(keys) == {"aim", "routes", "guards", "shell", "db", "manager",
-                         "orchestration", "repair", "lifeworld", "knowledge", "ops",
-                         "worker", "dash-core", "dash-views", "canvas", "conclusion"}
+    groups = {n["key"] for n in nodes if n["node_type"] == "group"}
+    leaves = {n["key"] for n in nodes if n["node_type"] == "code"}
+    assert groups == {"backend", "frontend", "data", "agents", "selfrepair"}
+    assert leaves == {"routes", "guards", "shell", "db", "manager",
+                      "orchestration", "repair", "lifeworld", "knowledge", "ops",
+                      "worker", "dash-core", "dash-views", "canvas"}
+    assert set(keys) == groups | leaves | {"aim", "conclusion"}
+
+    # TWO LEVELS, structurally: every top node between aim and conclusion is a
+    # GROUP; every module is the child of exactly one group; a group's boundary
+    # is precisely the union of its children's — an architecture diagram whose
+    # zoomed-out level cannot drift from the modules underneath it.
+    by = {n["key"]: n for n in nodes}
+    for n in nodes:
+        if n["node_type"] in ("aim", "conclusion", "group"):
+            assert n["parent_key"] == "", f"{n['key']} must sit at the top level"
+        else:
+            assert by.get(n["parent_key"], {}).get("node_type") == "group", \
+                f"module {n['key']} is not parented to a group"
+    for g in sorted(groups):
+        kids = [c for c in nodes if c["parent_key"] == g]
+        assert kids, f"group {g} has no children"
+        assert by[g]["paths"] == sorted({p for c in kids for p in c["paths"]}), \
+            f"group {g}'s paths are not the union of its children's"
+        assert by[g]["spec"], f"group {g} carries no spec"
 
     # every boundary entry exists in the repo
     for n in nodes:
@@ -109,6 +131,65 @@ def test_the_seed_matches_reality(fresh_db):
 
 
 # --------------------------------------------------------------------------
+# the top level is derived, never curated
+# --------------------------------------------------------------------------
+
+def test_group_edges_are_derived_from_child_edges():
+    """Group A → group B iff any child of A touches any child of B, the first
+    crossing edge in input order riding up as the representative; an edge
+    inside one layer is that layer's private business, and an endpoint with no
+    parent derives nothing. Pure: lists in, list out."""
+    parent_of = {"a1": "A", "a2": "A", "b1": "B", "c1": "C"}
+    child = [
+        {"src": "a1", "dst": "a2", "edge_type": "interface",
+         "contract": {"rule": "in-house"}, "contract_test": "tests/t_aa.py"},
+        {"src": "a1", "dst": "b1", "edge_type": "data",
+         "contract": {"rule": "first crossing"}, "contract_test": "tests/t_ab.py"},
+        {"src": "a2", "dst": "b1", "edge_type": "interface",
+         "contract": {"rule": "second crossing, not the representative"},
+         "contract_test": ""},
+        {"src": "b1", "dst": "c1", "edge_type": "depends", "contract": {},
+         "contract_test": ""},
+        {"src": "b1", "dst": "orphan", "edge_type": "depends", "contract": {},
+         "contract_test": ""},
+    ]
+    before = [dict(e) for e in child]
+    got = modgraph.derive_group_edges(child, parent_of)
+    assert got == [
+        {"src": "A", "dst": "B", "edge_type": "data",
+         "contract": {"rule": "first crossing"}, "contract_test": "tests/t_ab.py"},
+        {"src": "B", "dst": "C", "edge_type": "depends", "contract": {},
+         "contract_test": ""},
+    ]
+    assert child == before, "the derivation must not mutate its input"
+
+
+def test_the_seeds_top_level_edges_are_exactly_the_derivation(fresh_db):
+    """The stored group-to-group edges are the derivation over the stored child
+    edges — no hand-curated arrow at the top level — and the frame holds: the
+    aim feeds every layer, every layer feeds the conclusion, and no edge mixes
+    a group with a leaf (the canvas clips by level)."""
+    pid = _seeded(fresh_db)
+    nodes = modgraph.nodes(pid)
+    parent_of = {n["key"]: n["parent_key"] for n in nodes if n["parent_key"]}
+    groups = {n["key"] for n in nodes if n["node_type"] == "group"}
+    edges = [{"src": e["src_key"], "dst": e["dst_key"], "edge_type": e["edge_type"],
+              "contract": e["contract"], "contract_test": e["contract_test"]}
+             for e in modgraph.edges(pid)]
+    child = [e for e in edges if e["src"] in parent_of and e["dst"] in parent_of]
+    stored = [e for e in edges if e["src"] in groups and e["dst"] in groups]
+    assert stored == modgraph.derive_group_edges(child, parent_of)
+    assert stored, "the layers of a working platform cannot be unconnected"
+    for g in sorted(groups):
+        assert any(e["src"] == "aim" and e["dst"] == g for e in edges)
+        assert any(e["src"] == g and e["dst"] == "conclusion" for e in edges)
+    for e in edges:
+        assert (e["src"] in groups) == (e["dst"] in groups) or \
+            e["src"] == "aim" or e["dst"] == "conclusion", \
+            f"{e['src']}→{e['dst']} mixes the two levels"
+
+
+# --------------------------------------------------------------------------
 # immutability: drift makes a NEW version; nothing edits history
 # --------------------------------------------------------------------------
 
@@ -133,7 +214,7 @@ def test_drift_makes_a_new_version_and_never_touches_the_old_rows(fresh_db, monk
     real = modgraph._self_manifest
     def drifted():
         man = real()
-        man["nodes"][1]["spec"] = "the routes module, freshly reworded"
+        man["nodes"][1]["spec"] = "the backend layer, freshly reworded"
         return man
     monkeypatch.setattr(modgraph, "_self_manifest", drifted)
 
@@ -171,11 +252,14 @@ def test_the_seed_never_overwrites_a_managers_plan(fresh_db):
 def test_affected_selection_is_the_suite_plus_every_touched_contract(fresh_db):
     """Verifying a node runs its own suite plus the contract of every edge it is
     party to — either end, because the other side of an interface is exactly who
-    a change here breaks — and nothing else."""
+    a change here breaks — and nothing else. Verifying a GROUP is exactly the
+    union of its children's affected sets."""
     modgraph.init()
     pid = modgraph.create_plan(7, authored_by="test")
-    for k in ("a", "b", "c"):
-        modgraph.add_node(pid, k, k.upper())
+    modgraph.add_node(pid, "g", "The AB layer", node_type="group")
+    for k in ("a", "b"):
+        modgraph.add_node(pid, k, k.upper(), parent_key="g")
+    modgraph.add_node(pid, "c", "C")
     modgraph.map_test(pid, "a", "tests/t_a.py")
     modgraph.map_test(pid, "a", "tests/t_a2.py")
     modgraph.map_test(pid, "b", "tests/t_b.py")
@@ -189,6 +273,10 @@ def test_affected_selection_is_the_suite_plus_every_touched_contract(fresh_db):
     assert "tests/t_bc.py" not in got, "an edge not touching the node was selected"
     assert "tests/t_b.py" not in got, "another node's suite was selected"
     assert modgraph.affected_tests(pid, "nowhere") == []
+    # the group: the union of its children's sets — no more, no less
+    assert modgraph.affected_tests(pid, "g") == sorted(
+        set(modgraph.affected_tests(pid, "a")) | set(modgraph.affected_tests(pid, "b")))
+    assert "tests/t_b.py" in modgraph.affected_tests(pid, "g")
     # pure: selection wrote nothing
     assert db._rows("SELECT COUNT(*) AS n FROM graph_node_runs")[0]["n"] == runs_before
 
@@ -312,6 +400,46 @@ def test_config_validates_the_model_and_layout_merges(root_client):
     assert r.status_code == 200
     pos = modgraph.positions(plan["id"])
     assert pos["db"] == [120.0, 80.0] and "routes" not in pos
+
+
+# --------------------------------------------------------------------------
+# the payload carries both levels; a group answers for its children
+# --------------------------------------------------------------------------
+
+def test_the_payload_carries_parents_and_rolls_groups_up(root_client, monkeypatch):
+    """The canvas derives its two levels client-side from parent_key alone, so
+    every node row must carry it — and a group must answer for its children:
+    suite totals summed, activity busy exactly when a child is busy."""
+    from app import repair
+    monkeypatch.setattr(repair, "status", lambda: {"sprint": {"tasks": [{
+        "status": "building", "title": "Fix knowledge decay",
+        "brief": "conductor/app/knowledge.py drops rows on decay",
+        "factor": "correctness"}]}})
+    plan = modgraph.active_plan(0)
+    modgraph.update_test_result(plan["id"], "tests/test_knowledge.py", "failing", "boom")
+
+    r = root_client.get("/api/graph/self")
+    assert r.status_code == 200, r.text
+    out = r.json()
+    by = {n["key"]: n for n in out["nodes"]}
+    assert all("parent_key" in n for n in out["nodes"]), \
+        "every row must carry parent_key — the canvas clips by level with it"
+    assert by["aim"]["parent_key"] == "" and by["conclusion"]["parent_key"] == ""
+    assert by["knowledge"]["parent_key"] == "data"
+
+    kids = [n for n in out["nodes"] if n["parent_key"] == "data"]
+    assert by["data"]["node_type"] == "group" and kids
+    for f in ("total", "passing", "failing", "advisory"):
+        assert by["data"]["tests"][f] == sum(k["tests"][f] for k in kids), \
+            f"the group's {f} is not the sum of its children's"
+    assert by["data"]["tests"]["failing"] >= 1, "the child's red must reach the layer"
+    assert by["data"]["tests"]["total"] > by["knowledge"]["tests"]["total"], \
+        "db's suites must be in the rollup too"
+
+    # busy child -> busy group; an untouched layer stays quiet
+    assert by["knowledge"]["activity"], "the building task names knowledge.py"
+    assert by["data"]["activity"] == by["knowledge"]["activity"]
+    assert by["frontend"]["activity"] == []
 
 
 # --------------------------------------------------------------------------

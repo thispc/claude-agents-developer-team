@@ -5,7 +5,7 @@
 // (barycenter), which is what stops the wires from weaving. Saved positions —
 // someone dragged that node — always win over anything computed here.
 
-const COL_W = 260;   // x distance between layers
+const COL_W = 260;   // x distance between layers (default; a level can ask for more air)
 const ROW_H = 150;   // y distance between slots in a layer
 
 /** src/dst regardless of which serializer produced the edge (the seam's shapes
@@ -15,9 +15,13 @@ function ends(e) {
 }
 
 /** {key -> {x, y}} for every node. `positions` is the persisted {key: [x,y]} map;
- * a key present there is used verbatim and skipped by the auto-layout. */
-export function layout(nodes, edges, positions) {
+ * a key present there is used verbatim and skipped by the auto-layout. `opts` may
+ * widen the grid ({colW, rowH}) — the top level of the hierarchical view breathes
+ * like an architecture diagram, a group's interior packs a little tighter. */
+export function layout(nodes, edges, positions, opts) {
   positions = positions || {};
+  const colW = (opts && opts.colW) || COL_W;
+  const rowH = (opts && opts.rowH) || ROW_H;
   const keys = nodes.map((n) => String(n.key));
   const have = new Set(keys);
   const preds = new Map(keys.map((k) => [k, []]));
@@ -82,7 +86,7 @@ export function layout(nodes, edges, positions) {
       const saved = positions[k];
       out[k] = (Array.isArray(saved) && saved.length === 2)
         ? { x: +saved[0], y: +saved[1] }
-        : { x: d * COL_W, y: (i - (layer.length - 1) / 2) * ROW_H };
+        : { x: d * colW, y: (i - (layer.length - 1) / 2) * rowH };
     });
   }
   return out;

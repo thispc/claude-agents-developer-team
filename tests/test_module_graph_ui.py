@@ -181,3 +181,92 @@ def test_the_graph_src_seam_exists_with_the_five_verbs():
     for verb in ("fetch:", "verify:", "saveLayout:", "setConfig:", "inspect:"):
         assert verb in seam, f"the seam lost its {verb.rstrip(':')} verb"
     assert "/api/graph/self" in seam
+
+
+# --------------------------------------------------------------------------
+# the hierarchical microscope: themes, drill state, motion, HUD
+# --------------------------------------------------------------------------
+
+def test_two_themes_scoped_to_graphscreen_with_persistence():
+    """Blueprint (this screen's default HUD) and paper (the app's own look) are
+    one data attribute apart; every colour resolves through --gr-* custom
+    properties scoped to #graphScreen, so neither theme can leak app-wide."""
+    css = _read("graph/graph.css")
+    assert '#graphScreen[data-gtheme="blueprint"]' in css
+    assert '#graphScreen[data-gtheme="paper"]' in css
+    assert "--gr-" in css
+    assert ":root" not in css, "graph theme variables must stay scoped to #graphScreen"
+    mod = _read("graph/index.js")
+    assert 'THEME_KEY = "gr:theme"' in mod
+    assert "localStorage.setItem(THEME_KEY" in mod, "the chosen theme must persist"
+    assert "dataset.gtheme" in mod
+    assert '"blueprint"' in mod and '"paper"' in mod
+    html = _read("index.html")
+    assert 'id="graphTheme"' in html, "the theme toggle lives in the graph bar"
+
+
+def test_breadcrumb_exists_and_climbs():
+    html = _read("index.html")
+    assert 'id="graphCrumb"' in html
+    mod = _read("graph/index.js")
+    assert "renderCrumb" in mod
+    assert "gr-crumb-up" in mod, "the aim crumb is the way back up a level"
+
+
+def test_drill_state_lives_in_the_hash():
+    """#/graph is the architecture, #/graph/<group> is inside that group — the
+    address bar, the back button and a pasted link all mean the same place."""
+    mod = _read("graph/index.js")
+    assert "function open(sourceName, sub)" in mod, "open() must accept the drill sub-path"
+    assert '"#/graph/" + encodeURIComponent(key)' in mod, "drilling must write the hash"
+    js = dashboard_js()
+    assert 'ModuleGraph.open("self", ' in js, \
+        "core.js must pass the hash's sub-path through to the module"
+
+
+def test_motion_is_css_with_reduced_motion_guards():
+    """Dash-flow shimmer, wire draw-in, hover lift and the selection pulse are
+    all CSS (transform/opacity/dash only) — and every one of them stands down
+    under prefers-reduced-motion."""
+    css = _read("graph/graph.css")
+    for needle in ("gr-dashflow", "gr-drawin", "gr-pulse", "stroke-dashoffset"):
+        assert needle in css, f"the {needle} animation is gone"
+    assert ":hover .gr-cardg" in css and "scale(1.03)" in css, "the hover lift is gone"
+    reduce = css.split("prefers-reduced-motion", 1)[1]
+    for guard in ("gr-flow", "gr-draw", "gr-sel", ":hover .gr-cardg", "gr-busy"):
+        assert guard in reduce, f"{guard} does not stand down under reduced motion"
+
+
+def test_the_raf_loop_lives_only_in_the_camera():
+    """Efficiency pin: the ONE requestAnimationFrame loop is the camera flight
+    (flyTo) and nothing else — at rest, no JS animation loop runs at all."""
+    mod = _read("graph/index.js")
+    before, after = mod.split("function flyTo", 1)
+    assert "requestAnimationFrame" not in before, "an rAF loop outside the camera"
+    fly_body = after.split("\nfunction ", 1)[0]
+    assert "requestAnimationFrame" in fly_body
+    assert "requestAnimationFrame" not in after.split("\nfunction ", 1)[1], \
+        "an rAF loop outside the camera"
+    for rel in ("graph/nodes.js", "graph/layout.js"):
+        assert "requestAnimationFrame" not in _read(rel)
+
+
+def test_minimap_present_with_click_to_jump():
+    html = _read("index.html")
+    assert 'id="graphMini"' in html
+    mod = _read("graph/index.js")
+    assert "renderMini" in mod and "miniViewport" in mod
+    assert "onpointerdown" in mod.split("function renderMini", 1)[1].split("\nfunction ", 1)[0], \
+        "the minimap must jump the camera on click"
+
+
+def test_edge_tooltip_escapes_the_contract():
+    """Contracts are planner-authored JSON riding into a floating div — every
+    interpolated field goes through esc() or it is an injection."""
+    html = _read("index.html")
+    assert 'id="graphTip"' in html
+    mod = _read("graph/index.js")
+    body = mod.split("function showTip", 1)[1].split("\nfunction ", 1)[0]
+    assert "esc(JSON.stringify(ed.contract))" in body
+    assert "esc(ed.edge_type" in body and "esc(ed.contract_test)" in body
+    assert "esc(s)" in body and "esc(d)" in body

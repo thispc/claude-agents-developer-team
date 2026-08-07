@@ -67,17 +67,26 @@ def _task(factor="correctness", title="Fix knowledge decay",
 
 
 def _author_reply(paths_extra=None):
-    """A valid manager answer: a regrouped two-module plan over real files."""
+    """A valid manager answer in the TWO-LEVEL shape: one group over two leaf
+    modules. It also probes the server's distrust on purpose: a decoy paths
+    list on the group (the real union is computed server-side) and an
+    assignment on the group (leaves only — it must be discarded)."""
     return json.dumps({
         "modules": [
             {"key": "aim", "title": "devteam, replanned by its own manager",
              "node_type": "aim", "spec": "the aim", "join": "all_of", "tags": [], "paths": []},
-            {"key": "engine", "title": "The engine room", "node_type": "code",
+            {"key": "core", "title": "The engine room", "node_type": "group",
+             "spec": "the repair layer and what it knows", "join": "all_of",
+             "tags": ["backend"],
+             "paths": ["conductor/app/main.py"]},        # decoy: must be ignored
+            {"key": "engine", "title": "The engine", "node_type": "code",
+             "parent": "core",
              "spec": "the repair engine and its builder", "join": "all_of",
              "tags": ["backend"],
              "paths": ["conductor/app/repair.py", "conductor/app/repair_builder.py"]
                       + (paths_extra or [])},
             {"key": "memory", "title": "What the crew knows", "node_type": "code",
+             "parent": "core",
              "spec": "the knowledge store", "join": "all_of", "tags": ["backend"],
              "paths": ["conductor/app/knowledge.py"]},
             {"key": "conclusion", "title": "The running platform",
@@ -85,14 +94,13 @@ def _author_reply(paths_extra=None):
              "tags": [], "paths": []},
         ],
         "edges": [
-            {"src": "aim", "dst": "memory", "type": "depends", "contract": {}},
-            {"src": "aim", "dst": "engine", "type": "depends", "contract": {}},
+            {"src": "aim", "dst": "core", "type": "depends", "contract": {}},
             {"src": "memory", "dst": "engine", "type": "data",
              "contract": {"rule": "lessons reach builds only via knowledge.recall"}},
-            {"src": "engine", "dst": "conclusion", "type": "depends", "contract": {}},
-            {"src": "memory", "dst": "conclusion", "type": "depends", "contract": {}},
+            {"src": "core", "dst": "conclusion", "type": "depends", "contract": {}},
         ],
-        "assignments": {"engine": "correctness", "memory": "reusability"},
+        "assignments": {"engine": "correctness", "memory": "reusability",
+                        "core": "speed"},
     })
 
 
@@ -163,15 +171,30 @@ def test_the_manager_authors_the_plan_once_and_identical_is_a_noop(fresh_db, mon
     assert plan["id"] == pid and plan["authored_by"] == "manager"
     assert modgraph.get_plan(seed_id)["status"] == "superseded"
     keys = [n["key"] for n in modgraph.nodes(pid)]
-    assert keys == ["aim", "engine", "memory", "conclusion"]
+    assert keys == ["aim", "core", "engine", "memory", "conclusion"]
 
-    # assignments: factor -> the specialist's living human id, via the crew record
+    # the two-level shape, held structurally: the group tops out, the leaves
+    # hang from it, and the group's boundary is the COMPUTED union of its
+    # children's — the decoy path the manager wrote on the group was ignored
+    by = {n["key"]: n for n in modgraph.nodes(pid)}
+    assert by["core"]["node_type"] == "group" and by["core"]["parent_key"] == ""
+    assert by["engine"]["parent_key"] == "core" and by["memory"]["parent_key"] == "core"
+    assert by["core"]["paths"] == sorted(set(by["engine"]["paths"])
+                                         | set(by["memory"]["paths"]))
+    assert "conductor/app/main.py" not in by["core"]["paths"]
+
+    # assignments: factor -> the specialist's living human id, via the crew
+    # record — and on LEAVES only, the one aimed at the group was discarded
     assert modgraph.get_assign(pid, "engine")["agent_id"] == info["agents"]["correctness"]
     assert modgraph.get_assign(pid, "memory")["agent_id"] == info["agents"]["reusability"]
+    assert modgraph.get_assign(pid, "core") is None, \
+        "an assignment on a group must be discarded — a layer is worked through its children"
 
-    # the test mapping is mechanical, not authored: knowledge tests land on `memory`
+    # the test mapping is mechanical, not authored: knowledge tests land on the
+    # LEAF `memory`; the group holds no rows of its own — it answers by rollup
     mapped = {t["path"] for t in modgraph.tests(pid, "memory")}
     assert "tests/test_knowledge.py" in mapped
+    assert modgraph.tests(pid, "core") == []
 
     # the reveal: one planned event per node in topo order, then the ready flare
     evs = [e for e in db.list_events(0)
@@ -209,6 +232,29 @@ def test_invented_paths_are_dropped_with_a_log(fresh_db, monkeypatch):
     assert "conductor/app/repair.py" in node["paths"], "valid siblings must survive the drop"
     from app import logs
     assert any(r["event"] == "graph_paths_dropped" for r in logs.rows())
+
+
+def test_a_parent_that_is_not_a_group_is_cleared(fresh_db, monkeypatch):
+    """Two levels means TWO: a leaf claiming another leaf as its parent, or a
+    group claiming a parent of its own, flattens to top level rather than
+    minting a hierarchy the canvas has no idea how to clip — and the group's
+    computed union then covers only the children that remain."""
+    _root_user(); _go_live(monkeypatch)
+    modgraph.init(); modgraph.seed_self_graph(); repair.ensure_team()
+    reply = json.loads(_author_reply())
+    assert reply["modules"][1]["key"] == "core" and reply["modules"][3]["key"] == "memory"
+    reply["modules"][1]["parent"] = "aim"          # a group must not nest
+    reply["modules"][3]["parent"] = "engine"       # a leaf is nobody's parent
+    from app import providers
+    fake, _calls = _author_fake(json.dumps(reply))
+    monkeypatch.setattr(providers, "complete", fake)
+    pid = asyncio.run(modgraph_author.author_self_plan())
+    by = {n["key"]: n for n in modgraph.nodes(pid)}
+    assert by["core"]["parent_key"] == ""
+    assert by["memory"]["parent_key"] == ""
+    assert by["engine"]["parent_key"] == "core", "the valid parent must survive"
+    assert by["core"]["paths"] == sorted(by["engine"]["paths"]), \
+        "the union must follow the children that actually remain"
 
 
 def test_offline_authors_nothing(fresh_db, monkeypatch):

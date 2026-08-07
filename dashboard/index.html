@@ -514,9 +514,17 @@
     <b>🕸 Module graph</b>
     <span class="dim" id="graphPlanInfo"></span>
     <span class="studio-spacer"></span>
+    <button class="rp-mini" id="graphTheme" title="Switch this canvas between the blueprint HUD and the app's paper look">◐ blueprint</button>
   </div>
   <div class="graph-body">
-    <div class="graph-canvas" id="graphCanvas"></div>
+    <!-- The stage: #graphCanvas is the world host (createWorld owns and wipes it),
+         so the HUD chrome — breadcrumb, minimap, edge tooltip — are SIBLINGS. -->
+    <div class="graph-stage">
+      <div class="graph-canvas" id="graphCanvas"></div>
+      <nav class="gr-crumb" id="graphCrumb" aria-label="where you are in the graph"></nav>
+      <div class="gr-mini" id="graphMini" title="Minimap — click to jump"></div>
+      <div class="gr-edge-tip" id="graphTip" hidden></div>
+    </div>
     <aside id="graphAside"><p class="dim">loading the graph…</p></aside>
   </div>
 </section>

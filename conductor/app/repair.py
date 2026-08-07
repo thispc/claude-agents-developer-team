@@ -801,13 +801,17 @@ def _graph_node_for(task: dict) -> tuple[int, str] | None:
     task's own file mentions (task['files'] when the planner said, else paths
     named in title/brief/evidence) prefix-matched to each node's boundary
     manifest. When the task names no files at all, the specialist's ASSIGNED
-    node (graph_assign, written by the manager's authoring pass) answers."""
+    node (graph_assign, written by the manager's authoring pass) answers.
+
+    LEAVES only: a group's boundary is the union of its children's, so letting
+    groups into the match would swallow every build their children should own —
+    runs land on modules, the payload rolls them up to the layer."""
     from . import modgraph
     plan = modgraph.active_plan(0)
     if not plan:
         return None
     pid = int(plan["id"])
-    nodes = modgraph.nodes(pid)
+    nodes = [n for n in modgraph.nodes(pid) if n["node_type"] != "group"]
     files = [str(f) for f in (task.get("files") or [])]
     if not files:
         text = " ".join(str(task.get(k) or "") for k in ("title", "brief", "evidence"))
