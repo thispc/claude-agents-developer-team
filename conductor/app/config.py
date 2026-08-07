@@ -16,6 +16,10 @@ def _flag(name: str, default: bool = False) -> bool:
 # engine remains as a fallback: set CANVAS_V2=0 (or false/no/off) to serve it.
 CANVAS_V2 = _flag("CANVAS_V2", default=True)
 
+# The Module Graph: projects (starting with the platform itself) as a graph of verified
+# modules. ON by default; MODULE_GRAPH=0 removes the surface and the old flow is untouched.
+MODULE_GRAPH = _flag("MODULE_GRAPH", default=True)
+
 # Per-agent MODEL session usage — an agent that burns its model's session quota goes to sleep
 # until the rolling window passes (starting model: Claude, whose subscription session is ~5h).
 # Usage = model-uses within the window; at the cap the agent sleeps. Both are env-tunable.

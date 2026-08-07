@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import auth, bus, config, db, findings, home, knowledge, launcher, logs, manager, scheduler, upkeep
+from . import auth, bus, config, db, findings, home, knowledge, launcher, logs, manager, modgraph, scheduler, upkeep
 from .routes import router, _manager_tasks
 
 
@@ -19,6 +19,14 @@ async def lifespan(app: FastAPI):
     auth.init()       # seeds the root superuser from .env on first run
     findings.init()
     knowledge.init()
+    modgraph.init()
+    try:
+        # The offline fallback graph for the platform itself. Guarded: a seed failure
+        # (an unreadable file, a moved module) must never block boot — the graph screen
+        # can heal it later, the rest of the app does not depend on it.
+        modgraph.seed_self_graph()
+    except Exception as e:
+        logs.warn("lifecycle", "graph_seed_failed", f"module-graph seed skipped: {e}")
     loop = asyncio.get_event_loop()
     bus.set_loop(loop)
     # Photograph HEAD now, not lazily — code_currency() compares against this forever

@@ -6,7 +6,7 @@ const $ = (s) => document.querySelector(s);
 // Every full-screen section. Six functions used to each carry their own copy of this list,
 // which is how a new screen ends up visible underneath another one.
 const SCREENS = ["#home", "main", "#plan", "#studio", "#scenes", "#lifeworld",
-                 "#aboutPage", "#selfPage", "#agentPage"];
+                 "#aboutPage", "#selfPage", "#agentPage", "#graphScreen"];
 function hideScreens(except) {
   for (const sel of SCREENS) {
     if (sel === except) continue;
@@ -461,6 +461,24 @@ function showHome(skipHash) {
   loadProjects();
 }
 
+/** The module graph — the platform as a living graph of verified modules. The screen
+ * itself is an ES module (dashboard/graph/); this is the classic scripts' door to it.
+ * Gated on the MODULE_GRAPH flag via /api/me: with the flag off (or the module not
+ * loaded) the same click lands on Devteam HQ, exactly where it used to. */
+function openModuleGraph(skipHash) {
+  if (!(me && me.module_graph) || !window.ModuleGraph) {
+    openDevteamHQ("command", skipHash);
+    return;
+  }
+  hideScreens("#graphScreen");
+  const g = $("#graphScreen");
+  if (g) g.hidden = false;
+  $("#projectBar").hidden = true;
+  currentProject = null;
+  if (!skipHash) setHash("#/graph");
+  window.ModuleGraph.open("self");
+}
+
 function openProject(id, view, skipHash) {
   const sp = $("#selfPage"); if (sp) sp.hidden = true;
   const ab = $("#aboutPage"); if (ab) ab.hidden = true;
@@ -548,6 +566,9 @@ function route() {
     const ag = $("#agentPage");
     if (ag && !ag.hidden) { ag.hidden = true; if (typeof agTimer !== "undefined" && agTimer) { clearInterval(agTimer); agTimer = null; } }
   }
+  // Same discipline for the module graph: routing away destroys its instance (its
+  // timers, its listeners) — close() is idempotent, so this is safe to say every time.
+  if (!location.hash.startsWith("#/graph") && window.ModuleGraph) window.ModuleGraph.close();
   const plan = location.hash.match(/^#\/plan(?:\/(\d+))?/);
   if (plan) {
     openPlan();
@@ -567,6 +588,7 @@ function route() {
   if (location.hash.startsWith("#/lifeworld")) { openStudio(true); return; }   // legacy link
   if (location.hash.startsWith("#/about")) { openAbout(true); return; }
   if (location.hash.startsWith("#/improve")) { openSelfRepair(true); return; }
+  if (location.hash.startsWith("#/graph")) { openModuleGraph(true); return; }
   {
     const hq = location.hash.match(/^#\/hq(?:\/(\w+))?/);
     if (hq) { openDevteamHQ(hq[1] || "command", true); return; }

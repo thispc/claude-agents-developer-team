@@ -234,8 +234,16 @@ async def ws_feed(ws: WebSocket) -> None:
             event = await q.get()
             pid = event.get("project_id")
             if pid not in visible:
-                p = db.get_project(pid) if pid else None
-                visible[pid] = bool(p and can_see(p, user))
+                if pid == 0:
+                    # Project 0 is the platform itself: the crew's and the module
+                    # graph's events. Same gate as the Improve tile — visible to
+                    # whoever may self-repair, DROPPED for everyone else, so the
+                    # graph screen gets a live feed without HQ-style polling.
+                    visible[0] = config.may_self_repair(user["username"],
+                                                       bool(user["is_root"]))
+                else:
+                    p = db.get_project(pid) if pid else None
+                    visible[pid] = bool(p and can_see(p, user))
             if visible[pid]:
                 await ws.send_json(event)
     except (WebSocketDisconnect, RuntimeError):

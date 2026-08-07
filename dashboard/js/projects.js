@@ -917,6 +917,13 @@ async function refreshBoard() {
       : () => { location.hash = `#/studio`; setTimeout(() =>
           (typeof lwOpenScene === "function") && (lwWorldId = p.team_world, lwOpenScene(p.team_room)), 350); };
   }
+  // HQ only: the door to the module-graph canvas, shown when the flag says the
+  // graph exists at all (me.module_graph mirrors MODULE_GRAPH server-side).
+  const gl = $("#graphLink");
+  if (gl) {
+    gl.hidden = !(projSrc && me && me.module_graph);
+    gl.onclick = () => openModuleGraph();
+  }
   const sb = $("#sprintBadge");
   if (sb) {
     const total = p.sprints ?? 1;
@@ -1075,6 +1082,10 @@ function connectWs() {
       noteActivity(e); renderEvent(e); scheduleRefresh();
     }
     else loadProjects();  // on the home page, keep the table live
+    // Module-graph bridge: the graph screen is an ES module and cannot reach this
+    // let-bound socket, so its kinds are re-broadcast as DOM events it CAN hear.
+    if (e.kind && (e.kind.startsWith("graph_") || e.source === "repair"))
+      document.dispatchEvent(new CustomEvent("graph-event", { detail: e }));
     if (e.source === "repair" && typeof rpOnEvent === "function") rpOnEvent(e);
     if (e.kind === "boss_question" || e.kind === "answered") { refreshQuestion(); refreshBell(); }
     if (e.kind === "boss_question") notifyBoss(e);

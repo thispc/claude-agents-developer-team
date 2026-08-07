@@ -778,6 +778,105 @@ def reg_key_for(world_id: int, human_id: int) -> str:
     return key_for("lw", world_id, human_id)
 
 
+# --- the module graph: real work lights the node that owns it -----------------
+#
+# The canvas highlight follows the sprint, not a simulation: when a specialist's
+# build session starts, the node whose boundary manifest owns the task gets a
+# trace row and a pid-0 event; when the session ends, the run closes and the
+# glow goes out. Everything here is best-effort by construction — the graph is a
+# map of the work, and a map that can crash the expedition is worse than no map.
+
+_GRAPH_FILE_RE = re.compile(r"\b[\w./-]+\.(?:py|js|css|html|md|sh|json|yml|yaml)\b")
+
+
+def _graph_specialist_id(task: dict) -> int | None:
+    hid = ((team() or {}).get("agents") or {}).get(str(task.get("factor") or ""))
+    return int(hid) if hid else None
+
+
+def _graph_node_for(task: dict) -> tuple[int, str] | None:
+    """(plan_id, node_key) of the active devteam plan node that owns this task.
+
+    Matched the same way the /api/graph/self activity payload matches: the
+    task's own file mentions (task['files'] when the planner said, else paths
+    named in title/brief/evidence) prefix-matched to each node's boundary
+    manifest. When the task names no files at all, the specialist's ASSIGNED
+    node (graph_assign, written by the manager's authoring pass) answers."""
+    from . import modgraph
+    plan = modgraph.active_plan(0)
+    if not plan:
+        return None
+    pid = int(plan["id"])
+    nodes = modgraph.nodes(pid)
+    files = [str(f) for f in (task.get("files") or [])]
+    if not files:
+        text = " ".join(str(task.get(k) or "") for k in ("title", "brief", "evidence"))
+        files = _GRAPH_FILE_RE.findall(text)
+    for n in nodes:
+        if any(f == p or (p.endswith("/") and f.startswith(p))
+               for f in files for p in n["paths"]):
+            return pid, n["key"]
+    hid = _graph_specialist_id(task)
+    if hid:
+        for n in nodes:
+            a = modgraph.get_assign(pid, n["key"])
+            if a and a.get("agent_id") == hid:
+                return pid, n["key"]
+    return None
+
+
+def _graph_build_started(task: dict) -> None:
+    """Open a running build row on the owning node and light it on the canvas."""
+    try:
+        from . import modgraph
+        own = _graph_node_for(task)
+        if not own:
+            return
+        pid, key = own
+        rid = modgraph.note_run(pid, key, "build", agent_id=_graph_specialist_id(task),
+                                status="running",
+                                detail=json.dumps({"title": str(task.get("title") or "")[:140]}))
+        task["graph_node"] = {"plan": pid, "key": key}
+        task["graph_run"] = rid
+        bus.emit(0, None, "graph", "graph_node_active",
+                 {"key": key, "agent": str(task.get("factor") or ""),
+                  "task": str(task.get("title") or "")[:140]})
+    except Exception as e:
+        logs.warn("sprint", "graph_hook_failed", str(e)[:200], where="build_started")
+
+
+def _graph_build_ended(task: dict, ok: bool, detail: str = "") -> None:
+    """Close the open build run (success or death) and put the glow out."""
+    try:
+        from . import modgraph
+        rid = task.pop("graph_run", None)
+        key = (task.get("graph_node") or {}).get("key")
+        if rid:
+            modgraph.close_run(int(rid), "ok" if ok else "failed", detail=detail[:200])
+        if key:
+            bus.emit(0, None, "graph", "graph_node_idle", {"key": key})
+    except Exception as e:
+        logs.warn("sprint", "graph_hook_failed", str(e)[:200], where="build_ended")
+
+
+def _graph_verified(task: dict, ok: bool, headline: str = "") -> None:
+    """One closed verify row on the owning node: what the suite said, on the map."""
+    try:
+        from . import modgraph
+        gn = task.get("graph_node")
+        if not gn:
+            own = _graph_node_for(task)
+            if not own:
+                return
+            gn = {"plan": own[0], "key": own[1]}
+        rid = modgraph.note_run(int(gn["plan"]), gn["key"], "verify",
+                                agent_id=_graph_specialist_id(task),
+                                status="ok" if ok else "failed", detail=headline[:200])
+        modgraph.close_run(rid, "ok" if ok else "failed", detail=headline[:200])
+    except Exception as e:
+        logs.warn("sprint", "graph_hook_failed", str(e)[:200], where="verified")
+
+
 def info_world() -> int:
     return int((team() or {}).get("world_id") or 0)
 
@@ -1200,6 +1299,16 @@ async def _phase_plan(st: dict, rec: dict) -> None:
     else:
         set_state(phase="build", task_idx=0)
     bus.emit(0, None, "repair", "repair_planned", {"sprint": rec["no"], "tasks": len(tasks)})
+    # The manager owns the MODULE GRAPH too: after the deliberation, before the build,
+    # ONE bounded call authors the devteam plan the canvas reveals (modgraph_author) —
+    # once per LINEUP, not per sprint (the kv stamp is the staleness check), and never
+    # allowed to cost the sprint anything but this guarded attempt.
+    try:
+        from . import modgraph_author
+        if modgraph_author.should_author() and headroom(need=1)[0]:
+            await modgraph_author.author_self_plan()
+    except Exception as e:
+        logs.warn("sprint", "graph_author_failed", str(e)[:200])
 
 
 def _task(st: dict, rec: dict) -> dict | None:
@@ -1255,6 +1364,7 @@ async def _phase_build(st: dict, rec: dict) -> None:
     ensure_team()
     note_decision(t, _task_cue(t))
     _note_activity(t, "building", t["title"])
+    _graph_build_started(t)                          # the module graph lights the node
     crew = await specialist_context(t)
     if crew and crew.get("neighbours"):
         import functools
@@ -1268,15 +1378,18 @@ async def _phase_build(st: dict, rec: dict) -> None:
         CURRENT_BUILD = None
         t["branch"], t["worktree"] = out["branch"], out["worktree"]
         ledger_add("build", str(tuning.get("repair_builder_model")), out.get("usd", 0))
+        _graph_build_ended(t, True)
         t["status"] = "verifying"
         save_sprint(rec)
         set_state(phase="verify")
     except asyncio.CancelledError:
         CURRENT_BUILD = None
+        _graph_build_ended(t, False, "aborted")
         return                                      # abort() already rewrote the state
     except Exception as e:
         CURRENT_BUILD = None
         ledger_add("build", str(tuning.get("repair_builder_model")), 0)       # a failed session still burned quota
+        _graph_build_ended(t, False, str(e)[:200])
         logs.error("session", "build_died", str(e)[:300], task=t["title"],
                    attempt=t.get("attempts"), kind=type(e).__name__)
         if _rate_limited(str(e)):
@@ -1328,6 +1441,7 @@ async def _phase_verify(st: dict, rec: dict) -> None:
     # What the suite said is the outcome that teaches. A red headline is also the situation
     # this specialist will recognise next time it sees one like it.
     _release_activity(t)
+    _graph_verified(t, bool(res.get("ok")), str(res.get("headline") or ""))
     await note_outcome(t, bool(res.get("ok")),
                  says=("the change held up" if res.get("ok")
                        else f"this kind of change breaks: {res.get('headline', '')}"))

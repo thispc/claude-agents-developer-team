@@ -79,6 +79,7 @@ def me(request: Request) -> dict:
             "has_ai_credentials": auth.has_own_ai_credentials(u),
             "may_self_repair": config.may_self_repair(u["username"], bool(u["is_root"])),
             "canvas_v2": config.CANVAS_V2,
+            "module_graph": config.MODULE_GRAPH,
             "settings": auth.redacted(s)}
 
 

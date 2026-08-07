@@ -1,0 +1,93 @@
+/* Module graph — the #graphScreen canvas + its aside. Colours come ONLY from the
+   design system's variables (style.css:root); this file introduces no hex literals,
+   because the crew just finished consolidating the ones that had crept in. */
+
+#graphScreen { display: flex; flex-direction: column; height: calc(100vh - 54px); outline: none; }
+#graphScreen[hidden] { display: none; }
+
+.graph-bar {
+  display: flex; align-items: center; gap: 14px; padding: 10px 20px;
+  border-bottom: 1px solid var(--line); background: var(--card);
+}
+.graph-bar b { font-size: 15px; }
+.graph-body { flex: 1; display: flex; min-height: 0; }
+.graph-canvas { position: relative; flex: 1; min-width: 0; }
+
+/* ---- the aside: light card + inspector, this screen's own hosts ---- */
+#graphAside {
+  width: 340px; flex: none; overflow-y: auto; padding: 14px 16px;
+  border-left: 1px solid var(--line); background: var(--card);
+  font-size: 13px; color: var(--text);
+}
+#graphAside .dim { color: var(--dim); }
+#graphAside .err { color: var(--bad); }
+.gr-light-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+.gr-light-glyph { font-size: 22px; line-height: 1.2; }
+.gr-close { margin-left: auto; }
+.gr-tags { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.gr-tag {
+  font-size: 11px; padding: 1px 8px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent); border: 1px solid var(--line-soft);
+}
+.gr-failtext { color: var(--bad); }
+.gr-actline { color: var(--accent); font-weight: 550; }
+.gr-hint { margin-top: 10px; }
+.gr-spec { margin: 8px 0 12px; line-height: 1.45; }
+.gr-sec { margin: 14px 0; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.gr-sec-h { font-weight: 650; margin-bottom: 6px; }
+.gr-test { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
+.gr-test code { font-family: var(--mono); font-size: 11.5px; }
+.gr-test-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; align-self: center; }
+.gr-test-passing .gr-test-dot { background: var(--good); }
+.gr-test-failing .gr-test-dot, .gr-test-error .gr-test-dot { background: var(--bad); }
+.gr-test-last { width: 100%; padding-left: 14px; font-size: 11.5px; }
+.gr-edge { margin: 5px 0; }
+.gr-contract { margin: 2px 0 0 10px; font-size: 11.5px; }
+.gr-contract code { font-family: var(--mono); }
+.gr-run { margin: 4px 0; font-size: 12px; }
+.gr-cfg { display: flex; align-items: center; gap: 8px; margin: 6px 0; color: var(--dim); }
+.gr-cfg select { flex: 1; }
+.gr-actions { margin-top: 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gr-health-ok { color: var(--good); }
+.gr-health-attention { color: var(--warn); }
+.gr-health-critical { color: var(--bad); }
+.gr-health-unknown { color: var(--dim); }
+
+/* ---- the nodes ---- */
+.gr-node { cursor: move; }
+.gr-card { fill: var(--card); stroke: var(--line); stroke-width: 1.5; }
+.gr-aim .gr-card { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+.gr-conclusion .gr-card { fill: var(--good-soft); stroke: var(--good-border); stroke-width: 2; }
+.gr-title { font: 600 12.5px var(--ui); fill: var(--text); }
+.gr-sub { font: 11px var(--ui); fill: var(--dim); }
+.gr-glyph { font-size: 15px; }
+.gr-ring { stroke-width: 3; }
+.gr-ring-good { stroke: var(--good); }
+.gr-ring-bad { stroke: var(--bad); }
+.gr-ring-mixed { stroke: var(--warn); }
+.gr-ring-none { stroke: var(--line); }
+.gr-agent { fill: var(--mgr); }
+.gr-agent-i { font: 700 10px var(--ui); fill: var(--card); }
+.gr-node.gr-sel .gr-card { stroke: var(--accent); stroke-width: 3; }
+
+/* ---- the staged reveal: scale/opacity via a class, stepped by the module ---- */
+.gr-cardg {
+  transform-box: fill-box; transform-origin: center;
+  transition: transform 0.35s ease, opacity 0.35s ease;
+}
+.gr-node.gr-hidden { pointer-events: none; }
+.gr-node.gr-hidden .gr-cardg { transform: scale(0.6); opacity: 0; }
+
+/* ---- live activity: the glow on a node the crew is touching right now ---- */
+.gr-node.gr-busy .gr-card { stroke: var(--accent); stroke-width: 2.5; animation: gr-glow 1.5s ease-in-out infinite; }
+@keyframes gr-glow {
+  0%, 100% { filter: drop-shadow(0 0 2px var(--accent-soft)); }
+  50% { filter: drop-shadow(0 0 9px var(--accent)); }
+}
+
+/* Reduced motion: no pulse, no entrance transition — state changes still happen,
+   they just appear instead of animating. */
+@media (prefers-reduced-motion: reduce) {
+  .gr-node.gr-busy .gr-card { animation: none; filter: drop-shadow(0 0 4px var(--accent)); }
+  .gr-cardg { transition: none; }
+}

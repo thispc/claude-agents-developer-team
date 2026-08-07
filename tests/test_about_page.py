@@ -123,11 +123,11 @@ def test_the_internal_door_really_has_three_requests_behind_it():
 
 
 def test_the_table_count_matches_the_schema():
-    from app import db, auth, findings, knowledge
+    from app import db, auth, findings, knowledge, modgraph
     declared = sum(mod.SCHEMA.count("CREATE TABLE IF NOT EXISTS")
-                   for mod in (db, auth, findings, knowledge))
-    assert "Twenty-nine tables" in _handbook() and declared == 29, \
-        f"{declared} tables are declared; the handbook says twenty-nine"
+                   for mod in (db, auth, findings, knowledge, modgraph))
+    assert "Thirty-five tables" in _handbook() and declared == 35, \
+        f"{declared} tables are declared; the handbook says thirty-five"
 
 
 def test_the_round_table_range_matches_the_limits():

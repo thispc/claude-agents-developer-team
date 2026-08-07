@@ -6,6 +6,7 @@
 <title>devteam — AI dev team console</title>
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="canvas2/canvas2.css">
+<link rel="stylesheet" href="graph/graph.css">
 </head>
 <body>
 <div id="loginScreen" hidden>
@@ -43,6 +44,7 @@
   <div id="statusBadge" class="badge" hidden>—</div>
   <div id="sprintBadge" class="badge" hidden title="Delivery cycle">—</div>
   <button class="rp-mini" id="teamLink" hidden title="Open the team that staffs this project">👥 Its team</button>
+  <button class="rp-mini" id="graphLink" hidden title="The platform as a graph of verified modules">🕸 Module graph</button>
   <div id="costBadge" class="badge" hidden>—</div>
   <div class="spacer"></div>
   <button id="restartBtn" hidden title="Re-run the manager on this project">↻ Restart manager</button>
@@ -503,6 +505,22 @@
   <div id="agentBody"><p class="dim">reading them…</p></div>
 </section>
 
+<!-- The module graph — the platform as a graph of verified modules. The canvas and the
+     aside are this screen's OWN hosts (the graph module never borrows another screen's
+     overlay); tabindex="-1" lets its key listeners live on the section, not the document. -->
+<section id="graphScreen" hidden tabindex="-1">
+  <div class="graph-bar">
+    <button class="studio-back" id="graphBack">← Devteam HQ</button>
+    <b>🕸 Module graph</b>
+    <span class="dim" id="graphPlanInfo"></span>
+    <span class="studio-spacer"></span>
+  </div>
+  <div class="graph-body">
+    <div class="graph-canvas" id="graphCanvas"></div>
+    <aside id="graphAside"><p class="dim">loading the graph…</p></aside>
+  </div>
+</section>
+
 <section id="selfPage" hidden>
   <div class="plan-head">
     <div>
@@ -865,5 +883,6 @@
 <script src="js/repair.js"></script>
 <script src="js/boot.js"></script>
 <script type="module" src="canvas2/index.js"></script>
+<script type="module" src="graph/index.js"></script>
 </body>
 </html>

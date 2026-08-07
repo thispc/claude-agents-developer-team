@@ -30,6 +30,7 @@ from . import projects                                          # noqa: F401,E40
 from . import boss                                              # noqa: F401,E402
 from . import tasks                                             # noqa: F401,E402
 from . import internal                                          # noqa: F401,E402
+from . import graph                                             # noqa: F401,E402  the module graph
 
 # Names other code imports from app.routes directly.
 from .session import Settings                                   # noqa: F401,E402
