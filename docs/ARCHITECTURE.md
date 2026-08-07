@@ -192,7 +192,7 @@ belongs to the project it claims.
 | `agents/manager.md` | The manager's system prompt (disposition, workflow, rules) |
 | `agents/roles.json` | Built-in roles: model, max_parallel, fan-out policy |
 | `agents/{backend,frontend,tester}.md` | Built-in role prompts. Unknown roles get a generic one |
-| `dashboard/` | Vanilla JS, no build step. the client is `js/core.js` → `js/lib.js` → `js/ops.js` → `js/projects.js` → `js/studio-legacy.js` → `js/studio.js` → `js/canvas1.js` → `js/agent.js` → `js/repair.js` → `js/boot.js` (classic scripts, one global scope, loaded in `index.html` order) plus the `canvas2/` ES module |
+| `dashboard/` | Vanilla JS, no build step. the client is `js/core.js` → `js/lib.js` → `js/ops.js` → `js/projects.js` → `js/studio-legacy.js` → `js/studio.js` → `js/canvas1.js` → `js/agent.js` → `js/repair.js` → `js/boot.js` (classic scripts, one global scope, loaded in `index.html` order) plus the `canvas2/` ES module and `graph/` — **the Atlas** (`#/graph`): the module graph as rooms-and-doors navigation — one room on screen at a time (top level or inside a group), dependency-column CSS grid, door chips derived from real edges, keyboard + a full-tree map overlay; no free camera |
 | `deploy/` | Dockerfiles, k8s manifests, the kind rehearsal cluster |
 
 ---

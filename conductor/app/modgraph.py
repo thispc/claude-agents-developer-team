@@ -568,13 +568,26 @@ def _tests_for_nodes(by_key: dict[str, list[str]]) -> dict[str, set[str]]:
     return out
 
 
-def derive_group_edges(child_edges: list[dict], parent_of: dict[str, str]) -> list[dict]:
+def derive_group_edges(child_edges: list[dict], parent_of: dict[str, str],
+                       group_edges: list[dict] | None = None) -> list[dict]:
     """Top-level edges are COMPUTED, never curated: group A → group B iff any
     child of A has an edge to any child of B (and A is not B — an edge inside
     one layer is that layer's private business). The first qualifying child
     edge in input order is the representative: its type, contract and contract
     test ride up, so the top level shows a real rule, not a hollow arrow.
-    Pure — lists in, list out, no rows, no files, no model."""
+
+    `group_edges` — an AUTHORED top tier (the manager writes its own) — is
+    reconciled rather than trusted. The live hole this closes: plan v6 carried
+    the child edge ops→db while its authored tier had no selfrepair→data over
+    it, and one selfrepair→agents arrow no child edge backed. So: a crossing
+    the author missed is derived anyway; an authored arrow that matches a real
+    crossing keeps its deliberate type/contract over the mechanical
+    representative; and an authored arrow with no child crossing behind it is
+    DROPPED — an arrow into nothing is exactly the lie this derivation exists
+    to prevent. Pure — lists in, list out, no rows, no files, no model."""
+    authored: dict[tuple[str, str], dict] = {}
+    for e in group_edges or []:
+        authored.setdefault((e["src"], e["dst"]), e)
     out: list[dict] = []
     seen: set[tuple[str, str]] = set()
     for e in child_edges:
@@ -582,8 +595,10 @@ def derive_group_edges(child_edges: list[dict], parent_of: dict[str, str]) -> li
         if not ga or not gb or ga == gb or (ga, gb) in seen:
             continue
         seen.add((ga, gb))
-        out.append({"src": ga, "dst": gb, "edge_type": e["edge_type"],
-                    "contract": e["contract"], "contract_test": e["contract_test"]})
+        rep = authored.get((ga, gb), e)
+        out.append({"src": ga, "dst": gb, "edge_type": rep["edge_type"],
+                    "contract": rep["contract"],
+                    "contract_test": rep.get("contract_test", "")})
     return out
 
 

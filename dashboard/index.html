@@ -44,7 +44,7 @@
   <div id="statusBadge" class="badge" hidden>—</div>
   <div id="sprintBadge" class="badge" hidden title="Delivery cycle">—</div>
   <button class="rp-mini" id="teamLink" hidden title="Open the team that staffs this project">👥 Its team</button>
-  <button class="rp-mini" id="graphLink" hidden title="The platform as a graph of verified modules">🕸 Module graph</button>
+  <button class="rp-mini" id="graphLink" hidden title="The Atlas — the platform as rooms of verified modules, navigable like a game">🗺 The Atlas</button>
   <div id="costBadge" class="badge" hidden>—</div>
   <div class="spacer"></div>
   <button id="restartBtn" hidden title="Re-run the manager on this project">↻ Restart manager</button>
@@ -505,33 +505,33 @@
   <div id="agentBody"><p class="dim">reading them…</p></div>
 </section>
 
-<!-- The module graph — the platform as a graph of verified modules. The canvas and the
-     aside are this screen's OWN hosts (the graph module never borrows another screen's
-     overlay); tabindex="-1" lets its key listeners live on the section, not the document. -->
+<!-- The Atlas — the platform as rooms of verified modules: one room on screen at a
+     time, no camera. The room grid and the aside are this screen's OWN hosts (the
+     module never borrows another screen's overlay); tabindex="-1" lets its key
+     listeners live on the section, not the document. -->
 <section id="graphScreen" hidden tabindex="-1">
   <div class="graph-bar">
     <button class="studio-back" id="graphBack">← Devteam HQ</button>
-    <b>🕸 Module graph</b>
+    <b>🗺 The Atlas</b>
     <span class="dim" id="graphPlanInfo"></span>
+    <nav class="gr-crumb" id="graphCrumb" aria-label="where you are in the atlas"></nav>
+    <button class="gr-goalchip" id="graphGoal" hidden title="The Artifact — the running platform"></button>
     <span class="studio-spacer"></span>
     <select id="graphTeam" hidden title="the pool modules are staffed from — independent of the sprint crew"></select>
-    <button class="rp-mini" id="graphTheme" title="Switch this canvas between the blueprint HUD and the app's paper look">◐ blueprint</button>
+    <button class="rp-mini" id="graphAtlasBtn" title="The Atlas map — the whole two-level tree (M)">🗺 Map</button>
+    <button class="rp-mini" id="graphTheme" title="Switch this screen between the blueprint HUD and the app's paper look">◐ blueprint</button>
   </div>
   <div class="graph-body">
-    <!-- The stage: #graphCanvas is the world host (createWorld owns and wipes it),
-         so the HUD chrome — breadcrumb, minimap, edge tooltip — are SIBLINGS.
-         The transition docks, the pinned GOAL and the health legend are SCREEN-FIXED
-         overlays: siblings of the canvas host, outside the world transform, so the
-         camera can never move them. -->
+    <!-- The stage: an SVG wire underlay + the room grid share one positioned wrap,
+         so card anchors and elbows can never disagree; the legend and the Atlas
+         map overlay are stage-level siblings. No canvas, no world transform. -->
     <div class="graph-stage">
-      <div class="graph-canvas" id="graphCanvas"></div>
-      <nav class="gr-crumb" id="graphCrumb" aria-label="where you are in the graph"></nav>
-      <div class="gr-mini" id="graphMini" title="Minimap — click to jump"></div>
-      <div class="gr-edge-tip" id="graphTip" hidden></div>
-      <div class="gr-dock gr-dock-left" id="graphDockL" hidden aria-label="upstream groups feeding this level"></div>
-      <div class="gr-dock gr-dock-right" id="graphDockR" hidden aria-label="downstream groups this level feeds"></div>
-      <button class="gr-goal" id="graphGoal" hidden title="The Artifact — the running platform"></button>
+      <div class="gr-roomwrap" id="graphRoomWrap">
+        <svg class="gr-wires" id="graphWires" aria-hidden="true"></svg>
+        <div class="gr-room" id="graphRoom"></div>
+      </div>
       <div class="gr-legend" id="graphLegend" hidden></div>
+      <div class="gr-atlas" id="graphAtlas" hidden aria-label="the Atlas map — every room at once"></div>
     </div>
     <aside id="graphAside"><p class="dim">loading the graph…</p></aside>
   </div>

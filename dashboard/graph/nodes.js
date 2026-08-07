@@ -1,38 +1,27 @@
-// Module graph — NODES: the SVG card for one module, built with svgEl only.
-// Everything user- or planner-authored (titles, agent names, activity) goes
-// through svgEl's `text` attribute, which is textContent underneath — never
-// markup — so a node called "<img onerror=…>" renders as its own name.
+// The Atlas — CARDS: one module as an HTML card, built with createElement and
+// textContent ONLY. Everything user- or planner-authored (titles, agent names,
+// activity lines) lands via textContent, never markup — a node called
+// "<img onerror=…>" renders as its own name.
 //
-// Card anatomy: rounded rect (~170×64) · type glyph · title · test-status ring
-// (green all passing / red any failing / grey none run) · a small initial chip
-// when an agent is assigned. Aim and conclusion are bigger and tinted — they are
-// the sentence's subject and full stop, not two more modules. GROUP cards are
-// the architecture tier: bigger still, rolled-up numbers, and a ⊕ affordance
-// (class gr-drill, data-drill=key) the canvas resolves as "dive in".
-
-import { svgEl } from "../canvas2/world.js";
-
-export const NODE_W = 170, NODE_H = 64;
-const BIG_W = 208, BIG_H = 80;
-const GROUP_W = 236, GROUP_H = 104;
+// Two kinds, visually unmistakable (the capillary metaphor):
+//   · CHAMBER (a group) — a doorway: layered/stacked shadow implying depth,
+//     the child count, rolled-up tests, a big "Enter ▸" affordance. Click = a
+//     room transition, never a panel.
+//   · CAPILLARY (a leaf) — the fine grain where agents actually act: solid
+//     filled card with a distinct accent border, the AGENT front and center
+//     (avatar chip + name + ★ mastery), test count, an activity line that
+//     pulses while the crew touches it.
+// Plus the frame: the AIM card (the room's subject) and the ARTIFACT card (the
+// conclusion as the always-last column of the top room).
+//
+// Every card carries data-key; chips that travel carry data-door. index.js
+// resolves both by delegation — no per-card listeners to leak.
 
 export const GLYPH = { aim: "🎯", code: "📦", research: "🔬", data: "🗄",
                        group: "🗂", conclusion: "🏁" };
 
-export function nodeSize(n) {
-  if (n.node_type === "group") return { w: GROUP_W, h: GROUP_H };
-  const big = n.node_type === "aim" || n.node_type === "conclusion";
-  return { w: big ? BIG_W : NODE_W, h: big ? BIG_H : NODE_H };
-}
-
-function ringClass(tests) {
-  const t = tests || {};
-  if (!t.total || (!t.passing && !t.failing)) return "gr-ring-none";  // nothing run yet
-  return t.failing ? "gr-ring-bad" : t.passing === t.total ? "gr-ring-good" : "gr-ring-mixed";
-}
-
 // Tri-state health — every field OPTIONAL (the payload may predate the backend):
-// green = calm breathing glow, yellow = amber pulse, red = urgent slow strobe.
+// green = calm glow, yellow = amber pulse, red = urgent slow strobe.
 const HS_STATES = ["green", "yellow", "red"];
 const HS_TIP = {
   green: "healthy — heartbeat ok, tests green",
@@ -43,110 +32,127 @@ export function healthClass(n) {
   const s = n && n.health && n.health.status;
   return HS_STATES.includes(s) ? "gr-hs-" + s : "";
 }
-function syncHealth(g, n) {
-  HS_STATES.forEach((s) => g.classList.remove("gr-hs-" + s));
+function syncHealth(el, n) {
+  HS_STATES.forEach((s) => el.classList.remove("gr-hs-" + s));
   const c = healthClass(n);
-  if (c) g.classList.add(c);
+  if (c) el.classList.add(c);
+  const tip = n && n.health && HS_TIP[n.health.status];
+  if (tip) el.title = tip;
 }
 
-function trim(s, n) {
-  s = String(s || "");
-  return s.length > n ? s.slice(0, n - 1) + "…" : s;
-}
-
-function agentInitial(agent) {
-  // The payload carries the specialist's NAME when the crew record knows it —
-  // "C" for Correctness reads as a person; "4" (a bare row id) read as a bug.
-  const name = String((agent && (agent.name || agent.agent_id || agent.home_id)) || "");
-  return (name.trim()[0] || "?").toUpperCase();
+function elem(tag, cls, text) {
+  const el = document.createElement(tag);
+  if (cls) el.className = cls;
+  if (text != null) el.textContent = String(text);   // textContent — never markup
+  return el;
 }
 
 function testsBrief(tests) {
   const t = tests || {};
   if (!t.total) return "no tests mapped";
-  return `${t.passing}/${t.total} passing${t.failing ? " · advisory" : ""}`;
+  return `${t.passing}/${t.total} passing${t.failing ? " · " + t.failing + " failing" : ""}`;
 }
 
-/** The ⊕ affordance on a group card: its own hit circle carrying data-drill, so
- * the canvas's pointerdown resolves it BEFORE the card underneath — pressing ⊕
- * dives into the group, pressing the card selects or drags it. */
-function drillPlus(key, x, y) {
-  return svgEl("g", { class: "gr-drill", "data-drill": String(key) }, [
-    svgEl("circle", { class: "gr-drill-bg", cx: x, cy: y, r: 12, "pointer-events": "all" }),
-    svgEl("text", { class: "gr-drill-t", x, y: y + 1, "text-anchor": "middle",
-      "dominant-baseline": "central", "pointer-events": "none", text: "＋" }),
-  ]);
+function ringClass(tests) {
+  const t = tests || {};
+  if (!t.total || (!t.passing && !t.failing)) return "gr-ring-none";
+  return t.failing ? "gr-ring-bad" : t.passing === t.total ? "gr-ring-good" : "gr-ring-mixed";
 }
 
-/** Fill (or refill) a node group's content. Kept separate from buildNode so
- * updateNode can repaint data without losing the group's classes/position. */
-function fill(g, n) {
-  while (g.firstChild) g.removeChild(g.firstChild);
-  const { w, h } = nodeSize(n);
-  const inner = svgEl("g", { class: "gr-cardg" });
-  // The health tooltip says EXACTLY what each state means — svgEl's `text`
-  // attribute is textContent, so a hostile status string cannot become markup.
-  const hs = n.health && HS_TIP[n.health.status];
-  if (hs) inner.append(svgEl("title", { text: hs }));
+function agentName(agent) {
+  const n = String((agent && agent.name) || "").trim();
+  return n || `agent #${(agent && (agent.agent_id ?? agent.home_id)) ?? "?"}`;
+}
+
+/** The agent block on a CAPILLARY — front and center, because "who works this"
+ * is the first thing a glance must answer. Unassigned says so honestly. */
+function agentBlock(n) {
+  const row = elem("div", "gr-cagent");
+  if (n.agent) {
+    const name = agentName(n.agent);
+    row.append(elem("span", "gr-cagent-avatar", (name[0] || "?").toUpperCase()),
+               elem("b", "gr-cagent-name", name));
+    if (n.mastery && n.mastery.master) {
+      const star = elem("span", "gr-cagent-star", "★");
+      star.title = `master of this module — ${n.mastery.runs} verified runs`;
+      row.append(star);
+    }
+  } else {
+    row.classList.add("gr-cagent-none");
+    row.append(elem("span", "gr-cagent-avatar", "?"),
+               elem("span", "gr-cagent-name", "Unassigned"));
+  }
+  return row;
+}
+
+/** Fill (or refill) one card's content. Separate from buildCard so updateCard
+ * can repaint data without losing the card's classes or focus state. */
+function fill(el, n) {
+  while (el.firstChild) el.removeChild(el.firstChild);
+  syncHealth(el, n);
+  const head = elem("div", "gr-card-head");
+  head.append(elem("span", "gr-card-glyph", GLYPH[n.node_type] || GLYPH.code),
+              elem("b", "gr-card-title", String(n.title || n.key)));
+  const ring = elem("span", "gr-ring " + ringClass(n.tests));
+  ring.title = testsBrief(n.tests);
+  head.append(ring);
+  el.append(head);
+
   if (n.node_type === "group") {
     const kids = Number(n.children) || 0;
-    inner.append(
-      svgEl("rect", { class: "gr-card", x: -w / 2, y: -h / 2, width: w, height: h, rx: 16 }),
-      svgEl("rect", { class: "gr-topline", x: -w / 2 + 16, y: -h / 2 - 1,
-        width: w - 32, height: 2.5, rx: 1.2, "pointer-events": "none" }),
-      svgEl("text", { class: "gr-glyph", x: -w / 2 + 22, y: -h / 2 + 23, "text-anchor": "middle",
-        "dominant-baseline": "central", "pointer-events": "none", text: GLYPH.group }),
-      svgEl("text", { class: "gr-title", x: -w / 2 + 40, y: -h / 2 + 22, "dominant-baseline": "central",
-        "pointer-events": "none", text: trim(n.title || n.key, 22) }),
-      svgEl("text", { class: "gr-sub", x: -w / 2 + 18, y: -h / 2 + 52, "dominant-baseline": "central",
-        "pointer-events": "none", text: `${kids} module${kids === 1 ? "" : "s"} inside` }),
-      svgEl("text", { class: "gr-sub", x: -w / 2 + 18, y: -h / 2 + 72, "dominant-baseline": "central",
-        "pointer-events": "none", text: testsBrief(n.tests) }),
-      svgEl("circle", { class: "gr-ring " + ringClass(n.tests),
-        cx: w / 2 - 15, cy: -h / 2 + 15, r: 6, fill: "none", "pointer-events": "none" }),
-      drillPlus(n.key, w / 2 - 21, h / 2 - 21),
-    );
-    g.appendChild(inner);
-    return;
+    el.append(elem("div", "gr-card-sub", `${kids} module${kids === 1 ? "" : "s"} inside`));
+    el.append(elem("div", "gr-card-sub", testsBrief(n.tests)));
+    el.append(elem("div", "gr-enter", "Enter ▸"));
+  } else if (n.node_type === "aim") {
+    if (n.spec) el.append(elem("div", "gr-card-sub gr-card-spec", String(n.spec).slice(0, 140)));
+  } else {
+    el.append(agentBlock(n));
+    el.append(elem("div", "gr-card-sub", testsBrief(n.tests)));
+    const act = ((n.activity || [])[0]);
+    if (act) el.append(elem("div", "gr-act", "● " + String(act.task || act.what || "working")));
   }
-  inner.append(
-    svgEl("rect", { class: "gr-card", x: -w / 2, y: -h / 2, width: w, height: h, rx: 12 }),
-    svgEl("text", { class: "gr-glyph", x: -w / 2 + 16, y: 1, "text-anchor": "middle",
-      "dominant-baseline": "central", "pointer-events": "none",
-      text: GLYPH[n.node_type] || GLYPH.code }),
-    svgEl("text", { class: "gr-title", x: -w / 2 + 32, y: -6, "dominant-baseline": "central",
-      "pointer-events": "none", text: trim(n.title || n.key, 24) }),
-    svgEl("text", { class: "gr-sub", x: -w / 2 + 32, y: 13, "dominant-baseline": "central",
-      "pointer-events": "none",
-      text: (n.tests && n.tests.total) ? testsBrief(n.tests) : n.node_type }),
-    svgEl("circle", { class: "gr-ring " + ringClass(n.tests),
-      cx: w / 2 - 13, cy: -h / 2 + 13, r: 6, fill: "none", "pointer-events": "none" }),
-  );
-  if (n.agent) inner.append(
-    svgEl("circle", { class: "gr-agent", cx: w / 2 - 14, cy: h / 2 - 14, r: 9, "pointer-events": "none" }),
-    svgEl("text", { class: "gr-agent-i", x: w / 2 - 14, y: h / 2 - 13, "text-anchor": "middle",
-      "dominant-baseline": "central", "pointer-events": "none", text: agentInitial(n.agent) }),
-  );
-  g.appendChild(inner);
+  el.append(elem("div", "gr-doors"));                // door chips land here (index.js)
 }
 
-/** One module as an SVG group. data-key is what native hit-testing resolves. */
-export function buildNode(n) {
-  const g = svgEl("g", {
-    class: "gr-node gr-" + (n.node_type || "code"),
-    "data-key": String(n.key), "data-kind": "module",
-  });
-  syncHealth(g, n);
-  fill(g, n);
-  return g;
+/** One module as a card element. data-key is what click delegation resolves. */
+export function buildCard(n) {
+  const kind = n.node_type === "group" ? "gr-chamber"
+    : n.node_type === "aim" ? "gr-aimcard"
+    : "gr-capillary";
+  const el = elem("div", "gr-card " + kind);
+  el.setAttribute("data-key", String(n.key));
+  el.setAttribute("data-kind", n.node_type === "group" ? "chamber" : "capillary");
+  el.setAttribute("role", "button");
+  fill(el, n);
+  return el;
 }
 
-/** Repaint an existing node's content in place (title, ring, chip, health state)
- * without touching its transform, selection or reveal state. */
-export function updateNode(g, n) {
-  const busy = g.classList.contains("gr-busy"), sel = g.classList.contains("gr-sel");
-  syncHealth(g, n);
-  fill(g, n);
-  g.classList.toggle("gr-busy", busy);
-  g.classList.toggle("gr-sel", sel);
+/** Repaint an existing card in place (title, ring, agent, health) without
+ * touching its focus, busy or reveal state. */
+export function updateCard(el, n) {
+  const busy = el.classList.contains("gr-busy"), foc = el.classList.contains("gr-focus");
+  fill(el, n);
+  el.classList.toggle("gr-busy", busy);
+  el.classList.toggle("gr-focus", foc);
+}
+
+/** The ARTIFACT — the conclusion as the top room's always-last column card.
+ * Its live facts (health, beat) ride the payload's `conclusion` dict. */
+export function buildArtifactCard(node, conclusion, title) {
+  const c = conclusion || {};
+  const el = elem("div", "gr-card gr-artifact");
+  el.setAttribute("data-key", String((node && node.key) || "conclusion"));
+  el.setAttribute("data-kind", "artifact");
+  el.setAttribute("role", "button");
+  const head = elem("div", "gr-card-head");
+  head.append(elem("span", "gr-card-glyph", GLYPH.conclusion),
+              elem("b", "gr-card-title", String(title || "The Artifact")));
+  const dot = elem("span", "gr-goal-dot gr-goaldot-" + String(c.health || "unknown"));
+  dot.title = "health: " + String(c.health || "unknown");
+  head.append(dot);
+  el.append(head);
+  el.append(elem("div", "gr-card-sub", "the GOAL everything feeds"));
+  if (c.beat != null) el.append(elem("div", "gr-card-sub", "beat: " + String(c.beat)));
+  el.append(elem("div", "gr-doors"));
+  return el;
 }

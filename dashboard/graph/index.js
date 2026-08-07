@@ -1,65 +1,70 @@
-// Module graph — orchestrator. The platform rendered as a living, TWO-LEVEL graph
-// of verified modules: aim → architecture groups → (dive in) → each group's modules
-// → conclusion. Level 0 reads like a clean architecture diagram; double-clicking a
-// group is a MICROSCOPE — the camera flies at it while it dissolves into its
-// subgraph. Which level you are on lives in the hash (#/graph, #/graph/<group>).
+// Module graph — THE ATLAS. Rooms and doors, not a camera.
 //
-// Engine discipline (learned the hard way on canvas2, each point deliberate):
-//   · createWorld/svgEl are IMPORTED from canvas2/world.js, never copied — one engine.
-//   · This module owns exactly ONE instance of ITSELF, created by open() and torn
-//     down by close(); it never registers globals another canvas reads, so mounting
-//     the graph cannot kill the Studio's canvas or vice versa.
-//   · Key listeners live on the #graphScreen element (tabindex="-1"), so typing
-//     anywhere else in the app can never fall through to graph shortcuts.
-//   · The inspector and every action button render inside #graphScreen's own aside —
-//     no borrowed hosts from other screens.
-//   · Reduced motion is decided here with matchMedia, not via another script's const.
-//   · Motion is CSS transform/opacity only; the ONE rAF loop in this file lives
-//     inside flyTo() and runs ONLY while the camera is in flight.
+// The free-camera canvas was rejected for a reason worth pinning: pan + zoom +
+// screen-fixed portals made a small graph HARDER to read — cards adrift in dead
+// space, arrows into nothing. The Atlas replaces all of it with game navigation:
+//
+//   · ONE ROOM on screen at a time — the top level (aim → chambers → the
+//     Artifact) or the inside of one group. No pan, no zoom, no drag, no
+//     camera: a CSS grid of dependency COLUMNS (topo order over the room's own
+//     edges) that always fits the viewport, scrolling vertically only when it
+//     truly must.
+//   · Two card kinds, unmistakable at a glance: CHAMBERS (groups) are doorways
+//     — layered depth, child count, "Enter ▸"; CAPILLARIES (leaves) are where
+//     agents actually act — the specialist front and center. Click a chamber =
+//     travel; click a capillary = the full side panel.
+//   · Wiring that cannot lie: an SVG underlay draws ONLY real in-room edges as
+//     orthogonal elbows between card anchors read from the DOM after layout.
+//     Every cross-room dependency is a DOOR CHIP on the card itself ("→ Data ›
+//     db"), derived exclusively from actual payload edges — clicking one
+//     travels there and flash-highlights the target card.
+//   · Keyboard first-class: arrows move focus, Enter opens/enters, Esc climbs
+//     out, M toggles the full-screen Atlas map. All state lives in the hash
+//     (#/graph, #/graph/<group>) so back/forward/pasted links all work.
+//
+// Engine discipline (kept from every canvas lesson, minus the canvas):
+//   · This module owns exactly ONE instance of itself, created by open() and
+//     torn down by close(); it registers no globals another screen reads.
+//   · Key listeners live on #graphScreen (tabindex="-1"), never the document.
+//   · The inspector and every action button render inside this screen's aside.
+//   · Reduced motion is decided here with matchMedia; every transition is CSS
+//     transform/opacity and stands down under prefers-reduced-motion.
+//   · No JS animation loop at all — nothing here animates outside CSS.
 
-import { createWorld, svgEl } from "../canvas2/world.js";
-import { wireNode, setWireEnds, setPos, speechBubble, SIZES } from "../canvas2/render.js";
-import { buildNode, updateNode, nodeSize, GLYPH } from "./nodes.js";
-import { layout, topoOrder } from "./layout.js";
+import { buildCard, updateCard, buildArtifactCard, GLYPH } from "./nodes.js";
+import { columns, topoOrder } from "./layout.js";
 
 const W = window;
-const DRAG_THRESH = 4;                 // px of screen travel before a press becomes a drag
-const WIRE_GAP = SIZES.AGENT_R + 9;    // render.js pulls this much off each wire end
 const THEME_KEY = "gr:theme";          // "blueprint" (this screen's default) | "paper"
-const L0_GRID = { colW: 350, rowH: 215 };   // architecture tier: generous air
-const L1_GRID = { colW: 300, rowH: 175 };   // inside a group: a little tighter
-const PORTAL = { w: 128, h: 34 };      // the pill stubs cross-group wires land on
-const DRILL_MS = 450;                  // the microscope flight
-const SWAP_MS = 230;                   // when the outgoing level yields the stage
+const STAGGER_MS = 60;                 // card entrance stagger
+const SWAP_MS = 200;                   // the outgoing room yields the stage
+const SVG_NS = "http://www.w3.org/2000/svg";
 const reduceMotion = () =>
   W.matchMedia && W.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-// Which plan_id:key pairs have already had their entrance. Module state, so a new
-// plan version replays the reveal but a mere route-away-and-back does not; entering
-// a level deliberately forgets its keys so every dive replays the staging.
+// Which plan_id:key pairs have already had their entrance. Module state, so a
+// new plan version replays the reveal but a mere poll repaint does not; entering
+// a room deliberately forgets its keys so every visit replays the staging.
 const SEEN = new Set();
 
-let inst = null;                       // this graph's one live instance
+let inst = null;                       // this screen's one live instance
 
 // ---- the source seam ------------------------------------------------------------
 // projSrc's discipline: renderers never branch on where the truth comes from.
-// V1 ships the devteam source; V2 adds a project source with the same five verbs.
+// V1 ships the devteam source; V2 adds a project source with the same verbs.
+// (No layout-save verb any more: the Atlas has no draggable positions to save.)
 const DEVTEAM_GRAPH_SRC = {
   name: "self",
   fetch: () => W.api("/api/graph/self"),
   verify: (key) => W.api("/api/graph/self/verify", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ node: key }) }),
-  saveLayout: (positions) => W.api("/api/graph/self/layout", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ positions }) }),
   setConfig: (key, cfg) => W.api(`/api/graph/self/node/${encodeURIComponent(key)}/config`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(cfg) }),
   inspect: (key) => W.api(`/api/graph/self/node/${encodeURIComponent(key)}`),
   replan: () => W.api("/api/graph/self/replan", { method: "POST" }),
-  // The verb tier (backend lands in parallel — every caller treats a refusal as
-  // information, never as a crash):
+  // The verb tier (every caller treats a refusal as information, never a crash):
   service: (key, action) => W.api(`/api/graph/self/node/${encodeURIComponent(key)}/service`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action }) }),
@@ -86,20 +91,23 @@ const SOURCES = { self: DEVTEAM_GRAPH_SRC };
 
 // ---- small helpers --------------------------------------------------------------
 const esc = (s) => (W.escapeHtml ? W.escapeHtml(String(s ?? "")) : String(s ?? ""));
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-function nowMs() { return (W.performance && performance.now) ? performance.now() : Date.now(); }
 
 /** src/dst regardless of which serializer produced the edge. */
 function edgeEnds(e) {
   return [String(e.src ?? e.src_key ?? ""), String(e.dst ?? e.dst_key ?? "")];
 }
 
+function svgMk(tag, attrs) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+  return el;
+}
+
 // ---- lifecycle ------------------------------------------------------------------
-/** Open the graph at a level. `sub` is the drill sub-path from the hash —
- * "" for the architecture view, a group key for inside that group. Called again
- * while already open (every #/graph/... hash change lands here via route()), it
- * becomes NAVIGATION: the existing instance animates between levels instead of
- * being torn down, which is what makes the microscope transition possible. */
+/** Open the Atlas at a room. `sub` is the sub-path from the hash — "" for the
+ * top room, a group key for inside that group. Called again while already open
+ * (every #/graph/... hash change lands here via route()), it becomes
+ * NAVIGATION: the existing instance transitions between rooms. */
 function open(sourceName, sub) {
   const level = decodeURIComponent(String(sub || "")) || null;
   if (inst && inst.srcName === (sourceName || "self")) {
@@ -110,32 +118,32 @@ function open(sourceName, sub) {
   }
   close();
   const screen = document.getElementById("graphScreen");
-  const host = document.getElementById("graphCanvas");
+  const wrap = document.getElementById("graphRoomWrap");
+  const room = document.getElementById("graphRoom");
+  const wires = document.getElementById("graphWires");
   const aside = document.getElementById("graphAside");
-  if (!screen || !host || !aside) return;
-  const world = createWorld(host);
+  if (!screen || !wrap || !room || !wires || !aside) return;
   inst = {
     src: SOURCES[sourceName] || DEVTEAM_GRAPH_SRC,
     srcName: sourceName || "self",
-    screen, host, aside, world,
-    hostRect: host.getBoundingClientRect(),
-    level,                     // null = architecture view, else the open group's key
-    nodes: new Map(),          // key -> { key, data, g, x, y }  (visible level only)
-    edges: [],                 // { a, b, g, d, pa, pb }
-    portals: new Map(),        // portal pk -> { g, x, y, out, drill }
+    screen, wrap, room, wires, aside,
+    level,                     // null = the top room, else the open group's key
+    cards: new Map(),          // key -> element (visible room only)
+    wireEls: [],               // [{ a, b, el }] for the live-flow toggle
+    roomKeys: new Set(),
     byKey: new Map(),          // every node in the payload, visible or not
-    sel: new Set(),
     inspectKey: null,
-    gesture: null, space: false,
-    data: null, firstPaint: true,
-    transition: false,         // a level flight is in progress — repaints hold fire
-    revealQueue: [], revealTimer: null,
+    focusKey: null,
+    flashKey: null,            // set by door-chip/atlas travel; flashes on arrival
+    atlasOpen: false,
+    data: null,
+    transition: false,         // a room swap is in progress — repaints hold fire
+    revealTimer: null, revealQueue: [],
     pollTimer: null, refetchTimer: null, swapTimer: null, drawTimer: null,
+    flashTimer: null,
     crumb: document.getElementById("graphCrumb"),
-    mini: document.getElementById("graphMini"),
-    tip: document.getElementById("graphTip"),
-    tipOn: false,
-    viewKey: "gr:view:" + (SOURCES[sourceName] ? sourceName : "self"),
+    atlas: document.getElementById("graphAtlas"),
+    goalChip: document.getElementById("graphGoal"),
   };
   applyTheme(inst, safeGet(THEME_KEY) || "blueprint");
   const tBtn = document.getElementById("graphTheme");
@@ -143,6 +151,8 @@ function open(sourceName, sub) {
     if (inst) applyTheme(inst,
       inst.screen.dataset.gtheme === "blueprint" ? "paper" : "blueprint");
   };
+  const aBtn = document.getElementById("graphAtlasBtn");
+  if (aBtn) aBtn.onclick = () => { if (inst) toggleAtlas(inst); };
   wireEvents(inst);
   asideDefault(inst);
   loadTeam(inst);
@@ -152,11 +162,11 @@ function open(sourceName, sub) {
   // graph/repair kinds as DOM CustomEvents, which a module CAN hear.
   inst._onGraphEvent = (ev) => { if (inst) onGraphEvent(inst, ev.detail || {}); };
   document.addEventListener("graph-event", inst._onGraphEvent);
-  // ...and a 6s poll as the fallback, PAUSED while something is selected (or the
-  // camera is mid-flight) so a repaint never clears a selection, blanks the
-  // inspector mid-sentence, or repaints the stage under a transition.
+  // ...and a 6s poll as the fallback, PAUSED while the panel or the Atlas map is
+  // open (or a room swap is mid-flight) so a repaint never blanks the inspector
+  // mid-sentence or repaints the stage under a transition.
   inst.pollTimer = setInterval(() => {
-    if (!inst || inst.sel.size || inst.inspectKey || inst.gesture || inst.transition) return;
+    if (!inst || inst.inspectKey || inst.transition || inst.atlasOpen) return;
     refetch(inst);
   }, 6000);
   screen.focus({ preventScroll: true });
@@ -170,18 +180,15 @@ function close() {
   clearTimeout(inst.revealTimer);
   clearTimeout(inst.swapTimer);
   clearTimeout(inst.drawTimer);
-  clearTimeout(inst.oldTimer);
-  inst._fly = null;                        // the camera loop checks this token and stops
-  hideTip(inst);
+  clearTimeout(inst.flashTimer);
   document.removeEventListener("graph-event", inst._onGraphEvent);
   try { inst._teardown && inst._teardown(); } catch (e) { /* */ }
-  try { inst.world.destroy(); } catch (e) { /* */ }
-  // The screen-fixed overlays are index.html's, not the world's — createWorld's
-  // teardown never touches them, so the instance resets them on the way out.
-  for (const id of ["graphDockL", "graphDockR", "graphGoal", "graphLegend"]) {
-    const el = document.getElementById(id);
-    if (el) { el.hidden = true; el.innerHTML = ""; }
-  }
+  inst.room.innerHTML = "";
+  inst.wires.innerHTML = "";
+  if (inst.atlas) { inst.atlas.hidden = true; inst.atlas.innerHTML = ""; }
+  if (inst.goalChip) { inst.goalChip.hidden = true; inst.goalChip.innerHTML = ""; }
+  const legend = document.getElementById("graphLegend");
+  if (legend) { legend.hidden = true; legend.innerHTML = ""; }
   document.querySelectorAll(".gr-dialog").forEach((d) => d.remove());
   inst = null;
 }
@@ -195,7 +202,7 @@ async function refetch(i) {
     return;
   }
   if (i !== inst) return;               // closed while the fetch was in flight
-  if (i.transition) { scheduleRefetch(i); return; }   // never repaint mid-flight
+  if (i.transition) { scheduleRefetch(i); return; }   // never repaint mid-swap
   paint(i, data);
 }
 
@@ -203,7 +210,7 @@ function scheduleRefetch(i) {
   if (i.refetchTimer) return;
   i.refetchTimer = setTimeout(() => {
     i.refetchTimer = null;
-    if (!inst || inst.sel.size || inst.inspectKey || inst.gesture || inst.transition) return;
+    if (!inst || inst.inspectKey || inst.transition || inst.atlasOpen) return;
     refetch(inst);
   }, 800);
 }
@@ -222,60 +229,13 @@ function applyTheme(i, name) {
   if (b) b.textContent = theme === "paper" ? "◑ paper" : "◐ blueprint";
 }
 
-// ---- the camera -----------------------------------------------------------------
-/** THE one rAF driver in this module: an eased camera flight. It exists only for
- * the duration of a transition — no rAF loop runs while the graph is at rest.
- * The centre of interest travels on a cubic-out; on drill-ins the zoom itself
- * takes a back-eased curve, which is the tiny spring overshoot the microscope
- * lands with. Under prefers-reduced-motion the camera simply arrives. */
-function easeOutCubic(p) { return 1 - Math.pow(1 - p, 3); }
-function easeOutBack(p) { const c = 1.4; return 1 + (c + 1) * Math.pow(p - 1, 3) + c * Math.pow(p - 1, 2); }
-
-function flyTo(i, target, ms, spring, done) {
-  const token = {};
-  i._fly = token;
-  i.hostRect = i.host.getBoundingClientRect();      // once per flight, never per frame
-  if (reduceMotion() || !ms) {
-    i.world.setView(target); miniViewport(i); i._fly = null;
-    if (done) done();
-    return;
-  }
-  const r = i.hostRect;
-  const from = i.world.getView();
-  const c0 = { x: (r.width / 2 - from.x) / from.k, y: (r.height / 2 - from.y) / from.k };
-  const c1 = { x: (r.width / 2 - target.x) / target.k, y: (r.height / 2 - target.y) / target.k };
-  const t0 = nowMs();
-  const tick = () => {
-    if (i._fly !== token || inst !== i) return;     // superseded or closed — stand down
-    const p = clamp((nowMs() - t0) / ms, 0, 1);
-    const eP = easeOutCubic(p), eK = spring ? easeOutBack(p) : eP;
-    const k = from.k + (target.k - from.k) * eK;
-    const cx = c0.x + (c1.x - c0.x) * eP, cy = c0.y + (c1.y - c0.y) * eP;
-    i.world.setView({ k, x: r.width / 2 - cx * k, y: r.height / 2 - cy * k });
-    miniViewport(i);
-    if (p < 1) requestAnimationFrame(tick);
-    else { i._fly = null; if (done) done(); }
-  };
-  requestAnimationFrame(tick);
-}
-
-/** A view framing world-space bounds — world.fit's math without applying it,
- * so the camera can EASE there instead of jumping. */
-function viewFor(i, bounds, pad) {
-  pad = pad || 120;
-  const r = i.hostRect;
-  if (!bounds || !isFinite(bounds.minX)) return { x: r.width / 2, y: r.height / 2, k: 1 };
-  const bw = Math.max(1, bounds.maxX - bounds.minX), bh = Math.max(1, bounds.maxY - bounds.minY);
-  const k = clamp(Math.min((r.width - pad * 2) / bw, (r.height - pad * 2) / bh, 1.15), 0.25, 3.2);
-  return { k, x: (r.width - bw * k) / 2 - bounds.minX * k, y: (r.height - bh * k) / 2 - bounds.minY * k };
-}
-
-// ---- the two levels -------------------------------------------------------------
-/** The nodes a level shows. Top level: aim + groups (or the whole flat plan when
- * no groups were authored — the old graph keeps working). Inside a group: exactly
- * its children. The CONCLUSION is never a world node any more — it is the GOAL,
- * pinned screen-space at the right edge; wires toward it end at exit markers. */
-function levelNodes(data, level) {
+// ---- rooms ----------------------------------------------------------------------
+/** The nodes a room shows. Top room: aim + chambers (or the whole flat plan when
+ * no groups were authored — the graph keeps working). Inside a group: exactly
+ * its children. The CONCLUSION is never a room node here — at the top it is the
+ * ARTIFACT, the always-last column card; in sub-rooms it is the header's goal
+ * chip linking home. */
+function roomNodes(data, level) {
   const ns = ((data && data.nodes) || []).filter((n) => n.node_type !== "conclusion");
   if (level) return ns.filter((n) => String(n.parent_key || "") === level);
   if (!ns.some((n) => n.node_type === "group")) return ns;
@@ -290,7 +250,7 @@ function goalTitle(n) {
 }
 
 // Group health rolls WORST-OF its children, derived client-side whenever the
-// payload has not rolled it itself (every health field is optional — the graph
+// payload has not rolled it itself (every health field is optional — the Atlas
 // must render gracefully against a backend that predates the contract).
 const HS_RANK = { green: 0, yellow: 1, red: 2 };
 function deriveGroupHealth(data) {
@@ -307,143 +267,94 @@ function deriveGroupHealth(data) {
   }
 }
 
-/** Where a group card sits at level 0 — the world point its subgraph unfolds
- * around, so the microscope lands exactly where the card used to be. */
-function groupAnchor(i, key) {
-  const top = levelNodes(i.data, null);
-  const keys = new Set(top.map((n) => String(n.key)));
-  const es = ((i.data && i.data.edges) || []).filter((e) => {
-    const [s, d] = edgeEnds(e); return keys.has(s) && keys.has(d);
-  });
-  const pos = layout(top, es, (i.data && i.data.positions) || {}, L0_GRID);
-  return pos[key] || { x: 0, y: 0 };
-}
-
-/** Layout for one level: auto-layout on the level's own subgraph, a group's
- * children recentred onto the group's home spot (the reclaimed space), and saved
- * drags winning verbatim — keys are unique across levels, so the positions
- * payload needs no new shape. */
-function levelLayout(i, level) {
-  const ns = levelNodes(i.data, level);
-  const keys = new Set(ns.map((n) => String(n.key)));
-  const inEdges = ((i.data && i.data.edges) || []).filter((e) => {
-    const [s, d] = edgeEnds(e); return keys.has(s) && keys.has(d);
-  });
-  const pos = layout(ns, inEdges, {}, level ? L1_GRID : L0_GRID);
-  if (level && ns.length) {
-    const a = groupAnchor(i, level);
-    let cx = 0, cy = 0;
-    ns.forEach((n) => { cx += pos[n.key].x; cy += pos[n.key].y; });
-    cx /= ns.length; cy /= ns.length;
-    ns.forEach((n) => { pos[n.key].x += a.x - cx; pos[n.key].y += a.y - cy; });
-  }
-  const saved = (i.data && i.data.positions) || {};
-  ns.forEach((n) => {
-    const s = saved[n.key];
-    if (Array.isArray(s) && s.length === 2) pos[n.key] = { x: +s[0], y: +s[1] };
-  });
-  return { ns, keys, inEdges, pos };
-}
-
-function boundsFor(ns, pos) {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const n of ns) {
-    const p = pos[n.key]; if (!p) continue;
-    const { w, h } = nodeSize(n);
-    minX = Math.min(minX, p.x - w / 2 - 20); minY = Math.min(minY, p.y - h / 2 - 20);
-    maxX = Math.max(maxX, p.x + w / 2 + 20); maxY = Math.max(maxY, p.y + h / 2 + 30);
-  }
-  return { minX, minY, maxX, maxY };
-}
-
-/** The view a level should be framed at, computed BEFORE it is painted — the
- * camera flies toward where the destination will be. */
-function targetViewFor(i, level) {
-  const { ns, pos } = levelLayout(i, level);
-  return viewFor(i, boundsFor(ns, pos), level ? 190 : 120);
-}
-
-// ---- navigation: the microscope -------------------------------------------------
-/** All drilling funnels through the hash, so the address bar, the back button and
- * a pasted link all mean the same thing. route() → openModuleGraph → open → navTo. */
+// ---- navigation -----------------------------------------------------------------
+/** All travel funnels through the hash, so the address bar, the back button and
+ * a pasted link all mean the same room. route() → openModuleGraph → open → navTo. */
 function drillTo(i, key) {
-  hideTip(i);
   const want = key ? "#/graph/" + encodeURIComponent(key) : "#/graph";
   // Never rewrite an already-correct hash: assigning it again mints a duplicate
   // history entry, and the first browser-back then appears to do nothing.
   if (location.hash !== want) location.hash = want;
+  else navTo(i, key || null);
 }
 
-/** The level transition, frame by frame: (1) the outgoing cards bow out — every
- * card takes .gr-exit (scale-down fade) except a drilled-into group, which takes
- * .gr-zoombig and BLOOMS, its card expanding past the camera as it fades, wires
- * fading with them; (2) the camera starts its 450ms eased flight toward the
- * destination's framing (spring overshoot on the way DOWN); (3) ~230ms in, while
- * everything is still moving, the stage swaps — the old level's elements are
- * dropped and the new level paints hidden, then reveals card-by-card (60ms
- * stagger), wires drawing themselves last via dash-offset; (4) the camera lands,
- * the transition flag lifts and polling resumes. Reduced motion: an instant swap
- * at the destination view, nothing in between. */
+/** Door-chip / Atlas travel: go to a room and flash-highlight one card there. */
+function travel(i, roomKey, targetKey) {
+  i.flashKey = targetKey || null;
+  if (i.atlasOpen) toggleAtlas(i, false);
+  if ((roomKey || null) === i.level) { flashNow(i); return; }
+  drillTo(i, roomKey || "");
+}
+
+function flashNow(i) {
+  if (!i.flashKey) return;
+  const el = i.cards.get(String(i.flashKey));
+  i.flashKey = null;
+  if (!el) return;
+  el.classList.remove("gr-flash");
+  void el.offsetWidth;                       // restart the animation
+  el.classList.add("gr-flash");
+  i.focusKey = el.getAttribute("data-key");
+  applyFocus(i);
+  clearTimeout(i.flashTimer);
+  i.flashTimer = setTimeout(() => el.classList.remove("gr-flash"), 1800);
+}
+
+/** The room transition, frame by frame: entering a chamber = the clicked card
+ * scales up toward the viewer while the room fades; ~200ms in the stage swaps
+ * and the new room's cards stagger in (~60ms, topo order), wires drawing
+ * themselves last. Leaving = the reverse (the room recedes). Under
+ * prefers-reduced-motion: an instant swap, nothing in between. */
 function navTo(i, level) {
   level = level || null;
-  if (level === i.level) { renderCrumb(i); return; }
+  if (level === i.level) { renderCrumb(i); flashNow(i); return; }
   if (!i.data) { i.level = level; return; }
-  clearSel(i); i.inspectKey = null; hideTip(i); asideDefault(i);
-  const dirIn = !!level && !i.level;         // top → group gets the spring
-  if (reduceMotion()) {
-    const v = targetViewFor(i, level);
-    setLevelNow(i, level, true);
-    i.world.setView(v); miniViewport(i); saveView(i);
-    return;
-  }
+  i.inspectKey = null;
+  clearSel(i);
+  asideDefault(i);
+  if (i.atlasOpen) toggleAtlas(i, false);
+  if (reduceMotion()) { setRoomNow(i, level); return; }
   i.transition = true;
   clearTimeout(i.swapTimer);
   clearTimeout(i.revealTimer);
   i.revealTimer = null; i.revealQueue = [];
-  // (1) the outgoing level bows out
-  i.nodes.forEach((t) => t.g.classList.add(
-    level && t.key === level ? "gr-zoombig" : "gr-exit"));
-  i.edges.forEach((e) => e.g.classList.add("gr-exit"));
-  i.portals.forEach((p) => p.g.classList.add("gr-exit"));
-  // (2) the flight
-  flyTo(i, targetViewFor(i, level), DRILL_MS, dirIn, () => {
+  const enteringCard = level ? i.cards.get(String(level)) : null;
+  if (enteringCard) {
+    // entering: the chamber card blooms into the new room
+    enteringCard.classList.add("gr-openit");
+    i.room.classList.add("gr-room-enter");
+  } else {
+    // leaving (or a cross-jump): the room recedes
+    i.room.classList.add("gr-room-leave");
+  }
+  i.swapTimer = setTimeout(() => {
+    if (inst !== i) return;
     i.transition = false;
-    saveView(i);
+    setRoomNow(i, level);
     scheduleRefetch(i);
-  });
-  // (3) the swap, mid-flight
-  i.swapTimer = setTimeout(() => { if (inst === i) setLevelNow(i, level); }, SWAP_MS);
+  }, SWAP_MS);
 }
 
-/** Cut to a level: forget the level's entrance keys so the staging replays, and
- * paint. Outgoing cards KEEP the stage briefly so their exit transition can
- * finish under the incoming reveal (CSS gives .gr-exit/.gr-zoombig
- * pointer-events:none, so they cannot shadow hit-testing while they fade). */
-function setLevelNow(i, level, instant) {
+/** Cut to a room now: forget the room's entrance keys so the staging replays,
+ * then paint. */
+function setRoomNow(i, level) {
   i.level = level;
-  const olds = [];
-  i.nodes.forEach((t) => olds.push(t.g));
-  i.nodes.clear();
-  clearTimeout(i.oldTimer);
-  if (instant || reduceMotion()) olds.forEach((g) => g.remove());
-  else i.oldTimer = setTimeout(() => olds.forEach((g) => g.remove()), 340);
+  i.room.classList.remove("gr-room-enter", "gr-room-leave");
   const planId = i.data && i.data.plan && i.data.plan.id;
-  levelNodes(i.data, level).forEach((n) => SEEN.delete(planId + ":" + n.key));
+  roomNodes(i.data, level).forEach((n) => SEEN.delete(planId + ":" + n.key));
+  i.focusKey = null;
   paint(i, i.data);
 }
 
 // ---- painting -------------------------------------------------------------------
 function paint(i, data) {
   i.data = data;
-  i.hostRect = i.host.getBoundingClientRect();
   deriveGroupHealth(data);
   i.byKey = new Map((data.nodes || []).map((n) => [String(n.key), n]));
   const planId = data.plan && data.plan.id;
-  // A replan can dissolve the group being viewed — fall back to the architecture.
-  // REPLACE the history entry rather than pushing one: `location.hash =` here
-  // re-entered route() and stacked a second entry per drill, which is what made
-  // the first browser-back leave the hash where it already was.
-  if (i.level && !levelNodes(data, i.level).length) {
+  // A replan can dissolve the group being viewed — fall back to the top room.
+  // REPLACE the history entry rather than pushing one (the back-button lesson).
+  if (i.level && !roomNodes(data, i.level).length) {
     i.level = null;
     if (location.hash !== "#/graph") history.replaceState(null, "", "#/graph");
   }
@@ -452,58 +363,94 @@ function paint(i, data) {
     const p = String(n.parent_key || "");
     if (p) counts[p] = (counts[p] || 0) + 1;
   }
-  const { ns, inEdges, pos } = levelLayout(i, i.level);
-  const live = new Set();
-  for (const n of ns) {
+  const ns = roomNodes(data, i.level);
+  for (const n of ns)
     if (n.node_type === "group") n.children = counts[String(n.key)] || 0;
-    const key = String(n.key);
-    live.add(key);
-    let t = i.nodes.get(key);
-    if (!t) {
-      const g = buildNode(n);
-      if (!SEEN.has(planId + ":" + key)) g.classList.add("gr-hidden");
-      i.world.el.gTokens.appendChild(g);
-      t = { key, data: n, g, x: 0, y: 0 };
-      i.nodes.set(key, t);
-    } else {
-      updateNode(t.g, n);
-      t.data = n;
+  const conclusion = (data.nodes || []).find((n) => n.node_type === "conclusion");
+  const showArtifact = !i.level && !!conclusion;
+  i.roomKeys = new Set(ns.map((n) => String(n.key)));
+  if (showArtifact) i.roomKeys.add(String(conclusion.key));
+
+  // In-room edges only — the SVG underlay draws nothing else.
+  const inEdges = ((data.edges) || []).filter((e) => {
+    const [s, d] = edgeEnds(e);
+    return i.roomKeys.has(s) && i.roomKeys.has(d);
+  });
+
+  // Dependency columns over the room's own edges; the Artifact is ALWAYS the
+  // last column of the top room, whatever the topology says.
+  const cols = columns(ns, inEdges.filter((e) => {
+    const [s, d] = edgeEnds(e);
+    return (!conclusion || (s !== String(conclusion.key) && d !== String(conclusion.key)));
+  }));
+  const colCount = cols.length + (showArtifact ? 1 : 0);
+  i.room.innerHTML = "";
+  i.room.style.setProperty("--gr-cols", String(Math.max(1, colCount)));
+  const nsBy = new Map(ns.map((n) => [String(n.key), n]));
+  const oldCards = i.cards;
+  i.cards = new Map();
+  const place = (colEl, key, el) => { colEl.appendChild(el); i.cards.set(key, el); };
+  cols.forEach((col) => {
+    const colEl = document.createElement("div");
+    colEl.className = "gr-col";
+    for (const key of col) {
+      const n = nsBy.get(key);
+      let el = oldCards.get(key);
+      if (el && el.getAttribute("data-kind") !== "artifact") updateCard(el, n);
+      else el = buildCard(n);
+      if (!SEEN.has(planId + ":" + key)) el.classList.add("gr-hidden");
+      place(colEl, key, el);
     }
-    const p = pos[key] || { x: 0, y: 0 };
-    t.x = p.x; t.y = p.y;
-    setPos(t.g, p.x, p.y);
+    i.room.appendChild(colEl);
+  });
+  if (showArtifact) {
+    const colEl = document.createElement("div");
+    colEl.className = "gr-col gr-col-artifact";
+    const key = String(conclusion.key);
+    const el = buildArtifactCard(conclusion, data.conclusion, goalTitle(conclusion));
+    if (!SEEN.has(planId + ":" + key)) el.classList.add("gr-hidden");
+    place(colEl, key, el);
+    i.room.appendChild(colEl);
   }
-  for (const [key, t] of [...i.nodes]) if (!live.has(key)) { t.g.remove(); i.nodes.delete(key); }
-  const fresh = topoOrder(ns, inEdges).filter((k) => !SEEN.has(planId + ":" + k));
-  buildPortals(i, fresh.length > 0);
-  rebuildWires(i);
+
+  // Door chips — cross-room dependencies, from the payload's edges alone.
+  for (const n of ns) attachDoors(i, i.cards.get(String(n.key)), n);
+
   showActivity(i);
   reselect(i);
   const planInfo = document.getElementById("graphPlanInfo");
   if (planInfo && data.plan) planInfo.textContent =
     `v${data.plan.version} · by ${data.plan.authored_by || "seed"}`;
+
+  i.inEdges = inEdges;
+  const fresh = topoOrder(ns, inEdges)
+    .concat(showArtifact ? [String(conclusion.key)] : [])
+    .filter((k) => !SEEN.has(planId + ":" + k));
   if (fresh.length) reveal(i, planId, fresh);
-  if (i.firstPaint) { i.firstPaint = false; restoreView(i); }
-  renderMini(i);
+  else drawWires(i, false);
+
+  if (!i.focusKey || !i.cards.has(i.focusKey))
+    i.focusKey = (cols[0] && cols[0][0]) || (ns[0] && String(ns[0].key)) || null;
+  applyFocus(i, true);
+  flashNow(i);
   renderCrumb(i);
-  renderGoal(i);
+  renderGoalChip(i);
   renderLegend(i);
+  if (i.atlasOpen) renderAtlas(i);
 }
 
 /** The staged entrance: cards scale/fade in one at a time in topo order (~60ms
- * stagger, a CSS scale/opacity transition), wires and portal stubs arriving only
- * AFTER their endpoints — the wires drawing themselves via a dash-offset sweep.
- * Under prefers-reduced-motion — the check comes FIRST, before any stepper is
- * armed — everything simply appears. */
+ * stagger, a CSS transition), the wires drawing themselves only AFTER their
+ * endpoints via a dash-offset sweep. Under prefers-reduced-motion — the check
+ * comes FIRST, before any stepper is armed — everything simply appears. */
 function reveal(i, planId, freshKeys) {
   if (reduceMotion()) {
     for (const k of freshKeys) {
       SEEN.add(planId + ":" + k);
-      const t = i.nodes.get(k);
-      if (t) t.g.classList.remove("gr-hidden");
+      const el = i.cards.get(k);
+      if (el) el.classList.remove("gr-hidden");
     }
-    i.portals.forEach((p) => p.g.classList.remove("gr-hidden"));
-    rebuildWires(i);
+    drawWires(i, false);
     return;
   }
   for (const k of freshKeys)
@@ -512,221 +459,182 @@ function reveal(i, planId, freshKeys) {
   const step = () => {
     i.revealTimer = null;
     const q = i.revealQueue.shift();
-    if (!q) {                            // every card is on stage → the wires' turn
-      i.portals.forEach((p) => p.g.classList.remove("gr-hidden"));
-      i._staged = true;                  // rebuildWires arms the dash-draw once
-      rebuildWires(i);
-      return;
-    }
+    if (!q) { drawWires(i, true); return; }        // all cards on stage → the wires' turn
     SEEN.add(q[0] + ":" + q[1]);
-    const t = i.nodes.get(q[1]);
-    if (t) {
-      void t.g.getBoundingClientRect();          // commit the hidden state first
-      t.g.classList.remove("gr-hidden");         // → CSS transition plays
+    const el = i.cards.get(q[1]);
+    if (el) {
+      void el.offsetWidth;                          // commit the hidden state first
+      el.classList.remove("gr-hidden");             // → CSS transition plays
     }
-    i.revealTimer = setTimeout(step, 60);
+    i.revealTimer = setTimeout(step, STAGGER_MS);
   };
   i.revealTimer = setTimeout(step, 40);
 }
 
-/** Where a wire meets a card: the boundary point toward the other node, pushed so
- * render.js's own end-cut lands the arrowhead just OUTSIDE the card instead of
- * underneath it (cards are far wider than the agent circles the cut was sized for). */
-function anchor(from, to, size) {
-  const dx = to.x - from.x, dy = to.y - from.y, len = Math.hypot(dx, dy) || 1;
-  const ux = dx / len, uy = dy / len;
-  const t = Math.min(size.w / 2 / Math.max(Math.abs(ux), 1e-6),
-                     size.h / 2 / Math.max(Math.abs(uy), 1e-6));
-  const d = Math.max(0, Math.min(t + 6, len / 2 - 4) - WIRE_GAP);
-  return { x: from.x + ux * d, y: from.y + uy * d };
-}
-
-// ---- portals: where a wire leaves the room --------------------------------------
-/** One foreign group, one direction → one crossing. The pk encodes both. The
- * conclusion is special: its crossings belong to the pinned GOAL, never a gate. */
-function portalPk(i, foreignKey, out) {
-  const n = i.byKey.get(String(foreignKey));
-  if (!n) return null;
-  if (n.node_type === "conclusion")
-    return { pk: (out ? ">" : "<") + "~goal", drill: null, goal: true, label: goalTitle(n) };
-  const gkey = String(n.parent_key || "");
-  const drill = gkey && i.byKey.has(gkey) ? gkey : "";
-  const holder = drill ? i.byKey.get(drill) : null;
-  return { pk: (out ? ">" : "<") + (drill || "~top"), drill,
-           label: holder ? (holder.title || drill) : (n.title || String(n.key)) };
-}
-
-/** Cross-level edges do not vanish — but the INTERACTIVE portal is no longer a
- * world-space pill that rides the camera. What stays in world space is a small
- * FADED ARROWHEAD at the frame boundary (so the wire's direction still reads);
- * the clickable gates live on the screen-fixed docks (renderDocks), and the
- * conclusion's crossings point at the pinned GOAL. Incoming traffic exits on the
- * left of the subgraph, outgoing on the right. */
-function buildPortals(i, hidden) {
-  i.portals.forEach((p) => p.g.remove());
-  i.portals.clear();
-  const wanted = new Map();
-  if (i.data) {
-    for (const e of i.data.edges || []) {
-      const [s, d] = edgeEnds(e);
-      const sIn = i.nodes.has(s), dIn = i.nodes.has(d);
-      if (sIn === dIn) continue;                   // in-level (drawn) or elsewhere (not ours)
-      const p = portalPk(i, sIn ? d : s, sIn);
-      if (!p) continue;
-      if (!i.level && !p.goal) continue;           // top level crosses only into the goal
-      if (!wanted.has(p.pk)) wanted.set(p.pk, { ...p, out: p.pk[0] === ">", n: 0 });
-      wanted.get(p.pk).n += 1;
-    }
-  }
-  if (wanted.size) {
-    const bb = sceneBounds(i);
-    if (isFinite(bb.minX)) {
-      const midY = (bb.minY + bb.maxY) / 2;
-      const ins = [...wanted.values()].filter((w) => !w.out);
-      const outs = [...wanted.values()].filter((w) => w.out);
-      const place = (w, idx, total, x) => {
-        const y = midY + (idx - (total - 1) / 2) * 66;
-        // The marker points along the data's travel (left → right), both sides.
-        const g = svgEl("g", {
-          class: "gr-exitmark" + (hidden ? " gr-hidden" : ""),
-          transform: `translate(${x} ${y})`, "pointer-events": "none",
-        }, [svgEl("path", { class: "gr-exitmark-a", d: "M-7,-7 L9,0 L-7,7 Z" })]);
-        i.world.el.gTokens.appendChild(g);
-        i.portals.set(w.pk, { g, x, y, out: w.out, drill: w.drill });
-      };
-      ins.forEach((w, idx) => place(w, idx, ins.length, bb.minX - 90));
-      outs.forEach((w, idx) => place(w, idx, outs.length, bb.maxX + 90));
-    }
-  }
-  renderDocks(i, wanted);
-}
-
-// ---- the transition docks: metroidvania gates, SCREEN-FIXED ---------------------
-/** The interactive cross-group portals live OUTSIDE the world transform: two
- * docks at the stage's left/right vertical midline — left = upstream groups
- * feeding this level, right = downstream groups it feeds. They are plain HTML
- * siblings of the canvas host, so no camera transform can ever move them; a dock
- * with no crossings on its side hides. A gate whose group is busy pulses. */
-function renderDocks(i, wanted) {
-  const L = document.getElementById("graphDockL");
-  const R = document.getElementById("graphDockR");
-  if (!L || !R) return;
-  const gates = [...(wanted ? wanted.values() : [])].filter((w) => !w.goal);
-  const fill = (host, ws) => {
-    host.innerHTML = "";
-    for (const w of ws) {
-      const b = document.createElement("button");
-      b.className = "gr-gate";
-      b.setAttribute("data-drill", w.drill || "");
-      const gn = w.drill ? i.byKey.get(w.drill) : null;
-      if (gn && (gn.activity || []).length) b.classList.add("gr-gate-busy");
-      b.title = (w.out ? "downstream: " : "upstream: ")
-        + String(w.label || "the architecture") + " — click to travel through";
-      const arrow = document.createElement("span");
-      arrow.className = "gr-gate-arrow";
-      arrow.textContent = w.out ? "→" : "←";
-      const name = document.createElement("span");
-      name.className = "gr-gate-name";
-      name.textContent = String(w.label || w.drill || "overview");  // textContent — titles are authored text
-      b.append(arrow, name);
-      b.onclick = () => drillTo(i, w.drill || "");
-      host.appendChild(b);
-    }
-    host.hidden = !ws.length;
-  };
-  fill(L, gates.filter((w) => !w.out));
-  fill(R, gates.filter((w) => w.out));
-}
-
-function rebuildWires(i) {
-  const gW = i.world.el.gWires;
-  gW.innerHTML = "";
-  i.edges = [];
-  const staged = i._staged;              // one dash-draw sweep, armed by reveal()
-  i._staged = false;
+// ---- the wires: an SVG underlay of real in-room edges ---------------------------
+/** Orthogonal elbows between card anchor points READ FROM THE DOM after layout —
+ * deterministic, no simulation of where the grid put things. Source anchor:
+ * right edge midpoint; destination anchor: left edge midpoint. */
+function drawWires(i, staged) {
+  const svg = i.wires;
+  svg.innerHTML = "";
+  i.wireEls = [];
+  const wr = i.wrap.getBoundingClientRect();
+  const wpx = Math.max(i.wrap.scrollWidth, Math.round(wr.width));
+  const hpx = Math.max(i.wrap.scrollHeight, Math.round(wr.height));
+  svg.setAttribute("width", wpx);
+  svg.setAttribute("height", hpx);
+  svg.setAttribute("viewBox", `0 0 ${wpx} ${hpx}`);
+  const defs = svgMk("defs");
+  const marker = svgMk("marker", { id: "grArrow", viewBox: "0 0 10 10",
+    refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
+  marker.appendChild(svgMk("path", { d: "M0,0 L10,5 L0,10 Z", class: "gr-arrowhead" }));
+  defs.appendChild(marker);
+  svg.appendChild(defs);
   let di = 0;
-  ((i.data && i.data.edges) || []).forEach((e, idx) => {
+  for (const e of i.inEdges || []) {
     const [s, d] = edgeEnds(e);
-    const A = i.nodes.get(s), B = i.nodes.get(d);
-    let pa = null, pb = null;
-    if (!A && !B) return;                           // an edge of some other level
-    if (!A || !B) {
-      const p = portalPk(i, A ? d : s, !!A);
-      // Top level draws only its own tier — plus the goal's exit markers.
-      if (!p || (!i.level && !p.goal)) return;
-      const stub = i.portals.get(p.pk);
-      if (!stub || stub.g.classList.contains("gr-hidden")) return;
-      if (A) pb = stub; else pa = stub;
+    const A = i.cards.get(s), B = i.cards.get(d);
+    if (!A || !B) continue;
+    const ra = A.getBoundingClientRect(), rb = B.getBoundingClientRect();
+    const scroll = { x: -wr.left, y: -wr.top };
+    const x0 = ra.right + scroll.x, y0 = ra.top + ra.height / 2 + scroll.y;
+    const x1 = rb.left + scroll.x, y1 = rb.top + rb.height / 2 + scroll.y;
+    let dPath;
+    if (x1 > x0 + 12) {
+      const mx = (x0 + x1) / 2;
+      dPath = `M ${x0} ${y0} L ${mx} ${y0} L ${mx} ${y1} L ${x1 - 3} ${y1}`;
+    } else {
+      // a back-edge or same-column edge: route around via the cards' outer rims
+      const yb = Math.max(ra.bottom, rb.bottom) + 18 + scroll.y;
+      dPath = `M ${x0} ${y0} L ${x0 + 14} ${y0} L ${x0 + 14} ${yb} `
+            + `L ${x1 - 14} ${yb} L ${x1 - 14} ${y1} L ${x1 - 3} ${y1}`;
     }
-    if ((A && A.g.classList.contains("gr-hidden")) ||
-        (B && B.g.classList.contains("gr-hidden"))) return;
-    const An = A ? { x: A.x, y: A.y } : { x: pa.x, y: pa.y };
-    const Bn = B ? { x: B.x, y: B.y } : { x: pb.x, y: pb.y };
-    const a1 = anchor(An, Bn, A ? nodeSize(A.data) : PORTAL);
-    const b1 = anchor(Bn, An, B ? nodeSize(B.data) : PORTAL);
-    const g = wireNode({ tid: idx, a: s, b: d, dir: "a2b", closed: true,
-                         ax: a1.x, ay: a1.y, bx: b1.x, by: b1.y });
-    g.classList.add("gr-wire", "gr-wire-" + (e.edge_type || "depends"));
-    if (pa || pb) g.classList.add("gr-wire-portal");
-    if (staged) {
-      g.classList.add("gr-draw");
-      g.style.setProperty("--gr-dd", Math.min(di * 45, 500) + "ms");
+    const p = svgMk("path", {
+      class: "gr-wire gr-wire-" + (e.edge_type || "depends"),
+      d: dPath, fill: "none", "marker-end": "url(#grArrow)",
+    });
+    if (staged && !reduceMotion()) {
+      p.classList.add("gr-draw");
+      p.style.setProperty("--gr-dd", Math.min(di * 45, 500) + "ms");
     }
-    gW.appendChild(g);
-    i.edges.push({ a: s, b: d, g, d: e, pa, pb });
+    svg.appendChild(p);
+    i.wireEls.push({ a: s, b: d, el: p });
     di += 1;
-  });
-  if (staged) {                          // the sweep is one-shot; hand back to gr-flow
+  }
+  if (staged) {
     clearTimeout(i.drawTimer);
     i.drawTimer = setTimeout(() => {
-      if (inst === i) i.edges.forEach((x) => x.g.classList.remove("gr-draw"));
+      if (inst === i) i.wireEls.forEach((x) => x.el.classList.remove("gr-draw"));
     }, 1200);
   }
   flowWires(i);
 }
 
-function updateWiresFor(i, key) {
-  for (const edge of i.edges) {
-    if (edge.a !== key && edge.b !== key) continue;
-    const A = i.nodes.get(edge.a), B = i.nodes.get(edge.b);
-    const An = A ? { x: A.x, y: A.y } : edge.pa, Bn = B ? { x: B.x, y: B.y } : edge.pb;
-    if (!An || !Bn) continue;
-    const a1 = anchor(An, Bn, A ? nodeSize(A.data) : PORTAL);
-    const b1 = anchor(Bn, An, B ? nodeSize(B.data) : PORTAL);
-    setWireEnds(edge.g, a1.x, a1.y, b1.x, b1.y);
+// ---- door chips: where a dependency leaves the room -----------------------------
+/** The chips for one card, derived EXCLUSIVELY from the payload's edges — a
+ * chip exists iff a real edge crosses the room's wall at this card. The foreign
+ * endpoint resolves to its owning room (its parent group; the top room when it
+ * has none) plus the leaf itself, so the label reads "→ Data › db" and the
+ * click can land with the target flash-highlighted. Never derived from group
+ * adjacency — the wall's truth is the child edges themselves. */
+function doorChips(i, n) {
+  const key = String(n.key);
+  const out = [];
+  const seen = new Set();
+  for (const e of (i.data && i.data.edges) || []) {
+    const [s, d] = edgeEnds(e);
+    const feeds = s === key && !i.roomKeys.has(d);
+    const needs = d === key && !i.roomKeys.has(s);
+    if (!feeds && !needs) continue;
+    const foreign = i.byKey.get(feeds ? d : s);
+    if (!foreign) continue;
+    let room, roomTitle, target;
+    if (foreign.node_type === "conclusion") {
+      room = ""; roomTitle = "The Artifact"; target = String(foreign.key);
+    } else if (foreign.node_type === "group") {
+      room = String(foreign.key); roomTitle = String(foreign.title || foreign.key); target = "";
+    } else {
+      const p = String(foreign.parent_key || "");
+      room = p && i.byKey.has(p) ? p : "";
+      const holder = room ? i.byKey.get(room) : null;
+      roomTitle = holder ? String(holder.title || room) : "overview";
+      target = String(foreign.key);
+    }
+    const sig = (feeds ? ">" : "<") + room + "›" + target;
+    if (seen.has(sig)) continue;
+    seen.add(sig);
+    const leaf = foreign.node_type === "group" ? "" : String(foreign.title || foreign.key);
+    out.push({
+      dir: feeds ? "out" : "in", room, target,
+      label: roomTitle + (leaf && leaf !== roomTitle ? " › " + leaf : ""),
+    });
+  }
+  return out;
+}
+
+function attachDoors(i, el, n) {
+  if (!el) return;
+  const host = el.querySelector(".gr-doors");
+  if (!host) return;
+  host.innerHTML = "";
+  for (const c of doorChips(i, n)) {
+    const b = document.createElement("button");
+    b.className = "gr-door gr-door-" + c.dir;
+    b.setAttribute("data-door", c.room);
+    b.setAttribute("data-target", c.target);
+    b.title = (c.dir === "out" ? "feeds " : "needs ") + c.label + " — travel there";
+    const arrow = document.createElement("span");
+    arrow.className = "gr-door-arrow";
+    arrow.textContent = c.dir === "out" ? "→" : "←";
+    const name = document.createElement("span");
+    name.className = "gr-door-name";
+    name.textContent = c.label;                    // textContent — titles are authored text
+    b.append(arrow, name);
+    host.appendChild(b);
   }
 }
 
 // ---- live activity --------------------------------------------------------------
-/** A node the crew is touching right now glows and says what is being done to it. */
-function setBusy(i, t, act) {
-  t.g.querySelectorAll(".lw2-bubble-fo").forEach((b) => b.remove());
-  t.g.classList.toggle("gr-busy", !!act);
-  if (act) t.g.appendChild(speechBubble(act.task || act.what || "working", 0));
+/** A card the crew is touching right now pulses and says what is being done. */
+function setBusy(i, el, act) {
+  el.classList.toggle("gr-busy", !!act);
+  let line = el.querySelector(".gr-act");
+  if (act) {
+    if (!line) {
+      line = document.createElement("div");
+      line.className = "gr-act";
+      const doors = el.querySelector(".gr-doors");
+      el.insertBefore(line, doors || null);
+    }
+    line.textContent = "● " + String(act.task || act.what || "working");
+  } else if (line) line.remove();
 }
 function showActivity(i) {
-  i.nodes.forEach((t) => setBusy(i, t, ((t.data && t.data.activity) || [])[0]));
+  i.cards.forEach((el, key) => {
+    const n = i.byKey.get(key);
+    setBusy(i, el, ((n && n.activity) || [])[0]);
+  });
   flowWires(i);
 }
 
-/** Live edge flow: a wire whose either endpoint is busy carries a slow marching-
- * dash shimmer — the data is visibly moving. The animation itself is pure CSS;
- * this only flips the class. */
+/** Live edge flow: a wire whose either endpoint is busy carries a marching-dash
+ * shimmer — the data is visibly moving. The animation itself is pure CSS. */
 function flowWires(i) {
-  for (const e of i.edges) {
-    const A = i.nodes.get(e.a), B = i.nodes.get(e.b);
-    const on = !!((A && A.g.classList.contains("gr-busy")) ||
-                  (B && B.g.classList.contains("gr-busy")));
-    e.g.classList.toggle("gr-flow", on);
+  for (const w of i.wireEls) {
+    const A = i.cards.get(w.a), B = i.cards.get(w.b);
+    const on = !!((A && A.classList.contains("gr-busy")) ||
+                  (B && B.classList.contains("gr-busy")));
+    w.el.classList.toggle("gr-flow", on);
   }
 }
 
 function onGraphEvent(i, e) {
   if (!e || !e.kind) return;
   if (e.kind === "graph_node_active" || e.kind === "graph_node_idle") {
-    const t = e.node != null && i.nodes.get(String(e.node));
-    if (t) {
-      setBusy(i, t, e.kind === "graph_node_active"
+    const el = e.node != null && i.cards.get(String(e.node));
+    if (el) {
+      setBusy(i, el, e.kind === "graph_node_active"
         ? { task: e.task || e.what || "working" } : null);
       flowWires(i);
     }
@@ -735,9 +643,9 @@ function onGraphEvent(i, e) {
   scheduleRefetch(i);          // verify results, replans, crew events → repaint soon
 }
 
-// ---- breadcrumb -----------------------------------------------------------------
-/** Persistent, top-left: `aim` at the architecture level, `aim ▸ Group` inside a
- * group — the aim crumb is the way back up. */
+// ---- breadcrumb + the goal chip -------------------------------------------------
+/** Persistent, in the bar: `aim` at the top room, `aim ▸ Group` inside one —
+ * the aim crumb is the way back up. */
 function renderCrumb(i) {
   if (!i.crumb) return;
   const aim = (i.data && (i.data.nodes || []).find((n) => n.node_type === "aim"));
@@ -748,43 +656,36 @@ function renderCrumb(i) {
   }
   const g = i.byKey.get(i.level);
   i.crumb.innerHTML =
-    `<button class="gr-crumb-up" title="Back to the architecture (Esc)">🎯 ${root}</button>` +
+    `<button class="gr-crumb-up" title="Back to the top room (Esc)">🎯 ${root}</button>` +
     `<span class="gr-crumb-sep">▸</span>` +
     `<span class="gr-crumb-here">${esc((g && g.title) || i.level)}</span>`;
   const b = i.crumb.querySelector(".gr-crumb-up");
   if (b) b.onclick = () => drillTo(i, "");
 }
 
-// ---- the GOAL: the conclusion, pinned screen-space at the right edge ------------
-/** The conclusion never rides the camera. It is the level's GOAL — a fixed slab
- * at the stage's right edge centre, a sibling of the canvas host like the docks,
- * so zoom/pan cannot move it. Wires toward it end at the faded exit arrowheads.
- * Clicking it opens the goal panel: beat, uptime, shas, the mini cluster. */
-function renderGoal(i) {
-  const el = document.getElementById("graphGoal");
+/** In sub-rooms the Artifact stays present as a slim goal chip in the header,
+ * linking home; in the top room the Artifact card itself is on stage. */
+function renderGoalChip(i) {
+  const el = i.goalChip;
   if (!el) return;
-  if (!i.data) { el.hidden = true; return; }
+  if (!i.data || !i.level) { el.hidden = true; return; }
   const node = (i.data.nodes || []).find((n) => n.node_type === "conclusion");
   const c = i.data.conclusion || {};
   el.innerHTML = "";
   const flag = document.createElement("span");
-  flag.className = "gr-goal-glyph";
   flag.textContent = "🏁";
   const name = document.createElement("span");
-  name.className = "gr-goal-name";
+  name.className = "gr-goalchip-name";
   name.textContent = goalTitle(node);
   const dot = document.createElement("span");
   dot.className = "gr-goal-dot gr-goaldot-" + String(c.health || "unknown");
   el.append(flag, name, dot);
-  if (c.beat != null) {
-    const beat = document.createElement("span");
-    beat.className = "gr-goal-beat";
-    beat.textContent = String(c.beat);
-    el.append(beat);
-  }
-  el.title = goalTitle(node) + " — the GOAL everything feeds";
+  el.title = goalTitle(node) + " — back to the top room";
   el.hidden = false;
-  el.onclick = () => { clearSel(i); i.inspectKey = null; asideConclusion(i); };
+  el.onclick = () => {
+    if (node) i.flashKey = String(node.key);
+    drillTo(i, "");
+  };
 }
 
 // ---- the health legend: three states, one line each -----------------------------
@@ -808,6 +709,69 @@ function renderLegend(i) {
     el.appendChild(row);
   }
   el.hidden = false;
+}
+
+// ---- the Atlas map: the whole two-level tree, one overlay -----------------------
+/** M (or the bar button) opens the full-screen map: one box per room — the top
+ * room first, then every chamber — each with compact health-coloured dots for
+ * its cards, the current room marked. Click a room to jump; click a dot to
+ * jump AND flash that card. The Hollow Knight moment: you always know where
+ * you are, and everywhere is one click away. */
+function toggleAtlas(i, on) {
+  const want = on != null ? !!on : !i.atlasOpen;
+  i.atlasOpen = want;
+  if (!i.atlas) return;
+  i.atlas.hidden = !want;
+  if (want) renderAtlas(i);
+}
+
+function renderAtlas(i) {
+  const host = i.atlas;
+  if (!host || !i.data) return;
+  host.innerHTML = "";
+  const inner = document.createElement("div");
+  inner.className = "gr-atlas-inner";
+  const head = document.createElement("div");
+  head.className = "gr-atlas-head";
+  const title = document.createElement("b");
+  title.textContent = "🗺 The Atlas";
+  const hint = document.createElement("span");
+  hint.className = "dim";
+  hint.textContent = "click anywhere to travel · M or Esc closes";
+  head.append(title, hint);
+  inner.appendChild(head);
+  const grid = document.createElement("div");
+  grid.className = "gr-atlas-grid";
+  const dotFor = (n) => {
+    const dot = document.createElement("button");
+    dot.className = "gr-atlas-dot "
+      + ((n.health && HS_RANK[n.health.status] != null) ? "gr-hs-" + n.health.status : "gr-hs-unknown");
+    dot.title = String(n.title || n.key);
+    dot.setAttribute("data-jump-node", String(n.key));
+    return dot;
+  };
+  const roomBox = (roomKey, label, nodes) => {
+    const box = document.createElement("div");
+    box.className = "gr-atlas-room" + ((roomKey || null) === i.level ? " gr-atlas-here" : "");
+    const h = document.createElement("button");
+    h.className = "gr-atlas-roomname";
+    h.textContent = label + ((roomKey || null) === i.level ? "  ◉ you are here" : "");
+    h.setAttribute("data-jump-room", roomKey);
+    box.appendChild(h);
+    const dots = document.createElement("div");
+    dots.className = "gr-atlas-dots";
+    nodes.forEach((n) => dots.appendChild(dotFor(n)));
+    box.appendChild(dots);
+    return box;
+  };
+  const tops = roomNodes(i.data, null);
+  const conclusion = (i.data.nodes || []).find((n) => n.node_type === "conclusion");
+  grid.appendChild(roomBox("", "Overview", tops.concat(conclusion ? [conclusion] : [])));
+  for (const g of tops.filter((n) => n.node_type === "group"))
+    grid.appendChild(roomBox(String(g.key), String(g.title || g.key),
+                             roomNodes(i.data, String(g.key))));
+  inner.appendChild(grid);
+  host.appendChild(inner);
 }
 
 // ---- the team selector: the pool modules are staffed from -----------------------
@@ -859,132 +823,30 @@ async function loadTeam(i) {
   };
 }
 
-// ---- minimap --------------------------------------------------------------------
-// Bottom-right, click-to-jump. NOT a second render of the scene: plain rects drawn
-// from the same node records, plus one rectangle for the viewport.
-const MINI_W = 168, MINI_H = 112;
-function renderMini(i) {
-  if (!i.mini) return;
-  if (!i.miniSvg) {
-    i.miniSvg = svgEl("svg", { class: "gr-mini-svg", width: MINI_W, height: MINI_H,
-                               viewBox: `0 0 ${MINI_W} ${MINI_H}` });
-    i.miniRects = svgEl("g");
-    i.miniView = svgEl("rect", { class: "gr-mini-view", fill: "none", rx: 2 });
-    i.miniSvg.append(i.miniRects, i.miniView);
-    i.mini.innerHTML = "";
-    i.mini.appendChild(i.miniSvg);
-    i.mini.onpointerdown = (e) => {          // click-to-jump: centre the camera there
-      const m = i.miniMap;
-      if (!m) return;
-      const r = i.mini.getBoundingClientRect();
-      const wx = (e.clientX - r.left - m.ox) / m.s, wy = (e.clientY - r.top - m.oy) / m.s;
-      const v = i.world.getView(), hr = i.hostRect;
-      flyTo(i, { k: v.k, x: hr.width / 2 - wx * v.k, y: hr.height / 2 - wy * v.k },
-            320, false, () => saveView(i));
-    };
-  }
-  const bb = sceneBounds(i);
-  if (!isFinite(bb.minX)) { i.miniMap = null; i.miniRects.innerHTML = ""; return; }
-  const s = Math.min((MINI_W - 14) / Math.max(1, bb.maxX - bb.minX),
-                     (MINI_H - 14) / Math.max(1, bb.maxY - bb.minY));
-  i.miniMap = {
-    s,
-    ox: (MINI_W - (bb.maxX - bb.minX) * s) / 2 - bb.minX * s,
-    oy: (MINI_H - (bb.maxY - bb.minY) * s) / 2 - bb.minY * s,
-  };
-  i.miniRects.innerHTML = "";
-  i.nodes.forEach((t) => {
-    const { w, h } = nodeSize(t.data);
-    i.miniRects.appendChild(svgEl("rect", {
-      class: "gr-mini-n gr-mini-" + (t.data.node_type || "code"),
-      x: t.x * s + i.miniMap.ox - (w * s) / 2, y: t.y * s + i.miniMap.oy - (h * s) / 2,
-      width: Math.max(3, w * s), height: Math.max(2.5, h * s), rx: 1.5,
-    }));
-  });
-  miniViewport(i);
-}
-
-function miniViewport(i) {
-  const m = i.miniMap;
-  if (!m || !i.miniView) return;
-  const v = i.world.getView(), r = i.hostRect;
-  const x0 = (0 - v.x) / v.k, y0 = (0 - v.y) / v.k;
-  const ww = r.width / v.k, wh = r.height / v.k;
-  i.miniView.setAttribute("x", x0 * m.s + m.ox);
-  i.miniView.setAttribute("y", y0 * m.s + m.oy);
-  i.miniView.setAttribute("width", Math.max(4, ww * m.s));
-  i.miniView.setAttribute("height", Math.max(4, wh * m.s));
-}
-
-// ---- edge tooltip ---------------------------------------------------------------
-/** Hovering a wire floats its CONTRACT next to the cursor: the two parties, the
- * edge type, the rule itself and the test that enforces it — all escaped, because
- * contracts are planner-authored JSON. */
-function showTip(i, wireG, e) {
-  if (!i.tip || i.transition) return;
-  const ed = ((i.data && i.data.edges) || [])[+wireG.getAttribute("data-tid")];
-  if (!ed) return;
-  const [s, d] = edgeEnds(ed);
-  const rule = ed.contract && Object.keys(ed.contract).length
-    ? `<code>${esc(JSON.stringify(ed.contract))}</code>`
-    : `<span class="dim">no contract recorded</span>`;
-  i.tip.innerHTML =
-    `<b>${esc(s)} → ${esc(d)}</b><span class="gr-edge-tip-type">${esc(ed.edge_type || "depends")}</span>` +
-    rule +
-    (ed.contract_test ? `<div class="dim">${esc(ed.contract_test)}</div>` : "");
-  i.tip.hidden = false;
-  i.tipOn = true;
-  i.stageRect = i.tip.parentElement.getBoundingClientRect();
-  moveTip(i, e);
-}
-function moveTip(i, e) {
-  if (!i.tipOn || !i.stageRect) return;
-  const x = clamp(e.clientX - i.stageRect.left + 16, 8, Math.max(8, i.stageRect.width - 360));
-  const y = clamp(e.clientY - i.stageRect.top + 14, 8, Math.max(8, i.stageRect.height - 140));
-  i.tip.style.transform = `translate(${x}px, ${y}px)`;
-}
-function hideTip(i) {
-  if (!i || !i.tip) return;
-  i.tipOn = false;
-  i.tip.hidden = true;
-}
-
 // ---- selection ------------------------------------------------------------------
 function clearSel(i) {
-  i.sel.forEach((k) => { const t = i.nodes.get(k); if (t) t.g.classList.remove("gr-sel"); });
-  i.sel.clear();
+  i.cards.forEach((el) => el.classList.remove("gr-sel"));
 }
-function addSel(i, k) { const t = i.nodes.get(k); if (t) { t.g.classList.add("gr-sel"); i.sel.add(k); } }
-function setSel(i, k) { clearSel(i); addSel(i, k); }
-function reselect(i) { const keep = [...i.sel].filter((k) => i.nodes.has(k)); i.sel.clear(); keep.forEach((k) => addSel(i, k)); }
-
-/** The selection settled: ONE panel, always complete. A single click on any
- * module or group opens the full side panel (agent, spec, tests, wiring, trace,
- * steering); the conclusion keeps its health card; nothing → the how-to.
- * Double-click has exactly ONE meaning left: the microscope into a group. */
-function selectionChanged(i) {
-  if (i.sel.size === 1) {
-    const key = [...i.sel][0];
-    const t = i.nodes.get(key);
-    if (t && t.data.node_type === "conclusion") { i.inspectKey = null; asideConclusion(i); }
-    else openPanel(i, key);
-  } else if (i.sel.size > 1) {
-    i.inspectKey = null;
-    i.aside.innerHTML = `<p class="dim">${i.sel.size} modules selected — drag to arrange them together.</p>`;
-  } else {
-    i.inspectKey = null;
-    asideDefault(i);
-  }
+function setSel(i, key) {
+  clearSel(i);
+  const el = i.cards.get(String(key));
+  if (el) el.classList.add("gr-sel");
+}
+function reselect(i) {
+  if (i.inspectKey && i.cards.has(i.inspectKey)) setSel(i, i.inspectKey);
 }
 
 // ---- the aside (this screen's own panel/action host) ----------------------------
 function asideDefault(i) {
   i.aside.innerHTML = `<div class="gr-tip">
-    <p class="dim"><b>Click</b> a module — everything about it (its agent, spec,
-    tests, wiring, steering) opens here. <b>Double-click</b> a <b>group</b> (or its
-    ⊕) to dive inside; <kbd>Esc</kbd> or the breadcrumb climbs back out. Drag to
-    arrange — positions stick. Scroll to zoom, hold space to pan, <kbd>f</kbd>
-    frames everything. Hover a wire to read its contract.</p></div>`;
+    <p class="dim"><b>The Atlas</b> — one room at a time, no camera to lose.
+    <b>Click</b> a capillary card (where an agent works) and everything about it
+    — its agent, spec, tests, wiring, steering — opens here. <b>Click</b> a
+    chamber card (a doorway) or press <kbd>Enter</kbd> to walk into that room;
+    <kbd>Esc</kbd> or the breadcrumb climbs back out. Arrow keys move the
+    focus. Door chips on a card ("→ Data › db") are its real cross-room
+    dependencies — click one to travel there. <kbd>M</kbd> opens the full map.
+    Right-click a card for its verbs.</p></div>`;
 }
 
 function testsLine(tests) {
@@ -1077,8 +939,8 @@ function wireCluster(i) {
   if (st) st.onclick = () => go("stop", st);
 }
 
-/** The GOAL panel — the pinned Artifact's single click. Live beat, uptime and
- * shas when the backend sends them (all optional), plus the mini cluster. */
+/** The GOAL panel — the Artifact card's click. Live beat, uptime and shas when
+ * the backend sends them (all optional), plus the mini cluster. */
 function asideConclusion(i) {
   const c = (i.data && i.data.conclusion) || {};
   const node = ((i.data && i.data.nodes) || []).find((n) => n.node_type === "conclusion");
@@ -1101,12 +963,11 @@ function asideConclusion(i) {
 }
 
 /** THE panel: one side panel with everything, opened by a SINGLE click on any
- * module or group. There is no lighter card behind it and no second tier — what
- * you see is always complete: agent first, then spec, tests, wiring, trace and
- * steering. Groups add the dive and the union-verify. */
+ * capillary (or Peek on any card). What you see is always complete: agent
+ * first, then spec, tests, wiring, trace and steering. Groups add the dive and
+ * the union-verify. Kept verbatim from the previous graph — it is good. */
 async function openPanel(i, key) {
-  const t = i.nodes.get(key);
-  if (!t) { asideDefault(i); return; }
+  if (!i.byKey.has(String(key))) { asideDefault(i); return; }
   setSel(i, key);
   i.inspectKey = key;
   i.aside.innerHTML = `<p class="dim">reading ${esc(key)}…</p>`;
@@ -1180,7 +1041,7 @@ function renderPanel(i, key, d) {
   // graph payload node — show those, never a lying "no tests mapped".
   const testRows = isGroup
     ? `<p class="gr-testline">${testsLine(live.tests)}</p>
-       <p class="dim">per-file results live on each module inside — dive in to see them</p>`
+       <p class="dim">per-file results live on each module inside — enter the room to see them</p>`
     : (d.tests || []).map((tt) => `
     <div class="gr-test gr-test-${esc(tt.status)}">
       <span class="gr-test-dot"></span><code>${esc(tt.path)}</code>
@@ -1248,7 +1109,7 @@ function renderPanel(i, key, d) {
             `<option value="${a}"${a === (cfg.autonomy || "") ? " selected" : ""}>${a || "default"}</option>`).join("")}</select>
         </label>
       </div>
-      ${isGroup ? `<div class="gr-actions"><button class="primary" id="grGroupOpen">⊕ Open group</button></div>` : ""}
+      ${isGroup ? `<div class="gr-actions"><button class="primary" id="grGroupOpen">⊕ Enter room</button></div>` : ""}
     </div>`;
   wirePanel(i, key, isGroup);
 }
@@ -1283,8 +1144,8 @@ function wirePanel(i, key, isGroup) {
       return;
     }
     if (inst !== i) return;
-    await refetch(i);                          // the new plan repaints the stage
-    if (i.inspectKey === key && i.nodes.has(key)) openPanel(i, key);
+    await refetch(i);                          // the new plan repaints the room
+    if (i.inspectKey === key && i.byKey.has(key)) openPanel(i, key);
   };
   const send = async (cfg) => {
     try { await i.src.setConfig(key, cfg); W.toast && W.toast("Saved"); }
@@ -1313,68 +1174,132 @@ function wirePanel(i, key, isGroup) {
   };
 }
 
-// ---- events / gestures (the canvas2 core, minus seats/portal/threads) -----------
+// ---- events: click, keyboard, context menu — nothing else -----------------------
+// No pointer capture, no zoom gesture, no drag: the Atlas listens for clicks on the
+// room (delegated), keys on the screen element, and the right-click menu.
 function wireEvents(i) {
-  const { svg } = i.world.el;
-  const onDown = (e) => pointerDown(i, e);
-  const onMove = (e) => { if (i.tipOn) moveTip(i, e); pointerMove(i, e); };
-  const onUp = (e) => pointerUp(i, e);
-  const onWheel = (e) => {
-    e.preventDefault();
-    const k0 = i.world.scale;
-    // proportional zoom: trackpads glide, wheels step — both feel continuous
-    const f = Math.exp((e.deltaY < 0 ? 1 : -1) * Math.min(60, Math.abs(e.deltaY)) * 0.004);
-    i.world.zoomAt(e.clientX, e.clientY, f);
-    miniViewport(i);
-    saveView(i);
-    // the zoom-out gesture past the threshold IS the way back up a level
-    if (i.level && !i.transition && e.deltaY > 0 && k0 > 0.32 && i.world.scale <= 0.32)
-      drillTo(i, "");
+  const onClick = (e) => {
+    const door = e.target.closest && e.target.closest(".gr-door");
+    if (door) {
+      travel(i, door.getAttribute("data-door") || "", door.getAttribute("data-target") || "");
+      return;
+    }
+    const card = e.target.closest && e.target.closest(".gr-card");
+    if (card) activateCard(i, card);
   };
-  const onDbl = (e) => e.preventDefault();     // real dblclick handled via pressToken
-  const onCtx = (e) => contextMenu(i, e);
+  const onAtlasClick = (e) => {
+    const dot = e.target.closest && e.target.closest("[data-jump-node]");
+    if (dot) {
+      const key = dot.getAttribute("data-jump-node");
+      const n = i.byKey.get(String(key)) || {};
+      const room = n.node_type === "group" ? String(n.key) : String(n.parent_key || "");
+      travel(i, room, n.node_type === "group" ? "" : String(key));
+      return;
+    }
+    const roomBtn = e.target.closest && e.target.closest("[data-jump-room]");
+    if (roomBtn) { travel(i, roomBtn.getAttribute("data-jump-room") || "", ""); return; }
+    if (e.target === i.atlas) toggleAtlas(i, false);   // the backdrop closes it
+  };
   const onKey = (e) => keyDown(i, e);
-  const onKeyUp = (e) => { if (e.code === "Space") i.space = false; };
-  const onOver = (e) => {
-    const wg = e.target.closest && e.target.closest(".gr-wire");
-    if (wg && !i.gesture) showTip(i, wg, e);
-  };
-  const onOut = (e) => {
-    if (e.target.closest && e.target.closest(".gr-wire")) hideTip(i);
-  };
+  const onCtx = (e) => contextMenu(i, e);
+  const onResize = () => { if (inst === i && !i.transition) drawWires(i, false); };
 
-  svg.addEventListener("pointerdown", onDown);
-  svg.addEventListener("pointermove", onMove);
-  svg.addEventListener("pointerup", onUp);
-  svg.addEventListener("pointercancel", onUp);
-  svg.addEventListener("lostpointercapture", onUp);
-  svg.addEventListener("wheel", onWheel, { passive: false });
-  svg.addEventListener("dblclick", onDbl);
-  svg.addEventListener("pointerover", onOver);
-  svg.addEventListener("pointerout", onOut);
+  i.room.addEventListener("click", onClick);
+  if (i.atlas) i.atlas.addEventListener("click", onAtlasClick);
   // Keys belong to THIS screen (it carries tabindex="-1" and is focused on open) —
   // a listener on the whole document would fire under every other screen too.
   // The context menu rides the screen too, so the graph's verbs never leak
   // under any other screen.
   i.screen.addEventListener("keydown", onKey);
-  i.screen.addEventListener("keyup", onKeyUp);
   i.screen.addEventListener("contextmenu", onCtx);
+  W.addEventListener("resize", onResize);
 
   i._teardown = () => {
-    svg.removeEventListener("pointerdown", onDown); svg.removeEventListener("pointermove", onMove);
-    svg.removeEventListener("pointerup", onUp); svg.removeEventListener("pointercancel", onUp);
-    svg.removeEventListener("lostpointercapture", onUp); svg.removeEventListener("wheel", onWheel);
-    svg.removeEventListener("dblclick", onDbl);
-    svg.removeEventListener("pointerover", onOver); svg.removeEventListener("pointerout", onOut);
-    i.screen.removeEventListener("keydown", onKey); i.screen.removeEventListener("keyup", onKeyUp);
+    i.room.removeEventListener("click", onClick);
+    if (i.atlas) i.atlas.removeEventListener("click", onAtlasClick);
+    i.screen.removeEventListener("keydown", onKey);
     i.screen.removeEventListener("contextmenu", onCtx);
+    W.removeEventListener("resize", onResize);
   };
 }
 
+/** One click, one meaning per card kind: a CHAMBER is a doorway (travel), a
+ * CAPILLARY (and the aim) opens the full panel, the ARTIFACT opens the goal. */
+function activateCard(i, cardEl) {
+  const key = cardEl.getAttribute("data-key");
+  i.focusKey = key;
+  applyFocus(i);
+  const kind = cardEl.getAttribute("data-kind");
+  if (kind === "chamber") { drillTo(i, key); return; }
+  if (kind === "artifact") { clearSel(i); i.inspectKey = null; setSel(i, key); asideConclusion(i); return; }
+  openPanel(i, key);
+}
+
+// ---- keyboard: arrows move focus, Enter opens/enters, Esc climbs, M = map -------
+function applyFocus(i, quiet) {
+  i.cards.forEach((el) => el.classList.remove("gr-focus"));
+  const el = i.focusKey && i.cards.get(String(i.focusKey));
+  if (el) {
+    el.classList.add("gr-focus");
+    if (!quiet) el.scrollIntoView({ block: "nearest", behavior: reduceMotion() ? "auto" : "smooth" });
+  }
+}
+
+/** Geometric focus movement: from the focused card's centre, the nearest card
+ * centre in the pressed direction wins — DOM rects, not grid guesses, so it
+ * matches exactly what the eye sees. */
+function moveFocus(i, dx, dy) {
+  const cur = i.focusKey && i.cards.get(String(i.focusKey));
+  if (!cur) {
+    const first = i.cards.keys().next();
+    if (!first.done) { i.focusKey = first.value; applyFocus(i); }
+    return;
+  }
+  const cr = cur.getBoundingClientRect();
+  const cx = cr.left + cr.width / 2, cy = cr.top + cr.height / 2;
+  let best = null, bestScore = Infinity;
+  i.cards.forEach((el, key) => {
+    if (el === cur) return;
+    const r = el.getBoundingClientRect();
+    const x = r.left + r.width / 2, y = r.top + r.height / 2;
+    const vx = x - cx, vy = y - cy;
+    const along = vx * dx + vy * dy;               // must be forward of the press
+    if (along <= 4) return;
+    const across = Math.abs(vx * dy) + Math.abs(vy * dx);
+    const score = along + across * 2.5;            // prefer straight-ahead
+    if (score < bestScore) { bestScore = score; best = key; }
+  });
+  if (best) { i.focusKey = best; applyFocus(i); }
+}
+
+function keyDown(i, e) {
+  const tag = (e.target && e.target.tagName) || "";
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target && e.target.isContentEditable)) return;
+  if (e.key === "m" || e.key === "M") { toggleAtlas(i); e.preventDefault(); return; }
+  if (i.atlasOpen) {
+    if (e.key === "Escape") { toggleAtlas(i, false); e.preventDefault(); }
+    return;
+  }
+  if (e.key === "Escape" || e.key === "Backspace") {
+    if (i.inspectKey) { i.inspectKey = null; clearSel(i); asideDefault(i); }
+    else if (i.level) drillTo(i, "");            // climb out of the room
+    e.preventDefault();
+    return;
+  }
+  if (e.key === "Enter") {
+    const el = i.focusKey && i.cards.get(String(i.focusKey));
+    if (el) activateCard(i, el);
+    e.preventDefault();
+    return;
+  }
+  const dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+  if (dir) { moveFocus(i, dir[0], dir[1]); e.preventDefault(); }
+}
+
 // ---- the right-click verb menu ---------------------------------------------------
-/** Right-click IS the verb surface. On a node: Start, Stop, Peek, Test, Remove,
- * Replace. On empty canvas: the level menu. The native menu is suppressed inside
- * the stage only — inputs and the aside keep the browser's own (paste lives there). */
+/** Right-click IS the verb surface. On a card: Start, Stop, Peek, Test, Remove,
+ * Replace. On the room floor: the room menu. The native menu is suppressed
+ * inside the stage only — inputs and the aside keep the browser's own. */
 function contextMenu(i, e) {
   const t = e.target;
   const tag = (t && t.tagName) || "";
@@ -1382,9 +1307,8 @@ function contextMenu(i, e) {
       (t.closest && (t.closest("#graphAside") || t.closest(".gr-dialog")))) return;
   e.preventDefault();
   if (!W.studioMenu) return;
-  hideTip(i);
-  const nodeEl = t.closest && t.closest(".gr-node");
-  if (nodeEl) nodeMenu(i, e, nodeEl.getAttribute("data-key"));
+  const cardEl = t.closest && t.closest(".gr-card");
+  if (cardEl) nodeMenu(i, e, cardEl.getAttribute("data-key"));
   else levelMenu(i, e);
 }
 
@@ -1413,8 +1337,7 @@ function nodeMenu(i, e, key) {
 
 function levelMenu(i, e) {
   W.studioMenu(e.clientX, e.clientY, [
-    { label: "Zoom to fit", act: () => flyTo(i,
-        viewFor(i, sceneBounds(i), i.level ? 190 : 120), 300, false, () => saveView(i)) },
+    { label: "Open the Atlas map", act: () => toggleAtlas(i, true) },
     { label: "Toggle theme", act: () => applyTheme(i,
         i.screen.dataset.gtheme === "blueprint" ? "paper" : "blueprint") },
     { label: "Back to overview", disabled: !i.level, act: () => drillTo(i, "") },
@@ -1446,7 +1369,7 @@ async function removeNodeFlow(i, key) {
   if (!W.confirm(`Remove '${n.title || key}' from the plan?\nThe change lands as a new plan version.`)) return;
   try { await i.src.removeNode(key); }
   catch (er) { W.toast && W.toast((er && er.message) || String(er), true); return; }
-  W.toast && W.toast(`removed ${key} — repainting the level`);
+  W.toast && W.toast(`removed ${key} — repainting the room`);
   if (inst !== i) return;
   if (i.inspectKey === key) { i.inspectKey = null; clearSel(i); asideDefault(i); }
   await refetch(i);                       // node gone, new plan version in the header
@@ -1468,12 +1391,12 @@ function grDialog(i, titleText) {
   const h = document.createElement("b");
   h.textContent = titleText;
   box.appendChild(h);
-  // Keys typed into the dialog are the dialog's own — never the canvas's shortcuts.
+  // Keys typed into the dialog are the dialog's own — never the screen's shortcuts.
   box.addEventListener("keydown", (ev) => {
     ev.stopPropagation();
     if (ev.key === "Escape") box.remove();
   });
-  i.host.parentElement.appendChild(box);           // the stage, not the world
+  i.wrap.parentElement.appendChild(box);           // the stage, not the room grid
   return box;
 }
 
@@ -1584,191 +1507,6 @@ async function agentPicker(i, key) {
   box.append(list, row);
 }
 
-function pointerDown(i, e) {
-  if (e.button === 2) return;
-  i.screen.focus({ preventScroll: true });     // clicks keep the keys aimed here
-  hideTip(i);
-  const svg = i.world.el.svg;
-  svg.setPointerCapture(e.pointerId);          // route ALL further events here — no lost moves
-  if (e.button === 1 || i.space) {
-    i.gesture = { type: "pan", x: e.clientX, y: e.clientY };
-    i.host.classList.add("lw2-panning");
-    return;
-  }
-  if (e.button !== 0) return;
-  // ⊕ affordances and portal stubs resolve BEFORE the node card underneath them
-  const drillEl = e.target.closest && e.target.closest("[data-drill]");
-  if (drillEl) {
-    i.gesture = { type: "drill", key: drillEl.getAttribute("data-drill") || "",
-                  x: e.clientX, y: e.clientY };
-    return;
-  }
-  const tokEl = e.target.closest && e.target.closest(".gr-node");
-  if (tokEl) { pressToken(i, e, tokEl); return; }
-  // empty floor → clear + marquee
-  if (!e.shiftKey) { clearSel(i); i.inspectKey = null; selectionChanged(i); }
-  beginMarquee(i, e);
-}
-
-function pressToken(i, e, tokEl) {
-  const key = tokEl.getAttribute("data-key");
-  // Whether this press MIGHT complete a double-click is decided here, but it only
-  // FIRES on pointerup-without-moving (a click-then-drag is a drag). With pointer
-  // capture the browser's synthesized dblclick is unreliable, so taps are tracked here.
-  const maybeDouble = !!(i._lastClick && i._lastClick.key === key && (nowMs() - i._lastClick.t) < 350);
-  const already = i.sel.has(key), grouped = i.sel.size >= 2 && already && !e.shiftKey;
-  if (e.shiftKey) { if (already) { i.sel.delete(key); const t = i.nodes.get(key); if (t) t.g.classList.remove("gr-sel"); } else addSel(i, key); }
-  else if (!already) setSel(i, key);
-  const members = (grouped || i.sel.size >= 2) ? [...i.sel] : [key];
-  i.gesture = { type: "arm", key, maybeDouble, start: { x: e.clientX, y: e.clientY },
-    members: members.map((mk) => { const t = i.nodes.get(mk); return { key: mk, x0: t.x, y0: t.y }; }),
-    moved: false, world0: i.world.toWorld(e.clientX, e.clientY) };
-}
-
-function beginMarquee(i, e) {
-  const w = i.world.toWorld(e.clientX, e.clientY);
-  const rect = svgEl("rect", { class: "lw2-marquee", x: w.x, y: w.y, width: 0, height: 0 });
-  i.world.el.gOverlay.appendChild(rect);
-  i.gesture = { type: "marquee", x0: w.x, y0: w.y, rect, add: e.shiftKey };
-}
-
-function pointerMove(i, e) {
-  const g = i.gesture;
-  if (!g) return;
-  if (g.type === "pan") {
-    i.world.panBy(e.clientX - g.x, e.clientY - g.y);
-    g.x = e.clientX; g.y = e.clientY;
-    miniViewport(i);
-    return;
-  }
-  const w = i.world.toWorld(e.clientX, e.clientY);
-  if (g.type === "marquee") {
-    g.rect.setAttribute("x", Math.min(w.x, g.x0)); g.rect.setAttribute("y", Math.min(w.y, g.y0));
-    g.rect.setAttribute("width", Math.abs(w.x - g.x0)); g.rect.setAttribute("height", Math.abs(w.y - g.y0));
-    return;
-  }
-  if (g.type === "arm") {
-    if (!g.moved && Math.hypot(e.clientX - g.start.x, e.clientY - g.start.y) <= DRAG_THRESH) return;
-    if (!g.moved) { g.moved = true; i.host.classList.add("lw2-dragging"); }
-    const dx = w.x - g.world0.x, dy = w.y - g.world0.y;
-    g.members.forEach((m) => moveToken(i, m.key, m.x0 + dx, m.y0 + dy));
-  }
-}
-
-function moveToken(i, key, x, y) {
-  const t = i.nodes.get(key);
-  if (!t) return;
-  t.x = x; t.y = y;
-  setPos(t.g, x, y);
-  updateWiresFor(i, key);
-}
-
-async function pointerUp(i, e) {
-  const g = i.gesture;
-  i.gesture = null;
-  try { i.world.el.svg.releasePointerCapture(e.pointerId); } catch (er) { /* */ }
-  i.host.classList.remove("lw2-panning", "lw2-dragging");
-  if (!g) return;
-  if (g.type === "pan") { saveView(i); return; }
-  if (g.type === "drill") {                      // ⊕ or a portal stub, released in place
-    if (Math.hypot(e.clientX - g.x, e.clientY - g.y) <= DRAG_THRESH) drillTo(i, g.key);
-    return;
-  }
-  if (g.type === "marquee") { endMarquee(i, g); return; }
-  if (g.type === "arm") {
-    if (!g.moved) {                              // released without moving → a click
-      if (g.maybeDouble) {
-        i._lastClick = null;
-        const t = i.nodes.get(g.key);
-        // Double-click keeps exactly ONE meaning: the microscope into a group.
-        // On a leaf it opens the same single panel a click already gives.
-        if (t && t.data.node_type === "group") drillTo(i, g.key);
-        else selectionChanged(i);
-      } else {
-        i._lastClick = { key: g.key, t: nowMs() };
-        selectionChanged(i);
-      }
-      return;
-    }
-    i._lastClick = null;                          // a drag is not part of a double-click
-    await commitDrag(i, g);
-  }
-}
-
-function endMarquee(i, g) {
-  const bx = +g.rect.getAttribute("x"), by = +g.rect.getAttribute("y");
-  const bw = +g.rect.getAttribute("width"), bh = +g.rect.getAttribute("height");
-  g.rect.remove();
-  if (bw > 4 || bh > 4) {
-    if (!g.add) clearSel(i);
-    i.nodes.forEach((t, key) => { if (t.x >= bx && t.x <= bx + bw && t.y >= by && t.y <= by + bh) addSel(i, key); });
-  } else if (!g.add) {
-    // a plain tap on empty floor — two of them inside 350ms re-frame the level
-    const t = nowMs();
-    if (i._floorTap && t - i._floorTap < 350) {
-      i._floorTap = 0;
-      flyTo(i, viewFor(i, sceneBounds(i), i.level ? 190 : 120), 320, false, () => saveView(i));
-    } else {
-      i._floorTap = t;
-    }
-  }
-  selectionChanged(i);
-}
-
-async function commitDrag(i, g) {
-  const positions = {};
-  for (const m of g.members) {
-    const t = i.nodes.get(m.key);
-    if (t) positions[m.key] = [Math.round(t.x), Math.round(t.y)];
-  }
-  try { await i.src.saveLayout(positions); }
-  catch (e) { W.toast && W.toast("Could not save the layout: " + ((e && e.message) || e)); }
-  saveView(i);
-  renderMini(i);
-}
-
-function keyDown(i, e) {
-  const tag = (e.target && e.target.tagName) || "";
-  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target && e.target.isContentEditable)) return;
-  if (e.code === "Space") { i.space = true; e.preventDefault(); return; }
-  if (e.key === "Escape") {
-    if (i.inspectKey || i.sel.size) { i.inspectKey = null; clearSel(i); selectionChanged(i); }
-    else if (i.level) drillTo(i, "");            // Esc climbs the breadcrumb
-    return;
-  }
-  if (e.key === "f" || e.key === "F") {
-    flyTo(i, viewFor(i, sceneBounds(i), i.level ? 190 : 120), 300, false, () => saveView(i));
-    return;
-  }
-  if (e.key === "Enter" && i.sel.size === 1) {
-    const key = [...i.sel][0];
-    const t = i.nodes.get(key);
-    if (t && t.data.node_type === "group") drillTo(i, key);
-    else openPanel(i, key);
-  }
-}
-
-function sceneBounds(i) {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  i.nodes.forEach((t) => {
-    const { w, h } = nodeSize(t.data);
-    minX = Math.min(minX, t.x - w / 2 - 20); minY = Math.min(minY, t.y - h / 2 - 20);
-    maxX = Math.max(maxX, t.x + w / 2 + 20); maxY = Math.max(maxY, t.y + h / 2 + 30);
-  });
-  return { minX, minY, maxX, maxY };
-}
-
-// Views persist PER LEVEL — coming back to the architecture finds it framed the
-// way it was left, and each group remembers its own vantage.
-function viewStoreKey(i) { return i.viewKey + (i.level ? ":" + i.level : ""); }
-function saveView(i) { try { localStorage.setItem(viewStoreKey(i), JSON.stringify(i.world.getView())); } catch (e) { /* */ } }
-function restoreView(i) {
-  let saved = null;
-  try { saved = JSON.parse(localStorage.getItem(viewStoreKey(i)) || "null"); } catch (e) { /* */ }
-  if (saved) i.world.setView(saved); else i.world.fit(sceneBounds(i));
-  miniViewport(i);
-}
-
 // The classic scripts' door in: core.js's openModuleGraph calls this, passing the
-// drill sub-path parsed from the hash.
+// room sub-path parsed from the hash.
 W.ModuleGraph = { open, close };

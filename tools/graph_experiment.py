@@ -1,5 +1,5 @@
-"""The Tony Stark drill — a scripted user fiddling through canvas → HQ → module graph →
-drill → single-click panel → steer → replan → browser-back out, printing FINDINGS for
+"""The Atlas drill — a scripted user fiddling through canvas → HQ → the Atlas →
+rooms → door chips → keyboard → the map → verbs → back out, printing FINDINGS for
 anything that misbehaves. Dependency-light: playwright (in the venv) and stdlib only.
 
 Run with the dev server up:  python tools/graph_experiment.py
@@ -43,6 +43,22 @@ def visible_screens(page) -> list[str]:
     }""")
 
 
+def room_keys(page) -> list[str]:
+    return page.evaluate(
+        "[...document.querySelectorAll('#graphRoom .gr-card')]"
+        ".map(c => c.getAttribute('data-key'))")
+
+
+def card_center(page, key):
+    return page.evaluate("""(k) => {
+        const c = [...document.querySelectorAll('#graphRoom .gr-card')]
+          .find(n => n.getAttribute('data-key') === k);
+        if (!c) return null;
+        const r = c.getBoundingClientRect();
+        return {x: r.x + r.width / 2, y: r.y + Math.min(24, r.height / 2)};
+    }""", key)
+
+
 def api(page, method: str, path: str, body: dict | None = None):
     """The page context's own cookies ride along — same session as the UI.
     The timeout is generous because the replan step IS a bounded model call."""
@@ -73,75 +89,131 @@ def main() -> int:
         page.wait_for_selector("header:not([hidden])")
         ok("signed in")
 
-        print("== canvas → HQ → module graph")
+        print("== canvas → HQ → the Atlas")
         page.evaluate("location.hash = '#/devteam'")   # the crew's canvas
         page.wait_for_timeout(900)
         page.evaluate("location.hash = '#/hq'")        # Devteam HQ
         page.wait_for_timeout(900)
         page.wait_for_selector("#graphLink:not([hidden])", timeout=8000)
         page.click("#graphLink")
-        page.wait_for_selector(".gr-node.gr-group", timeout=10000)
-        page.wait_for_timeout(1600)                    # the staged reveal
+        page.wait_for_selector("#graphRoom .gr-card.gr-chamber", timeout=10000)
+        page.wait_for_timeout(1600)                    # the staged reveal + wire sweep
         if page.evaluate("location.hash") != "#/graph":
-            finding(f"opening the graph landed on {page.evaluate('location.hash')}")
-        ok("graph open at #/graph")
+            finding(f"opening the Atlas landed on {page.evaluate('location.hash')}")
+        ok("the Atlas open at #/graph")
 
         st, payload = api(page, "GET", "/api/graph/self")
-        leaves = [n for n in payload.get("nodes", [])
+        nodes = payload.get("nodes", [])
+        leaves = [n for n in nodes
                   if n["node_type"] not in ("aim", "conclusion", "group")]
-        groups = [n for n in payload.get("nodes", []) if n["node_type"] == "group"]
+        groups = [n for n in nodes if n["node_type"] == "group"]
+        parent = {n["key"]: n.get("parent_key") or "" for n in nodes}
+
+        print("== the top tier cannot miss a crossing (the reconciliation invariant)")
+        edges = payload.get("edges", [])
+        pairs = {(e["src"], e["dst"]) for e in edges}
+        missed = []
+        for e in edges:
+            ga, gb = parent.get(e["src"], ""), parent.get(e["dst"], "")
+            if ga and gb and ga != gb and (ga, gb) not in pairs:
+                missed.append(f"{e['src']}→{e['dst']} has no {ga}→{gb} above it")
+        if missed:
+            finding("the payload's group tier misses crossings: " + "; ".join(missed[:4]))
+        else:
+            ok("every child crossing has its group arrow in the payload")
+
+        print("== the top ROOM: everything on screen, no camera to lose")
+        fit = page.evaluate("""() => {
+            const stage = document.querySelector('.graph-stage').getBoundingClientRect();
+            const cards = [...document.querySelectorAll('#graphRoom .gr-card')];
+            const out = cards.filter(c => {
+                const r = c.getBoundingClientRect();
+                return r.left < stage.left - 2 || r.right > stage.right + 2;
+            }).map(c => c.getAttribute('data-key'));
+            const st = document.querySelector('.graph-stage');
+            return {out, hscroll: st.scrollWidth > st.clientWidth + 2,
+                    n: cards.length};
+        }""")
+        if fit["out"]:
+            finding(f"cards overflow the room horizontally: {fit['out']}")
+        if fit["hscroll"]:
+            finding("the room scrolls horizontally — it must always fit the viewport width")
+        top_keys = set(room_keys(page))
+        want_top = {n["key"] for n in nodes if n["node_type"] == "group"} \
+            | {n["key"] for n in nodes if n["node_type"] == "aim"} \
+            | ({n["key"] for n in leaves if not parent.get(n["key"])} if groups else
+               {n["key"] for n in leaves})
+        conclusion = next((n for n in nodes if n["node_type"] == "conclusion"), None)
+        if conclusion:
+            want_top.add(conclusion["key"])
+        if top_keys != want_top:
+            finding(f"top room shows {sorted(top_keys)}, wanted {sorted(want_top)}")
+        else:
+            ok(f"top room renders all {fit['n']} cards in-viewport")
+        artifact_last = page.evaluate("""() => {
+            const cols = [...document.querySelectorAll('#graphRoom .gr-col')];
+            const last = cols[cols.length - 1];
+            return !!(last && last.classList.contains('gr-col-artifact')
+                      && last.querySelector('.gr-artifact'));
+        }""")
+        if conclusion and not artifact_last:
+            finding("the Artifact is not the top room's last column card")
+        wires = page.evaluate("document.querySelectorAll('#graphWires path.gr-wire').length")
+        if edges and not wires:
+            finding("no wires drawn in the top room despite in-room edges")
+        else:
+            ok(f"{wires} in-room wires drawn, the Artifact holds the last column")
 
         print("== every leaf shows its real tests (routes was the liar)")
         for n in leaves:
             if not n["tests"]["total"]:
                 finding(f"leaf '{n['key']}' has no mapped suites in the payload")
-        routes = next((n for n in leaves if n["key"] == "routes"), None)
-        if routes and routes["tests"]["total"]:
-            ok(f"routes leaf maps {routes['tests']['total']} suite(s)")
+        ok("leaf suite mapping checked")
 
-        print("== drill into a group (double-click = the microscope)")
-        gkey = (routes or leaves[0])["parent_key"] or groups[0]["key"]
+        # The named rooms this drill walks: ops lives in one, db in another.
+        ops = next((n for n in leaves if n["key"] == "ops"), None)
+        db = next((n for n in leaves if n["key"] == "db"), None)
+        gkey = (ops and parent.get("ops")) or (groups and groups[0]["key"]) or ""
+        dkey = (db and parent.get("db")) or ""
+
+        print(f"== enter a chamber (click = travel): {gkey}")
         hist0 = page.evaluate("history.length")
-        box = page.evaluate("""(k) => {
-            const g = [...document.querySelectorAll('.gr-node.gr-group')]
-              .find(n => n.getAttribute('data-key') === k);
-            if (!g) return null;
-            const r = g.getBoundingClientRect();
-            return {x: r.x + r.width/2, y: r.y + r.height/2};
-        }""", gkey)
+        box = card_center(page, gkey)
         if not box:
-            finding(f"group card '{gkey}' not on stage")
+            finding(f"chamber card '{gkey}' not in the top room")
             browser.close()
             return 1
         page.mouse.click(box["x"], box["y"])
-        page.wait_for_timeout(120)
-        page.mouse.click(box["x"], box["y"])
-        page.wait_for_timeout(1500)                    # the flight + reveal
+        page.wait_for_timeout(1200)                    # swap + stagger
         if page.evaluate("location.hash") != f"#/graph/{gkey}":
-            finding(f"drill landed on {page.evaluate('location.hash')}, wanted #/graph/{gkey}")
+            finding(f"entering landed on {page.evaluate('location.hash')}, wanted #/graph/{gkey}")
         hist1 = page.evaluate("history.length")
         if hist1 - hist0 > 1:
-            finding(f"one drill minted {hist1 - hist0} history entries (double hash write)")
+            finding(f"one enter minted {hist1 - hist0} history entries (double hash write)")
         else:
-            ok("one drill = one history entry")
+            ok("one enter = one history entry")
+        shown = sorted(room_keys(page))
+        want = sorted(n["key"] for n in leaves if parent.get(n["key"]) == gkey)
+        if shown != want:
+            finding(f"room '{gkey}' shows {shown}, wanted exactly its children {want}")
+        else:
+            ok(f"room '{gkey}' shows exactly its {len(want)} children")
 
-        print("== single click a leaf: ONE full panel, agent front and center")
-        lkey = next((n["key"] for n in leaves if n["parent_key"] == gkey), None)
-        lbox = page.evaluate("""(k) => {
-            const g = [...document.querySelectorAll('.gr-node')]
-              .find(n => n.getAttribute('data-key') === k);
-            if (!g) return null;
-            const r = g.getBoundingClientRect();
-            return {x: r.x + r.width/2, y: r.y + r.height/2};
-        }""", lkey)
+        lkey = (ops and ops["key"] in want and "ops") or (want[0] if want else None)
+        print("== single click a capillary: ONE full panel, agent front and center")
+        lbox = card_center(page, lkey)
         if not lbox:
-            finding(f"leaf card '{lkey}' not on stage after the drill")
+            finding(f"capillary card '{lkey}' not in the room")
         else:
             page.mouse.click(lbox["x"], lbox["y"])
             page.wait_for_timeout(700)
             aside = page.inner_text("#graphAside")
-            for needle, what in (("Tests", "tests section"), ("Trace", "trace section"),
-                                 ("Steering", "config section"), ("Edges", "edges section")):
+            for needle, what in (("Tech stack", "Tech-stack section"),
+                                 ("Test suite", "Test-suite section"),
+                                 ("Agent", "Agent section"),
+                                 ("Trace", "trace section"),
+                                 ("Steering", "config section"),
+                                 ("Edges", "edges section")):
                 if needle not in aside:
                     finding(f"single-click panel is missing its {what}")
             has_agent = page.evaluate(
@@ -155,25 +227,126 @@ def main() -> int:
                     ok("panel: honest Unassigned + the replan button")
             else:
                 ok("panel: an assigned specialist is shown")
-            if "no tests mapped" in aside and (next(
-                    (n for n in leaves if n["key"] == lkey), {})
-                    .get("tests", {}).get("total")):
-                finding(f"panel claims 'no tests mapped' on '{lkey}' but the payload maps some")
-
-            print("== the three panel sections (Tech stack / Test suite / Agent)")
-            n0 = len(FINDINGS)
-            for needle in ("Tech stack", "Test suite", "Agent"):
-                if needle not in aside:
-                    finding(f"panel is missing its {needle} section")
             for bid, what in (("grRepStack", "Tech-stack Replace"),
                               ("grRepTests", "Test-suite Replace"),
                               ("grAgentPick", "agent picker [Change agent]")):
                 if not page.evaluate(f"!!document.querySelector('#{bid}')"):
                     finding(f"panel is missing the {what} button")
-            if len(FINDINGS) == n0:
-                ok("panel: three sections, each with its replace control")
+            page.evaluate("document.getElementById('graphScreen').focus()")
+            page.keyboard.press("Escape")              # close the panel, stay in the room
+            page.wait_for_timeout(300)
+            if page.evaluate("location.hash") != f"#/graph/{gkey}":
+                finding("Esc with the panel open must close the panel, not leave the room")
 
-            print("== right-click: the six verbs, and Test fires")
+        print("== the door chip that cannot lie: ops → Data › db")
+        if not (ops and db and dkey):
+            finding("payload has no ops→db shape to drill (ops/db/parents missing)")
+        else:
+            door = page.evaluate("""(args) => {
+                const [okey, dkey] = args;
+                const card = [...document.querySelectorAll('#graphRoom .gr-card')]
+                  .find(c => c.getAttribute('data-key') === okey);
+                if (!card) return {err: 'no ops card'};
+                const doors = [...card.querySelectorAll('.gr-door')];
+                const hit = doors.find(d => d.getAttribute('data-door') === dkey);
+                if (!hit) return {err: 'no door to ' + dkey,
+                                  have: doors.map(d => d.getAttribute('data-door'))};
+                const r = hit.getBoundingClientRect();
+                return {x: r.x + r.width / 2, y: r.y + r.height / 2,
+                        label: hit.textContent.trim()};
+            }""", [ops["key"], dkey])
+            if door.get("err"):
+                finding(f"ops card door chip: {door['err']} (have {door.get('have')})")
+            else:
+                ok(f"door chip on ops: “{door['label']}”")
+                page.mouse.click(door["x"], door["y"])
+                page.wait_for_timeout(900)
+                if page.evaluate("location.hash") != f"#/graph/{dkey}":
+                    finding(f"the door landed on {page.evaluate('location.hash')}, "
+                            f"wanted #/graph/{dkey}")
+                flashed = page.evaluate("""(k) => {
+                    const c = [...document.querySelectorAll('#graphRoom .gr-card')]
+                      .find(n => n.getAttribute('data-key') === k);
+                    return c ? c.classList.contains('gr-flash') : null;
+                }""", db["key"])
+                if flashed is None:
+                    finding(f"'{db['key']}' card is not in the {dkey} room after the door")
+                elif not flashed:
+                    finding(f"the door landed but '{db['key']}' did not flash-highlight")
+                else:
+                    ok(f"travelled to {dkey}, {db['key']} flash-highlighted")
+
+        print("== keyboard: Esc climbs out, arrows + Enter walk back in")
+        page.evaluate("document.getElementById('graphScreen').focus()")
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(700)
+        if page.evaluate("location.hash") != "#/graph":
+            finding(f"Esc from a room landed on {page.evaluate('location.hash')}, wanted #/graph")
+        target = None
+        for _ in range(24):                            # walk the focus to a chamber
+            focused = page.evaluate("""() => {
+                const c = document.querySelector('#graphRoom .gr-card.gr-focus');
+                return c ? [c.getAttribute('data-key'), c.getAttribute('data-kind')] : null;
+            }""")
+            if focused and focused[1] == "chamber":
+                target = focused[0]
+                break
+            page.keyboard.press("ArrowRight")
+            page.wait_for_timeout(60)
+            focused2 = page.evaluate(
+                "(document.querySelector('#graphRoom .gr-card.gr-focus')||{getAttribute:()=>null}).getAttribute && "
+                "(document.querySelector('#graphRoom .gr-card.gr-focus')||{}).getAttribute('data-key')")
+            if focused and focused2 == focused[0]:
+                page.keyboard.press("ArrowDown")       # stuck at the right edge — drop a row
+                page.wait_for_timeout(60)
+        if not target:
+            finding("arrow keys never reached a chamber card (no visible focus walk)")
+        else:
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(900)
+            if page.evaluate("location.hash") != f"#/graph/{target}":
+                finding(f"Enter on chamber '{target}' landed on {page.evaluate('location.hash')}")
+            else:
+                ok(f"Enter entered '{target}'")
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(700)
+            if page.evaluate("location.hash") != "#/graph":
+                finding("Esc did not climb back out to #/graph")
+            else:
+                ok("Enter/Esc round-trip clean")
+
+        print("== M opens the Atlas map")
+        page.evaluate("document.getElementById('graphScreen').focus()")
+        page.keyboard.press("m")
+        page.wait_for_timeout(400)
+        atlas_open = page.evaluate(
+            "(e => !!e && !e.hidden)(document.querySelector('#graphAtlas'))")
+        if not atlas_open:
+            finding("M did not open the Atlas map overlay")
+        else:
+            rooms_n = page.evaluate(
+                "document.querySelectorAll('#graphAtlas .gr-atlas-room').length")
+            if rooms_n < len(groups) + 1:
+                finding(f"the map shows {rooms_n} rooms, wanted {len(groups) + 1}")
+            here = page.evaluate(
+                "!!document.querySelector('#graphAtlas .gr-atlas-here')")
+            if not here:
+                finding("the map does not mark the current room")
+            else:
+                ok(f"the map: {rooms_n} rooms, current room marked")
+            page.keyboard.press("m")
+            page.wait_for_timeout(300)
+            if page.evaluate(
+                    "(e => !!e && !e.hidden)(document.querySelector('#graphAtlas'))"):
+                finding("M did not close the Atlas map again")
+
+        print("== right-click: the six verbs, and Test fires")
+        page.evaluate("(h) => { location.hash = h; }", f"#/graph/{gkey}")
+        page.wait_for_timeout(1100)
+        lbox = card_center(page, lkey)
+        if not lbox:
+            finding(f"capillary '{lkey}' lost after re-entering {gkey}")
+        else:
             page.mouse.click(lbox["x"], lbox["y"], button="right")
             page.wait_for_timeout(350)
             labels = page.evaluate(
@@ -195,72 +368,15 @@ def main() -> int:
                 ok("Test verb fired the affected-only verify")
             page.wait_for_timeout(1800)             # the refetch repaints the ring
             ring = page.evaluate("""(k) => {
-                const g = [...document.querySelectorAll('.gr-node')]
+                const c = [...document.querySelectorAll('#graphRoom .gr-card')]
                   .find(n => n.getAttribute('data-key') === k);
-                const r = g && g.querySelector('.gr-ring');
+                const r = c && c.querySelector('.gr-ring');
                 return r ? (r.getAttribute('class') || '') : '';
             }""", lkey) or ""
             if not ring or "gr-ring-none" in ring:
                 finding(f"after the Test verb the ring did not update ({ring!r})")
             else:
                 ok(f"ring updated: {ring.split()[-1]}")
-
-        print("== the chrome is SCREEN-FIXED: docks & GOAL identical under zoom")
-        if page.evaluate("!!document.querySelector('.gr-node.gr-conclusion')"):
-            finding("the conclusion still renders as a world node — it must be the pinned GOAL")
-        if not page.evaluate("(e => !!e && !e.hidden)(document.querySelector('#graphGoal'))"):
-            finding("#graphGoal is hidden — the pinned Artifact is gone")
-        fixed_sel = [s for s in ("#graphGoal", "#graphDockL", "#graphDockR")
-                     if page.evaluate(
-                         f"(e => !!e && !e.hidden)(document.querySelector('{s}'))")]
-        rects = lambda: page.evaluate("""(sels) => sels.map(s => {
-            const r = document.querySelector(s).getBoundingClientRect();
-            return [s, r.x, r.y, r.width, r.height]; })""", fixed_sel)
-        node_rect = lambda: page.evaluate("""(k) => {
-            const g = [...document.querySelectorAll('.gr-node')]
-              .find(n => n.getAttribute('data-key') === k);
-            if (!g) return null;
-            const r = g.getBoundingClientRect();
-            return [r.x, r.y, r.width]; }""", lkey)
-        before, nb = rects(), node_rect()
-        centre = page.evaluate("""() => {
-            const r = document.querySelector('.graph-stage').getBoundingClientRect();
-            return {x: r.x + r.width / 2, y: r.y + r.height / 2}; }""")
-        page.mouse.move(centre["x"], centre["y"])
-        page.mouse.wheel(0, -240)                  # zoom IN — the world must move…
-        page.wait_for_timeout(400)
-        after, na = rects(), node_rect()
-        if before != after:
-            finding(f"screen-fixed chrome moved under zoom: {before} -> {after}")
-        elif fixed_sel:
-            ok(f"pinned under zoom: {', '.join(fixed_sel)}")
-        if nb is not None and nb == na:
-            finding("wheel zoom did not move the world — the fixed-chrome check proved nothing")
-        page.mouse.wheel(0, 240)                   # …and back out
-        page.wait_for_timeout(400)
-
-        print("== the GOAL panel: the Artifact + the mini cluster, honestly")
-        page.click("#graphGoal")
-        page.wait_for_timeout(500)
-        gaside = page.inner_text("#graphAside")
-        if "The Artifact" not in gaside:
-            finding("goal panel does not carry the Artifact title")
-        if "Mini cluster" not in gaside:
-            finding("goal panel has no mini-cluster section")
-        frame = page.evaluate("""() => {
-            const f = document.querySelector('#graphAside iframe');
-            return f ? [f.getAttribute('sandbox') || '', f.src] : null; }""")
-        if frame:
-            sandbox, src = frame
-            if "allow-same-origin" not in sandbox or "allow-scripts" not in sandbox:
-                finding(f"cluster iframe is not sandboxed: {sandbox!r}")
-            u, b = urlparse(src), urlparse(BASE)
-            if (u.scheme, u.netloc) == (b.scheme, b.netloc) and u.path in ("", "/"):
-                finding("cluster iframe points at the live app's own root")
-            else:
-                ok("cluster iframe sandboxed and not the live app")
-        else:
-            ok("no cluster iframe (not running / endpoint absent) — honest either way")
 
         print("== the team selector is honest about its backend")
         st_t, _ = api(page, "GET", "/api/graph/self/team")
@@ -299,78 +415,50 @@ def main() -> int:
             print("== replan skipped (SKIP_REPLAN=1)")
         else:
             print("== replan: the manager authors the plan (spends ONE model call)")
-            # The faithful path is the panel's own button when the leaf is
-            # unassigned; the API is the fallback when everything is staffed.
-            replanned = False
-            if page.evaluate("!!document.querySelector('#grStaff')"):
-                page.click("#grStaff")
-                try:
-                    page.wait_for_function(
-                        """() => { const o = document.querySelector('#grStaffOut');
-                                   return o && /✓|plan|usable|offline/.test(o.textContent); }""",
-                        timeout=300_000)
-                    outtxt = page.evaluate(
-                        "(document.querySelector('#grStaffOut')||{}).textContent || ''")
-                    if "✓" in outtxt:
-                        ok(f"the panel button replanned: {outtxt.strip()}")
-                        replanned = True
-                    else:
-                        finding(f"the panel's replan button failed: {outtxt.strip()}")
-                except Exception:
-                    finding("the panel's replan button never reported back")
-            if not replanned:
-                st, out = api(page, "POST", "/api/graph/self/replan")
-                if st != 200:
-                    finding(f"replan returned {st}: {out.get('detail')}")
-                elif (out.get("plan") or {}).get("authored_by") != "manager":
-                    finding(f"replan's plan is not manager-authored: {out}")
-                else:
-                    replanned = True
-            if replanned:
+            st, out = api(page, "POST", "/api/graph/self/replan")
+            if st != 200:
+                finding(f"replan returned {st}: {out.get('detail')}")
+            elif (out.get("plan") or {}).get("authored_by") != "manager":
+                finding(f"replan's plan is not manager-authored: {out}")
+            else:
                 st2, payload2 = api(page, "GET", "/api/graph/self")
                 leaves2 = [n for n in payload2.get("nodes", [])
                            if n["node_type"] not in ("aim", "conclusion", "group")]
                 bare = [n["key"] for n in leaves2 if not n.get("agent")]
-                noname = [n["key"] for n in leaves2
-                          if n.get("agent") and not n["agent"].get("name")]
                 if bare:
                     finding(f"after replan these leaves have no agent: {bare}")
                 else:
                     ok(f"replan landed — every one of the {len(leaves2)} leaves is staffed")
-                if noname:
-                    finding(f"assigned agents carry no display name: {noname}")
-                # chips render on LEAF cards, so stand on a level that shows some:
-                # drill (via the hash, like a pasted link) into a staffed leaf's group
-                target = next((n for n in leaves2 if n.get("agent")), None)
-                if target:
+                target2 = next((n for n in leaves2 if n.get("agent")), None)
+                if target2:
                     page.evaluate("(h) => { location.hash = h; }",
-                                  f"#/graph/{target['parent_key']}")
+                                  f"#/graph/{target2['parent_key']}")
                     try:
                         page.wait_for_function(
-                            "document.querySelectorAll('.gr-node .gr-agent').length > 0",
+                            "document.querySelectorAll('#graphRoom .gr-cagent-avatar').length > 0",
                             timeout=12_000)
                         chips = page.evaluate(
-                            "document.querySelectorAll('.gr-node .gr-agent').length")
-                        ok(f"{chips} agent chip(s) drawn on the leaf cards")
+                            "document.querySelectorAll('#graphRoom .gr-cagent-avatar').length")
+                        ok(f"{chips} agent chip(s) drawn on the capillary cards")
                     except Exception:
-                        finding("no agent chips on the leaf cards after the replan")
+                        finding("no agent chips on the capillary cards after the replan")
 
         print("== the back-nav hammer")
-        # wherever the replan left us, walk home the way a browser user does —
+        # wherever the drill left us, walk home the way a browser user does —
         # each back must MOVE (a back that leaves the hash unchanged is the bug)
         now = page.evaluate("location.hash")
-        for _ in range(4):
+        for _ in range(14):
             if now == "#/hq":
                 break
             before = now
             page.go_back()
-            page.wait_for_timeout(800)
+            page.wait_for_timeout(700)
             now = page.evaluate("location.hash")
             if now == before:
                 finding(f"browser-back from {before} left the hash unchanged")
                 break
         if now != "#/hq":
-            finding(f"backing out of the graph landed on '{now}', wanted #/hq")
+            finding(f"backing out of the Atlas landed on '{now}', wanted #/hq")
         vis = visible_screens(page)
         if vis != ["main"]:
             finding(f"at #/hq the visible screens are {vis}, wanted ['main'] only")

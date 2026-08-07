@@ -322,15 +322,28 @@ def graph_self(request: Request) -> dict:
             "service": modgraph_health.service_of(n["key"]),
             "mastery": _mastery_out(mastery_by.get(n["key"]), names),
         })
+    # The top tier CANNOT MISS A CROSSING. Stored group→group arrows are
+    # reconciled against the stored child edges (derive_group_edges) instead of
+    # being served verbatim: a manager-authored plan once carried ops→db with no
+    # selfrepair→data above it, plus one arrow no child edge backed. Authored
+    # contracts survive where a real crossing backs them; fabrications do not.
+    shaped = [{"src": e["src_key"], "dst": e["dst_key"], "edge_type": e["edge_type"],
+               "contract": e["contract"], "contract_test": e["contract_test"]}
+              for e in modgraph.edges(pid)]
+    parent_of = {n["key"]: n["parent_key"] for n in nodes if n["parent_key"]}
+    group_keys = {n["key"] for n in nodes if n["node_type"] == "group"}
+    tier = [e for e in shaped if e["src"] in group_keys and e["dst"] in group_keys]
+    child = [e for e in shaped if e["src"] in parent_of and e["dst"] in parent_of]
+    edges_out = ([e for e in shaped
+                  if not (e["src"] in group_keys and e["dst"] in group_keys)]
+                 + modgraph.derive_group_edges(child, parent_of, group_edges=tier))
     return {
         "plan": {"id": pid, "version": plan["version"], "kind": plan["kind"],
                  "status": plan["status"], "authored_by": plan["authored_by"],
                  "notes": plan["notes"], "created_at": plan["created_at"]},
         "models": sorted(_known_models()),
         "nodes": node_out,
-        "edges": [{"src": e["src_key"], "dst": e["dst_key"], "edge_type": e["edge_type"],
-                   "contract": e["contract"], "contract_test": e["contract_test"]}
-                  for e in modgraph.edges(pid)],
+        "edges": edges_out,
         "runs": modgraph.runs(pid, limit=40),
         "positions": modgraph.positions(pid),
         "conclusion": {"health": health,

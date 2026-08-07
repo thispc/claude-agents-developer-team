@@ -1,14 +1,18 @@
-"""Source-level pins for the module-graph canvas (dashboard/graph/).
+"""Source-level pins for the Atlas (dashboard/graph/) — rooms-and-doors module
+navigation, the canvas's replacement.
 
-The graph screen is the FOURTH canvas this dashboard has grown, and the first
-three each taught a lesson the hard way. These tests pin those lessons by name so
-they cannot silently un-learn themselves:
+The free-camera canvas was rejected by the owner after live use: pan + zoom +
+screen-fixed portal docks made a small graph HARDER to navigate. The Atlas is
+the correction, and these tests pin its load-bearing decisions by name:
 
-  1. one engine — world.js is imported, never copied;
-  2. no global singleton wars — the graph never touches the Studio canvas's global;
-  3. key listeners on the screen element, never the document;
-  4. its own inspector/action hosts — no borrowed overlays from other screens;
-  5. reduced motion decided locally and honoured BEFORE any animation is armed.
+  1. NO CAMERA — no pan/zoom/drag/pointer-capture anywhere in graph/*.js; one
+     room on screen at a time, a CSS grid that fits the viewport;
+  2. door chips derive from the payload's EDGES alone, never group adjacency —
+     wiring that cannot lie;
+  3. chambers (groups) and capillaries (leaves) are visually distinct kinds;
+  4. keyboard is first-class: keys live on the screen element, M is the map;
+  5. the lessons the canvases taught stay learned: no global singleton wars,
+     own aside hosts, reduced motion decided locally and honoured first.
 
 Classic-script assertions go through conftest.dashboard_js() (index.html's load
 order); the ES-module files are read directly — they are not in that bundle.
@@ -36,7 +40,8 @@ def test_graph_screen_is_wired_into_the_shell():
     assert '<script type="module" src="graph/index.js"></script>' in html
     assert '<link rel="stylesheet" href="graph/graph.css">' in html
     # its own hosts, inside the section — the module never borrows another screen's
-    assert 'id="graphCanvas"' in html and 'id="graphAside"' in html
+    assert 'id="graphRoom"' in html and 'id="graphAside"' in html
+    assert 'id="graphWires"' in html, "the wire underlay host is gone"
     # the HQ chip that opens it
     assert 'id="graphLink"' in html
 
@@ -69,6 +74,242 @@ def test_the_hq_chip_only_shows_in_devteam_mode_with_the_flag():
         "the #graphLink chip must hide for ordinary projects and when the flag is off"
 
 
+def test_drill_state_lives_in_the_hash():
+    """#/graph is the top room, #/graph/<group> is inside that group — the
+    address bar, the back button and a pasted link all mean the same room."""
+    mod = _read("graph/index.js")
+    assert "function open(sourceName, sub)" in mod, "open() must accept the room sub-path"
+    assert '"#/graph/" + encodeURIComponent(key)' in mod, "travel must write the hash"
+    js = dashboard_js()
+    assert 'ModuleGraph.open("self", ' in js, \
+        "core.js must pass the hash's sub-path through to the module"
+
+
+# --------------------------------------------------------------------------
+# THE ATLAS RULE: no camera. Ever.
+# --------------------------------------------------------------------------
+
+def test_no_pan_zoom_drag_or_pointer_capture_anywhere():
+    """The owner's verdict on the canvas stands: free navigation made it worse.
+    The Atlas has NO camera — so no pointer capture, no wheel handler, no drag
+    gesture, no world transform may exist in any graph module."""
+    for rel in ("graph/index.js", "graph/nodes.js", "graph/layout.js"):
+        src = _read(rel)
+        for banned in ("setPointerCapture", "pointerdown", "pointermove",
+                       "pointerup", "wheel", "zoomAt", "panBy", "createWorld",
+                       "getView", "setView"):
+            assert banned not in src, f"{rel} grew a camera again ({banned})"
+
+
+def test_the_atlas_imports_no_canvas_engine():
+    """world.js/render.js are the canvas engine — the Atlas is DOM + one SVG
+    underlay and must not import them (or anything from canvas2/)."""
+    for rel in ("graph/index.js", "graph/nodes.js", "graph/layout.js"):
+        assert "canvas2" not in _read(rel), f"{rel} imports the canvas engine"
+
+
+def test_no_position_persistence_and_no_layout_pixels():
+    """Positions were the camera's residue. The room is a CSS grid: layout.js
+    computes COLUMNS (topo order), never pixel coordinates, and nothing saves
+    dragged positions any more."""
+    mod = _read("graph/index.js")
+    assert "saveLayout" not in mod, "the seam grew its position-persistence verb back"
+    lay = _read("graph/layout.js")
+    assert "export function columns" in lay
+    assert "colW" not in lay and "rowH" not in lay, "layout.js does pixels again"
+    body = lay.split("export function columns", 1)[1]
+    assert "indeg" in body, "columns must come from a real topological pass"
+
+
+def test_one_room_on_screen_is_a_css_grid():
+    css = _read("graph/graph.css")
+    room = css.split(".gr-room {", 1)[1].split("}", 1)[0]
+    assert "display: grid" in room
+    assert "--gr-cols" in room, "the column count must ride a custom property"
+    mod = _read("graph/index.js")
+    assert 'setProperty("--gr-cols"' in mod
+
+
+# --------------------------------------------------------------------------
+# wiring that cannot lie: in-room wires from the DOM, door chips from edges
+# --------------------------------------------------------------------------
+
+def test_wires_draw_only_in_room_edges_from_dom_anchors():
+    mod = _read("graph/index.js")
+    paint = mod.split("function paint(", 1)[1].split("\nfunction ", 1)[0]
+    assert "roomKeys.has(s) && i.roomKeys.has(d)" in paint, \
+        "the SVG underlay may draw in-room edges ONLY"
+    dw = mod.split("function drawWires(", 1)[1].split("\nfunction ", 1)[0]
+    assert "getBoundingClientRect" in dw, \
+        "wire anchors must be READ from the DOM after layout, not simulated"
+
+
+def test_door_chips_are_built_from_payload_edges_not_group_adjacency():
+    """The chip builder walks i.data.edges and resolves the FOREIGN endpoint to
+    its owning room + leaf. It must never consult derived group-to-group
+    adjacency — the wall's truth is the child edges themselves."""
+    mod = _read("graph/index.js")
+    dc = mod.split("function doorChips(", 1)[1].split("\nfunction ", 1)[0]
+    assert "i.data.edges" in dc.replace("(i.data && i.data.edges)", "i.data.edges"), \
+        "door chips must consume the payload's edges"
+    assert "parent_key" in dc, "the foreign endpoint must resolve to its owning room"
+    ad = mod.split("function attachDoors(", 1)[1].split("\nfunction ", 1)[0]
+    assert "textContent" in ad, "chip labels are authored text — textContent only"
+    assert "data-door" in ad and "data-target" in ad, \
+        "a chip must carry where it travels and what to flash"
+
+
+def test_travel_flashes_the_target_card():
+    mod = _read("graph/index.js")
+    tr = mod.split("function travel(", 1)[1].split("\nfunction ", 1)[0]
+    assert "flashKey" in tr
+    fl = mod.split("function flashNow(", 1)[1].split("\nfunction ", 1)[0]
+    assert "gr-flash" in fl
+    css = _read("graph/graph.css")
+    assert "gr-flashglow" in css
+
+
+# --------------------------------------------------------------------------
+# two card kinds, visually unmistakable
+# --------------------------------------------------------------------------
+
+def test_chamber_and_capillary_are_distinct_classes():
+    nodes = _read("graph/nodes.js")
+    assert '"gr-chamber"' in nodes and '"gr-capillary"' in nodes
+    assert '"data-kind"' in nodes, "activation branches on the card kind"
+    assert "Enter ▸" in nodes, "a chamber must carry its big Enter affordance"
+    css = _read("graph/graph.css")
+    chamber = css.split(".gr-chamber {", 1)[1].split("}", 1)[0]
+    assert "box-shadow" in chamber, "chambers imply depth — the layered doorway look"
+    cap = css.split(".gr-capillary {", 1)[1].split("}", 1)[0]
+    assert "border-left" in cap, "capillaries carry the distinct accent border"
+
+
+def test_capillary_puts_the_agent_front_and_center():
+    nodes = _read("graph/nodes.js")
+    ab = nodes.split("function agentBlock(", 1)[1].split("\nfunction ", 1)[0]
+    assert "gr-cagent-avatar" in ab and "gr-cagent-name" in ab
+    assert "Unassigned" in ab, "an unstaffed capillary says so honestly"
+    assert "mastery" in ab and "★" in ab, "earned mastery shows on the card"
+
+
+def test_cards_are_dom_with_textcontent_only():
+    """Titles, agent names and activity are authored text — createElement +
+    textContent, never innerHTML."""
+    nodes = _read("graph/nodes.js")
+    assert "innerHTML" not in nodes, "innerHTML with node data is an injection waiting to happen"
+    assert "textContent" in nodes
+
+
+def test_chamber_click_enters_capillary_click_opens_the_panel():
+    mod = _read("graph/index.js")
+    ac = mod.split("function activateCard(", 1)[1].split("\nfunction ", 1)[0]
+    assert 'kind === "chamber"' in ac and "drillTo(i, key)" in ac
+    assert "openPanel(i, key)" in ac
+    assert 'kind === "artifact"' in ac and "asideConclusion" in ac
+
+
+# --------------------------------------------------------------------------
+# game navigation: keyboard first-class, the Atlas map
+# --------------------------------------------------------------------------
+
+def test_key_listeners_live_on_the_screen_not_the_document():
+    mod = _read("graph/index.js")
+    assert 'document.addEventListener("keydown"' not in mod, \
+        "a document-level key listener fires under every other screen"
+    assert '.screen.addEventListener("keydown"' in mod
+    html = _read("index.html")
+    assert 'id="graphScreen" hidden tabindex="-1"' in html, \
+        "without tabindex the section cannot receive key events at all"
+
+
+def test_arrows_enter_escape_and_m_are_wired():
+    mod = _read("graph/index.js")
+    kd = mod.split("function keyDown(", 1)[1].split("\nfunction ", 1)[0]
+    for key in ("ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"):
+        assert key in kd, f"{key} must move the card focus"
+    assert '"Enter"' in kd and "activateCard" in kd
+    assert '"Escape"' in kd and "drillTo(i, \"\")" in kd, "Esc climbs out of the room"
+    assert "toggleAtlas" in kd, "M must toggle the Atlas map"
+    css = _read("graph/graph.css")
+    assert ".gr-card.gr-focus" in css, "the focus ring must be visible"
+
+
+def test_the_atlas_overlay_exists_with_click_to_jump():
+    html = _read("index.html")
+    assert 'id="graphAtlas"' in html
+    mod = _read("graph/index.js")
+    assert "function toggleAtlas" in mod and "function renderAtlas" in mod
+    ra = mod.split("function renderAtlas(", 1)[1].split("\nfunction ", 1)[0]
+    assert "data-jump-room" in ra and "data-jump-node" in ra
+    assert "you are here" in ra, "the current room must be marked"
+    assert "gr-atlas-dot" in ra, "compact node dots with health colours"
+
+
+def test_breadcrumb_exists_and_climbs():
+    html = _read("index.html")
+    assert 'id="graphCrumb"' in html
+    mod = _read("graph/index.js")
+    assert "renderCrumb" in mod
+    assert "gr-crumb-up" in mod, "the aim crumb is the way back up a level"
+
+
+def test_room_transitions_are_css_and_stand_down_under_reduced_motion():
+    mod = _read("graph/index.js")
+    nav = mod.split("function navTo(", 1)[1].split("\nfunction ", 1)[0]
+    assert "reduceMotion()" in nav
+    assert nav.index("reduceMotion()") < nav.index("swapTimer"), \
+        "the reduced-motion early-out must come before any transition is armed"
+    assert "gr-openit" in nav, "entering = the clicked chamber scales up into the room"
+    rev = mod.split("function reveal(", 1)[1].split("\nfunction ", 1)[0]
+    assert "reduceMotion()" in rev
+    assert rev.index("reduceMotion()") < rev.index("setTimeout(step"), \
+        "the reduced-motion early-out must come before the stepper is armed"
+    css = _read("graph/graph.css")
+    reduce = css.split("prefers-reduced-motion", 1)[1]
+    for guard in ("gr-hidden", "gr-openit", "gr-room-enter", "gr-flow", "gr-draw", "gr-flash"):
+        assert guard in reduce, f"{guard} does not stand down under reduced motion"
+
+
+def test_no_raf_loop_anywhere():
+    """The canvas kept ONE rAF loop for its camera. The Atlas has no camera, so
+    it has none at all — every animation is CSS."""
+    for rel in ("graph/index.js", "graph/nodes.js", "graph/layout.js"):
+        assert "requestAnimationFrame" not in _read(rel), f"{rel} grew a JS animation loop"
+
+
+# --------------------------------------------------------------------------
+# the canvas blockers that stay learned
+# --------------------------------------------------------------------------
+
+def test_no_global_singleton_touching_other_canvases():
+    for rel in ("graph/index.js", "graph/nodes.js", "graph/layout.js"):
+        assert "LWCanvas2" not in _read(rel), f"{rel} touches the Studio canvas's global"
+
+
+def test_own_inspector_and_action_hosts():
+    for rel in ("graph/index.js", "graph/nodes.js", "graph/layout.js"):
+        src = _read(rel)
+        assert "lwOverlay" not in src, f"{rel} borrows the Studio overlay"
+        assert "sdPortal" not in src, f"{rel} borrows the delete portal"
+    assert "graphAside" in _read("graph/index.js"), "the inspector renders in this screen's own aside"
+
+
+def test_reduced_motion_is_decided_locally():
+    mod = _read("graph/index.js")
+    assert 'matchMedia("(prefers-reduced-motion: reduce)")' in mod, \
+        "the module must ask matchMedia itself — lib.js's const is not on window"
+    css = _read("graph/graph.css")
+    assert "prefers-reduced-motion" in css, "the animations must also stand down in CSS"
+
+
+def test_the_poll_pauses_while_the_panel_or_map_is_open():
+    """agent.js's lesson: repainting under the reader blanks the inspector
+    mid-sentence — and a repaint under the open map would be worse."""
+    mod = _read("graph/index.js")
+    assert "inst.inspectKey || inst.transition || inst.atlasOpen" in mod
+
+
 # --------------------------------------------------------------------------
 # the ws bridge: classic scripts own the socket; the module hears DOM events
 # --------------------------------------------------------------------------
@@ -85,356 +326,30 @@ def test_connect_ws_bridges_graph_and_repair_events_to_the_module():
 
 
 # --------------------------------------------------------------------------
-# one engine: world.js imported, never copied
-# --------------------------------------------------------------------------
-
-def test_graph_imports_the_canvas2_engine_rather_than_copying_it():
-    mod = _read("graph/index.js")
-    assert 'from "../canvas2/world.js"' in mod and "createWorld" in mod
-    assert "function createWorld" not in mod, "a copied engine drifts; import it"
-    assert 'from "../canvas2/render.js"' in mod, \
-        "wireNode/setWireEnds/setPos/speechBubble come from render.js"
-    nodes = _read("graph/nodes.js")
-    assert 'from "../canvas2/world.js"' in nodes and "svgEl" in nodes
-    assert "function svgEl" not in nodes
-
-
-# --------------------------------------------------------------------------
-# the four canvas blockers, each pinned by name
-# --------------------------------------------------------------------------
-
-def test_blocker_1_no_global_singleton_touching_other_canvases():
-    """Mounting the graph must not be able to kill the Studio's canvas: the graph
-    keeps its one instance module-private and never writes the global the Studio
-    canvas reads."""
-    for rel in ("graph/index.js", "graph/nodes.js", "graph/layout.js"):
-        assert "LWCanvas2" not in _read(rel), f"{rel} touches the Studio canvas's global"
-
-
-def test_blocker_2_key_listeners_live_on_the_screen_not_the_document():
-    mod = _read("graph/index.js")
-    assert 'document.addEventListener("keydown"' not in mod, \
-        "a document-level key listener fires under every other screen"
-    assert '.screen.addEventListener("keydown"' in mod
-    html = _read("index.html")
-    assert 'id="graphScreen" hidden tabindex="-1"' in html, \
-        "without tabindex the section cannot receive key events at all"
-
-
-def test_blocker_3_own_inspector_and_action_hosts():
-    for rel in ("graph/index.js", "graph/nodes.js", "graph/layout.js"):
-        src = _read(rel)
-        assert "#lwOverlay" not in src and "lwOverlay" not in src, f"{rel} borrows the Studio overlay"
-        assert "#sdPortal" not in src and "sdPortal" not in src, f"{rel} borrows the delete portal"
-    assert "graphAside" in _read("graph/index.js"), "the inspector renders in this screen's own aside"
-
-
-def test_blocker_4_reduced_motion_is_decided_locally():
-    mod = _read("graph/index.js")
-    assert 'matchMedia("(prefers-reduced-motion: reduce)")' in mod, \
-        "the module must ask matchMedia itself — lib.js's const is not on window"
-    css = _read("graph/graph.css")
-    assert "prefers-reduced-motion" in css, "the glow animation must also stand down in CSS"
-
-
-# --------------------------------------------------------------------------
-# the staged reveal honours reduced motion — checked BEFORE the stepper runs
-# --------------------------------------------------------------------------
-
-def test_reveal_checks_reduced_motion_before_stepping():
-    mod = _read("graph/index.js")
-    body = mod.split("function reveal(", 1)[1]
-    assert "reduceMotion()" in body
-    assert body.index("reduceMotion()") < body.index("setTimeout(step"), \
-        "the reduced-motion early-out must come before the stepper is armed"
-
-
-def test_the_poll_pauses_while_something_is_selected():
-    """agent.js's lesson: repainting under the cursor clears the selection and
-    blanks the inspector mid-sentence."""
-    mod = _read("graph/index.js")
-    assert "inst.sel.size || inst.inspectKey" in mod
-
-
-# --------------------------------------------------------------------------
-# nodes.js: svgEl only — titles can never become markup
-# --------------------------------------------------------------------------
-
-def test_node_cards_are_svg_only_and_titles_go_through_textcontent():
-    nodes = _read("graph/nodes.js")
-    assert "innerHTML" not in nodes, "innerHTML with node data is an injection waiting to happen"
-    assert "text: trim(n.title" in nodes, "the title must pass through svgEl's text attribute"
-    # svgEl's `text` attribute IS textContent — that contract is what the pin above leans on
-    world = _read("canvas2/world.js")
-    fn = world.split("export function svgEl", 1)[1].split("export function", 1)[0]
-    assert "textContent" in fn
-
-
-# --------------------------------------------------------------------------
 # the source seam: renderers stay source-agnostic
 # --------------------------------------------------------------------------
 
-def test_the_graph_src_seam_exists_with_the_six_verbs():
+def test_the_graph_src_seam_keeps_its_verbs():
     mod = _read("graph/index.js")
     assert "DEVTEAM_GRAPH_SRC" in mod
     seam = mod.split("DEVTEAM_GRAPH_SRC = {", 1)[1].split("};", 1)[0]
-    for verb in ("fetch:", "verify:", "saveLayout:", "setConfig:", "inspect:", "replan:"):
+    for verb in ("fetch:", "verify:", "setConfig:", "inspect:", "replan:",
+                 "service:", "setAgent:", "removeNode:", "replaceAspect:",
+                 "team:", "setTeam:", "cluster:"):
         assert verb in seam, f"the seam lost its {verb.rstrip(':')} verb"
     assert "/api/graph/self" in seam
 
 
 # --------------------------------------------------------------------------
-# the ONE panel: a single click opens everything, agent front and center
+# the ONE panel — kept verbatim from the canvas, because it was good
 # --------------------------------------------------------------------------
 
-def test_single_click_opens_the_one_full_panel():
-    """The owner's verdict on the two-tier aside ("double click ui is very clunky
-    and don't know what i need"): ONE panel, opened by a SINGLE click, always
-    complete — the lighter card tier is gone by name."""
+def test_single_click_on_a_capillary_opens_the_one_full_panel():
     mod = _read("graph/index.js")
     assert "function openPanel" in mod and "function renderPanel" in mod
     for gone in ("asideLight", "asideGroup", "openInspector", "renderInspector"):
         assert gone not in mod, f"the two-tier aside is back ({gone})"
-    body = mod.split("function selectionChanged(", 1)[1].split("\nfunction ", 1)[0]
-    assert "openPanel(i, key)" in body, "a single click must open the full panel"
 
-
-def test_the_panel_puts_the_agent_front_and_center():
-    """"i didnt see the assigned agent": the agent row renders directly under the
-    panel's title — the specialist's name when assigned, and when unassigned an
-    honest sentence plus the ONE action that fixes it (the manager replan)."""
-    mod = _read("graph/index.js")
-    assert "function agentRow" in mod
-    rp = mod.split("function renderPanel(", 1)[1].split("\nfunction ", 1)[0]
-    assert "${agentRow(" in rp, "the panel must render the agent row"
-    assert "the specialist working this module" in mod
-    assert "the manager staffs modules when it authors the plan" in mod, \
-        "the unassigned fallback must say WHO assigns and WHEN"
-    assert "Have the manager plan now" in mod
-    assert "i.src.replan()" in mod, "the unassigned button must call the replan verb"
-
-
-def test_double_click_keeps_exactly_one_meaning():
-    """Drill, groups only. On a leaf a double-click opens the same single panel a
-    click already gives — no inspector hiding behind a second gesture."""
-    mod = _read("graph/index.js")
-    up = mod.split("async function pointerUp(", 1)[1].split("\nfunction ", 1)[0]
-    dbl = up.split("if (g.maybeDouble)", 1)[1].split("} else {", 1)[0]
-    assert "drillTo(i, g.key)" in dbl, "double-click on a group is the microscope"
-    assert "selectionChanged(i)" in dbl, \
-        "a leaf double-click must land on the same panel as a click"
-
-
-def test_the_model_select_rides_the_servers_own_option_list():
-    """The config-400 lesson: a hardcoded option list drifts from what the server
-    validates. The payload carries the valid ids; the select builds from them;
-    and a rejected model is told what WOULD have worked."""
-    mod = _read("graph/index.js")
-    assert "d.models" in mod, "the select must prefer the payload's option list"
-    py = (REPO / "conductor" / "app" / "routes" / "graph.py").read_text()
-    assert "_known_models" in py
-    assert '"models": sorted(_known_models())' in py, \
-        "both graph payloads must carry the valid model ids"
-    assert "valid: " in py, "the 400 detail must SAY the valid options"
-
-
-def test_node_cards_chip_the_assigned_agent():
-    """The chip on the card itself is the at-a-glance answer to "who works this";
-    it prefers the specialist's NAME over a bare row id."""
-    nodes = _read("graph/nodes.js")
-    assert "if (n.agent)" in nodes, "the chip renders when the payload has agent"
-    assert "agentInitial" in nodes
-    assert "agent.name" in nodes, "the chip must prefer the specialist's name"
-
-
-# --------------------------------------------------------------------------
-# the hierarchical microscope: themes, drill state, motion, HUD
-# --------------------------------------------------------------------------
-
-def test_two_themes_scoped_to_graphscreen_with_persistence():
-    """Blueprint (this screen's default HUD) and paper (the app's own look) are
-    one data attribute apart; every colour resolves through --gr-* custom
-    properties scoped to #graphScreen, so neither theme can leak app-wide."""
-    css = _read("graph/graph.css")
-    assert '#graphScreen[data-gtheme="blueprint"]' in css
-    assert '#graphScreen[data-gtheme="paper"]' in css
-    assert "--gr-" in css
-    assert ":root" not in css, "graph theme variables must stay scoped to #graphScreen"
-    mod = _read("graph/index.js")
-    assert 'THEME_KEY = "gr:theme"' in mod
-    assert "localStorage.setItem(THEME_KEY" in mod, "the chosen theme must persist"
-    assert "dataset.gtheme" in mod
-    assert '"blueprint"' in mod and '"paper"' in mod
-    html = _read("index.html")
-    assert 'id="graphTheme"' in html, "the theme toggle lives in the graph bar"
-
-
-def test_breadcrumb_exists_and_climbs():
-    html = _read("index.html")
-    assert 'id="graphCrumb"' in html
-    mod = _read("graph/index.js")
-    assert "renderCrumb" in mod
-    assert "gr-crumb-up" in mod, "the aim crumb is the way back up a level"
-
-
-def test_drill_state_lives_in_the_hash():
-    """#/graph is the architecture, #/graph/<group> is inside that group — the
-    address bar, the back button and a pasted link all mean the same place."""
-    mod = _read("graph/index.js")
-    assert "function open(sourceName, sub)" in mod, "open() must accept the drill sub-path"
-    assert '"#/graph/" + encodeURIComponent(key)' in mod, "drilling must write the hash"
-    js = dashboard_js()
-    assert 'ModuleGraph.open("self", ' in js, \
-        "core.js must pass the hash's sub-path through to the module"
-
-
-def test_motion_is_css_with_reduced_motion_guards():
-    """Dash-flow shimmer, wire draw-in, hover lift and the selection pulse are
-    all CSS (transform/opacity/dash only) — and every one of them stands down
-    under prefers-reduced-motion."""
-    css = _read("graph/graph.css")
-    for needle in ("gr-dashflow", "gr-drawin", "gr-pulse", "stroke-dashoffset"):
-        assert needle in css, f"the {needle} animation is gone"
-    assert ":hover .gr-cardg" in css and "scale(1.03)" in css, "the hover lift is gone"
-    reduce = css.split("prefers-reduced-motion", 1)[1]
-    for guard in ("gr-flow", "gr-draw", "gr-sel", ":hover .gr-cardg", "gr-busy"):
-        assert guard in reduce, f"{guard} does not stand down under reduced motion"
-
-
-def test_the_raf_loop_lives_only_in_the_camera():
-    """Efficiency pin: the ONE requestAnimationFrame loop is the camera flight
-    (flyTo) and nothing else — at rest, no JS animation loop runs at all."""
-    mod = _read("graph/index.js")
-    before, after = mod.split("function flyTo", 1)
-    assert "requestAnimationFrame" not in before, "an rAF loop outside the camera"
-    fly_body = after.split("\nfunction ", 1)[0]
-    assert "requestAnimationFrame" in fly_body
-    assert "requestAnimationFrame" not in after.split("\nfunction ", 1)[1], \
-        "an rAF loop outside the camera"
-    for rel in ("graph/nodes.js", "graph/layout.js"):
-        assert "requestAnimationFrame" not in _read(rel)
-
-
-def test_minimap_present_with_click_to_jump():
-    html = _read("index.html")
-    assert 'id="graphMini"' in html
-    mod = _read("graph/index.js")
-    assert "renderMini" in mod and "miniViewport" in mod
-    assert "onpointerdown" in mod.split("function renderMini", 1)[1].split("\nfunction ", 1)[0], \
-        "the minimap must jump the camera on click"
-
-
-def test_edge_tooltip_escapes_the_contract():
-    """Contracts are planner-authored JSON riding into a floating div — every
-    interpolated field goes through esc() or it is an injection."""
-    html = _read("index.html")
-    assert 'id="graphTip"' in html
-    mod = _read("graph/index.js")
-    body = mod.split("function showTip", 1)[1].split("\nfunction ", 1)[0]
-    assert "esc(JSON.stringify(ed.contract))" in body
-    assert "esc(ed.edge_type" in body and "esc(ed.contract_test)" in body
-    assert "esc(s)" in body and "esc(d)" in body
-
-
-# --------------------------------------------------------------------------
-# the metroidvania chrome: SCREEN-FIXED docks, world-space exit arrowheads
-# --------------------------------------------------------------------------
-
-def test_fixed_docks_live_outside_the_world_transform():
-    """The cross-group portals are screen-fixed docks: siblings of the canvas
-    host in index.html. createWorld owns (and wipes) #graphCanvas, and the
-    camera transform lives on .lw2-viewport INSIDE it — an element outside that
-    div is physically beyond setView's reach, so the docks can never zoom or
-    pan with the world."""
-    html = _read("index.html")
-    # the canvas host is EMPTY — nothing can live inside the transformed world
-    assert '<div class="graph-canvas" id="graphCanvas"></div>' in html
-    stage = html.split('class="graph-stage"', 1)[1].split("</section>", 1)[0]
-    for sib in ('id="graphDockL"', 'id="graphDockR"', 'id="graphGoal"', 'id="graphLegend"'):
-        assert sib in stage, f"{sib} must be a sibling of the canvas host inside .graph-stage"
-    mod = _read("graph/index.js")
-    body = mod.split("function renderDocks(", 1)[1].split("\nfunction ", 1)[0]
-    assert "getElementById" in body
-    assert "world.el" not in body and "gTokens" not in body and "setView" not in body, \
-        "docks must never enter the world or ride the camera"
-    assert "host.hidden = !ws.length" in body, "a dock with no crossings must hide"
-    css = _read("graph/graph.css")
-    dock = css.split(".gr-dock {", 1)[1].split("}", 1)[0]
-    assert "position: absolute" in dock
-
-
-def test_world_keeps_only_faded_exit_arrowheads():
-    """The pills are gone; what remains in world space is a non-interactive faded
-    arrowhead at the frame boundary, so the wire's direction still reads."""
-    mod = _read("graph/index.js")
-    bp = mod.split("function buildPortals(", 1)[1].split("\nfunction ", 1)[0]
-    assert "gr-exitmark" in bp
-    assert "gTokens.appendChild" in bp, "the marker itself is world-space"
-    assert '"pointer-events": "none"' in bp, "markers must be inert — the dock is the click target"
-    assert "gr-portal-pill" not in mod, "the world-space pill portal is back"
-    css = _read("graph/graph.css")
-    mark = css.split(".gr-exitmark {", 1)[1].split("}", 1)[0]
-    assert "pointer-events: none" in mark and "opacity" in mark
-
-
-def test_dock_gates_drill_and_pulse_on_busy():
-    mod = _read("graph/index.js")
-    body = mod.split("function renderDocks(", 1)[1].split("\nfunction ", 1)[0]
-    assert "drillTo(i, w.drill" in body, "a gate press must drill through (existing navTo path)"
-    assert "gr-gate-busy" in body, "a busy group's gate must pulse"
-    assert "name.textContent" in body, "gate names are authored text — textContent only"
-    css = _read("graph/graph.css")
-    assert "gr-gatepulse" in css
-    assert "writing-mode: vertical-rl" in css, "gate names read stacked, like a game gate"
-
-
-# --------------------------------------------------------------------------
-# the right-click verb menu
-# --------------------------------------------------------------------------
-
-def test_context_menu_lists_the_six_verbs():
-    mod = _read("graph/index.js")
-    assert '.addEventListener("contextmenu"' in mod
-    assert 'removeEventListener("contextmenu"' in mod, "the listener must die with the instance"
-    cm = mod.split("function contextMenu(", 1)[1].split("\nfunction ", 1)[0]
-    assert "preventDefault" in cm, "the native menu must be suppressed inside the stage"
-    nm = mod.split("function nodeMenu(", 1)[1].split("\nfunction ", 1)[0]
-    for verb in ('"Start"', '"Stop"', '"Peek"', '"Test"', '"Remove"', '"Replace ▸"'):
-        assert f"label: {verb}" in nm, f"the node menu lost its {verb} verb"
-    # Start/Stop honour the service contract: disabled + the honest reason as tooltip
-    assert "control === false" in nm and "svc.reason" in nm
-    lm = mod.split("function levelMenu(", 1)[1].split("\nfunction ", 1)[0]
-    for entry in ("Zoom to fit", "Toggle theme", "Back to overview"):
-        assert entry in lm, f"the level menu lost its {entry} entry"
-
-
-def test_the_seam_gained_the_verb_tier():
-    """service / agent / remove / replace / team / cluster — all through the
-    source seam, so a V2 project source can implement the same verbs."""
-    mod = _read("graph/index.js")
-    seam = mod.split("DEVTEAM_GRAPH_SRC = {", 1)[1].split("};", 1)[0]
-    for verb in ("service:", "setAgent:", "removeNode:", "replaceAspect:",
-                 "team:", "setTeam:", "cluster:"):
-        assert verb in seam, f"the seam lost its {verb.rstrip(':')} verb"
-    for path in ("/service", "/agent", "/remove", "/replace",
-                 "/api/graph/self/team", "/api/graph/self/cluster"):
-        assert path in seam
-
-
-def test_remove_confirms_and_replace_files_a_ticket():
-    mod = _read("graph/index.js")
-    rm = mod.split("async function removeNodeFlow(", 1)[1].split("\nfunction ", 1)[0]
-    assert "W.confirm" in rm, "Remove without a confirm is a foot-gun"
-    assert "refetch(i)" in rm, "the level must repaint after a remove"
-    rd = mod.split("function replaceDialog(", 1)[1].split("\nasync function ", 1)[0]
-    assert "ticket filed" in rd
-    assert "openProject" in rd, "the filed ticket must link via openProject"
-    assert 'aspect' in rd and "replaceAspect" in rd
-
-
-# --------------------------------------------------------------------------
-# the panel's three sections + the agent picker + the team selector
-# --------------------------------------------------------------------------
 
 def test_the_panel_has_three_replaceable_sections():
     mod = _read("graph/index.js")
@@ -449,9 +364,29 @@ def test_the_panel_has_three_replaceable_sections():
     assert "agentPicker(i, key)" in wp, "the agent section's replace IS the picker"
 
 
+def test_the_panel_puts_the_agent_front_and_center():
+    mod = _read("graph/index.js")
+    assert "function agentRow" in mod
+    rp = mod.split("function renderPanel(", 1)[1].split("\nfunction ", 1)[0]
+    assert "${agentRow(" in rp, "the panel must render the agent row"
+    assert "the specialist working this module" in mod
+    assert "the manager staffs modules when it authors the plan" in mod, \
+        "the unassigned fallback must say WHO assigns and WHEN"
+    assert "Have the manager plan now" in mod
+    assert "i.src.replan()" in mod, "the unassigned button must call the replan verb"
+
+
+def test_the_model_select_rides_the_servers_own_option_list():
+    mod = _read("graph/index.js")
+    assert "d.models" in mod, "the select must prefer the payload's option list"
+    py = (REPO / "conductor" / "app" / "routes" / "graph.py").read_text()
+    assert "_known_models" in py
+    assert '"models": sorted(_known_models())' in py, \
+        "both graph payloads must carry the valid model ids"
+    assert "valid: " in py, "the 400 detail must SAY the valid options"
+
+
 def test_tech_stack_derives_client_side_when_absent():
-    """`stack` may NOT exist in the payload — the client derives it from the
-    node's paths (extensions), and a payload-sent stack wins when present."""
     mod = _read("graph/index.js")
     ts = mod.split("function techStack(", 1)[1].split("\nfunction ", 1)[0]
     assert "Array.isArray(stack)" in ts, "a payload-sent stack must win"
@@ -484,6 +419,57 @@ def test_agent_picker_and_team_selector():
 
 
 # --------------------------------------------------------------------------
+# the right-click verb menu — rebound to cards, all six verbs intact
+# --------------------------------------------------------------------------
+
+def test_context_menu_lists_the_six_verbs():
+    mod = _read("graph/index.js")
+    assert '.addEventListener("contextmenu"' in mod
+    assert 'removeEventListener("contextmenu"' in mod, "the listener must die with the instance"
+    cm = mod.split("function contextMenu(", 1)[1].split("\nfunction ", 1)[0]
+    assert "preventDefault" in cm, "the native menu must be suppressed inside the stage"
+    assert ".gr-card" in cm, "the menu must resolve the card under the click"
+    nm = mod.split("function nodeMenu(", 1)[1].split("\nfunction ", 1)[0]
+    for verb in ('"Start"', '"Stop"', '"Peek"', '"Test"', '"Remove"', '"Replace ▸"'):
+        assert f"label: {verb}" in nm, f"the card menu lost its {verb} verb"
+    # Start/Stop honour the service contract: disabled + the honest reason as tooltip
+    assert "control === false" in nm and "svc.reason" in nm
+    lm = mod.split("function levelMenu(", 1)[1].split("\nfunction ", 1)[0]
+    for entry in ("Open the Atlas map", "Toggle theme", "Back to overview"):
+        assert entry in lm, f"the room menu lost its {entry} entry"
+
+
+def test_remove_confirms_and_replace_files_a_ticket():
+    mod = _read("graph/index.js")
+    rm = mod.split("async function removeNodeFlow(", 1)[1].split("\nfunction ", 1)[0]
+    assert "W.confirm" in rm, "Remove without a confirm is a foot-gun"
+    assert "refetch(i)" in rm, "the room must repaint after a remove"
+    rd = mod.split("function replaceDialog(", 1)[1].split("\nasync function ", 1)[0]
+    assert "ticket filed" in rd
+    assert "openProject" in rd, "the filed ticket must link via openProject"
+    assert 'aspect' in rd and "replaceAspect" in rd
+
+
+# --------------------------------------------------------------------------
+# themes — two looks, scoped, persisted
+# --------------------------------------------------------------------------
+
+def test_two_themes_scoped_to_graphscreen_with_persistence():
+    css = _read("graph/graph.css")
+    assert '#graphScreen[data-gtheme="blueprint"]' in css
+    assert '#graphScreen[data-gtheme="paper"]' in css
+    assert "--gr-" in css
+    assert ":root" not in css, "graph theme variables must stay scoped to #graphScreen"
+    mod = _read("graph/index.js")
+    assert 'THEME_KEY = "gr:theme"' in mod
+    assert "localStorage.setItem(THEME_KEY" in mod, "the chosen theme must persist"
+    assert "dataset.gtheme" in mod
+    assert '"blueprint"' in mod and '"paper"' in mod
+    html = _read("index.html")
+    assert 'id="graphTheme"' in html, "the theme toggle lives in the graph bar"
+
+
+# --------------------------------------------------------------------------
 # tri-state health glow + the legend
 # --------------------------------------------------------------------------
 
@@ -498,8 +484,8 @@ def test_tri_state_health_classes_with_reduced_motion_stand_down():
     for anim in ("gr-breathe", "gr-amber", "gr-strobe"):
         assert anim in css, f"the {anim} animation is gone"
     reduce = css.split("prefers-reduced-motion", 1)[1]
-    assert ".gr-hs-green .gr-cardg, .gr-hs-yellow .gr-cardg, .gr-hs-red .gr-cardg { animation: none; }" \
-        in reduce, "tri-state must collapse to static colored rings under reduced motion"
+    assert ".gr-card.gr-hs-green, .gr-card.gr-hs-yellow, .gr-card.gr-hs-red { animation: none; }" \
+        in reduce, "tri-state must collapse to static colored borders under reduced motion"
     mod = _read("graph/index.js")
     dg = mod.split("function deriveGroupHealth(", 1)[1].split("\nfunction ", 1)[0]
     assert "Math.max" in dg, "a group rolls the WORST of its children"
@@ -520,23 +506,26 @@ def test_health_legend_bottom_left():
 
 
 # --------------------------------------------------------------------------
-# the conclusion is the GOAL: pinned, outside the transform, cluster sandboxed
+# the Artifact: last column of the top room, a header chip everywhere else
 # --------------------------------------------------------------------------
 
-def test_conclusion_is_the_pinned_goal_outside_the_transform():
+def test_conclusion_is_the_artifact_card_and_the_goal_chip():
     mod = _read("graph/index.js")
-    ln = mod.split("function levelNodes(", 1)[1].split("\nfunction ", 1)[0]
-    assert 'n.node_type !== "conclusion"' in ln, "the conclusion must never be a world node"
+    rn = mod.split("function roomNodes(", 1)[1].split("\nfunction ", 1)[0]
+    assert 'n.node_type !== "conclusion"' in rn, \
+        "the conclusion must never be an ordinary room card"
     gt = mod.split("function goalTitle(", 1)[1].split("\nfunction ", 1)[0]
     assert "The Artifact — the running platform" in gt
     assert "/artifact/i" in gt, \
         "override the display client-side ONLY when the backend has not renamed it"
-    rg = mod.split("function renderGoal(", 1)[1].split("\nfunction ", 1)[0]
-    assert 'getElementById("graphGoal")' in rg
-    assert "world.el" not in rg and "gTokens" not in rg, "the GOAL never enters the world"
-    # its crossings keep the faded-arrowhead treatment, not a dock gate
-    pk = mod.split("function portalPk(", 1)[1].split("\nfunction ", 1)[0]
-    assert 'node_type === "conclusion"' in pk and "goal: true" in pk
+    paint = mod.split("function paint(", 1)[1].split("\nfunction ", 1)[0]
+    assert "gr-col-artifact" in paint and "buildArtifactCard" in paint, \
+        "the Artifact is the top room's always-last column"
+    gc = mod.split("function renderGoalChip(", 1)[1].split("\nfunction ", 1)[0]
+    assert "!i.level" in gc, "the chip shows in sub-rooms; the top room has the card"
+    assert 'drillTo(i, "")' in gc, "the chip links home"
+    html = _read("index.html")
+    assert 'id="graphGoal"' in html
 
 
 def test_cluster_iframe_is_sandboxed_and_never_the_live_app():

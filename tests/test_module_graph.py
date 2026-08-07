@@ -164,6 +164,60 @@ def test_group_edges_are_derived_from_child_edges():
     assert child == before, "the derivation must not mutate its input"
 
 
+def test_a_child_crossing_the_authored_tier_missed_still_rides_up():
+    """The live hole, pinned in its exact shape: children r, o in G1; d in G2;
+    the child edge o→d MUST yield G1→G2. Plan v6 (manager-authored) carried
+    ops→db while its authored top tier had no selfrepair→data over it — and one
+    selfrepair→agents arrow no child edge backed. Reconciliation: a missed
+    crossing is derived anyway, an authored arrow a real crossing backs keeps
+    its deliberate type/contract, and a fabricated arrow is dropped."""
+    parent_of = {"r": "G1", "o": "G1", "d": "G2"}
+    child = [
+        {"src": "r", "dst": "o", "edge_type": "interface",
+         "contract": {"rule": "in-house"}, "contract_test": ""},
+        {"src": "o", "dst": "d", "edge_type": "data",
+         "contract": {"rule": "the crossing"}, "contract_test": "tests/t_od.py"},
+    ]
+    crossing = {"src": "G1", "dst": "G2", "edge_type": "data",
+                "contract": {"rule": "the crossing"}, "contract_test": "tests/t_od.py"}
+    # derived bare, the crossing is simply there
+    assert modgraph.derive_group_edges(child, parent_of) == [crossing]
+    # reconciled against an authored tier that MISSED it and invented G1→G3:
+    # the crossing appears anyway; the arrow into nothing does not survive
+    authored = [{"src": "G1", "dst": "G3", "edge_type": "depends",
+                 "contract": {}, "contract_test": ""}]
+    assert modgraph.derive_group_edges(child, parent_of,
+                                       group_edges=authored) == [crossing]
+    # an authored arrow a real crossing backs keeps its deliberate contract
+    authored = [{"src": "G1", "dst": "G2", "edge_type": "interface",
+                 "contract": {"rule": "the deliberate rule"}, "contract_test": ""}]
+    assert modgraph.derive_group_edges(child, parent_of, group_edges=authored) == [
+        {"src": "G1", "dst": "G2", "edge_type": "interface",
+         "contract": {"rule": "the deliberate rule"}, "contract_test": ""}]
+
+
+def test_the_payload_serves_the_reconciled_tier_not_the_stored_one(root_client):
+    """/api/graph/self must reconcile at the wire: a plan whose stored group
+    tier misses a crossing (or carries a fabricated arrow) still serves an
+    honest top level — the Atlas draws only arrows child edges back."""
+    plan_id = modgraph.create_plan(0, authored_by="manager", notes="drill")
+    modgraph.add_node(plan_id, "aim", "aim", node_type="aim")
+    for g in ("G1", "G2", "G3"):
+        modgraph.add_node(plan_id, g, g, node_type="group")
+    for key, parent in (("r", "G1"), ("o", "G1"), ("d", "G2"), ("x", "G3")):
+        modgraph.add_node(plan_id, key, key, node_type="code", parent_key=parent)
+    modgraph.add_node(plan_id, "conclusion", "done", node_type="conclusion")
+    modgraph.add_edge(plan_id, "o", "d")                    # the real crossing
+    modgraph.add_edge(plan_id, "G1", "G3")                  # fabricated — no child edge
+    modgraph.activate(plan_id)
+    r = root_client.get("/api/graph/self")
+    assert r.status_code == 200, r.text
+    pairs = [(e["src"], e["dst"]) for e in r.json()["edges"]]
+    assert ("G1", "G2") in pairs, "the missed crossing must be served"
+    assert ("G1", "G3") not in pairs, "an arrow no child edge backs must not be served"
+    assert ("o", "d") in pairs, "child edges ride unchanged"
+
+
 def test_the_seeds_top_level_edges_are_exactly_the_derivation(fresh_db):
     """The stored group-to-group edges are the derivation over the stored child
     edges — no hand-curated arrow at the top level — and the frame holds: the
