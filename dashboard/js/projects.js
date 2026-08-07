@@ -766,10 +766,20 @@ let projSrc = null;
 const DEVTEAM_SRC = {
   board: () => api("/api/repair/as-project"),
   question: async () => (lastProject && lastProject.question) || {},
-  answer: (qid, answer) => api(String(answer).startsWith("Approve")
-      ? "/api/logs/notices/approve" : "/api/logs/notices/dismiss",
-    { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ fp: qid }) }),
+  // Only the two literal options act on the notice; free-typed words are instructions
+  // FOR THE MANAGER, not a verdict — routing them to dismiss would silently throw the
+  // notice away because the person said something thoughtful.
+  answer: async (qid, answer) => {
+    const a = String(answer);
+    if (a.startsWith("Approve")) return api("/api/logs/notices/approve",
+      { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fp: qid }) });
+    if (a.startsWith("Dismiss")) return api("/api/logs/notices/dismiss",
+      { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fp: qid }) });
+    await DEVTEAM_SRC.chatSend(a);
+    toast("Told the manager — the notice stays open.");
+  },
   chatSend: async (text) => {
     await api("/api/repair/chat", { method: "POST",
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
@@ -780,14 +790,23 @@ const DEVTEAM_SRC = {
     try {
       const r = await api("/api/repair/chat", { method: "POST",
         headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "" }) });
-      log.innerHTML = (r.chat || []).slice(-40).map((m) =>
-        `<div class="msg ${m.role === "user" ? "user" : "manager"}"><b>${
-          m.role === "user" ? "You" : "Manager"}</b> ${escapeHtml(m.text || "")}</div>`).join("")
+      // The log carries every end-of-sprint report the engine files to the manager; a wall
+      // of "sprint N: 0 landed" drowns the conversation. Keep only the newest report and
+      // render the rest in the project chat's own bubble language.
+      const all = r.chat || [];
+      const isReport = (m) => m.role !== "user" && /^sprint \d+:/.test(m.text || "");
+      const lastReport = all.map(isReport).lastIndexOf(true);
+      const rows = all.filter((m, i) => !isReport(m) || i === lastReport).slice(-30);
+      log.innerHTML = rows.map((m) => m.role === "user"
+        ? `<div class="cmsg you"><div class="cbubble">${escapeHtml(m.text || "")}</div><div class="cmeta">you</div></div>`
+        : `<div class="cmsg mgr"><div class="cbubble">${escapeHtml(m.text || "")}</div><div class="cmeta">manager</div></div>`)
+        .join("")
         || `<p class="dim">Nothing said yet. The manager knows the sprint board, the crew and why it last slept.</p>`;
       log.scrollTop = log.scrollHeight;
     } catch (e) { log.innerHTML = `<p class="err">${escapeHtml(e.message || String(e))}</p>`; }
   },
   showTask: () => { if (typeof rpTab !== "undefined") rpTab = "board"; openSelfRepair(); },
+  addTask: () => { if (typeof rpTab !== "undefined") rpTab = "command"; openSelfRepair(); },
   // The lanes/kanban stay generic; the three HQ-only sections render with the repair
   // screen's OWN panels — the categorized board the owner asked to keep, above all.
   renderExtras: (p) => {
@@ -796,6 +815,16 @@ const DEVTEAM_SRC = {
     if (board) {
       board.innerHTML = `<div class="rp-hq">${rpBoardPanel(d)}</div>`;
       if (typeof rpWireQueue === "function") rpWireQueue(board);
+      board.querySelectorAll("[data-revert]").forEach((b) => b.addEventListener("click", async () => {
+        if (!confirm("Revert this landed change?")) return;
+        try { await api("/api/repair/revert", { method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sha: b.dataset.revert }) }); toast("Reverted."); }
+        catch (e) { toast(e.message); }
+        refreshBoard();
+      }));
+      board.querySelectorAll("[data-board]").forEach((b) =>
+        b.addEventListener("click", () => DEVTEAM_SRC.showTask()));
     }
     const notices = $("#notices");
     if (notices) { notices.innerHTML = `<div class="rp-hq">${rpNoticesPanel(d)}</div>`; rpNotices(); }
@@ -826,6 +855,7 @@ const DEVTEAM_SRC = {
     for (const sel of ['[data-v="dag"]', '[data-v="artifacts"]', '[data-v="blockers"]'])
       { const c = document.querySelector(sel); if (c) c.hidden = false; }
     const u = $("#usageChip"); if (u) u.hidden = true;
+    const sel2 = $("#projectSelect"); if (sel2) sel2.hidden = false;
   },
 };
 
@@ -837,12 +867,15 @@ function openDevteamHQ(view, skipHash) {
   const st = $("#studio"); if (st) st.hidden = true;
   $("#home").hidden = true;
   $("main").hidden = false;
-  $("#projectBar").hidden = true;
   projSrc = DEVTEAM_SRC;
   currentProject = "devteam";
   for (const sel of ['[data-v="dag"]', '[data-v="artifacts"]', '[data-v="blockers"]'])
     { const c = document.querySelector(sel); if (c) c.hidden = true; }
   const u = $("#usageChip"); if (u) u.hidden = false;
+  // The bar carries the badges HQ needs (status, the runs meter, team → the hexagon);
+  // only the project dropdown makes no sense here.
+  $("#projectBar").hidden = false;
+  const sel2 = $("#projectSelect"); if (sel2) sel2.hidden = true;
   switchView(view || "command", true);
   if (!skipHash) setHash("#/hq");
   refreshBoard();
@@ -878,7 +911,11 @@ async function refreshBoard() {
   renderCommand(p);
   const runs = p.runs_used ?? 0, maxRuns = p.max_runs ?? 40;
   $("#costBadge").hidden = false;
-  if (authMode === "subscription") {
+  if (p.badge_text) {
+    // A source that knows its own meter sends it pre-worded (HQ: the token window).
+    $("#costBadge").textContent = p.badge_text;
+    $("#costBadge").title = p.badge_title || "";
+  } else if (authMode === "subscription") {
     // No per-token billing — show the meaningful metric (agent runs), not dollars.
     $("#costBadge").textContent = `${runs}/${maxRuns} agent runs used`;
     $("#costBadge").title =
@@ -896,8 +933,10 @@ async function refreshBoard() {
   if (tb) {
     const has = p.team_world && p.team_room;
     tb.hidden = !has;
-    if (has) tb.onclick = () => { location.hash = `#/studio`; setTimeout(() =>
-      (typeof lwOpenScene === "function") && (lwWorldId = p.team_world, lwOpenScene(p.team_room)), 350); };
+    if (has) tb.onclick = projSrc
+      ? () => openDevteam()                      // HQ's team IS the hexagon
+      : () => { location.hash = `#/studio`; setTimeout(() =>
+          (typeof lwOpenScene === "function") && (lwWorldId = p.team_world, lwOpenScene(p.team_room)), 350); };
   }
   const sb = $("#sprintBadge");
   if (sb) {
@@ -958,6 +997,21 @@ function inlineCode(text) {
 }
 
 function renderEvent(e) {
+  // HQ: the crew's events arrive on the same socket but carry no project id. Translate
+  // them with the repair screen's own narrator so the live feed tells the sprint's story.
+  if (projSrc && e.source === "repair") {
+    const txt = typeof rpActText === "function" ? rpActText(e) : "";
+    if (!txt) return;
+    const div = document.createElement("div");
+    div.className = "system";
+    const when = e.ts ? new Date(e.ts * 1000).toLocaleTimeString() : "";
+    div.innerHTML = `<div class="src">⚙️ Crew · ${escapeHtml(e.kind)} · ${when}</div>${escapeHtml(txt)}`;
+    const box = $("#events");
+    if (box) { box.appendChild(div);
+      while (box.children.length > 400) box.removeChild(box.firstChild);
+      box.scrollTop = box.scrollHeight; }
+    return;
+  }
   if (e.project_id !== currentProject) return;
   // Legacy 'answer' events are the manager echoing what the boss had just said,
   // so every boss message appeared twice — once as typed, once prefixed "The boss
@@ -2468,7 +2522,10 @@ $("#addTaskRole").addEventListener("change", (e) => {
     } else e.target.selectedIndex = 0;
   }
 });
-$("#addTaskBtn").addEventListener("click", () => openAddTask(null));
+$("#addTaskBtn").addEventListener("click", () => {
+  if (projSrc) { projSrc.addTask(); return; }   // the crew takes tickets, not DAG rows
+  openAddTask(null);
+});
 $("#closeAddTaskBtn").addEventListener("click", () => $("#addTaskDialog").close());
 $("#editTaskBtn").addEventListener("click", () => {
   const t = lastTasks.find((x) => x.id === editTaskTarget);

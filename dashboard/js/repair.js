@@ -204,7 +204,8 @@ async function rpNotices() {
           headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fp: b.dataset.approveFp }) });
         toast(out.did ? `Done — ${out.did}` : (out.reason || "done"));
       } catch (e) { toast(e.message); }
-      rpNotices(); rpRefresh(true);
+      rpNotices();
+      if (typeof projSrc !== "undefined" && projSrc) refreshBoard(); else rpRefresh(true);
     }));
     el.querySelectorAll("[data-dismiss-fp]").forEach((b) => b.addEventListener("click", async () => {
       try {

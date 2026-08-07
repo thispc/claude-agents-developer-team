@@ -388,7 +388,7 @@ async function loadHealth() {
 
 const STATUS_CLASS = { done: "ok", failed: "bad", cancelled: "bad", review: "warn", hold: "warn", planning: "run", running: "run" };
 const STATUS_LABEL = { hold: "on hold — needs you", review: "in review",
-                       idle: "idle — nothing running" };
+                       idle: "idle — nothing running", paused: "⏸ switched off" };
 
 async function loadProjects() {
   const projects = await api("/api/projects");

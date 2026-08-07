@@ -1707,6 +1707,9 @@ def as_project() -> dict:
     roster = [{"role": f["name"], "model": model, "provider": "anthropic"}
               for f in d.get("factors") or [] if f.get("enabled")]
     m = (d.get("meters") or {}).get("s5h") or {}
+    u = (d.get("meters") or {}).get("util") or {}
+    badge = (f"{round(float(u.get('frac') or 0) * 100)}% of this token window used"
+             if u.get("budget_tok") else "")
     info = team() or {}
     return {"id": "devteam", "name": "Devteam — the IT crew", "status": p_status,
             "summary": summary,
@@ -1715,6 +1718,11 @@ def as_project() -> dict:
             "team": json.dumps(roster), "tasks": tasks, "manager_model": model,
             "autonomy": "autonomous", "cost_usd": 0.0, "budget_usd": 0.0,
             "runs_used": m.get("used", 0), "max_runs": m.get("cap", 0),
+            # Pre-formatted meter for the header badge: the crew's honest constraint is the
+            # shared token window, not the project pipeline's run counter.
+            "badge_text": badge,
+            "badge_title": "The crew shares your subscription's token window and only "
+                           "spends what you are not using. Details on the Usage tab.",
             "repo": (d.get("head") or {}).get("repo") or "",
             "team_world": info.get("world_id"), "team_room": info.get("room_id"),
             # sprints=1 on purpose: the project widget would paint one fabricated "SHIPPED"

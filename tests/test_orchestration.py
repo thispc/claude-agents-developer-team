@@ -842,7 +842,7 @@ async def test_a_clicked_answer_is_not_echoed_either(fresh_db, monkeypatch):
 def test_the_feed_hides_legacy_echo_events():
     """Rows already written before the fix must not keep double-printing."""
     js = dashboard_js()
-    body = js.split("function renderEvent(", 1)[1][:600]
+    body = js.split("function renderEvent(", 1)[1][:1400]   # the HQ translation sits first now
     assert 'e.kind === "answer"' in body and "return" in body
 
 
