@@ -58,6 +58,29 @@ const DEVTEAM_GRAPH_SRC = {
     body: JSON.stringify(cfg) }),
   inspect: (key) => W.api(`/api/graph/self/node/${encodeURIComponent(key)}`),
   replan: () => W.api("/api/graph/self/replan", { method: "POST" }),
+  // The verb tier (backend lands in parallel — every caller treats a refusal as
+  // information, never as a crash):
+  service: (key, action) => W.api(`/api/graph/self/node/${encodeURIComponent(key)}/service`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action }) }),
+  setAgent: (key, agentId) => W.api(`/api/graph/self/node/${encodeURIComponent(key)}/agent`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent_id: agentId }) }),
+  removeNode: (key) => W.api(`/api/graph/self/node/${encodeURIComponent(key)}/remove`, {
+    method: "POST" }),
+  replaceAspect: (key, aspect, note) => W.api(`/api/graph/self/node/${encodeURIComponent(key)}/replace`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ aspect, note }) }),
+  team: () => W.api("/api/graph/self/team"),
+  setTeam: (ref) => {                     // ref = "worldId:roomId", the option's value
+    const [world_id, room_id] = String(ref).split(":").map(Number);
+    return W.api("/api/graph/self/team", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ world_id, room_id }) });
+  },
+  cluster: (action) => W.api("/api/graph/self/cluster", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action }) }),
 };
 const SOURCES = { self: DEVTEAM_GRAPH_SRC };
 
@@ -122,6 +145,7 @@ function open(sourceName, sub) {
   };
   wireEvents(inst);
   asideDefault(inst);
+  loadTeam(inst);
   const back = document.getElementById("graphBack");
   if (back) back.onclick = () => { location.hash = "#/hq"; };
   // Live updates: the classic scripts own the socket; connectWs re-broadcasts
@@ -152,6 +176,13 @@ function close() {
   document.removeEventListener("graph-event", inst._onGraphEvent);
   try { inst._teardown && inst._teardown(); } catch (e) { /* */ }
   try { inst.world.destroy(); } catch (e) { /* */ }
+  // The screen-fixed overlays are index.html's, not the world's — createWorld's
+  // teardown never touches them, so the instance resets them on the way out.
+  for (const id of ["graphDockL", "graphDockR", "graphGoal", "graphLegend"]) {
+    const el = document.getElementById(id);
+    if (el) { el.hidden = true; el.innerHTML = ""; }
+  }
+  document.querySelectorAll(".gr-dialog").forEach((d) => d.remove());
   inst = null;
 }
 
@@ -240,14 +271,40 @@ function viewFor(i, bounds, pad) {
 }
 
 // ---- the two levels -------------------------------------------------------------
-/** The nodes a level shows. Top level: aim + groups + conclusion (or the whole
- * flat plan when no groups were authored — the old graph keeps working). Inside a
- * group: exactly its children. */
+/** The nodes a level shows. Top level: aim + groups (or the whole flat plan when
+ * no groups were authored — the old graph keeps working). Inside a group: exactly
+ * its children. The CONCLUSION is never a world node any more — it is the GOAL,
+ * pinned screen-space at the right edge; wires toward it end at exit markers. */
 function levelNodes(data, level) {
-  const ns = (data && data.nodes) || [];
+  const ns = ((data && data.nodes) || []).filter((n) => n.node_type !== "conclusion");
   if (level) return ns.filter((n) => String(n.parent_key || "") === level);
   if (!ns.some((n) => n.node_type === "group")) return ns;
   return ns.filter((n) => !String(n.parent_key || ""));
+}
+
+/** The GOAL's display name. The owner renamed it; the payload may still carry an
+ * older title — override client-side ONLY when the backend has not renamed it. */
+function goalTitle(n) {
+  const t = String((n && n.title) || "");
+  return /artifact/i.test(t) ? t : "The Artifact — the running platform";
+}
+
+// Group health rolls WORST-OF its children, derived client-side whenever the
+// payload has not rolled it itself (every health field is optional — the graph
+// must render gracefully against a backend that predates the contract).
+const HS_RANK = { green: 0, yellow: 1, red: 2 };
+function deriveGroupHealth(data) {
+  const worst = {};
+  for (const n of (data && data.nodes) || []) {
+    const p = String(n.parent_key || "");
+    const r = n.health && HS_RANK[n.health.status];
+    if (p && r != null) worst[p] = Math.max(worst[p] ?? 0, r);
+  }
+  for (const n of (data && data.nodes) || []) {
+    if (n.node_type !== "group" || (n.health && n.health.status)) continue;
+    const r = worst[String(n.key)];
+    if (r != null) n.health = { status: ["green", "yellow", "red"][r] };
+  }
 }
 
 /** Where a group card sits at level 0 — the world point its subgraph unfolds
@@ -379,6 +436,7 @@ function setLevelNow(i, level, instant) {
 function paint(i, data) {
   i.data = data;
   i.hostRect = i.host.getBoundingClientRect();
+  deriveGroupHealth(data);
   i.byKey = new Map((data.nodes || []).map((n) => [String(n.key), n]));
   const planId = data.plan && data.plan.id;
   // A replan can dissolve the group being viewed — fall back to the architecture.
@@ -428,6 +486,8 @@ function paint(i, data) {
   if (i.firstPaint) { i.firstPaint = false; restoreView(i); }
   renderMini(i);
   renderCrumb(i);
+  renderGoal(i);
+  renderLegend(i);
 }
 
 /** The staged entrance: cards scale/fade in one at a time in topo order (~60ms
@@ -482,10 +542,13 @@ function anchor(from, to, size) {
 }
 
 // ---- portals: where a wire leaves the room --------------------------------------
-/** One foreign group, one direction → one stub. The pk encodes both. */
+/** One foreign group, one direction → one crossing. The pk encodes both. The
+ * conclusion is special: its crossings belong to the pinned GOAL, never a gate. */
 function portalPk(i, foreignKey, out) {
   const n = i.byKey.get(String(foreignKey));
   if (!n) return null;
+  if (n.node_type === "conclusion")
+    return { pk: (out ? ">" : "<") + "~goal", drill: null, goal: true, label: goalTitle(n) };
   const gkey = String(n.parent_key || "");
   const drill = gkey && i.byKey.has(gkey) ? gkey : "";
   const holder = drill ? i.byKey.get(drill) : null;
@@ -493,48 +556,86 @@ function portalPk(i, foreignKey, out) {
            label: holder ? (holder.title || drill) : (n.title || String(n.key)) };
 }
 
-/** Cross-group child edges do not vanish at a level — they land on small "portal"
- * stubs at the frame's edge, labeled with the foreign group's name; pressing a
- * stub drills straight to that group (or back to the top for aim/conclusion).
- * Incoming traffic stacks on the left of the subgraph, outgoing on the right. */
+/** Cross-level edges do not vanish — but the INTERACTIVE portal is no longer a
+ * world-space pill that rides the camera. What stays in world space is a small
+ * FADED ARROWHEAD at the frame boundary (so the wire's direction still reads);
+ * the clickable gates live on the screen-fixed docks (renderDocks), and the
+ * conclusion's crossings point at the pinned GOAL. Incoming traffic exits on the
+ * left of the subgraph, outgoing on the right. */
 function buildPortals(i, hidden) {
   i.portals.forEach((p) => p.g.remove());
   i.portals.clear();
-  if (!i.level || !i.data) return;
   const wanted = new Map();
-  for (const e of i.data.edges || []) {
-    const [s, d] = edgeEnds(e);
-    const sIn = i.nodes.has(s), dIn = i.nodes.has(d);
-    if (sIn === dIn) continue;                     // in-level (drawn) or elsewhere (not ours)
-    const p = portalPk(i, sIn ? d : s, sIn);
-    if (!p) continue;
-    if (!wanted.has(p.pk)) wanted.set(p.pk, { ...p, out: p.pk[0] === ">", n: 0 });
-    wanted.get(p.pk).n += 1;
+  if (i.data) {
+    for (const e of i.data.edges || []) {
+      const [s, d] = edgeEnds(e);
+      const sIn = i.nodes.has(s), dIn = i.nodes.has(d);
+      if (sIn === dIn) continue;                   // in-level (drawn) or elsewhere (not ours)
+      const p = portalPk(i, sIn ? d : s, sIn);
+      if (!p) continue;
+      if (!i.level && !p.goal) continue;           // top level crosses only into the goal
+      if (!wanted.has(p.pk)) wanted.set(p.pk, { ...p, out: p.pk[0] === ">", n: 0 });
+      wanted.get(p.pk).n += 1;
+    }
   }
-  if (!wanted.size) return;
-  const bb = sceneBounds(i);
-  if (!isFinite(bb.minX)) return;
-  const midY = (bb.minY + bb.maxY) / 2;
-  const ins = [...wanted.values()].filter((w) => !w.out);
-  const outs = [...wanted.values()].filter((w) => w.out);
-  const place = (w, idx, total, x) => {
-    const y = midY + (idx - (total - 1) / 2) * 66;
-    const name = String(w.label).length > 15 ? String(w.label).slice(0, 14) + "…" : String(w.label);
-    const g = svgEl("g", {
-      class: "gr-portal" + (hidden ? " gr-hidden" : ""),
-      "data-drill": w.drill, transform: `translate(${x} ${y})`,
-    }, [
-      svgEl("rect", { class: "gr-portal-pill", x: -PORTAL.w / 2, y: -PORTAL.h / 2,
-        width: PORTAL.w, height: PORTAL.h, rx: PORTAL.h / 2, "pointer-events": "all" }),
-      svgEl("text", { class: "gr-portal-t", x: 0, y: 1, "text-anchor": "middle",
-        "dominant-baseline": "central", "pointer-events": "none",
-        text: (w.out ? "→ " : "← ") + name }),
-    ]);
-    i.world.el.gTokens.appendChild(g);
-    i.portals.set(w.pk, { g, x, y, out: w.out, drill: w.drill });
+  if (wanted.size) {
+    const bb = sceneBounds(i);
+    if (isFinite(bb.minX)) {
+      const midY = (bb.minY + bb.maxY) / 2;
+      const ins = [...wanted.values()].filter((w) => !w.out);
+      const outs = [...wanted.values()].filter((w) => w.out);
+      const place = (w, idx, total, x) => {
+        const y = midY + (idx - (total - 1) / 2) * 66;
+        // The marker points along the data's travel (left → right), both sides.
+        const g = svgEl("g", {
+          class: "gr-exitmark" + (hidden ? " gr-hidden" : ""),
+          transform: `translate(${x} ${y})`, "pointer-events": "none",
+        }, [svgEl("path", { class: "gr-exitmark-a", d: "M-7,-7 L9,0 L-7,7 Z" })]);
+        i.world.el.gTokens.appendChild(g);
+        i.portals.set(w.pk, { g, x, y, out: w.out, drill: w.drill });
+      };
+      ins.forEach((w, idx) => place(w, idx, ins.length, bb.minX - 90));
+      outs.forEach((w, idx) => place(w, idx, outs.length, bb.maxX + 90));
+    }
+  }
+  renderDocks(i, wanted);
+}
+
+// ---- the transition docks: metroidvania gates, SCREEN-FIXED ---------------------
+/** The interactive cross-group portals live OUTSIDE the world transform: two
+ * docks at the stage's left/right vertical midline — left = upstream groups
+ * feeding this level, right = downstream groups it feeds. They are plain HTML
+ * siblings of the canvas host, so no camera transform can ever move them; a dock
+ * with no crossings on its side hides. A gate whose group is busy pulses. */
+function renderDocks(i, wanted) {
+  const L = document.getElementById("graphDockL");
+  const R = document.getElementById("graphDockR");
+  if (!L || !R) return;
+  const gates = [...(wanted ? wanted.values() : [])].filter((w) => !w.goal);
+  const fill = (host, ws) => {
+    host.innerHTML = "";
+    for (const w of ws) {
+      const b = document.createElement("button");
+      b.className = "gr-gate";
+      b.setAttribute("data-drill", w.drill || "");
+      const gn = w.drill ? i.byKey.get(w.drill) : null;
+      if (gn && (gn.activity || []).length) b.classList.add("gr-gate-busy");
+      b.title = (w.out ? "downstream: " : "upstream: ")
+        + String(w.label || "the architecture") + " — click to travel through";
+      const arrow = document.createElement("span");
+      arrow.className = "gr-gate-arrow";
+      arrow.textContent = w.out ? "→" : "←";
+      const name = document.createElement("span");
+      name.className = "gr-gate-name";
+      name.textContent = String(w.label || w.drill || "overview");  // textContent — titles are authored text
+      b.append(arrow, name);
+      b.onclick = () => drillTo(i, w.drill || "");
+      host.appendChild(b);
+    }
+    host.hidden = !ws.length;
   };
-  ins.forEach((w, idx) => place(w, idx, ins.length, bb.minX - 170));
-  outs.forEach((w, idx) => place(w, idx, outs.length, bb.maxX + 170));
+  fill(L, gates.filter((w) => !w.out));
+  fill(R, gates.filter((w) => w.out));
 }
 
 function rebuildWires(i) {
@@ -550,9 +651,10 @@ function rebuildWires(i) {
     let pa = null, pb = null;
     if (!A && !B) return;                           // an edge of some other level
     if (!A || !B) {
-      if (!i.level) return;                         // top level draws only its own tier
       const p = portalPk(i, A ? d : s, !!A);
-      const stub = p && i.portals.get(p.pk);
+      // Top level draws only its own tier — plus the goal's exit markers.
+      if (!p || (!i.level && !p.goal)) return;
+      const stub = i.portals.get(p.pk);
       if (!stub || stub.g.classList.contains("gr-hidden")) return;
       if (A) pb = stub; else pa = stub;
     }
@@ -651,6 +753,110 @@ function renderCrumb(i) {
     `<span class="gr-crumb-here">${esc((g && g.title) || i.level)}</span>`;
   const b = i.crumb.querySelector(".gr-crumb-up");
   if (b) b.onclick = () => drillTo(i, "");
+}
+
+// ---- the GOAL: the conclusion, pinned screen-space at the right edge ------------
+/** The conclusion never rides the camera. It is the level's GOAL — a fixed slab
+ * at the stage's right edge centre, a sibling of the canvas host like the docks,
+ * so zoom/pan cannot move it. Wires toward it end at the faded exit arrowheads.
+ * Clicking it opens the goal panel: beat, uptime, shas, the mini cluster. */
+function renderGoal(i) {
+  const el = document.getElementById("graphGoal");
+  if (!el) return;
+  if (!i.data) { el.hidden = true; return; }
+  const node = (i.data.nodes || []).find((n) => n.node_type === "conclusion");
+  const c = i.data.conclusion || {};
+  el.innerHTML = "";
+  const flag = document.createElement("span");
+  flag.className = "gr-goal-glyph";
+  flag.textContent = "🏁";
+  const name = document.createElement("span");
+  name.className = "gr-goal-name";
+  name.textContent = goalTitle(node);
+  const dot = document.createElement("span");
+  dot.className = "gr-goal-dot gr-goaldot-" + String(c.health || "unknown");
+  el.append(flag, name, dot);
+  if (c.beat != null) {
+    const beat = document.createElement("span");
+    beat.className = "gr-goal-beat";
+    beat.textContent = String(c.beat);
+    el.append(beat);
+  }
+  el.title = goalTitle(node) + " — the GOAL everything feeds";
+  el.hidden = false;
+  el.onclick = () => { clearSel(i); i.inspectKey = null; asideConclusion(i); };
+}
+
+// ---- the health legend: three states, one line each -----------------------------
+function renderLegend(i) {
+  const el = document.getElementById("graphLegend");
+  if (!el) return;
+  if (el.childElementCount) { el.hidden = false; return; }   // built once per mount
+  el.innerHTML = "";
+  for (const [k, line] of [
+    ["green", "green — calm glow: heartbeat and tests both fine"],
+    ["yellow", "amber — pulsing: tests failing, heartbeat fine"],
+    ["red", "red — strobing: the heartbeat itself is failing"],
+  ]) {
+    const row = document.createElement("div");
+    row.className = "gr-legend-row";
+    const dot = document.createElement("span");
+    dot.className = "gr-legend-dot gr-hs-" + k;
+    const txt = document.createElement("span");
+    txt.textContent = line;
+    row.append(dot, txt);
+    el.appendChild(row);
+  }
+  el.hidden = false;
+}
+
+// ---- the team selector: the pool modules are staffed from -----------------------
+/** Lives in the graph header bar. GET /team fills it; changing it POSTs the pool
+ * switch. Rendered only when the backend answers — the endpoint may not have
+ * landed yet, and a dead dropdown would be a lie. */
+function teamMembers(r) {
+  const list = (r && (r.members || r.agents)) || (Array.isArray(r) ? r : []);
+  return (Array.isArray(list) ? list : [])
+    .map((m) => ({ id: m.agent_id ?? m.id ?? m.home_id,
+                   name: String(m.name || m.label || `agent #${m.agent_id ?? m.id}`) }))
+    .filter((m) => m.id != null);
+}
+
+async function loadTeam(i) {
+  const sel = document.getElementById("graphTeam");
+  if (!sel) return;
+  let r = null;
+  try { r = await i.src.team(); }
+  catch (e) { sel.hidden = true; return; }         // honest: no endpoint, no dropdown
+  if (inst !== i || !r) return;
+  i.teamInfo = r;                                  // the agent picker rides the same payload
+  // current/teams are {world_id, room_id, name} dicts; the option VALUE is "wid:rid"
+  // (what setTeam posts) and the LABEL is the human name — never the object itself.
+  const refOf = (t) => `${t.world_id}:${t.room_id}`;
+  const c = r.current && typeof r.current === "object" ? r.current : null;
+  const teams = (Array.isArray(r.teams) ? r.teams : [])
+    .filter((t) => t && t.world_id != null)
+    .map((t) => ({ ref: refOf(t), name: String(t.name || `team ${refOf(t)}`) }));
+  if (c && c.world_id != null && !teams.some((t) => t.ref === refOf(c)))
+    teams.unshift({ ref: refOf(c), name: String(c.name || `team ${refOf(c)}`) });
+  if (!teams.length) { sel.hidden = true; return; }
+  sel.innerHTML = "";
+  for (const t of teams) {
+    const o = document.createElement("option");
+    o.value = t.ref;
+    o.textContent = "team: " + t.name;
+    if (c && t.ref === refOf(c)) o.selected = true;
+    sel.appendChild(o);
+  }
+  sel.hidden = false;
+  sel.onchange = async () => {
+    try {
+      await i.src.setTeam(sel.value);
+      const label = sel.options[sel.selectedIndex]?.textContent || sel.value;
+      W.toast && W.toast(`${label} — modules staff from this pool now`);
+    } catch (e) { W.toast && W.toast((e && e.message) || String(e), true); }
+    if (inst === i) { loadTeam(i); scheduleRefetch(i); }
+  };
 }
 
 // ---- minimap --------------------------------------------------------------------
@@ -813,17 +1019,83 @@ function agentRow(i, n, d) {
       <span class="dim" id="grStaffOut"></span></div></div></div>`;
 }
 
+function fmtUptime(s) {
+  s = Math.max(0, Math.floor(+s || 0));
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m ${s % 60}s`;
+}
+
+/** Where the mini cluster iframe may point. `sandbox` is non-negotiable, and the
+ * frame may NEVER be this app's own root — embedding the live platform inside
+ * itself is the one recursion the goal panel refuses. */
+function clusterSafeUrl(u) {
+  try {
+    const url = new URL(String(u || ""), location.href);
+    if (!/^https?:$/.test(url.protocol)) return null;
+    if (url.origin === location.origin && (url.pathname === "/" || url.pathname === "")) return null;
+    return url.href;
+  } catch (e) { return null; }
+}
+
+function clusterHtml(c) {
+  const cl = c.cluster;                            // optional by contract
+  if (!cl) return `<p class="dim">this server does not report a mini cluster yet</p>`;
+  if (!cl.available)
+    return `<p class="dim">${esc(cl.reason || "the mini cluster is not available on this server")}</p>`;
+  if (cl.running) {
+    const url = clusterSafeUrl(cl.url);
+    const frame = url
+      ? `<div class="gr-monitor"><iframe sandbox="allow-same-origin allow-scripts"
+           src="${esc(url)}" title="mini cluster"></iframe></div>`
+      : `<p class="err">the cluster URL points at this app itself — refusing to embed it</p>`;
+    return `${frame}<div class="gr-actions">
+      <button id="grClusterStop">■ Stop mini cluster</button>
+      <span class="dim" id="grClusterOut"></span></div>`;
+  }
+  return `<div class="gr-actions"><button class="primary" id="grClusterStart">▶ Start mini cluster</button>
+    <span class="dim" id="grClusterOut"></span></div>`;
+}
+
+function wireCluster(i) {
+  const go = async (action, btn) => {
+    btn.disabled = true;
+    const o = i.aside.querySelector("#grClusterOut");
+    if (o) o.textContent = action === "start" ? "booting the mini cluster…" : "stopping…";
+    try { await i.src.cluster(action); }
+    catch (e) {
+      if (o) o.textContent = (e && e.message) || String(e);
+      btn.disabled = false;
+      return;
+    }
+    if (inst !== i) return;
+    await refetch(i);
+    asideConclusion(i);                            // repaint from the fresh truth
+  };
+  const s = i.aside.querySelector("#grClusterStart");
+  if (s) s.onclick = () => go("start", s);
+  const st = i.aside.querySelector("#grClusterStop");
+  if (st) st.onclick = () => go("stop", st);
+}
+
+/** The GOAL panel — the pinned Artifact's single click. Live beat, uptime and
+ * shas when the backend sends them (all optional), plus the mini cluster. */
 function asideConclusion(i) {
   const c = (i.data && i.data.conclusion) || {};
+  const node = ((i.data && i.data.nodes) || []).find((n) => n.node_type === "conclusion");
   const rep = c.repair || {};
   i.aside.innerHTML = `
     <div class="gr-light gr-conclusion">
-      <div class="gr-light-head"><span class="gr-light-glyph">🏁</span><div><b>Conclusion</b>
-        <div class="dim">what all of it adds up to</div></div></div>
-      <p>health: <b class="gr-health gr-health-${esc(c.health || "unknown")}">${esc(c.health || "unknown")}</b></p>
+      <div class="gr-light-head"><span class="gr-light-glyph">🏁</span><div><b>${esc(goalTitle(node))}</b>
+        <div class="dim">the GOAL — what all of it adds up to</div></div></div>
+      <p>health: <b class="gr-health gr-health-${esc(c.health || "unknown")}">${esc(c.health || "unknown")}</b>${
+        c.beat != null ? ` · beat: <b>${esc(String(c.beat))}</b>` : ""}</p>
+      ${c.uptime_s != null ? `<p class="dim">up ${esc(fmtUptime(c.uptime_s))}</p>` : ""}
+      ${c.boot_sha ? `<p class="dim">boot <code>${esc(String(c.boot_sha).slice(0, 10))}</code></p>` : ""}
       <p class="dim">crew: ${esc(rep.phase || "idle")}${rep.sprint ? ` · sprint ${esc(rep.sprint)}` : ""}</p>
+      <div class="gr-sec"><div class="gr-sec-h">Mini cluster</div><div id="grCluster">${clusterHtml(c)}</div></div>
       <button class="rp-mini" id="grOpenHq">🏢 Open HQ</button>
     </div>`;
+  wireCluster(i);
   const b = i.aside.querySelector("#grOpenHq");
   if (b) b.onclick = () => { location.hash = "#/hq"; };
 }
@@ -852,6 +1124,50 @@ async function openPanel(i, key) {
 // Fallback only — the live option list rides in the payload (d.models), so the
 // select can never drift from what the server's validator accepts.
 const MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-fable-5", "claude-haiku-4-5"];
+
+// ---- tech stack: derived CLIENT-SIDE from the node's paths whenever the payload
+// carries no `stack` of its own (the field is optional by contract) — file
+// extensions are the honest signal the client already holds.
+const EXT_KIND = [
+  [/\.py$/i, "Python / FastAPI"],
+  [/\.(js|mjs)$/i, "JavaScript / vanilla"],
+  [/\.sql$/i, "SQL"],
+  [/\.css$/i, "CSS"],
+  [/\.html?$/i, "HTML"],
+  [/\.(md|txt)$/i, "docs"],
+];
+function techStack(stack, paths) {
+  if (Array.isArray(stack) && stack.length)
+    return stack.map((s) => (typeof s === "string"
+      ? { kind: s, files: 0 }
+      : { kind: String(s.kind || s.name || "?"), files: Number(s.files ?? s.count ?? 0) }));
+  const counts = new Map();
+  for (const p of paths || []) {
+    const kind = (EXT_KIND.find(([re]) => re.test(String(p))) || [0, "other"])[1];
+    counts.set(kind, (counts.get(kind) || 0) + 1);
+  }
+  return [...counts].map(([kind, files]) => ({ kind, files }));
+}
+
+/** A group's stack is its children's files — a group card has no paths itself. */
+function nodePaths(i, key, n) {
+  if ((n.node_type || "") !== "group") return n.paths || [];
+  const out = [];
+  for (const c of (i.data && i.data.nodes) || [])
+    if (String(c.parent_key || "") === String(key)) out.push(...(c.paths || []));
+  return out;
+}
+
+/** The mastery badge: EARNED, never asserted — ★ only after the backend has
+ * counted enough verified runs; anything less says exactly how far along it is.
+ * The whole field is optional (the payload may predate the backend). */
+function masteryLine(m) {
+  if (!m || m.runs == null) return "";
+  const runs = Number(m.runs) || 0;
+  if (m.master) return `<p class="gr-mastery gr-mastery-on">★ Master of this module
+    <span class="dim">· ${runs} verified run${runs === 1 ? "" : "s"}</span></p>`;
+  return `<p class="gr-mastery dim">working toward mastery — ${Math.min(runs, 3)}/3 runs</p>`;
+}
 
 function renderPanel(i, key, d) {
   const n = d.node || {};
@@ -883,6 +1199,18 @@ function renderPanel(i, key, d) {
     <div class="gr-run"><span class="dim">${esc(r.kind || "run")} · ${esc(r.status || "")}</span>
       ${r.detail ? ` ${esc(String(r.detail).slice(0, 120))}` : ""}</div>`).join("")
     || `<p class="dim">nothing has happened to this module yet</p>`;
+  // The optional contract fields ride the GRAPH payload node (`live`) until the
+  // inspector payload learns them — read them from either, never require both.
+  const health = n.health || live.health || null;
+  const mastery = n.mastery || live.mastery || null;
+  const stackRows = techStack(n.stack || live.stack, nodePaths(i, key, { ...live, ...n }))
+    .map((s) => `<span class="gr-stack-chip">${esc(s.kind)}${
+      s.files ? ` <span class="dim">· ${s.files} file${s.files === 1 ? "" : "s"}</span>` : ""}</span>`)
+    .join("") || `<span class="dim">no files mapped — nothing to derive a stack from</span>`;
+  const healthLine = health && health.status
+    ? `<p class="gr-healthline gr-hl-${esc(health.status)}">health: <b>${esc(health.status)}</b>${
+        health.status === "yellow" ? ` <span class="dim">— tests failing, heartbeat fine</span>` :
+        health.status === "red" ? ` <span class="dim">— heartbeat failing</span>` : ""}</p>` : "";
   i.aside.innerHTML = `
     <div class="gr-inspect">
       <div class="gr-light-head">
@@ -891,11 +1219,23 @@ function renderPanel(i, key, d) {
           isGroup ? ` · ${Number(live.children) || 0} modules` : ""}</div></div>
         <button class="rp-link gr-close" id="grInsClose">close</button>
       </div>
-      ${agentRow(i, n, d)}
       ${act ? `<p class="gr-actline">● ${esc(act.task || act.what || "working")}</p>` : ""}
+      ${healthLine}
       ${n.spec ? `<p class="gr-spec">${esc(n.spec)}</p>` : ""}
       ${(n.tags || []).length ? `<div class="gr-tags">${n.tags.map((g) => `<span class="gr-tag">${esc(g)}</span>`).join("")}</div>` : ""}
-      <div class="gr-sec"><div class="gr-sec-h">Tests <span class="dim">advisory — red informs, never blocks</span></div>${testRows}</div>
+      <div class="gr-sec" id="grSecStack"><div class="gr-sec-h">Tech stack
+        <button class="rp-mini gr-replace" id="grRepStack">Replace</button></div>
+        <div class="gr-stack">${stackRows}</div></div>
+      <div class="gr-sec" id="grSecTests"><div class="gr-sec-h">Test suite
+        <button class="rp-mini gr-replace" id="grRepTests">Replace</button></div>
+        <p class="dim">Tests are advisory — a red ring informs, it never blocks.</p>
+        ${testRows}
+        <div class="gr-actions"><button${isGroup ? "" : ` class="primary"`} id="grVerify">▶ Verify now</button>
+        <span class="dim" id="grVerifyOut"></span></div></div>
+      <div class="gr-sec" id="grSecAgent"><div class="gr-sec-h">Agent
+        <button class="rp-mini gr-replace" id="grAgentPick">Change agent</button></div>
+        ${agentRow(i, n, d)}
+        ${masteryLine(mastery)}</div>
       <div class="gr-sec"><div class="gr-sec-h">Edges &amp; contracts</div>${edgeRows}</div>
       <div class="gr-sec"><div class="gr-sec-h">Trace</div>${traceRows}</div>
       <div class="gr-sec"><div class="gr-sec-h">Steering</div>
@@ -908,10 +1248,7 @@ function renderPanel(i, key, d) {
             `<option value="${a}"${a === (cfg.autonomy || "") ? " selected" : ""}>${a || "default"}</option>`).join("")}</select>
         </label>
       </div>
-      <div class="gr-actions">
-        ${isGroup ? `<button class="primary" id="grGroupOpen">⊕ Open group</button>` : ""}
-        <button${isGroup ? "" : ` class="primary"`} id="grVerify">▶ Verify${isGroup ? " group" : " now"}</button>
-        <span class="dim" id="grVerifyOut"></span></div>
+      ${isGroup ? `<div class="gr-actions"><button class="primary" id="grGroupOpen">⊕ Open group</button></div>` : ""}
     </div>`;
   wirePanel(i, key, isGroup);
 }
@@ -921,6 +1258,17 @@ function wirePanel(i, key, isGroup) {
   if (closeBtn) closeBtn.onclick = () => { i.inspectKey = null; clearSel(i); asideDefault(i); };
   const ob = i.aside.querySelector("#grGroupOpen");
   if (ob) ob.onclick = () => drillTo(i, key);
+  // The three sections' Replace flows: stack/tests file a ticket; the agent
+  // section's replace IS the picker (a group is staffed through its leaves).
+  const repStack = i.aside.querySelector("#grRepStack");
+  if (repStack) repStack.onclick = () => replaceDialog(i, key, "stack", "Tech stack");
+  const repTests = i.aside.querySelector("#grRepTests");
+  if (repTests) repTests.onclick = () => replaceDialog(i, key, "tests", "Test suite");
+  const pick = i.aside.querySelector("#grAgentPick");
+  if (pick) {
+    if (isGroup) { pick.disabled = true; pick.title = "a group is staffed through its modules"; }
+    else pick.onclick = () => agentPicker(i, key);
+  }
   const staff = i.aside.querySelector("#grStaff");
   if (staff) staff.onclick = async () => {          // "Have the manager plan now"
     const out = i.aside.querySelector("#grStaffOut");
@@ -984,6 +1332,7 @@ function wireEvents(i) {
       drillTo(i, "");
   };
   const onDbl = (e) => e.preventDefault();     // real dblclick handled via pressToken
+  const onCtx = (e) => contextMenu(i, e);
   const onKey = (e) => keyDown(i, e);
   const onKeyUp = (e) => { if (e.code === "Space") i.space = false; };
   const onOver = (e) => {
@@ -1005,8 +1354,11 @@ function wireEvents(i) {
   svg.addEventListener("pointerout", onOut);
   // Keys belong to THIS screen (it carries tabindex="-1" and is focused on open) —
   // a listener on the whole document would fire under every other screen too.
+  // The context menu rides the screen too, so the graph's verbs never leak
+  // under any other screen.
   i.screen.addEventListener("keydown", onKey);
   i.screen.addEventListener("keyup", onKeyUp);
+  i.screen.addEventListener("contextmenu", onCtx);
 
   i._teardown = () => {
     svg.removeEventListener("pointerdown", onDown); svg.removeEventListener("pointermove", onMove);
@@ -1015,7 +1367,221 @@ function wireEvents(i) {
     svg.removeEventListener("dblclick", onDbl);
     svg.removeEventListener("pointerover", onOver); svg.removeEventListener("pointerout", onOut);
     i.screen.removeEventListener("keydown", onKey); i.screen.removeEventListener("keyup", onKeyUp);
+    i.screen.removeEventListener("contextmenu", onCtx);
   };
+}
+
+// ---- the right-click verb menu ---------------------------------------------------
+/** Right-click IS the verb surface. On a node: Start, Stop, Peek, Test, Remove,
+ * Replace. On empty canvas: the level menu. The native menu is suppressed inside
+ * the stage only — inputs and the aside keep the browser's own (paste lives there). */
+function contextMenu(i, e) {
+  const t = e.target;
+  const tag = (t && t.tagName) || "";
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" ||
+      (t.closest && (t.closest("#graphAside") || t.closest(".gr-dialog")))) return;
+  e.preventDefault();
+  if (!W.studioMenu) return;
+  hideTip(i);
+  const nodeEl = t.closest && t.closest(".gr-node");
+  if (nodeEl) nodeMenu(i, e, nodeEl.getAttribute("data-key"));
+  else levelMenu(i, e);
+}
+
+function nodeMenu(i, e, key) {
+  const n = i.byKey.get(String(key)) || {};
+  const svc = n.service || null;         // optional — the payload may predate the backend
+  const locked = !!(svc && svc.control === false);
+  const why = (svc && svc.reason) || "";
+  const state = (svc && svc.state) || "";
+  const items = [];
+  if (state) items.push({ label: `service: ${state}`, disabled: true });
+  items.push(
+    { label: "Start", disabled: locked || state === "running", title: locked ? why : "",
+      act: () => serviceAction(i, key, "start") },
+    { label: "Stop", disabled: locked || state === "stopped", title: locked ? why : "",
+      act: () => serviceAction(i, key, "stop") },
+    { sep: true },
+    { label: "Peek", act: () => openPanel(i, key) },
+    { label: "Test", act: () => verifyNode(i, key) },
+    { sep: true },
+    { label: "Remove", act: () => removeNodeFlow(i, key) },
+    { label: "Replace ▸", act: () => replaceMenu(i, e, key) },
+  );
+  W.studioMenu(e.clientX, e.clientY, items);
+}
+
+function levelMenu(i, e) {
+  W.studioMenu(e.clientX, e.clientY, [
+    { label: "Zoom to fit", act: () => flyTo(i,
+        viewFor(i, sceneBounds(i), i.level ? 190 : 120), 300, false, () => saveView(i)) },
+    { label: "Toggle theme", act: () => applyTheme(i,
+        i.screen.dataset.gtheme === "blueprint" ? "paper" : "blueprint") },
+    { label: "Back to overview", disabled: !i.level, act: () => drillTo(i, "") },
+  ]);
+}
+
+async function serviceAction(i, key, action) {
+  try {
+    const r = await i.src.service(key, action);
+    const state = (r && ((r.service && r.service.state) || r.state)) || "done";
+    W.toast && W.toast(`${key}: ${action} → ${state}`);
+  } catch (er) { W.toast && W.toast((er && er.message) || String(er), true); }
+  if (inst === i) scheduleRefetch(i);
+}
+
+/** The Test verb: the existing affected-only verify, the ring repainting after. */
+async function verifyNode(i, key) {
+  W.toast && W.toast(`testing ${key}…`);
+  let r = null;
+  try { r = await i.src.verify(key); }
+  catch (er) { W.toast && W.toast((er && er.message) || String(er), true); }
+  if (r) W.toast && W.toast((r.ok ? "✓ " : "✕ ") + (r.headline || "tests finished"), !r.ok);
+  if (inst !== i) return;
+  await refetch(i);                       // rings repaint from the recorded truth
+}
+
+async function removeNodeFlow(i, key) {
+  const n = i.byKey.get(String(key)) || {};
+  if (!W.confirm(`Remove '${n.title || key}' from the plan?\nThe change lands as a new plan version.`)) return;
+  try { await i.src.removeNode(key); }
+  catch (er) { W.toast && W.toast((er && er.message) || String(er), true); return; }
+  W.toast && W.toast(`removed ${key} — repainting the level`);
+  if (inst !== i) return;
+  if (i.inspectKey === key) { i.inspectKey = null; clearSel(i); asideDefault(i); }
+  await refetch(i);                       // node gone, new plan version in the header
+}
+
+function replaceMenu(i, e, key) {
+  W.studioMenu(e.clientX + 26, e.clientY + 10, [
+    { label: "Tech stack", act: () => replaceDialog(i, key, "stack", "Tech stack") },
+    { label: "Test suite", act: () => replaceDialog(i, key, "tests", "Test suite") },
+    { label: "Module", act: () => replaceDialog(i, key, "module", "Module") },
+  ]);
+}
+
+// ---- the glass dialogs (replace note, agent picker) ------------------------------
+function grDialog(i, titleText) {
+  document.querySelectorAll(".gr-dialog").forEach((d) => d.remove());
+  const box = document.createElement("div");
+  box.className = "gr-dialog";
+  const h = document.createElement("b");
+  h.textContent = titleText;
+  box.appendChild(h);
+  // Keys typed into the dialog are the dialog's own — never the canvas's shortcuts.
+  box.addEventListener("keydown", (ev) => {
+    ev.stopPropagation();
+    if (ev.key === "Escape") box.remove();
+  });
+  i.host.parentElement.appendChild(box);           // the stage, not the world
+  return box;
+}
+
+/** Replace = a TICKET, not a mutation: one honest note line, filed to the crew. */
+function replaceDialog(i, key, aspect, label) {
+  const box = grDialog(i, `Replace ${label} — ${key}`);
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "one line: what should the replacement do differently?";
+  const row = document.createElement("div");
+  row.className = "gr-dialog-row";
+  const go = document.createElement("button");
+  go.className = "primary";
+  go.textContent = "File the ticket";
+  const cancel = document.createElement("button");
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => box.remove();
+  row.append(go, cancel);
+  box.append(input, row);
+  input.focus();
+  const submit = async () => {
+    go.disabled = true;
+    let r;
+    try { r = await i.src.replaceAspect(key, aspect, input.value.trim()); }
+    catch (er) {
+      go.disabled = false;
+      W.toast && W.toast((er && er.message) || String(er), true);
+      return;
+    }
+    const pid = r && (r.project_id ?? (r.project || {}).id);
+    W.toast && W.toast(`ticket filed${pid != null ? ` — #${pid}` : ""}`);
+    box.textContent = "";
+    const done = document.createElement("b");
+    done.textContent = `✓ ticket filed${pid != null ? ` — #${pid}` : ""}`;
+    const row2 = document.createElement("div");
+    row2.className = "gr-dialog-row";
+    if (pid != null && W.openProject) {
+      const openB = document.createElement("button");
+      openB.className = "primary";
+      openB.textContent = `Open #${pid} →`;
+      openB.onclick = () => { box.remove(); W.openProject(pid, "command"); };
+      row2.appendChild(openB);
+    }
+    const closeB = document.createElement("button");
+    closeB.textContent = "Close";
+    closeB.onclick = () => box.remove();
+    row2.appendChild(closeB);
+    box.append(done, row2);
+  };
+  go.onclick = submit;
+  input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") submit(); });
+}
+
+/** The agent picker — fed by the TEAM (GET /api/graph/self/team), assignment via
+ * POST /node/{key}/agent. When the backend has not landed, it says so honestly. */
+async function agentPicker(i, key) {
+  const box = grDialog(i, `Change agent — ${key}`);
+  const note = document.createElement("p");
+  note.className = "dim";
+  note.textContent = "pick from the team pool — the pool itself changes from the header bar";
+  box.appendChild(note);
+  let members = [];
+  let failed = null;
+  try { members = teamMembers(await i.src.team()); }
+  catch (er) { failed = (er && er.message) || String(er); }
+  if (inst !== i) { box.remove(); return; }
+  if (failed || !members.length) {
+    const p = document.createElement("p");
+    p.className = "dim";
+    p.textContent = failed
+      ? `the team endpoint is not answering yet: ${failed}`
+      : "the team has no members to offer";
+    box.appendChild(p);
+  }
+  const list = document.createElement("div");
+  list.className = "gr-picklist";
+  for (const m of members) {
+    const b = document.createElement("button");
+    b.className = "gr-pick";
+    const av = document.createElement("span");
+    av.className = "gr-agent-avatar";
+    av.textContent = (m.name.trim()[0] || "?").toUpperCase();
+    const nm = document.createElement("span");
+    nm.textContent = m.name;                       // textContent — names are free text
+    b.append(av, nm);
+    b.onclick = async () => {
+      b.disabled = true;
+      try { await i.src.setAgent(key, m.id); }
+      catch (er) {
+        b.disabled = false;
+        W.toast && W.toast((er && er.message) || String(er), true);
+        return;
+      }
+      W.toast && W.toast(`${m.name} now works ${key}`);
+      box.remove();
+      if (inst !== i) return;
+      await refetch(i);
+      if (i.inspectKey === key) openPanel(i, key);
+    };
+    list.appendChild(b);
+  }
+  const row = document.createElement("div");
+  row.className = "gr-dialog-row";
+  const cancel = document.createElement("button");
+  cancel.textContent = "Cancel";
+  cancel.onclick = () => box.remove();
+  row.appendChild(cancel);
+  box.append(list, row);
 }
 
 function pointerDown(i, e) {

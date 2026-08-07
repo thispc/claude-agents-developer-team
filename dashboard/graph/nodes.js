@@ -31,6 +31,24 @@ function ringClass(tests) {
   return t.failing ? "gr-ring-bad" : t.passing === t.total ? "gr-ring-good" : "gr-ring-mixed";
 }
 
+// Tri-state health — every field OPTIONAL (the payload may predate the backend):
+// green = calm breathing glow, yellow = amber pulse, red = urgent slow strobe.
+const HS_STATES = ["green", "yellow", "red"];
+const HS_TIP = {
+  green: "healthy — heartbeat ok, tests green",
+  yellow: "tests failing, heartbeat fine",
+  red: "heartbeat failing",
+};
+export function healthClass(n) {
+  const s = n && n.health && n.health.status;
+  return HS_STATES.includes(s) ? "gr-hs-" + s : "";
+}
+function syncHealth(g, n) {
+  HS_STATES.forEach((s) => g.classList.remove("gr-hs-" + s));
+  const c = healthClass(n);
+  if (c) g.classList.add(c);
+}
+
 function trim(s, n) {
   s = String(s || "");
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
@@ -66,6 +84,10 @@ function fill(g, n) {
   while (g.firstChild) g.removeChild(g.firstChild);
   const { w, h } = nodeSize(n);
   const inner = svgEl("g", { class: "gr-cardg" });
+  // The health tooltip says EXACTLY what each state means — svgEl's `text`
+  // attribute is textContent, so a hostile status string cannot become markup.
+  const hs = n.health && HS_TIP[n.health.status];
+  if (hs) inner.append(svgEl("title", { text: hs }));
   if (n.node_type === "group") {
     const kids = Number(n.children) || 0;
     inner.append(
@@ -114,14 +136,16 @@ export function buildNode(n) {
     class: "gr-node gr-" + (n.node_type || "code"),
     "data-key": String(n.key), "data-kind": "module",
   });
+  syncHealth(g, n);
   fill(g, n);
   return g;
 }
 
-/** Repaint an existing node's content in place (title, ring, chip) without
- * touching its transform, selection or reveal state. */
+/** Repaint an existing node's content in place (title, ring, chip, health state)
+ * without touching its transform, selection or reveal state. */
 export function updateNode(g, n) {
   const busy = g.classList.contains("gr-busy"), sel = g.classList.contains("gr-sel");
+  syncHealth(g, n);
   fill(g, n);
   g.classList.toggle("gr-busy", busy);
   g.classList.toggle("gr-sel", sel);

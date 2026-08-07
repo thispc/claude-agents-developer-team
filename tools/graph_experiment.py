@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
 
@@ -158,6 +159,120 @@ def main() -> int:
                     (n for n in leaves if n["key"] == lkey), {})
                     .get("tests", {}).get("total")):
                 finding(f"panel claims 'no tests mapped' on '{lkey}' but the payload maps some")
+
+            print("== the three panel sections (Tech stack / Test suite / Agent)")
+            n0 = len(FINDINGS)
+            for needle in ("Tech stack", "Test suite", "Agent"):
+                if needle not in aside:
+                    finding(f"panel is missing its {needle} section")
+            for bid, what in (("grRepStack", "Tech-stack Replace"),
+                              ("grRepTests", "Test-suite Replace"),
+                              ("grAgentPick", "agent picker [Change agent]")):
+                if not page.evaluate(f"!!document.querySelector('#{bid}')"):
+                    finding(f"panel is missing the {what} button")
+            if len(FINDINGS) == n0:
+                ok("panel: three sections, each with its replace control")
+
+            print("== right-click: the six verbs, and Test fires")
+            page.mouse.click(lbox["x"], lbox["y"], button="right")
+            page.wait_for_timeout(350)
+            labels = page.evaluate(
+                "[...document.querySelectorAll('.ctx-menu .ctx-item')]"
+                ".map(b => b.textContent.trim())")
+            for verb in ("Start", "Stop", "Peek", "Test", "Remove", "Replace"):
+                if not any(str(lbl).startswith(verb) for lbl in labels):
+                    finding(f"right-click menu is missing the {verb} verb (got {labels})")
+            with page.expect_response("**/api/graph/self/verify",
+                                      timeout=300_000) as rinfo:
+                page.evaluate("""() => {
+                    const b = [...document.querySelectorAll('.ctx-menu .ctx-item')]
+                      .find(x => x.textContent.trim() === 'Test');
+                    if (b) b.click();
+                }""")
+            if rinfo.value.status != 200:
+                finding(f"the Test verb's verify POST returned {rinfo.value.status}")
+            else:
+                ok("Test verb fired the affected-only verify")
+            page.wait_for_timeout(1800)             # the refetch repaints the ring
+            ring = page.evaluate("""(k) => {
+                const g = [...document.querySelectorAll('.gr-node')]
+                  .find(n => n.getAttribute('data-key') === k);
+                const r = g && g.querySelector('.gr-ring');
+                return r ? (r.getAttribute('class') || '') : '';
+            }""", lkey) or ""
+            if not ring or "gr-ring-none" in ring:
+                finding(f"after the Test verb the ring did not update ({ring!r})")
+            else:
+                ok(f"ring updated: {ring.split()[-1]}")
+
+        print("== the chrome is SCREEN-FIXED: docks & GOAL identical under zoom")
+        if page.evaluate("!!document.querySelector('.gr-node.gr-conclusion')"):
+            finding("the conclusion still renders as a world node — it must be the pinned GOAL")
+        if not page.evaluate("(e => !!e && !e.hidden)(document.querySelector('#graphGoal'))"):
+            finding("#graphGoal is hidden — the pinned Artifact is gone")
+        fixed_sel = [s for s in ("#graphGoal", "#graphDockL", "#graphDockR")
+                     if page.evaluate(
+                         f"(e => !!e && !e.hidden)(document.querySelector('{s}'))")]
+        rects = lambda: page.evaluate("""(sels) => sels.map(s => {
+            const r = document.querySelector(s).getBoundingClientRect();
+            return [s, r.x, r.y, r.width, r.height]; })""", fixed_sel)
+        node_rect = lambda: page.evaluate("""(k) => {
+            const g = [...document.querySelectorAll('.gr-node')]
+              .find(n => n.getAttribute('data-key') === k);
+            if (!g) return null;
+            const r = g.getBoundingClientRect();
+            return [r.x, r.y, r.width]; }""", lkey)
+        before, nb = rects(), node_rect()
+        centre = page.evaluate("""() => {
+            const r = document.querySelector('.graph-stage').getBoundingClientRect();
+            return {x: r.x + r.width / 2, y: r.y + r.height / 2}; }""")
+        page.mouse.move(centre["x"], centre["y"])
+        page.mouse.wheel(0, -240)                  # zoom IN — the world must move…
+        page.wait_for_timeout(400)
+        after, na = rects(), node_rect()
+        if before != after:
+            finding(f"screen-fixed chrome moved under zoom: {before} -> {after}")
+        elif fixed_sel:
+            ok(f"pinned under zoom: {', '.join(fixed_sel)}")
+        if nb is not None and nb == na:
+            finding("wheel zoom did not move the world — the fixed-chrome check proved nothing")
+        page.mouse.wheel(0, 240)                   # …and back out
+        page.wait_for_timeout(400)
+
+        print("== the GOAL panel: the Artifact + the mini cluster, honestly")
+        page.click("#graphGoal")
+        page.wait_for_timeout(500)
+        gaside = page.inner_text("#graphAside")
+        if "The Artifact" not in gaside:
+            finding("goal panel does not carry the Artifact title")
+        if "Mini cluster" not in gaside:
+            finding("goal panel has no mini-cluster section")
+        frame = page.evaluate("""() => {
+            const f = document.querySelector('#graphAside iframe');
+            return f ? [f.getAttribute('sandbox') || '', f.src] : null; }""")
+        if frame:
+            sandbox, src = frame
+            if "allow-same-origin" not in sandbox or "allow-scripts" not in sandbox:
+                finding(f"cluster iframe is not sandboxed: {sandbox!r}")
+            u, b = urlparse(src), urlparse(BASE)
+            if (u.scheme, u.netloc) == (b.scheme, b.netloc) and u.path in ("", "/"):
+                finding("cluster iframe points at the live app's own root")
+            else:
+                ok("cluster iframe sandboxed and not the live app")
+        else:
+            ok("no cluster iframe (not running / endpoint absent) — honest either way")
+
+        print("== the team selector is honest about its backend")
+        st_t, _ = api(page, "GET", "/api/graph/self/team")
+        sel_visible = page.evaluate(
+            "(e => !!e && !e.hidden)(document.querySelector('#graphTeam'))")
+        if st_t == 200 and not sel_visible:
+            finding("the team endpoint answers but the header selector is hidden")
+        elif st_t != 200 and sel_visible:
+            finding("the selector shows with no team endpoint behind it — a dead dropdown")
+        else:
+            ok(f"team selector matches its backend (endpoint {st_t}, "
+               f"{'shown' if sel_visible else 'hidden'})")
 
         print("== steer: the config POST and its refusal")
         st, out = api(page, "POST", f"/api/graph/self/node/{lkey}/config",

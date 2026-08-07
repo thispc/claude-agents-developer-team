@@ -175,7 +175,9 @@ function studioMenu(x, y, items) {
     b.className = "ctx-item" + (it.soon ? " soon" : "");
     b.textContent = it.label;
     if (it.soon) { b.disabled = true; const s = document.createElement("span"); s.textContent = "soon"; b.appendChild(s); }
+    else if (it.disabled) b.disabled = true;   // present but honest: it.title says why
     else b.addEventListener("click", () => { m.remove(); it.act(); });
+    if (it.title) b.title = it.title;
     m.appendChild(b);
   });
   document.body.appendChild(m);

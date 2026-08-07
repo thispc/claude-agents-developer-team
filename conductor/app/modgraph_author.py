@@ -37,7 +37,7 @@ import json
 import re
 import time
 
-from . import bus, config, db, logs, modgraph, providers, repair, tuning
+from . import bus, config, db, logs, modgraph, modgraph_health, providers, repair, tuning
 from . import repair_builder as rb
 
 NODE_TYPES = ("aim", "group", "code", "research", "data", "conclusion")
@@ -276,12 +276,21 @@ async def author_self_plan() -> int | None:
             "authored_by": cur["authored_by"], "version": cur["version"],
             "modules": [{"key": n["key"], "title": n["title"], "paths": n["paths"]}
                         for n in cur_man["nodes"]]})
+    # Directive-style notes the operator left on the graph (a removed module, above
+    # all) — the manager must SEE them or the next authoring pass quietly undoes an
+    # explicit human act. Consumed once an authoring call has actually read them.
+    op_notes = db.kv_get("graph:notes:0") or []
+    notes_txt = ""
+    if op_notes:
+        notes_txt = ("\n\nOPERATOR NOTES (explicit directives — honour them):\n"
+                     + "\n".join(f"- {str(n.get('note') or '')[:300]}"
+                                 for n in op_notes[-12:]))
     model = str(tuning.get("repair_builder_model"))
     try:
         raw = await providers.complete(
             "anthropic", model, AUTHOR_SYSTEM,
             f"INVENTORY (the tree as it is):\n{inventory}\n\n"
-            f"CURRENT PLAN:\n{current}\n\nTEAM ROSTER:\n{roster}\n\n"
+            f"CURRENT PLAN:\n{current}\n\nTEAM ROSTER:\n{roster}{notes_txt}\n\n"
             "Return the JSON object.",
             repair._root_settings(), max_tokens=3000)
         # Billed only when the call actually went out — most failures here are
@@ -298,6 +307,8 @@ async def author_self_plan() -> int | None:
 
     nodes, edges, assigns = _validated(obj, man, fs)
     cand = _candidate_manifest(nodes, edges)
+    if op_notes:
+        db.kv_set("graph:notes:0", [])     # the manager has read them; a note is not a law
     if cur and cur_man == cand:
         _stamp(cur["id"])
         logs.info("sprint", "graph_plan_unchanged",
@@ -319,10 +330,27 @@ async def author_self_plan() -> int | None:
         modgraph.map_test(plan_id, t["node"], t["path"], kind=t["kind"], status="mapped")
     modgraph.activate(plan_id)
     agents = (info or {}).get("agents") or {}
+    final: dict[str, int] = {}
     for key, fid in assigns.items():
         hid = agents.get(fid)
         if hid:
-            modgraph.set_assign(plan_id, key, agent_id=int(hid))
+            final[key] = int(hid)
+    # MASTERY OUTRANKS RESHUFFLING: an agent with >= MASTER_RUNS verified ok runs on a
+    # node keeps it, whatever the manager proposed — continuity on a module is worth
+    # more than a tidy re-deal, and the trace (not this pass) is what earns it back.
+    leaf_keys = {n["key"] for n in cand["nodes"]
+                 if n["node_type"] not in ("aim", "conclusion", "group")}
+    for key, m in modgraph_health.mastery(0).items():
+        if not m["master"] or key not in leaf_keys:
+            continue
+        if final.get(key) != int(m["agent_id"]):
+            logs.info("sprint", "graph_master_kept",
+                      f"'{key}' keeps its master (agent {m['agent_id']}, {m['runs']} "
+                      "verified runs) over the manager's pick",
+                      node=key, master=int(m["agent_id"]), proposed=final.get(key, 0))
+            final[key] = int(m["agent_id"])
+    for key, hid in final.items():
+        modgraph.set_assign(plan_id, key, agent_id=hid)
 
     by_key = {n["key"]: n for n in cand["nodes"]}
     order = _topo(cand)

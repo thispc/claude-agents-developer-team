@@ -175,7 +175,7 @@ is not.
 
 ### The API, in families
 
-An *API* is the list of requests a program will answer. There are 143; the
+An *API* is the list of requests a program will answer. There are 150; the
 dashboard uses them for you.
 
 | Family | Example | For |

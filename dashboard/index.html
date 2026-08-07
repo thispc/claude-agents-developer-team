@@ -514,16 +514,24 @@
     <b>🕸 Module graph</b>
     <span class="dim" id="graphPlanInfo"></span>
     <span class="studio-spacer"></span>
+    <select id="graphTeam" hidden title="the pool modules are staffed from — independent of the sprint crew"></select>
     <button class="rp-mini" id="graphTheme" title="Switch this canvas between the blueprint HUD and the app's paper look">◐ blueprint</button>
   </div>
   <div class="graph-body">
     <!-- The stage: #graphCanvas is the world host (createWorld owns and wipes it),
-         so the HUD chrome — breadcrumb, minimap, edge tooltip — are SIBLINGS. -->
+         so the HUD chrome — breadcrumb, minimap, edge tooltip — are SIBLINGS.
+         The transition docks, the pinned GOAL and the health legend are SCREEN-FIXED
+         overlays: siblings of the canvas host, outside the world transform, so the
+         camera can never move them. -->
     <div class="graph-stage">
       <div class="graph-canvas" id="graphCanvas"></div>
       <nav class="gr-crumb" id="graphCrumb" aria-label="where you are in the graph"></nav>
       <div class="gr-mini" id="graphMini" title="Minimap — click to jump"></div>
       <div class="gr-edge-tip" id="graphTip" hidden></div>
+      <div class="gr-dock gr-dock-left" id="graphDockL" hidden aria-label="upstream groups feeding this level"></div>
+      <div class="gr-dock gr-dock-right" id="graphDockR" hidden aria-label="downstream groups this level feeds"></div>
+      <button class="gr-goal" id="graphGoal" hidden title="The Artifact — the running platform"></button>
+      <div class="gr-legend" id="graphLegend" hidden></div>
     </div>
     <aside id="graphAside"><p class="dim">loading the graph…</p></aside>
   </div>

@@ -76,6 +76,7 @@
 .graph-bar b { font-size: 15px; }
 .graph-bar .dim { color: var(--gr-dim); }
 .graph-bar button { background: var(--gr-btn); color: var(--gr-text); border-color: var(--gr-line); }
+.graph-bar select { background: var(--gr-btn); color: var(--gr-text); border: 1px solid var(--gr-line); border-radius: 7px; padding: 3px 6px; font-size: 12px; }
 .graph-body { flex: 1; display: flex; min-height: 0; }
 
 /* The stage wraps the world host; the HUD chrome (breadcrumb, minimap, tooltip)
@@ -137,7 +138,18 @@
 .gr-hint { margin-top: 10px; }
 .gr-spec { margin: 8px 0 12px; line-height: 1.45; }
 .gr-sec { margin: 14px 0; padding-top: 10px; border-top: 1px solid var(--gr-line); }
-.gr-sec-h { font-weight: 650; margin-bottom: 6px; }
+.gr-sec-h { font-weight: 650; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+.gr-sec-h .gr-replace { margin-left: auto; flex: none; }
+.gr-stack { display: flex; flex-wrap: wrap; gap: 6px; }
+.gr-stack-chip {
+  font-size: 11.5px; padding: 2px 9px; border-radius: 999px;
+  background: var(--gr-accent-soft); border: 1px solid var(--gr-line); color: var(--gr-text);
+}
+.gr-mastery { margin: 6px 0 2px; }
+.gr-mastery-on { color: var(--gr-warn); font-weight: 650; }
+.gr-healthline.gr-hl-green b { color: var(--gr-good); }
+.gr-healthline.gr-hl-yellow b { color: var(--gr-warn); }
+.gr-healthline.gr-hl-red b { color: var(--gr-bad); }
 .gr-test { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
 .gr-test code { font-family: var(--mono); font-size: 11.5px; }
 .gr-test-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gr-dim); flex: none; align-self: center; }
@@ -221,7 +233,7 @@
   transform: scale(2.6); opacity: 0;
   transition: transform 0.46s cubic-bezier(0.2, 0.7, 0.2, 1), opacity 0.4s ease;
 }
-.gr-wire.gr-exit, .gr-portal.gr-exit { opacity: 0; transition: opacity 0.18s ease-in; pointer-events: none; }
+.gr-wire.gr-exit { opacity: 0; transition: opacity 0.18s ease-in; pointer-events: none; }
 
 /* ---- wires: theme stroke, draw-in AFTER endpoints, live data flow ---- */
 .gr-wire .lw2-wire-vis { stroke: var(--gr-wire); }
@@ -242,6 +254,30 @@
 }
 @keyframes gr-dashflow { to { stroke-dashoffset: -32; } }
 
+/* ---- tri-state health (health.status, every field optional) ----
+   green = calm breathing glow · yellow = amber pulse (tests failing, heartbeat
+   fine) · red = urgent slow strobe (heartbeat failing). Busy outranks them
+   visually (.gr-node.gr-busy is more specific), and reduced motion collapses
+   all three to static colored rings at the bottom of this file. */
+.gr-hs-green .gr-card { stroke: var(--gr-good); }
+.gr-hs-green .gr-cardg { animation: gr-breathe 3.4s ease-in-out infinite; }
+@keyframes gr-breathe {
+  0%, 100% { filter: drop-shadow(0 0 3px var(--gr-conc-fill)); }
+  50% { filter: drop-shadow(0 0 10px var(--gr-good)); }
+}
+.gr-hs-yellow .gr-card { stroke: var(--gr-warn); stroke-width: 2; }
+.gr-hs-yellow .gr-cardg { animation: gr-amber 1.3s ease-in-out infinite; }
+@keyframes gr-amber {
+  0%, 100% { filter: drop-shadow(0 0 2px transparent); }
+  50% { filter: drop-shadow(0 0 12px var(--gr-warn)); }
+}
+.gr-hs-red .gr-card { stroke: var(--gr-bad); stroke-width: 2.5; }
+.gr-hs-red .gr-cardg { animation: gr-strobe 2.2s steps(2, jump-none) infinite; }
+@keyframes gr-strobe {
+  0%, 100% { filter: drop-shadow(0 0 16px var(--gr-bad)); }
+  50% { filter: drop-shadow(0 0 2px transparent); }
+}
+
 /* ---- live activity: breathing glow on a node the crew is touching now ---- */
 .gr-node.gr-busy .gr-card { stroke: var(--gr-accent); stroke-width: 2.5; }
 .gr-node.gr-busy .gr-cardg { animation: gr-glow 1.6s ease-in-out infinite; }
@@ -250,13 +286,117 @@
   50% { filter: drop-shadow(0 0 12px var(--gr-accent)); }
 }
 
-/* ---- portals: where a wire leaves the room ---- */
-.gr-portal { cursor: pointer; transition: opacity 0.3s ease; }
-.gr-portal.gr-hidden { opacity: 0; pointer-events: none; }
-.gr-portal-pill { fill: var(--gr-glass); stroke: var(--gr-line); stroke-width: 1.5; transition: stroke 0.15s ease; }
-.gr-portal:hover .gr-portal-pill { stroke: var(--gr-accent); }
-.gr-portal-t { font: 600 11.5px var(--ui); fill: var(--gr-dim); }
-.gr-portal:hover .gr-portal-t { fill: var(--gr-accent); }
+/* ---- exit markers: the world-space residue of a cross-level wire ----
+   The INTERACTIVE portal is the screen-fixed dock; what stays in the world is a
+   faded arrowhead at the frame boundary so the wire's direction still reads. */
+.gr-exitmark { pointer-events: none; opacity: 0.45; transition: opacity 0.3s ease; }
+.gr-exitmark.gr-hidden, .gr-exitmark.gr-exit { opacity: 0; }
+.gr-exitmark-a { fill: var(--gr-wire); }
+
+/* ---- the transition docks: metroidvania gates, SCREEN-FIXED ----
+   Siblings of the canvas host at the stage's left/right vertical midline — the
+   camera transform lives on .lw2-viewport inside the host and can never reach
+   these. Tall glass slabs, stacked name, luminous edge; busy groups pulse. */
+.gr-dock {
+  position: absolute; z-index: 3; display: flex; flex-direction: column; gap: 10px;
+  max-height: 72%; overflow-y: auto; overflow-x: hidden;
+}
+.gr-dock[hidden] { display: none; }
+.gr-dock-left { left: 10px; top: 50%; transform: translateY(-50%); }
+.gr-dock-right { right: 10px; top: calc(50% + 104px); }  /* the GOAL owns centre-right */
+.gr-gate {
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  min-height: 118px; width: 44px; padding: 12px 5px; cursor: pointer;
+  background: var(--gr-glass); border: 1px solid var(--gr-card-stroke); border-radius: 12px;
+  color: var(--gr-dim); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  box-shadow: inset 0 0 18px var(--gr-card-glow), 0 0 10px var(--gr-card-glow);
+  transition: box-shadow 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+.gr-gate:hover {
+  color: var(--gr-accent); border-color: var(--gr-accent);
+  box-shadow: inset 0 0 22px var(--gr-glow), 0 0 16px var(--gr-glow);
+}
+.gr-gate-name {
+  writing-mode: vertical-rl; text-orientation: mixed;
+  font: 600 11.5px var(--ui); letter-spacing: 0.04em;
+  max-height: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gr-dock-left .gr-gate-name { transform: rotate(180deg); }
+.gr-gate-arrow { font-size: 13px; color: var(--gr-accent); }
+.gr-gate-busy { border-color: var(--gr-accent); animation: gr-gatepulse 1.8s ease-in-out infinite; }
+@keyframes gr-gatepulse {
+  0%, 100% { box-shadow: inset 0 0 18px var(--gr-card-glow), 0 0 8px var(--gr-glow); }
+  50% { box-shadow: inset 0 0 26px var(--gr-glow), 0 0 20px var(--gr-accent); }
+}
+
+/* ---- the GOAL: the conclusion as a pinned slab at the right edge centre ---- */
+.gr-goal {
+  position: absolute; z-index: 3; right: 10px; top: 50%; transform: translateY(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  width: 52px; min-height: 172px; padding: 14px 6px; cursor: pointer;
+  background: var(--gr-conc-fill); border: 1.5px solid var(--gr-good); border-radius: 14px;
+  color: var(--gr-text); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  box-shadow: inset 0 0 24px var(--gr-conc-fill), 0 0 14px var(--gr-conc-fill);
+  transition: box-shadow 0.2s ease;
+}
+.gr-goal[hidden] { display: none; }
+.gr-goal:hover { box-shadow: inset 0 0 28px var(--gr-conc-fill), 0 0 22px var(--gr-good); }
+.gr-goal-glyph { font-size: 16px; }
+.gr-goal-name {
+  writing-mode: vertical-rl; text-orientation: mixed; font: 650 11.5px var(--ui);
+  max-height: 168px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gr-goal-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--gr-dim); flex: none; }
+.gr-goaldot-ok { background: var(--gr-good); }
+.gr-goaldot-attention { background: var(--gr-warn); }
+.gr-goaldot-critical { background: var(--gr-bad); }
+.gr-goal-beat { font: 10px var(--mono); color: var(--gr-dim); }
+
+/* ---- the health legend: bottom-left, one line per state ---- */
+.gr-legend {
+  position: absolute; left: 14px; bottom: 14px; z-index: 3;
+  display: flex; flex-direction: column; gap: 3px; padding: 8px 11px;
+  background: var(--gr-panel); border: 1px solid var(--gr-line); border-radius: 10px;
+  color: var(--gr-dim); font-size: 11px;
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+}
+.gr-legend[hidden] { display: none; }
+.gr-legend-row { display: flex; align-items: center; gap: 7px; }
+.gr-legend-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.gr-legend-dot.gr-hs-green { background: var(--gr-good); }
+.gr-legend-dot.gr-hs-yellow { background: var(--gr-warn); }
+.gr-legend-dot.gr-hs-red { background: var(--gr-bad); }
+
+/* ---- the glass dialogs: replace note, agent picker ---- */
+.gr-dialog {
+  position: absolute; z-index: 5; left: 50%; top: 38%; transform: translate(-50%, -50%);
+  width: min(420px, 82%); padding: 14px 16px; border-radius: 12px;
+  display: flex; flex-direction: column; gap: 10px; font-size: 13px;
+  background: var(--gr-panel); border: 1px solid var(--gr-card-stroke); color: var(--gr-text);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+}
+.gr-dialog input {
+  width: 100%; background: var(--gr-btn); color: var(--gr-text);
+  border: 1px solid var(--gr-line); border-radius: 8px; padding: 7px 9px; font: 13px var(--ui);
+}
+.gr-dialog .dim { color: var(--gr-dim); }
+.gr-dialog-row { display: flex; gap: 10px; justify-content: flex-end; }
+.gr-dialog button { background: var(--gr-btn); color: var(--gr-text); border-color: var(--gr-line); }
+.gr-dialog button.primary { background: var(--gr-accent); color: var(--gr-bg); border-color: var(--gr-accent); }
+.gr-picklist { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+.gr-pick { display: flex; align-items: center; gap: 10px; text-align: left; padding: 7px 9px; border-radius: 9px; }
+
+/* ---- the mini cluster monitor: a scaled, SANDBOXED window — never the live app ---- */
+.gr-monitor {
+  margin: 8px 0; padding: 6px; border: 2px solid var(--gr-card-stroke); border-radius: 10px;
+  background: #04070c; overflow: hidden;
+  box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.6), 0 0 12px var(--gr-card-glow);
+}
+.gr-monitor iframe {
+  display: block; width: 200%; height: 340px; border: 0; background: #fff;
+  transform: scale(0.5); transform-origin: 0 0;
+}
 
 /* ---- the HUD: breadcrumb, minimap, edge tooltip (glass, above the vignette) ---- */
 .gr-crumb {
@@ -310,7 +450,12 @@
   .gr-node.gr-sel .gr-cardg { animation: none; }
   .gr-node.gr-busy .gr-cardg { animation: none; filter: drop-shadow(0 0 4px var(--gr-accent)); }
   .gr-node.gr-exit .gr-cardg, .gr-node.gr-zoombig .gr-cardg { transition: none; }
-  .gr-wire.gr-exit, .gr-portal.gr-exit, .gr-portal { transition: none; }
+  .gr-wire.gr-exit, .gr-exitmark { transition: none; }
   .gr-wire.gr-draw .lw2-wire-vis { animation: none; stroke-dasharray: none; stroke-dashoffset: 0; }
   .gr-wire.gr-flow .lw2-wire-vis { animation: none; stroke-dasharray: none; }
+  /* tri-state health stands down to STATIC colored rings — the colored card
+     stroke stays, only the breathing/pulsing/strobing stops */
+  .gr-hs-green .gr-cardg, .gr-hs-yellow .gr-cardg, .gr-hs-red .gr-cardg { animation: none; }
+  .gr-gate, .gr-gate-busy { animation: none; transition: none; }
+  .gr-goal { transition: none; }
 }

@@ -334,3 +334,220 @@ def test_edge_tooltip_escapes_the_contract():
     assert "esc(JSON.stringify(ed.contract))" in body
     assert "esc(ed.edge_type" in body and "esc(ed.contract_test)" in body
     assert "esc(s)" in body and "esc(d)" in body
+
+
+# --------------------------------------------------------------------------
+# the metroidvania chrome: SCREEN-FIXED docks, world-space exit arrowheads
+# --------------------------------------------------------------------------
+
+def test_fixed_docks_live_outside_the_world_transform():
+    """The cross-group portals are screen-fixed docks: siblings of the canvas
+    host in index.html. createWorld owns (and wipes) #graphCanvas, and the
+    camera transform lives on .lw2-viewport INSIDE it — an element outside that
+    div is physically beyond setView's reach, so the docks can never zoom or
+    pan with the world."""
+    html = _read("index.html")
+    # the canvas host is EMPTY — nothing can live inside the transformed world
+    assert '<div class="graph-canvas" id="graphCanvas"></div>' in html
+    stage = html.split('class="graph-stage"', 1)[1].split("</section>", 1)[0]
+    for sib in ('id="graphDockL"', 'id="graphDockR"', 'id="graphGoal"', 'id="graphLegend"'):
+        assert sib in stage, f"{sib} must be a sibling of the canvas host inside .graph-stage"
+    mod = _read("graph/index.js")
+    body = mod.split("function renderDocks(", 1)[1].split("\nfunction ", 1)[0]
+    assert "getElementById" in body
+    assert "world.el" not in body and "gTokens" not in body and "setView" not in body, \
+        "docks must never enter the world or ride the camera"
+    assert "host.hidden = !ws.length" in body, "a dock with no crossings must hide"
+    css = _read("graph/graph.css")
+    dock = css.split(".gr-dock {", 1)[1].split("}", 1)[0]
+    assert "position: absolute" in dock
+
+
+def test_world_keeps_only_faded_exit_arrowheads():
+    """The pills are gone; what remains in world space is a non-interactive faded
+    arrowhead at the frame boundary, so the wire's direction still reads."""
+    mod = _read("graph/index.js")
+    bp = mod.split("function buildPortals(", 1)[1].split("\nfunction ", 1)[0]
+    assert "gr-exitmark" in bp
+    assert "gTokens.appendChild" in bp, "the marker itself is world-space"
+    assert '"pointer-events": "none"' in bp, "markers must be inert — the dock is the click target"
+    assert "gr-portal-pill" not in mod, "the world-space pill portal is back"
+    css = _read("graph/graph.css")
+    mark = css.split(".gr-exitmark {", 1)[1].split("}", 1)[0]
+    assert "pointer-events: none" in mark and "opacity" in mark
+
+
+def test_dock_gates_drill_and_pulse_on_busy():
+    mod = _read("graph/index.js")
+    body = mod.split("function renderDocks(", 1)[1].split("\nfunction ", 1)[0]
+    assert "drillTo(i, w.drill" in body, "a gate press must drill through (existing navTo path)"
+    assert "gr-gate-busy" in body, "a busy group's gate must pulse"
+    assert "name.textContent" in body, "gate names are authored text — textContent only"
+    css = _read("graph/graph.css")
+    assert "gr-gatepulse" in css
+    assert "writing-mode: vertical-rl" in css, "gate names read stacked, like a game gate"
+
+
+# --------------------------------------------------------------------------
+# the right-click verb menu
+# --------------------------------------------------------------------------
+
+def test_context_menu_lists_the_six_verbs():
+    mod = _read("graph/index.js")
+    assert '.addEventListener("contextmenu"' in mod
+    assert 'removeEventListener("contextmenu"' in mod, "the listener must die with the instance"
+    cm = mod.split("function contextMenu(", 1)[1].split("\nfunction ", 1)[0]
+    assert "preventDefault" in cm, "the native menu must be suppressed inside the stage"
+    nm = mod.split("function nodeMenu(", 1)[1].split("\nfunction ", 1)[0]
+    for verb in ('"Start"', '"Stop"', '"Peek"', '"Test"', '"Remove"', '"Replace ▸"'):
+        assert f"label: {verb}" in nm, f"the node menu lost its {verb} verb"
+    # Start/Stop honour the service contract: disabled + the honest reason as tooltip
+    assert "control === false" in nm and "svc.reason" in nm
+    lm = mod.split("function levelMenu(", 1)[1].split("\nfunction ", 1)[0]
+    for entry in ("Zoom to fit", "Toggle theme", "Back to overview"):
+        assert entry in lm, f"the level menu lost its {entry} entry"
+
+
+def test_the_seam_gained_the_verb_tier():
+    """service / agent / remove / replace / team / cluster — all through the
+    source seam, so a V2 project source can implement the same verbs."""
+    mod = _read("graph/index.js")
+    seam = mod.split("DEVTEAM_GRAPH_SRC = {", 1)[1].split("};", 1)[0]
+    for verb in ("service:", "setAgent:", "removeNode:", "replaceAspect:",
+                 "team:", "setTeam:", "cluster:"):
+        assert verb in seam, f"the seam lost its {verb.rstrip(':')} verb"
+    for path in ("/service", "/agent", "/remove", "/replace",
+                 "/api/graph/self/team", "/api/graph/self/cluster"):
+        assert path in seam
+
+
+def test_remove_confirms_and_replace_files_a_ticket():
+    mod = _read("graph/index.js")
+    rm = mod.split("async function removeNodeFlow(", 1)[1].split("\nfunction ", 1)[0]
+    assert "W.confirm" in rm, "Remove without a confirm is a foot-gun"
+    assert "refetch(i)" in rm, "the level must repaint after a remove"
+    rd = mod.split("function replaceDialog(", 1)[1].split("\nasync function ", 1)[0]
+    assert "ticket filed" in rd
+    assert "openProject" in rd, "the filed ticket must link via openProject"
+    assert 'aspect' in rd and "replaceAspect" in rd
+
+
+# --------------------------------------------------------------------------
+# the panel's three sections + the agent picker + the team selector
+# --------------------------------------------------------------------------
+
+def test_the_panel_has_three_replaceable_sections():
+    mod = _read("graph/index.js")
+    rp = mod.split("function renderPanel(", 1)[1].split("\nfunction ", 1)[0]
+    for header in ("Tech stack", "Test suite", "Agent"):
+        assert header in rp, f"the panel lost its {header} section"
+    for bid in ("grSecStack", "grSecTests", "grSecAgent",
+                "grRepStack", "grRepTests", "grAgentPick"):
+        assert bid in rp, f"the panel lost {bid}"
+    wp = mod.split("function wirePanel(", 1)[1].split("\nfunction ", 1)[0]
+    assert 'replaceDialog(i, key, "stack"' in wp and 'replaceDialog(i, key, "tests"' in wp
+    assert "agentPicker(i, key)" in wp, "the agent section's replace IS the picker"
+
+
+def test_tech_stack_derives_client_side_when_absent():
+    """`stack` may NOT exist in the payload — the client derives it from the
+    node's paths (extensions), and a payload-sent stack wins when present."""
+    mod = _read("graph/index.js")
+    ts = mod.split("function techStack(", 1)[1].split("\nfunction ", 1)[0]
+    assert "Array.isArray(stack)" in ts, "a payload-sent stack must win"
+    for kind in ("Python / FastAPI", "JavaScript / vanilla", "SQL", "CSS"):
+        assert kind in mod, f"the {kind} extension mapping is gone"
+
+
+def test_mastery_badge_is_earned_never_asserted():
+    mod = _read("graph/index.js")
+    ml = mod.split("function masteryLine(", 1)[1].split("\nfunction ", 1)[0]
+    assert "★ Master of this module" in ml
+    assert "working toward mastery" in ml and "/3 runs" in ml
+    assert "if (!m || m.runs == null)" in ml, "mastery is optional — absence renders nothing"
+
+
+def test_agent_picker_and_team_selector():
+    html = _read("index.html")
+    assert 'id="graphTeam"' in html
+    assert "independent of the sprint crew" in html, \
+        "the selector's one-line explanation tooltip is gone"
+    mod = _read("graph/index.js")
+    lt = mod.split("async function loadTeam(", 1)[1].split("\nfunction ", 1)[0]
+    assert "sel.hidden = true" in lt, \
+        "no endpoint → no dropdown; a dead selector would be a lie"
+    assert "i.src.setTeam" in lt
+    ap = mod.split("async function agentPicker(", 1)[1].split("\nfunction ", 1)[0]
+    assert "i.src.team()" in ap, "the picker is fed by GET /api/graph/self/team"
+    assert "i.src.setAgent(key, m.id)" in ap
+    assert "textContent" in ap, "member names are free text — textContent only"
+
+
+# --------------------------------------------------------------------------
+# tri-state health glow + the legend
+# --------------------------------------------------------------------------
+
+def test_tri_state_health_classes_with_reduced_motion_stand_down():
+    nodes = _read("graph/nodes.js")
+    assert '"gr-hs-" + s' in nodes
+    assert "tests failing, heartbeat fine" in nodes and "heartbeat failing" in nodes, \
+        "the yellow/red tooltips must say exactly what is wrong"
+    css = _read("graph/graph.css")
+    for cls in (".gr-hs-green", ".gr-hs-yellow", ".gr-hs-red"):
+        assert cls in css, f"{cls} is gone"
+    for anim in ("gr-breathe", "gr-amber", "gr-strobe"):
+        assert anim in css, f"the {anim} animation is gone"
+    reduce = css.split("prefers-reduced-motion", 1)[1]
+    assert ".gr-hs-green .gr-cardg, .gr-hs-yellow .gr-cardg, .gr-hs-red .gr-cardg { animation: none; }" \
+        in reduce, "tri-state must collapse to static colored rings under reduced motion"
+    mod = _read("graph/index.js")
+    dg = mod.split("function deriveGroupHealth(", 1)[1].split("\nfunction ", 1)[0]
+    assert "Math.max" in dg, "a group rolls the WORST of its children"
+    assert "n.health && n.health.status" in dg, \
+        "a payload-rolled group health must win over the client's derivation"
+
+
+def test_health_legend_bottom_left():
+    html = _read("index.html")
+    assert 'id="graphLegend"' in html
+    mod = _read("graph/index.js")
+    lg = mod.split("function renderLegend(", 1)[1].split("\nfunction ", 1)[0]
+    for line in ("calm glow", "tests failing, heartbeat fine", "heartbeat itself is failing"):
+        assert line in lg, "the legend must explain each state in one line"
+    css = _read("graph/graph.css")
+    leg = css.split(".gr-legend {", 1)[1].split("}", 1)[0]
+    assert "left: 14px" in leg and "bottom: 14px" in leg
+
+
+# --------------------------------------------------------------------------
+# the conclusion is the GOAL: pinned, outside the transform, cluster sandboxed
+# --------------------------------------------------------------------------
+
+def test_conclusion_is_the_pinned_goal_outside_the_transform():
+    mod = _read("graph/index.js")
+    ln = mod.split("function levelNodes(", 1)[1].split("\nfunction ", 1)[0]
+    assert 'n.node_type !== "conclusion"' in ln, "the conclusion must never be a world node"
+    gt = mod.split("function goalTitle(", 1)[1].split("\nfunction ", 1)[0]
+    assert "The Artifact — the running platform" in gt
+    assert "/artifact/i" in gt, \
+        "override the display client-side ONLY when the backend has not renamed it"
+    rg = mod.split("function renderGoal(", 1)[1].split("\nfunction ", 1)[0]
+    assert 'getElementById("graphGoal")' in rg
+    assert "world.el" not in rg and "gTokens" not in rg, "the GOAL never enters the world"
+    # its crossings keep the faded-arrowhead treatment, not a dock gate
+    pk = mod.split("function portalPk(", 1)[1].split("\nfunction ", 1)[0]
+    assert 'node_type === "conclusion"' in pk and "goal: true" in pk
+
+
+def test_cluster_iframe_is_sandboxed_and_never_the_live_app():
+    mod = _read("graph/index.js")
+    assert 'sandbox="allow-same-origin allow-scripts"' in mod
+    cs = mod.split("function clusterSafeUrl(", 1)[1].split("\nfunction ", 1)[0]
+    assert "url.origin === location.origin" in cs and 'url.pathname === "/"' in cs, \
+        "the app's own root must be refused — never iframe the live app itself"
+    ch = mod.split("function clusterHtml(", 1)[1].split("\nfunction ", 1)[0]
+    assert "cl.available" in ch and "cl.reason" in ch, \
+        "unavailability must show the honest reason"
+    assert "grClusterStart" in ch and "grClusterStop" in ch
+    gp = mod.split("function asideConclusion(", 1)[1].split("\nfunction ", 1)[0]
+    assert "uptime" in gp and "boot_sha" in gp and "Mini cluster" in gp
