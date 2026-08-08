@@ -43,7 +43,13 @@ for _k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GEMINI_API_KEY",
            "DOCR_REGISTRY", "DIGITALOCEAN_API_TOKEN", "AUTO_UPDATE", "DEMO_MODE",
            "BRANCH_PREFIX", "ALLOW_MERGE", "DEVTEAM_ENV", "SELF_REPO",
            "PROTECTED_REPOS",
-           "GITHUB_REPO", "REQUIRE_STAGING", "CUSTOM_MODEL_ENDPOINTS"):
+           "GITHUB_REPO", "REQUIRE_STAGING", "CUSTOM_MODEL_ENDPOINTS",
+           # A shell that sourced data/env/conductor.env (a fleet operator's)
+           # would flip the knowledge shim into URL mode and make the offline
+           # suite depend on a running service. The suite's baseline is the
+           # in-process fallback; URL mode is tested explicitly in
+           # tests/test_knowledge_service.py against an in-process ASGI app.
+           "KNOWLEDGE_URL"):
     os.environ.pop(_k, None)
 
 from app import auth, db  # noqa: E402

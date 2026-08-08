@@ -123,11 +123,19 @@ def test_the_internal_door_really_has_three_requests_behind_it():
 
 
 def test_the_table_count_matches_the_schema():
-    from app import db, auth, findings, knowledge, modgraph
+    # knowledge's one table left with the P1 extraction: the knowledge SERVICE
+    # owns it now (services/knowledge, data/knowledge.db), so it is no longer
+    # part of the conductor's count — the honest accounting is 34 here plus a
+    # named pointer at the service, and the handbook says exactly that. (The
+    # legacy fallback still creates a knowledge table until commit B, but a
+    # table on the way out is not a table the platform declares.)
+    from app import db, auth, findings, modgraph
     declared = sum(mod.SCHEMA.count("CREATE TABLE IF NOT EXISTS")
-                   for mod in (db, auth, findings, knowledge, modgraph))
-    assert "Thirty-five tables" in _handbook() and declared == 35, \
-        f"{declared} tables are declared; the handbook says thirty-five"
+                   for mod in (db, auth, findings, modgraph))
+    assert "Thirty-four tables" in _handbook() and declared == 34, \
+        f"{declared} tables are declared; the handbook says thirty-four"
+    assert "knowledge service" in _handbook(), \
+        "the handbook no longer says where the knowledge table went"
 
 
 def test_the_round_table_range_matches_the_limits():

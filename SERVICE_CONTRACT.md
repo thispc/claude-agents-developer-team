@@ -44,7 +44,12 @@ process-compose on first boot. These nine rules are the whole deal — the
    `tests/` beside the code: a smoke test (in-process ASGI, no sockets) and a
    Schemathesis contract test driving the app against the **committed** spec. No
    network, no other services, no shared fixtures — the suite passes on a machine
-   where nothing else is running.
+   where nothing else is running. The whole repo's suite collects at once
+   (`testpaths = tests services`), which is why the service directory and its
+   `tests/` dir each keep the scaffold's `__init__.py`: those two markers make the
+   test modules `<name>.tests.…`, so a `conftest.py` (and a `test_smoke.py`) may
+   exist in every service without any of them silently replacing the conductor's
+   or a sibling's. Delete them and the second service you add breaks the first.
 
 7. **Every client documents degraded mode.**
    For each caller of this service, somewhere greppable, the answer to "and when

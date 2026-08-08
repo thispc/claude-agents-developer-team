@@ -1,385 +1,245 @@
-"""knowledge.py — what an agent has learned, stored so it can be found again.
+"""knowledge.py — what an agent has learned, stored so it can be found again. Since P1
+the store itself is the knowledge SERVICE (services/knowledge, its own process on 8881,
+its own data/knowledge.db); this file is the conductor's one door to it, same public
+names as ever: remember / recall / reinforce / forget / stats / init /
+backfill_from_sprints, plus _tokens for lifeworld/ports.
 
-A generic black box behind four verbs:
+DUAL-MODE, for the strangler window between commit A and commit B:
 
-    remember(owner, cue, says)   what happened, and what to take from it
-    recall(owner, query, k)      the nearest things it already knows
-    reinforce(id, good|bad)      how that turned out, next time it was used
-    forget(owner, ...)           because a knowledge base that only grows is a landfill
+  KNOWLEDGE_URL set    → the HTTP client below. gen_fleet writes the URL into
+                         data/env/conductor.env from services.yaml, so a fleet boot
+                         (./run-local.sh) is in this mode by construction.
+  KNOWLEDGE_URL unset  → the old in-process body, vendored unchanged in
+                         _knowledge_legacy.py, INSTALLED WHOLESALE: this module
+                         replaces itself in sys.modules with the legacy module, so
+                         fallback mode is byte-identical to pre-P1 — same functions,
+                         same table in devteam.db, same introspectable source.
+                         (`./run-local.sh --legacy` and the offline test suite run
+                         here.) Commit B deletes the legacy module and this branch.
 
-The distinction that makes retrieval work is CUE versus SAYS. The cue is the SITUATION —
-"the build failed with ImportError: no module named app" — and it is the only thing a query
-is ever matched against. The says is the LESSON — "an ImportError here means the venv
-symlink, not the code" — and it is what comes back. Embedding the lesson instead of the
-situation is the classic mistake: you then retrieve by similarity to answers, and an agent
-that already knew the answer would not be asking.
+The mode is decided at import: a process boots into one world and stays there —
+flipping the env var mid-flight would otherwise half-migrate in-memory state.
 
-WHY EMBEDDINGS AND NOT ONLY THE EXACT KEY. `decisions.signature()` is a coarse exact key
-(`error:ImportError`), which catches the same lesson worded differently but cannot catch a
-situation that is merely LIKE one seen before — a different exception with the same cause, a
-timeout that is really the same misconfiguration. That is the whole gap this closes.
+LATENCY BUDGET (URL mode): one localhost HTTP round-trip per verb, ~1-3ms in
+practice, 5ms p50 budgeted; hard timeout 2s so a wedged service can never hold a
+sprint hostage. A client is built per call — at the platform's call rates the
+~0.1ms construction cost buys freedom from event-loop lifetime bugs.
 
-TWO BACKENDS, and the choice is the platform's usual one. Where a provider key exists, real
-embeddings; where none does, a deterministic hashed n-gram vector that costs nothing, needs
-no dependency, works offline and is stable across restarts. Every row records WHICH backend
-produced its vector, because comparing a hashed vector to a neural one is not a worse
-answer, it is a meaningless one — so rows from another backend are re-embedded on demand
-rather than silently scored against.
+DEGRADED MODES (URL mode, service down — every shape chosen so a sprint never
+blocks and never lies):
+    recall   → []                      with one deduped warn (not 180 an hour)
+    remember → 0 (no row id, no-op)    same warn
+    reinforce→ no-op                   same warn
+    forget   → 0                       same warn
+    stats    → {"total": 0, "rows": [], "backends": [], "degraded": True}
+    _tokens  → []                      same warn (leak-checks go blind, honestly)
+    backfill_from_sprints → 0 WITHOUT setting the done-marker, so the seed is
+                            retried next boot instead of silently lost.
 
-RETRIEVAL IS BLENDED, not pure cosine. A hashed embedder is decent at wording and poor at
-meaning, an exact term match is the reverse, and both are blind to whether a lesson has ever
-actually worked. So the score mixes similarity, literal term overlap, how well the lesson has
-held up, and how recent it is — and every hit reports which of those earned it, because a
-retrieval you cannot explain is one nobody will trust twice.
+MIGRATION, handled in init() rather than db.py's migration tuple because the
+knowledge schema never lived there (it was knowledge.py's own SCHEMA, created by
+its own init — the same precedent modgraph follows): on a URL-mode boot, an
+existing `knowledge` table is RENAMED to `knowledge_legacy` — renamed, not
+dropped, because (a) the service's first-boot backfill copies the rows out of it
+over a read-only ATTACH, and (b) rollback (unset the URL) must find the data
+again — _knowledge_legacy.init() renames it back. Commit B drops it for good.
 """
 
 from __future__ import annotations
 
-import array
-import hashlib
-import json
-import math
-import re
-import time
-from typing import Any, Iterable
+import os
+import sys
 
-from . import db
+_URL = (os.environ.get("KNOWLEDGE_URL") or "").strip().rstrip("/")
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS knowledge (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner    TEXT NOT NULL,                    -- 'lw:2:30' (an agent) or 'global'
-    kind     TEXT NOT NULL DEFAULT 'belief',   -- belief | episode | note
-    sig      TEXT NOT NULL DEFAULT '',         -- the exact key, when there is one
-    cue      TEXT NOT NULL,                    -- the SITUATION; the only thing queries match
-    says     TEXT NOT NULL,                    -- the LESSON; what comes back
-    payload  TEXT NOT NULL DEFAULT '{}',
-    backend  TEXT NOT NULL,                    -- which embedder made vec
-    dim      INTEGER NOT NULL,
-    vec      BLOB NOT NULL,
-    good     INTEGER NOT NULL DEFAULT 0,
-    bad      INTEGER NOT NULL DEFAULT 0,
-    used     INTEGER NOT NULL DEFAULT 0,
-    ts       REAL NOT NULL,
-    UNIQUE(owner, kind, sig, cue)
-);
-CREATE INDEX IF NOT EXISTS idx_knowledge_owner ON knowledge(owner, kind);
-"""
+if not _URL:
+    # Fallback mode: BE the legacy module. The import system re-reads sys.modules
+    # after executing this file, so `from . import knowledge` everywhere yields
+    # the legacy module itself — its functions, constants and source, unchanged.
+    from . import _knowledge_legacy as _legacy
+    sys.modules[__name__] = _legacy
 
-DIM = 256                      # the local backend's width
-LOCAL = f"hash-{DIM}"
-MAX_PER_OWNER = 2000           # a knowledge base that only grows is a landfill
-# Applied to RELEVANCE, not to the final score — otherwise a lesson with a perfect record
-# clears the bar on its record alone, which is how a knowledge base starts confidently
-# answering questions nobody asked.
-FLOOR = 0.10
+else:
+    import httpx
 
-_WORD = re.compile(r"[a-z0-9_]+")
+    from . import config, db
 
-# IDF alone cannot separate "on" from "8787" until the corpus is large, and a knowledge base
-# is smallest exactly when it is newest — so the words that carry no information about a
-# situation are named outright rather than waited for.
-_STOP = frozenset("""
-a an and are as at be been being but by can could did do does for from had has have he her
-his how i if in into is it its me my no nor not of on once only or our out over own same she
-so some such than that the their them then there these they this those to too under until up
-very was we were what when where which while who why will with would you your it's we're
-""".split())
+    DIM = 256
+    LOCAL = f"hash-{DIM}"          # logs_routes names the free backend in its answers
 
+    _TIMEOUT = 2.0
+    # Tests inject an httpx transport here (ASGITransport onto the service app,
+    # or a MockTransport that raises) — the client code path stays identical.
+    _TRANSPORT: httpx.AsyncBaseTransport | None = None
+    _TOKEN = ""
 
-def _useful(t: str) -> bool:
-    """A token worth matching on. Single characters and bare small integers are the debris of
-    tokenising paths and versions ("127.0.0.1" → 127, 0, 0, 1) and match everything."""
-    if t in _STOP:
-        return False
-    if len(t) < 2:
-        return False
-    return not (t.isdigit() and len(t) < 3)
+    def _token() -> str:
+        """The service's own token, read from where gen_fleet minted it — the
+        same resolution the /svc gateway uses (routes/svc.py)."""
+        global _TOKEN
+        if not _TOKEN:
+            try:
+                _TOKEN = (config.ROOT / "data" / "tokens" / "knowledge.token") \
+                    .read_text().strip()
+            except OSError:
+                _TOKEN = ""
+        return _TOKEN
 
+    def _client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(base_url=_URL, timeout=_TIMEOUT, transport=_TRANSPORT,
+                                 headers={"X-Service-Token": _token()})
 
-# --- the local embedder: free, offline, deterministic ------------------------
+    def _sync_client() -> httpx.Client:
+        # reinforce/forget/stats/_tokens keep their historical sync signatures;
+        # a blocked event loop is bounded by the 2s timeout and, in practice, by
+        # the localhost round-trip. Tests swap this factory for a TestClient.
+        return httpx.Client(base_url=_URL, timeout=_TIMEOUT,
+                            headers={"X-Service-Token": _token()})
 
-def _tokens(text: str) -> list[str]:
-    # Private by name, but the lifeworld substrate consumes this through its ports
-    # module (lifeworld/ports.knowledge_tokens) so leak-checks and recall agree on
-    # what a word is — do not rename without updating that door.
-    return [t for t in _WORD.findall((text or "").lower())[:300] if _useful(t)][:200]
+    def _degraded(verb: str, err: Exception) -> None:
+        """One deduped warn per window, never a raise — the degraded shapes are
+        the contract; the log line is how a 3am operator learns which one fired."""
+        try:
+            from . import logs
+            # "lifecycle" is the vocabulary's own word for a process being up or
+            # down — logs.log() coerces anything unknown, and a silently coerced
+            # category is a filter that quietly stops working.
+            logs.log("lifecycle", "knowledge_degraded",
+                     f"knowledge service unreachable — {verb} degraded "
+                     f"({type(err).__name__}: {str(err)[:120]})",
+                     level="warn", dedupe_s=300, verb=verb)
+        except Exception:
+            pass
 
+    # --- the four verbs, over the wire ---------------------------------------
 
-def _features(text: str) -> Iterable[tuple[str, float]]:
-    """Words, word bigrams, and character 4-grams.
+    async def remember(owner: str, cue: str, says: str, *, kind: str = "belief",
+                       sig: str = "", payload: dict | None = None, good: int = 0,
+                       bad: int = 0, settings: dict | None = None) -> int:
+        try:
+            async with _client() as c:
+                r = await c.post("/remember", json={
+                    "owner": owner, "cue": str(cue or ""), "says": str(says or ""),
+                    "kind": kind, "sig": sig, "payload": payload or {},
+                    "good": int(good), "bad": int(bad), "settings": settings or {}})
+                r.raise_for_status()
+                return int(r.json().get("id") or 0)
+        except Exception as e:
+            _degraded("remember", e)
+            return 0
 
-    Character grams are what make it survive the things that actually vary between two
-    reports of one situation: a path, a hostname, a typo, a British/American spelling.
-    """
-    toks = _tokens(text)
-    for t in toks:
-        yield ("w:" + t, 1.0)
-    for a, b in zip(toks, toks[1:]):
-        yield (f"b:{a}_{b}", 1.3)          # a pair is more specific than either word
-    flat = " ".join(toks)
-    for i in range(0, max(0, len(flat) - 3)):
-        yield ("c:" + flat[i:i + 4], 0.35)
+    async def recall(owner: str, query: str, k: int = 5, *, kind: str = "",
+                     settings: dict | None = None,
+                     include_global: bool = True) -> list[dict]:
+        if not str(query or "").strip():
+            return []                      # the legacy fast-path, no wire call
+        try:
+            async with _client() as c:
+                r = await c.post("/recall", json={
+                    "owner": owner, "query": query,
+                    # the service's contract bounds k to 1..25; clamp like the
+                    # legacy body did instead of earning a 422
+                    "k": max(1, min(int(k), 25)), "kind": kind,
+                    "include_global": bool(include_global),
+                    "settings": settings or {}})
+                r.raise_for_status()
+                return list(r.json().get("hits") or [])
+        except Exception as e:
+            _degraded("recall", e)
+            return []
 
+    def reinforce(row_id: int, outcome: str) -> None:
+        if outcome not in ("good", "bad"):
+            return
+        try:
+            with _sync_client() as c:
+                c.post("/reinforce",
+                       json={"id": int(row_id), "outcome": outcome}).raise_for_status()
+        except Exception as e:
+            _degraded("reinforce", e)
 
-def embed_local(text: str) -> array.array:
-    """A hashed bag-of-features vector, L2-normalised. No model, no network, no drift."""
-    v = array.array("f", [0.0]) * DIM
-    for feat, weight in _features(text):
-        h = hashlib.blake2b(feat.encode(), digest_size=8).digest()
-        idx = int.from_bytes(h[:4], "big") % DIM
-        sign = 1.0 if h[4] & 1 else -1.0        # signed hashing cancels collisions on average
-        v[idx] += sign * weight
-    norm = math.sqrt(sum(x * x for x in v)) or 1.0
-    for i in range(DIM):
-        v[i] /= norm
-    return v
+    def forget(owner: str, *, row_id: int = 0, sig: str = "") -> int:
+        try:
+            with _sync_client() as c:
+                r = c.post("/forget", json={"owner": owner, "row_id": int(row_id),
+                                            "sig": sig})
+                r.raise_for_status()
+                return int(r.json().get("removed") or 0)
+        except Exception as e:
+            _degraded("forget", e)
+            return 0
 
+    def stats(owner: str = "") -> dict:
+        try:
+            with _sync_client() as c:
+                r = c.get("/stats", params={"owner": owner})
+                r.raise_for_status()
+                return r.json()
+        except Exception as e:
+            _degraded("stats", e)
+            return {"total": 0, "rows": [], "backends": [], "degraded": True}
 
-async def embed_remote(texts: list[str], settings: dict) -> tuple[str, int, list[array.array]] | None:
-    """Real embeddings, when a provider key exists. None if none does — never a hard failure:
-    knowledge that stops being stored because a key expired is worse than coarse knowledge."""
-    key = (settings or {}).get("openai_api_key")
-    if not key:
-        return None
-    try:
-        import httpx
-        model = "text-embedding-3-small"
-        async with httpx.AsyncClient(timeout=20) as c:
-            r = await c.post("https://api.openai.com/v1/embeddings",
-                             headers={"Authorization": f"Bearer {key}"},
-                             json={"model": model, "input": texts[:64]})
-            r.raise_for_status()
-            rows = r.json().get("data") or []
-        out = [array.array("f", d["embedding"]) for d in rows]
-        if not out:
-            return None
-        return f"openai:{model}", len(out[0]), out
-    except Exception:
-        return None
+    def _tokens(text: str) -> list[str]:
+        # lifeworld/ports.knowledge_tokens — the old private reach-in, contract now.
+        try:
+            with _sync_client() as c:
+                r = c.post("/tokens", json={"text": str(text or "")})
+                r.raise_for_status()
+                return list(r.json().get("tokens") or [])
+        except Exception as e:
+            _degraded("tokens", e)
+            return []
 
+    # --- lifecycle -----------------------------------------------------------
 
-async def embed(texts: list[str], settings: dict | None = None) -> tuple[str, int, list[array.array]]:
-    got = await embed_remote(texts, settings or {})
-    if got:
-        return got
-    return LOCAL, DIM, [embed_local(t) for t in texts]
+    def init() -> None:
+        """URL mode owns no table — this is the one-way door of commit A: rename
+        the conductor's knowledge table aside (see the module docstring for why
+        rename, not drop). Runs inside the conductor's normal init sequence, so
+        it needs db.init() to have happened — same ordering main.py always had."""
+        names = {r["name"] for r in db._rows(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+            " AND name IN ('knowledge','knowledge_legacy')")}
+        if "knowledge" in names and "knowledge_legacy" not in names:
+            db._execute("ALTER TABLE knowledge RENAME TO knowledge_legacy")
 
-
-def _blob(v: array.array) -> bytes:
-    return v.tobytes()
-
-
-def _vec(blob: bytes, dim: int) -> array.array:
-    a = array.array("f")
-    a.frombytes(blob[:dim * 4])
-    return a
-
-
-def _cos(a: array.array, b: array.array) -> float:
-    n = min(len(a), len(b))
-    return sum(a[i] * b[i] for i in range(n))      # both are unit vectors
-
-
-# --- the four verbs ---------------------------------------------------------
-
-async def remember(owner: str, cue: str, says: str, *, kind: str = "belief", sig: str = "",
-                   payload: dict | None = None, good: int = 0, bad: int = 0,
-                   settings: dict | None = None) -> int:
-    """Store one thing worth finding again. Upserts on (owner, kind, sig, cue)."""
-    cue, says = str(cue or "").strip()[:1000], str(says or "").strip()[:1000]
-    if not cue or not says:
-        return 0
-    backend, dim, vecs = await embed([cue], settings)
-    db._execute(
-        "INSERT INTO knowledge (owner, kind, sig, cue, says, payload, backend, dim, vec,"
-        " good, bad, ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
-        " ON CONFLICT(owner, kind, sig, cue) DO UPDATE SET"
-        " says=excluded.says, payload=excluded.payload, backend=excluded.backend,"
-        " dim=excluded.dim, vec=excluded.vec, good=knowledge.good+excluded.good,"
-        " bad=knowledge.bad+excluded.bad, ts=excluded.ts",
-        (owner, kind, sig, cue, says, json.dumps(payload or {}), backend, dim,
-         _blob(vecs[0]), int(good), int(bad), time.time()))
-    _prune(owner)
-    row = db._rows("SELECT id FROM knowledge WHERE owner=? AND kind=? AND sig=? AND cue=?",
-                   (owner, kind, sig, cue))
-    return int(row[0]["id"]) if row else 0
-
-
-async def recall(owner: str, query: str, k: int = 5, *, kind: str = "",
-                 settings: dict | None = None, include_global: bool = True) -> list[dict]:
-    """The nearest things this agent already knows about a situation like this one.
-
-    Every hit says WHY it matched. A retrieval you cannot explain is one nobody trusts twice,
-    and on a blended score the reason is genuinely not obvious — a hit can win on wording, on
-    a shared rare term, or on having been right ten times before.
-    """
-    query = str(query or "").strip()
-    if not query:
-        return []
-    owners = [owner] + (["global"] if include_global and owner != "global" else [])
-    where = "owner IN (%s)" % ",".join("?" for _ in owners)
-    args: list[Any] = list(owners)
-    if kind:
-        where += " AND kind=?"
-        args.append(kind)
-    rows = db._rows(f"SELECT * FROM knowledge WHERE {where} ORDER BY ts DESC LIMIT 800", tuple(args))
-    if not rows:
-        return []
-
-    backend, dim, vecs = await embed([query], settings)
-    qv = vecs[0]
-    qt = set(_tokens(query))
-    # IDF over what this owner actually knows, computed on the rows already in hand. Without
-    # it, "the" counts as much as "ImportError" and every cue looks equally like every other:
-    # the words that identify a situation are exactly the ones almost nothing else contains.
-    df: dict[str, int] = {}
-    cues = []
-    for r in rows:
-        ct = set(_tokens(r["cue"]))
-        cues.append(ct)
-        for t in ct:
-            df[t] = df.get(t, 0) + 1
-    n_docs = max(1, len(rows))
-
-    def idf(t: str) -> float:
-        return math.log(1.0 + n_docs / (1.0 + df.get(t, 0)))
-
-    now = time.time()
-    out = []
-    for r, ct in zip(rows, cues):
-        # Never score across backends: a hashed vector against a neural one is not a worse
-        # answer, it is a meaningless one. Re-embed the row locally instead of skipping it —
-        # knowledge that vanishes because a key was added is worse than coarse knowledge.
-        if r["backend"] == backend and int(r["dim"]) == dim:
-            cos = _cos(qv, _vec(r["vec"], int(r["dim"])))
-        elif backend == LOCAL:
-            cos = _cos(qv, embed_local(r["cue"]))
-        else:
-            cos = _cos(embed_local(query), embed_local(r["cue"]))
-        # How much of what the QUERY is about this cue covers — not Jaccard, which punishes
-        # a long cue for being detailed and would rather match a short vague one. Retrieval
-        # asks "does this answer my question", not "are these two texts the same size".
-        shared = sum(idf(t) for t in (qt & ct))
-        asked = sum(idf(t) for t in qt) or 1.0
-        lex = min(1.0, shared / asked)
-        ev = int(r["good"]) + int(r["bad"])
-        conf = (int(r["good"]) / ev) if ev else 0.0
-        age_days = max(0.0, (now - float(r["ts"])) / 86400)
-        fresh = 1.0 / (1.0 + age_days / 30.0)
-        # RELEVANCE decides; the priors only modulate. Adding a track record and a recency
-        # bonus to the score let a lesson that has always worked outrank one that is actually
-        # about the question — every row scored ~0.2 and the ordering was noise. A prior is
-        # a tie-breaker, so it belongs as a multiplier near 1, never as a term of its own.
-        # Weighted by which signal is actually trustworthy here. A neural embedding knows
-        # that ModuleNotFoundError and ImportError are the same family; a hashed one only
-        # knows they share letters, and pretending otherwise makes the score a lie.
-        w_cos = 0.70 if backend != LOCAL else 0.30
-        rel = w_cos * max(0.0, cos) + (1.0 - w_cos) * lex
-        if rel < FLOOR:
-            continue
-        score = rel * (0.90 + 0.10 * conf) * (0.95 + 0.05 * fresh)
-        out.append({
-            "id": r["id"], "owner": r["owner"], "kind": r["kind"], "sig": r["sig"],
-            "cue": r["cue"], "says": r["says"], "payload": json.loads(r["payload"] or "{}"),
-            "good": r["good"], "bad": r["bad"], "evidence": ev, "confidence": round(conf, 3),
-            "score": round(score, 4),
-            "why": {"similarity": round(cos, 3), "shared_terms": round(lex, 3),
-                    "relevance": round(rel, 3), "held_up": round(conf, 3),
-                    "recency": round(fresh, 3),
-                    # The rare words that actually earned it — the readable half of "why".
-                    "matched": sorted((qt & ct), key=lambda t: -idf(t))[:5]},
-        })
-    out.sort(key=lambda h: -h["score"])
-    return out[:max(1, min(int(k), 25))]
-
-
-def reinforce(row_id: int, outcome: str) -> None:
-    """How it turned out the time this was used. The only thing that moves confidence."""
-    if outcome not in ("good", "bad"):
-        return
-    db._execute(f"UPDATE knowledge SET {outcome}={outcome}+1, used=used+1 WHERE id=?", (int(row_id),))
-
-
-def forget(owner: str, *, row_id: int = 0, sig: str = "") -> int:
-    if row_id:
-        db._execute("DELETE FROM knowledge WHERE id=? AND owner=?", (int(row_id), owner))
-        return 1
-    if sig:
-        db._execute("DELETE FROM knowledge WHERE owner=? AND sig=?", (owner, sig))
-        return 1
-    db._execute("DELETE FROM knowledge WHERE owner=?", (owner,))
-    return 1
-
-
-def _prune(owner: str) -> None:
-    """Keep the useful and the recent; drop what has never helped and is old.
-
-    Ranked by how often it has been right, then by recency — so a lesson that keeps working
-    survives forever and a one-off observation nobody has used decays out.
-    """
-    n = db._rows("SELECT COUNT(*) AS n FROM knowledge WHERE owner=?", (owner,))[0]["n"]
-    if n <= MAX_PER_OWNER:
-        return
-    db._execute(
-        "DELETE FROM knowledge WHERE id IN ("
-        " SELECT id FROM knowledge WHERE owner=?"
-        " ORDER BY (good - bad) ASC, used ASC, ts ASC LIMIT ?)",
-        (owner, int(n - MAX_PER_OWNER)))
-
-
-def stats(owner: str = "") -> dict:
-    where, args = ("WHERE owner=?", (owner,)) if owner else ("", ())
-    rows = db._rows(f"SELECT owner, kind, COUNT(*) AS n, SUM(good) AS g, SUM(bad) AS b"
-                    f" FROM knowledge {where} GROUP BY owner, kind", args)
-    return {"rows": [dict(r) for r in rows],
-            "total": sum(int(r["n"]) for r in rows),
-            "backends": [dict(r) for r in db._rows(
-                "SELECT backend, COUNT(*) AS n FROM knowledge GROUP BY backend", ())]}
-
-
-def init() -> None:
-    db._conn.executescript(SCHEMA)
-    db._conn.commit()
-
-
-async def backfill_from_sprints(settings: dict | None = None) -> int:
-    """Seed the store from sprints that already happened.
-
-    A knowledge base is useless on the day you build it and useful on the day it has been
-    running a month — which means the first month is the hard part. But this platform has
-    already run 30-odd sprints and recorded every one: what was attempted, what the suite
-    said, and whether it landed. That is exactly the material, sitting unused.
-
-    Only outcomes are imported, never intentions: a task nobody finished taught nothing, and
-    filling a store with hopes is how it starts confidently answering questions.
-    """
-    from . import db
-    if db.kv_get("knowledge:backfilled"):
-        return 0
-    n = 0
-    try:
-        for rec in sorted((db.kv_prefix("repair:sprint:") or {}).values(),
-                          key=lambda r: r.get("no", 0)):
-            for t in rec.get("tasks", []) or []:
-                title = str(t.get("title") or "").strip()
-                if not title:
-                    continue
-                v = t.get("verification") or {}
-                if t.get("status") == "landed":
-                    cue, says, good, bad = title, f"this worked: {title}", 1, 0
-                elif t.get("status") == "failed":
-                    why = str(t.get("error") or v.get("headline") or "").strip()
-                    if not why:
+    async def backfill_from_sprints(settings: dict | None = None) -> int:
+        """Seed the store from sprints that already happened — conductor-side,
+        because the sprint record is conductor kv; each lesson goes through
+        remember() above. See _knowledge_legacy.backfill_from_sprints for the
+        full reasoning; this is the same import loop over the wire."""
+        if db.kv_get("knowledge:backfilled"):
+            return 0
+        # Preflight: if the service is unreachable, every remember() below would
+        # quietly no-op and the marker would bury the seed forever. Skip WITHOUT
+        # marking, and the next boot tries again.
+        if stats().get("degraded"):
+            _degraded("backfill_from_sprints", RuntimeError("preflight stats degraded"))
+            return 0
+        n = 0
+        try:
+            for rec in sorted((db.kv_prefix("repair:sprint:") or {}).values(),
+                              key=lambda r: r.get("no", 0)):
+                for t in rec.get("tasks", []) or []:
+                    title = str(t.get("title") or "").strip()
+                    if not title:
                         continue
-                    cue, says, good, bad = f"{title} — {why}", f"this failed: {why}", 0, 1
-                else:
-                    continue                      # still open: it has taught nothing yet
-                await remember("global", cue=cue, says=says, kind="episode",
-                               payload={"sprint": rec.get("no"), "factor": t.get("factor", "")},
-                               good=good, bad=bad, settings=settings)
-                n += 1
-        db.kv_set("knowledge:backfilled", True)
-    except Exception:
-        pass
-    return n
+                    v = t.get("verification") or {}
+                    if t.get("status") == "landed":
+                        cue, says, good, bad = title, f"this worked: {title}", 1, 0
+                    elif t.get("status") == "failed":
+                        why = str(t.get("error") or v.get("headline") or "").strip()
+                        if not why:
+                            continue
+                        cue, says, good, bad = f"{title} — {why}", f"this failed: {why}", 0, 1
+                    else:
+                        continue                  # still open: it has taught nothing yet
+                    await remember("global", cue=cue, says=says, kind="episode",
+                                   payload={"sprint": rec.get("no"),
+                                            "factor": t.get("factor", "")},
+                                   good=good, bad=bad, settings=settings)
+                    n += 1
+            db.kv_set("knowledge:backfilled", True)
+        except Exception:
+            pass
+        return n

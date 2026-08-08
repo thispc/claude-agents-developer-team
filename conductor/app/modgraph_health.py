@@ -66,7 +66,19 @@ def _probe_db() -> bool:
 
 
 def _probe_knowledge() -> bool:
-    """The knowledge store: its table exists and the embedder is callable."""
+    """The knowledge store. In URL mode (P1: KNOWLEDGE_URL set, the store is the
+    knowledge service) the honest beat is the REAL service answering its own
+    /health — the same endpoint process-compose probes. In legacy mode: the
+    in-process table exists and the embedder is callable."""
+    import os
+    url = (os.environ.get("KNOWLEDGE_URL") or "").strip().rstrip("/")
+    if url:
+        try:
+            import httpx
+            r = httpx.get(f"{url}/health", timeout=1.5)
+            return r.status_code == 200 and bool(r.json().get("ok"))
+        except Exception:
+            return False
     from . import knowledge
     rows = db._rows("SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge'")
     return bool(rows) and callable(knowledge.embed)

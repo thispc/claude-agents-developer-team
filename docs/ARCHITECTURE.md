@@ -57,10 +57,20 @@ Three rules keep the diagram true: the substrate reaches the platform only throu
 root) is the registry, `tools/gen_fleet.py` generates the process-compose config plus
 per-service env/tokens/topology from it, and `./run-local.sh` boots everything under
 **process-compose** (readiness probes, restarts, a token-authed REST API on 8899).
-Today only the conductor is managed; extracted services (knowledge, usage, …) join the
-registry phase by phase, each meeting `SERVICE_CONTRACT.md` and reached same-origin via
-the conductor's `/svc/<name>/…` gateway. The diagram keeps its current shape until the
-Atlas's cards become those services (P6).
+The conductor and — since P1 — **knowledge** are managed; the rest (usage, notify, watch,
+lifeworld, modgraph) join the registry phase by phase, each meeting `SERVICE_CONTRACT.md`
+and reached same-origin via the conductor's `/svc/<name>/…` gateway. The diagram keeps its
+current shape until the Atlas's cards become those services (P6).
+
+**knowledge (8881).** What agents have learned no longer lives in the conductor's database:
+`services/knowledge` owns `data/knowledge.db` and answers `/recall`, `/remember`,
+`/reinforce`, `/forget`, `/stats`, `/tokens` behind `X-Service-Token`. The embedding key
+rides each request body — model credentials never leave the conductor.
+`conductor/app/knowledge.py` keeps every public name it always had and is now a client:
+`KNOWLEDGE_URL` set → HTTP (2s timeout, ~5ms p50 budget), unset → the pre-P1 in-process
+body (`_knowledge_legacy.py`, deleted at cutover). When the service is down the shim
+degrades rather than blocking: recall `[]`, writes no-op, stats `degraded: true` — a
+knowledge base that is unreachable must cost a sprint nothing but its memory.
 
 ---
 

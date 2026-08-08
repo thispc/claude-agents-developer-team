@@ -35,6 +35,16 @@ services:
     accepts: [worker, verify]   # the shared-token doors it answers (X-Worker-Token, VERIFY_TOKEN)
     ui: false                   # the dashboard IS the shell, not a /svc panel
 
+  knowledge:
+    kind: service
+    port: 8881
+    dir: services/knowledge
+    db: data/knowledge.db
+    cmd: .venv/bin/uvicorn app:app --app-dir services/knowledge --host 127.0.0.1 --port ${PORT}
+    callers: [conductor]        # via its shim conductor/app/knowledge.py, which documents
+                                # the degraded modes (recall→[], writes→no-op, stats→degraded)
+    ui: false                   # headless — an API-only store, honestly
+
   worker-pool:
     kind: ephemeral
     managed_by: launcher        # launcher.py spawns and reaps workers; never in process-compose

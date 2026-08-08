@@ -208,7 +208,7 @@ so nothing depends on you having been watching.
 
 ### What the database holds
 
-Thirty-five tables. Most live in one file; **knowledge** has its own (`knowledge.py`) because it carries embedding vectors and is the one table queried by similarity rather than by key, and the **module graph** keeps its six in `modgraph.py` because immutable plan versions want their own schema, not entries in the migration list. The ones worth knowing: **projects** and **tasks**
+Thirty-four tables. Most live in one file; the **module graph** keeps its six in `modgraph.py` because immutable plan versions want their own schema, not entries in the migration list. The **knowledge** table is not among them any more: what agents have learned lives with the knowledge service (`services/knowledge`, its own process, its own `data/knowledge.db`) — it carries embedding vectors, is the one store queried by similarity rather than by key, and the conductor reaches it over HTTP through a shim that degrades to empty answers rather than ever blocking a sprint. The ones worth knowing: **projects** and **tasks**
 (the work), **agents** (teammates and their memory), **runs** (one row per AI
 task — the source of all measurement), **events** (the permanent activity
 record), **findings** (what the platform believes is wrong with itself),

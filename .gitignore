@@ -4,6 +4,11 @@ __pycache__/
 venv/
 .env
 *.db
+# every service opens its db WAL (SERVICE_CONTRACT rule 1), and WAL leaves two
+# sidecar files beside it — untracked and unignored, they ride into the next
+# `git add -A` as binary noise
+*.db-wal
+*.db-shm
 *.sqlite3
 workspaces/
 previews/

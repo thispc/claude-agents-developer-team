@@ -12,9 +12,13 @@
 # readiness probes, restarts, and its REST API token-authed on the fleet_api port
 # (8899 — see services.yaml; token in data/tokens/fleet-api.token).
 #
-# --legacy is the FALLBACK until P1 lands (and after, for a machine where the fleet
-# tooling misbehaves): one uvicorn, no generator, no process-compose — exactly the
-# pre-fleet behaviour. Both paths serve http://127.0.0.1:$PORT.
+# --legacy is the FALLBACK for a machine where the fleet tooling misbehaves: one
+# uvicorn, no generator, no process-compose — exactly the pre-fleet behaviour.
+# Both paths serve http://127.0.0.1:$PORT. Because it sources no data/env/*.env,
+# KNOWLEDGE_URL stays unset and the conductor uses the pre-P1 in-process knowledge
+# body (conductor/app/_knowledge_legacy.py, and devteam.db's own table) — which is
+# what makes this path work with no services running at all. That fallback body
+# disappears at the P1 cutover, and this flag is re-scoped with it.
 #
 # Data lives in ./devteam.db (the repo root) and persists across restarts.
 # Live mode (agents genuinely think) uses, in order: your Settings-page key, the
