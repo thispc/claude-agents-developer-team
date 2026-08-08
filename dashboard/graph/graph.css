@@ -349,6 +349,21 @@
 .gr-legend-dot.gr-hs-yellow { background: var(--gr-warn); }
 .gr-legend-dot.gr-hs-red { background: var(--gr-bad); }
 
+/* ---- the store is unreachable: say so, rather than draw an empty repository ----
+   An empty room and a room that could not be read look identical, and the
+   difference is the whole question. This is what the payload's `degraded: true`
+   puts on stage. */
+.gr-unavailable {
+  grid-column: 1 / -1; align-self: center; justify-self: center;
+  max-width: 46ch; padding: 18px 22px; text-align: center;
+  background: var(--gr-panel); border: 1px solid var(--gr-line); border-radius: 12px;
+  color: var(--gr-dim); font-size: 13px; line-height: 1.5;
+}
+.gr-unavailable-head {
+  color: var(--gr-warn); font-size: 15px; font-weight: 600; margin: 0 0 6px;
+}
+.gr-unavailable p { margin: 0; }
+
 /* ---- the aside: the ONE panel, this screen's own host ---- */
 #graphAside {
   width: 340px; flex: none; overflow-y: auto; padding: 14px 16px;

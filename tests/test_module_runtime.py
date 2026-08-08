@@ -23,6 +23,15 @@ def _fresh_beats():
     mh._BEATS.update(ts=0.0, keys=frozenset(), by_key={})
 
 
+def _svc_rows(sql: str, params: tuple = ()) -> list[dict]:
+    """The graph's rows, wherever they currently live — another process's since
+    P5, the conductor's again under MODGRAPH_ROLLBACK. The drills below assert
+    about the ROWS (a superseded plan not edited, a no-op that wrote nothing),
+    and asking through the client would only prove it agrees with itself."""
+    from conftest import graph_rows
+    return graph_rows(sql, params)
+
+
 def _nodes(root_client) -> dict:
     r = root_client.get("/api/graph/self")
     assert r.status_code == 200, r.text
@@ -391,7 +400,7 @@ def test_the_authoring_pass_keeps_the_master_over_the_managers_pick(fresh_db, mo
 
 def test_remove_makes_a_new_version_and_never_edits_the_old(root_client):
     v1 = modgraph.active_plan(0)["id"]
-    before = {t: db._rows(f"SELECT * FROM {t} WHERE plan_id=? ORDER BY id", (v1,))
+    before = {t: _svc_rows(f"SELECT * FROM {t} WHERE plan_id=? ORDER BY id", (v1,))
               for t in ("graph_nodes", "graph_edges", "graph_node_tests")}
     modgraph.set_assign(v1, "db", agent_id=77)
     modgraph.save_positions(v1, {"db": [10, 20], "knowledge": [30, 40]})
@@ -424,7 +433,7 @@ def test_remove_makes_a_new_version_and_never_edits_the_old(root_client):
     assert pos.get("db") == [10.0, 20.0] and "knowledge" not in pos
     # v1: byte-identical rows, only the plan's status moved
     for t, rows in before.items():
-        assert db._rows(f"SELECT * FROM {t} WHERE plan_id=? ORDER BY id", (v1,)) == rows, \
+        assert _svc_rows(f"SELECT * FROM {t} WHERE plan_id=? ORDER BY id", (v1,)) == rows, \
             f"{t} rows of the superseded plan were edited"
     assert modgraph.get_plan(v1)["status"] == "superseded"
     # the flare and the note the manager will read next authoring

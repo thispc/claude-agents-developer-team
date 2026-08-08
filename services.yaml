@@ -6,7 +6,7 @@
 # kinds:
 #   core      — the conductor. Managed by process-compose.
 #   service   — an extracted microservice (knowledge 8881, usage 8882, notify 8883,
-#               watch 8884, lifeworld 8885). Managed by process-compose.
+#               watch 8884, lifeworld 8885, modgraph 8886). Managed by process-compose.
 #   ephemeral — short-lived children a platform component spawns and reaps itself.
 #   external  — processes a platform component owns on a reserved port range;
 #               probed, never started, by the fleet.
@@ -144,6 +144,27 @@ services:
                                 # edge, and the generator writes KNOWLEDGE_TOKEN into
                                 # data/env/lifeworld.env because of this one line.
     ui: false                   # headless — the Studio canvas IS its face, same-origin
+
+  modgraph:
+    kind: service
+    port: 8886
+    dir: services/modgraph
+    db: data/modgraph.db
+    cmd: .venv/bin/uvicorn app:app --app-dir services/modgraph --host 127.0.0.1 --port ${PORT}
+    callers: [conductor]        # via conductor/app/modgraph.py. routes/graph.py stays the
+                                # BFF and every /api/graph/* path is unchanged — the Atlas
+                                # hardcodes them. Degraded: reads → empty with degraded:true
+                                # so the Atlas says "graph unavailable" instead of drawing an
+                                # empty repository; note_run/close_run → a no-op with a log,
+                                # because a trace gap is a GAP and the crew keeps building
+                                # (the deliberate opposite of lifeworld's honest pause — the
+                                # graph is observability, not the substrate).
+    # NO doors. It is a store and three derivations over its own six tables; it
+    # spends nothing, emits nothing and reads none of the owner's dials. The one
+    # thing that ever wanted a model — the manager AUTHORING the plan — stayed in
+    # the conductor (modgraph_author) precisely so this end could have no doors,
+    # and that is what broke the modgraph_author↔repair cycle.
+    ui: false                   # headless — the Atlas is its face, same-origin
 
   worker-pool:
     kind: ephemeral

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+from conftest import MODGRAPH_ROLLBACK, dashboard_js  # the split dashboard JS, in load order
 
 DASH = Path(__file__).resolve().parent.parent / "dashboard"
 HTML = (DASH / "index.html").read_text()
@@ -139,12 +139,17 @@ def test_the_about_page_says_keys_never_leave_the_conductor():
     assert "without the key ever going out" in HTML
 
 
+@pytest.mark.skipif(MODGRAPH_ROLLBACK,
+                    reason="rollback mode is the pre-P5 world: the six are back")
 def test_the_table_count_matches_the_schema():
-    # knowledge's one table left with the P1 extraction and lw_worlds left with P4:
-    # each is a SERVICE's now (services/knowledge → data/knowledge.db,
-    # services/lifeworld → data/lifeworld.db), so neither is part of the conductor's
-    # count. The honest accounting is 33 here plus named pointers at the services,
-    # and the handbook says exactly that.
+    # knowledge's one table left with P1, lw_worlds with P4, and the module graph's
+    # SIX with P5: each is a SERVICE's now (services/knowledge → data/knowledge.db,
+    # services/lifeworld → data/lifeworld.db, services/modgraph → data/modgraph.db),
+    # so none of them is part of the conductor's count. The honest accounting is 27
+    # here plus named pointers at the services, and the handbook says exactly that.
+    #
+    # modgraph is NOT summed any more, and its absence from that tuple is the
+    # assertion: the conductor has no schema of its own for another process's rows.
     #
     # P2 and P3 moved four more stores and the number did NOT move, which is its own
     # thing to be honest about: the meter, the notifier's memory, the log ring and the
@@ -152,13 +157,16 @@ def test_the_table_count_matches_the_schema():
     # went, or a count quietly implies the meter is still in here.
     from app import db, auth, findings, modgraph
     declared = sum(mod.SCHEMA.count("CREATE TABLE IF NOT EXISTS")
-                   for mod in (db, auth, findings, modgraph))
-    assert "Thirty-three tables" in _handbook() and declared == 33, \
-        f"{declared} tables are declared; the handbook says thirty-three"
+                   for mod in (db, auth, findings))
+    assert not hasattr(modgraph, "SCHEMA"), \
+        "the graph's client declares a schema again — its six tables left in P5"
+    assert "Twenty-seven tables" in _handbook() and declared == 27, \
+        f"{declared} tables are declared; the handbook says twenty-seven"
     assert "knowledge service" in _handbook(), \
         "the handbook no longer says where the knowledge table went"
     for moved in ("usage_rows", "notify_seen", "data/usage.db", "data/notify.db",
-                  "lw_worlds", "data/lifeworld.db"):
+                  "lw_worlds", "data/lifeworld.db",
+                  "graph_node_runs", "data/modgraph.db"):
         assert moved in _handbook(), \
             f"the handbook no longer says where {moved} lives"
 

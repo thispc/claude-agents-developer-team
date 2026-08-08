@@ -17,12 +17,30 @@ that does not exist is dropped and logged, never trusted. Offline, this module
 returns None and changes nothing; the seed stays in charge, which is exactly
 what a fallback is for.
 
-WHY THE STORE STAYS MODEL-FREE. modgraph.py is pinned at source level to never
-touch a model (the no-LLM-in-the-scheduler verdict). Authorship therefore lives
-HERE: this module spends the call and hands modgraph plain rows. The plan it
-writes is a new immutable version (authored_by='manager') that supersedes the
-seed; an answer identical to the active plan writes nothing at all, because a
-"new version" with the same bytes would be history-noise pretending to be work.
+WHY THE STORE STAYS MODEL-FREE — AND WHY THIS FILE DID NOT MOVE IN P5. The store
+is pinned at source level to never touch a model (the no-LLM-in-the-scheduler
+verdict). Authorship therefore lives HERE: this module spends the call and hands
+the store plain rows. The plan it writes is a new immutable version
+(authored_by='manager') that supersedes the seed; an answer identical to the
+active plan writes nothing at all, because a "new version" with the same bytes
+would be history-noise pretending to be work.
+
+P5 made the store a service and left this file exactly where it was, which is
+what broke the one genuine import cycle in the whole decomposition. Look at what
+these 370 lines actually need: `providers.complete` and the owner's resolved
+settings, `repair`'s live roster, its headroom meter and its ledger, `tuning`'s
+builder-model knob, the bus, and the operator's directive notes. That is the
+conductor, five times over. It is a BRAIN — it reads a tree and a roster and
+decides on a decomposition — and the thing it writes into is a STORE. Moving it
+would have dragged the crew and the provider credentials into a service whose job
+is six tables; leaving it turns `modgraph_author → modgraph` into an HTTP call and
+`modgraph → repair` into nothing at all.
+
+WHEN THE STORE IS DOWN, THIS PASS REFUSES BEFORE IT SPENDS. The inventory, the
+current plan and the mechanical test mapping all come over the wire now, and an
+authoring call made without them would produce a plan from a blank tree and then
+fail to write it — a real model call, spent, for nothing. `should_author()` stays
+true, so the next sprint tries again.
 
 The kv stamp `graph:authored:0` records which roster the manager last authored
 for. The engine's per-sprint hook consults it (should_author) so authoring costs
@@ -261,6 +279,15 @@ async def author_self_plan() -> int | None:
         info = repair.team() or {}
     fs = repair.enabled_factors()
     man = modgraph.self_manifest()
+    if not man.get("nodes"):
+        # The store could not be read (or has nothing to say about the tree). The
+        # completion below is a REAL model call on the owner's quota, and it would
+        # be spent authoring a decomposition of an empty inventory into a store
+        # that cannot receive it. should_author() stays true; the next sprint retries.
+        logs.warn("sprint", "graph_author_skipped",
+                  "the module graph's inventory is unavailable — authoring skipped "
+                  "rather than spending a call on a plan with nowhere to land")
+        return None
     cur = modgraph.active_plan(0)
     cur_man = modgraph._manifest_of(cur["id"]) if cur else None
 
@@ -316,31 +343,23 @@ async def author_self_plan() -> int | None:
                   plan=cur["id"])
         return int(cur["id"])
 
-    plan_id = modgraph.create_plan(
-        0, kind="template", authored_by="manager",
-        notes="authored by the crew's manager from the live inventory")
-    for n in cand["nodes"]:
-        modgraph.add_node(plan_id, n["key"], n["title"], node_type=n["node_type"],
-                          spec=n["spec"], join_mode=n["join_mode"],
-                          parent_key=n["parent_key"], tags=n["tags"], paths=n["paths"])
-    for e in cand["edges"]:
-        modgraph.add_edge(plan_id, e["src"], e["dst"], edge_type=e["edge_type"],
-                          contract=e["contract"], contract_test=e["contract_test"])
-    for t in cand["tests"]:
-        modgraph.map_test(plan_id, t["node"], t["path"], kind=t["kind"], status="mapped")
-    modgraph.activate(plan_id)
     agents = (info or {}).get("agents") or {}
     final: dict[str, int] = {}
     for key, fid in assigns.items():
         hid = agents.get(fid)
         if hid:
             final[key] = int(hid)
-    # MASTERY OUTRANKS RESHUFFLING: an agent with >= MASTER_RUNS verified ok runs on a
-    # node keeps it, whatever the manager proposed — continuity on a module is worth
-    # more than a tidy re-deal, and the trace (not this pass) is what earns it back.
+    # MASTERY OUTRANKS RESHUFFLING: an agent with enough verified ok runs on a node
+    # keeps it, whatever the manager proposed — continuity on a module is worth more
+    # than a tidy re-deal, and the trace (not this pass) is what earns it back.
+    #
+    # `or {}` reads as "nothing has been earned", and that would be a LIE if the store
+    # were unreachable — so it cannot be reached that way: the inventory is read from
+    # the same service at the top of this function and an unreadable one returns above,
+    # before a single token is spent. This is the display default, not the outage path.
     leaf_keys = {n["key"] for n in cand["nodes"]
                  if n["node_type"] not in ("aim", "conclusion", "group")}
-    for key, m in modgraph_health.mastery(0).items():
+    for key, m in (modgraph_health.mastery(0) or {}).items():
         if not m["master"] or key not in leaf_keys:
             continue
         if final.get(key) != int(m["agent_id"]):
@@ -349,8 +368,24 @@ async def author_self_plan() -> int | None:
                       "verified runs) over the manager's pick",
                       node=key, master=int(m["agent_id"]), proposed=final.get(key, 0))
             final[key] = int(m["agent_id"])
-    for key, hid in final.items():
-        modgraph.set_assign(plan_id, key, agent_id=hid)
+
+    # ONE WRITE. The nodes, the edges, the mechanical test mapping, the assignments
+    # and the activation are a single transaction in the service. Before P5 this was
+    # fifty-odd row calls inside one process; over a wire that is fifty chances to be
+    # interrupted with the plan already ACTIVE and half its edges missing — which the
+    # Atlas would render as a repository that had lost its contracts.
+    plan = modgraph.import_plan(
+        0, kind="template", authored_by="manager",
+        notes="authored by the crew's manager from the live inventory",
+        nodes=cand["nodes"], edges=cand["edges"],
+        tests=[dict(t, status="mapped") for t in cand["tests"]],
+        assigns={key: {"agent_id": hid} for key, hid in final.items()})
+    if not plan:
+        logs.warn("sprint", "graph_plan_unwritten",
+                  "the manager authored a plan the store would not take — nothing "
+                  "changed, and no stamp is written, so the next sprint tries again")
+        return None
+    plan_id = int(plan["id"])
 
     by_key = {n["key"]: n for n in cand["nodes"]}
     order = _topo(cand)
@@ -359,7 +394,7 @@ async def author_self_plan() -> int | None:
         bus.emit(0, None, "graph", "graph_node_planned",
                  {"key": key, "title": n["title"], "node_type": n["node_type"],
                   "factor": assigns.get(key, ""), "i": i, "n": len(order)})
-    plan = modgraph.get_plan(plan_id) or {}
+    # No re-read: the import returned the plan row it wrote, in the one call.
     bus.emit(0, None, "graph", "graph_plan_ready",
              {"plan": plan_id, "version": plan.get("version"),
               "nodes": len(cand["nodes"]), "authored_by": "manager"})

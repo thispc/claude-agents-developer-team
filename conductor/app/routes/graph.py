@@ -12,6 +12,21 @@ contract tests of every edge it touches, run with a bounded timeout through
 shell.sh, results written to the test rows and the trace — never a rollback,
 never a block. A red ring on the canvas that you can still operate is the V1
 gate; teeth arrive only when the graph starts dispatching work.
+
+SINCE P5 THIS FILE IS THE BFF AND ONLY THE BFF. The rows it reads live in the
+modgraph service; `modgraph.py` is the client. Every `/api/graph/*` path is
+unchanged and must stay so — the Atlas hardcodes them — and so is every payload
+shape, with one addition: `degraded`. Two things deliberately did NOT follow the
+tables out:
+
+  the verify RUNNER   `graph_self_verify` shells out to the repo's own pytest
+                      over real files in THIS process's checkout. The service
+                      says which files and stores the verdict; a store that
+                      spawned pytest in another process's working tree would
+                      have imported that tree's whole world.
+  the composition     who an agent id IS (the crew's record), what the crew is
+                      touching right now, the cluster switch, the probes — all
+                      conductor facts, joined onto the service's rows here.
 """
 
 from __future__ import annotations
@@ -77,6 +92,12 @@ def _gated(request: Request) -> dict:
     return _root(request)
 
 
+GRAPH_DOWN = ("the module graph's store is not answering — the map is unavailable, "
+              "but nothing else is: the crew keeps building and every other screen "
+              "is unaffected. Check the fleet (data/logs/fleet.log), or start it "
+              "with ./run-local.sh.")
+
+
 def _self_plan() -> dict:
     plan = modgraph.active_plan(0)
     if not plan:
@@ -85,7 +106,8 @@ def _self_plan() -> dict:
         modgraph.seed_self_graph()
         plan = modgraph.active_plan(0)
     if not plan:
-        raise HTTPException(503, "no plan for the platform graph")
+        raise HTTPException(503, GRAPH_DOWN if modgraph.degraded()
+                            else "no plan for the platform graph")
     return plan
 
 
@@ -242,14 +264,51 @@ def _test_counts(rows: list[dict]) -> dict:
             "advisory": len(suites) - passing - failing}
 
 
+def _graph_unavailable() -> dict:
+    """The payload when the store cannot be read: every key a caller reads is
+    present and not one of them is invented.
+
+    HONEST-EMPTY BEATS AN ERROR HERE, and it is the opposite call from the
+    Studio's (which 503s when the lifeworld is down, because rendering an empty
+    world would let the next save persist it). Nothing the Atlas draws is ever
+    saved back, so the failure mode is only what the operator is told — and "the
+    graph is unavailable" on a screen that still shows the crew's phase, the
+    uptime and the cluster is more use at 3am than a red toast with no screen
+    behind it. `degraded` is what the Atlas keys its banner off; `plan: null` is
+    what stops it pretending version 1 exists."""
+    st = _crew_snapshot()
+    crew_state = st.get("state") or {}
+    return {
+        "plan": None, "degraded": True, "reason": GRAPH_DOWN,
+        "models": sorted(_known_models()),
+        "nodes": [], "edges": [], "runs": [], "positions": {},
+        "conclusion": {"health": "unknown",
+                       "repair": {"phase": crew_state.get("phase", ""),
+                                  "sprint": crew_state.get("sprint_no", 0)},
+                       "beat": "ok", "uptime_s": _uptime_s(),
+                       "boot_sha": "", "head_sha": "", "cluster": _cluster_state()},
+    }
+
+
 @router.get("/api/graph/self")
 def graph_self(request: Request) -> dict:
     """The whole platform graph in one payload: the canvas's single read. Both
     levels ride in it — the canvas derives them client-side from parent_key —
     and a GROUP node answers for its children: suite counts summed, activity
-    busy whenever any child is busy. Work itself only ever lands on leaves."""
+    busy whenever any child is busy. Work itself only ever lands on leaves.
+
+    Eight round trips to the store since P5 (plan, nodes, edges, tests, assigns,
+    runs, positions, mastery), ~10ms on localhost. `assigns` is one call and not
+    one per node on purpose — see modgraph.assigns."""
     _gated(request)
-    plan = _self_plan()
+    plan = modgraph.active_plan(0)
+    if not plan:
+        modgraph.seed_self_graph()
+        plan = modgraph.active_plan(0)
+    if not plan:
+        if modgraph.degraded():
+            return _graph_unavailable()
+        raise HTTPException(503, "no plan for the platform graph")
     pid = plan["id"]
     nodes = modgraph.nodes(pid)
     tests = modgraph.tests(pid)
@@ -289,10 +348,13 @@ def graph_self(request: Request) -> dict:
         if n["node_type"] == "group":
             health_by[n["key"]] = modgraph_health.rollup(
                 [health_by[k] for k in kids_of.get(n["key"], []) if k in health_by])
-    mastery_by = modgraph_health.mastery(0)
+    # One call, not one per node: fourteen round trips on a payload the Atlas
+    # polls is a latency regression dressed up as a faithful port.
+    assign_by = modgraph.assigns(pid)
+    mastery_by = modgraph_health.mastery(0) or {}
     node_out = []
     for n in nodes:
-        a = modgraph.get_assign(pid, n["key"]) or {}
+        a = assign_by.get(n["key"]) or {}
         if n["node_type"] == "group":
             # Rolled up, not stored: totals summed over the children, activity
             # the dedup'd union of theirs — busy iff any child is busy.
@@ -342,6 +404,10 @@ def graph_self(request: Request) -> dict:
         "plan": {"id": pid, "version": plan["version"], "kind": plan["kind"],
                  "status": plan["status"], "authored_by": plan["authored_by"],
                  "notes": plan["notes"], "created_at": plan["created_at"]},
+        # A read that failed PART WAY through is the case this catches: the plan
+        # answered and the nodes did not. Empty-because-unreadable and
+        # empty-because-that-is-the-graph must never look the same on screen.
+        "degraded": modgraph.degraded(),
         "models": sorted(_known_models()),
         "nodes": node_out,
         "edges": edges_out,
@@ -618,9 +684,8 @@ def graph_self_node_remove(key: str, request: Request) -> dict:
     if kids:
         raise HTTPException(400, f"'{key}' still has children ({', '.join(sorted(kids))}) "
                                  "— remove or re-parent them first")
-    new_id = modgraph.create_plan(0, kind=plan["kind"], authored_by=u["username"],
-                                  notes=f"node '{key}' removed by {u['username']}")
     survivors = [n for n in nodes if n["key"] != key]
+    out_nodes = []
     for n in survivors:
         paths = n["paths"]
         if n["node_type"] == "group" and n["key"] == node["parent_key"]:
@@ -628,37 +693,41 @@ def graph_self_node_remove(key: str, request: Request) -> dict:
             # of the children that REMAIN, not a memory of one that is gone.
             paths = sorted({p for c in survivors
                             if c["parent_key"] == n["key"] for p in c["paths"]})
-        modgraph.add_node(new_id, n["key"], n["title"], node_type=n["node_type"],
-                          spec=n["spec"], join_mode=n["join_mode"],
-                          parent_key=n["parent_key"], tags=n["tags"], paths=paths)
-    for e in modgraph.edges(pid):
-        if key in (e["src_key"], e["dst_key"]):
-            continue
-        modgraph.add_edge(new_id, e["src_key"], e["dst_key"], edge_type=e["edge_type"],
-                          contract=e["contract"], contract_test=e["contract_test"])
-    for t in modgraph.tests(pid):
-        if t["node_key"] == key:
-            continue
-        modgraph.map_test(new_id, t["node_key"], t["path"], kind=t["kind"],
-                          source=t["source"], status=t["status"])
-    for n in survivors:
-        a = modgraph.get_assign(pid, n["key"])
-        if a and (a.get("agent_id") or a.get("home_id") or a.get("model") or a.get("autonomy")):
-            modgraph.set_assign(new_id, n["key"], agent_id=a.get("agent_id"),
-                                home_id=a.get("home_id"), model=a.get("model"),
-                                autonomy=a.get("autonomy"))
+        out_nodes.append({**{k: n[k] for k in ("key", "title", "node_type", "spec",
+                                               "join_mode", "parent_key", "tags")},
+                          "paths": paths})
+    out_edges = [{"src": e["src_key"], "dst": e["dst_key"], "edge_type": e["edge_type"],
+                  "contract": e["contract"], "contract_test": e["contract_test"]}
+                 for e in modgraph.edges(pid) if key not in (e["src_key"], e["dst_key"])]
+    out_tests = [{"node": t["node_key"], "path": t["path"], "kind": t["kind"],
+                  "source": t["source"], "status": t["status"]}
+                 for t in modgraph.tests(pid) if t["node_key"] != key]
+    assign_by = modgraph.assigns(pid)
+    out_assigns = {n["key"]: assign_by[n["key"]] for n in survivors
+                   if n["key"] in assign_by
+                   and any(assign_by[n["key"]].get(f)
+                           for f in ("agent_id", "home_id", "model", "autonomy"))}
     pos = modgraph.positions(pid)
     pos.pop(key, None)
-    if pos:
-        db.kv_set(f"graph:pos:{new_id}", pos)
-    modgraph.activate(new_id)
+    # ONE WRITE, for the reason the authoring pass has one: a plan is a whole
+    # thing. Rebuilding it row by row over a wire would mean a version that could
+    # be ACTIVATED with half its edges — and the operator's evidence for the
+    # removal would be a graph that had silently lost its contracts.
+    new_plan = modgraph.import_plan(
+        0, kind=plan["kind"], authored_by=u["username"],
+        notes=f"node '{key}' removed by {u['username']}",
+        nodes=out_nodes, edges=out_edges, tests=out_tests,
+        assigns=out_assigns, positions=pos)
+    if not new_plan:
+        raise HTTPException(503, GRAPH_DOWN)
+    new_id = int(new_plan["id"])
     notes = db.kv_get("graph:notes:0") or []
     notes.append({"ts": time.time(),
                   "note": f"The operator removed the module '{key}' ({node['title']}) "
                           "from the plan. Do not reintroduce it unless the operator "
                           "asks; fold anything it still covered into other modules."})
     db.kv_set("graph:notes:0", notes[-12:])
-    new_plan = modgraph.get_plan(new_id) or {}
+    # No re-read: the import returned the plan row it wrote.
     bus.emit(0, None, "graph", "graph_node_removed",
              {"key": key, "plan": new_id, "version": new_plan.get("version")})
     return {"ok": True, "removed": key,

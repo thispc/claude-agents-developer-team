@@ -540,3 +540,23 @@ def test_cluster_iframe_is_sandboxed_and_never_the_live_app():
     assert "grClusterStart" in ch and "grClusterStop" in ch
     gp = mod.split("function asideConclusion(", 1)[1].split("\nfunction ", 1)[0]
     assert "uptime" in gp and "boot_sha" in gp and "Mini cluster" in gp
+
+
+def test_an_unreadable_store_says_so_instead_of_drawing_an_empty_repository():
+    """P5: the graph's rows are another process's, and when that process is not
+    answering `/api/graph/self` returns 200 with `degraded: true`, no plan and no
+    nodes. Painting that as a bare room would read as "this repository has no
+    modules", which is the one thing it does not mean — so the room says it, and
+    says the reason the payload gave (which names what is still true: the crew
+    keeps building; only the map is gone)."""
+    mod = _read("graph/index.js")
+    assert "function paintUnavailable(" in mod
+    pu = mod.split("function paintUnavailable(", 1)[1].split("\nfunction ", 1)[0]
+    assert "data.degraded" in pu and "(data.nodes || []).length" in pu, \
+        "the banner must key off the payload's own flag, not off emptiness alone"
+    assert "gr-unavailable" in pu and "data.reason" in pu, \
+        "the honest reason comes from the backend, never from a hardcoded guess"
+    paint = mod.split("\nfunction paint(", 1)[1].split("\nfunction ", 1)[0]
+    assert "paintUnavailable(i, data)" in paint.split("\n", 3)[1], \
+        "the check must come FIRST — the normal path assumes a plan"
+    assert ".gr-unavailable {" in _read("graph/graph.css")

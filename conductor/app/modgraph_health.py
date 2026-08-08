@@ -17,7 +17,18 @@ button that pretends is worse than none, because the operator plans around what 
 **MASTERY.** An agent that keeps finishing work on a module becomes its master — computed
 from the trace (graph_node_runs), never stored, so it can not drift from what actually
 happened. Counted across ALL plan versions by node key, because keys are the stable identity:
-a replan must not amnesty away who knows this module best.
+a replan must not amnesty away who knows this module best. Since P5 the COUNTING happens in
+the modgraph service, because the trace does: it is a JOIN over two tables that are both
+that service's, and a JOIN you can still write is a join that was inside the boundary. This
+module keeps the NAME, so nothing above it had to learn the arithmetic moved.
+
+P6 SUPERSEDES MOST OF THIS FILE. The per-module `PROBES` and the `SERVICES` honest-switch
+table exist because the platform's modules were in-process code; the plan's next phase makes
+every card a real service, so both are replaced wholesale by process-compose's live state
+(readiness + a real `GET /health`, and Start/Stop through the fleet's REST API). What
+survives P6 is what is already service-independent: `health_of`, `rollup`, `tests_state` and
+`mastery`. P5 deliberately changed none of the probes — it moved the STORE, and a phase that
+also rewrote the health model would have made "did the Atlas render identically" unanswerable.
 """
 
 from __future__ import annotations
@@ -33,10 +44,10 @@ from . import config, db
 # probing on every poll would spend a process spawn (shell) per poll for no new truth.
 BEAT_TTL_S = 10
 
-# Verified ok runs on one node before its top agent is called the master. Three, not one:
-# a single lucky landing is not mastery, and the number must be small enough to be earnable
-# within a day of sprints.
-MASTER_RUNS = 3
+# MASTER_RUNS — how many verified ok runs earn a module's master — is NOT here any
+# more. It belongs to the code that counts, and that is services/modgraph/derive.py;
+# a copy of the threshold on this side would be a second number to keep in step, and
+# the one that drifted would be the one nobody was reading.
 
 
 # --- the probes: one per module, each a real check of the thing it names ------
@@ -328,24 +339,21 @@ def service_set(key: str, action: str) -> dict:
 
 # --- mastery: earned from the trace, never stored -----------------------------
 
-def mastery(project_id: int = 0) -> dict[str, dict]:
-    """{node_key: {"agent_id", "runs", "master"}} — the top agent per node.
+def mastery(project_id: int = 0) -> dict[str, dict] | None:
+    """{node_key: {"agent_id", "runs", "master"}} — the top agent per node, or None.
 
     Counted over CLOSED ok runs of kind build|verify across EVERY plan version of the
     project: node keys are the stable identity, so mastery survives a replan by
     construction. Ties keep the incumbent — the agent whose first ok run came earlier —
     because a challenger 'catches up to' a master, it does not split the title, and a
-    later arrival must EXCEED the master's count to take over."""
-    rows = db._rows(
-        "SELECT r.node_key AS k, r.agent_id AS a, COUNT(*) AS n, MIN(r.id) AS first"
-        " FROM graph_node_runs r JOIN graph_plans p ON p.id = r.plan_id"
-        " WHERE p.project_id=? AND r.status='ok' AND r.ended_at IS NOT NULL"
-        "   AND r.kind IN ('build','verify') AND r.agent_id IS NOT NULL"
-        " GROUP BY r.node_key, r.agent_id", (int(project_id),))
-    out: dict[str, dict] = {}
-    for r in sorted(rows, key=lambda r: (r["k"], -r["n"], r["first"])):
-        if r["k"] in out:
-            continue                       # sorted best-first: the first row per key wins
-        out[r["k"]] = {"agent_id": int(r["a"]), "runs": int(r["n"]),
-                       "master": int(r["n"]) >= MASTER_RUNS}
-    return out
+    later arrival must EXCEED the master's count to take over.
+
+    The query moved to the modgraph service with the trace it reads; this is the
+    conductor's name for it. NONE, NOT {}, when the store cannot be read: the
+    authoring pass's "a master keeps its module" rule consults this, and an outage
+    that looked like "nobody has earned anything" would let one reshuffle undo every
+    earned continuity on the box. Callers that only DISPLAY mastery treat None as
+    "nothing to show" — which is honest, and which the payload's own `degraded` flag
+    already explains."""
+    from . import modgraph
+    return modgraph.mastery(project_id)

@@ -50,7 +50,7 @@ for _k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GEMINI_API_KEY",
            # not reach a real 8881/8882/8883/8884 (or fail because nothing is
            # listening there).
            "KNOWLEDGE_URL", "USAGE_URL", "NOTIFY_URL", "WATCH_URL",
-           "LIFEWORLD_URL"):
+           "LIFEWORLD_URL", "MODGRAPH_URL"):
     os.environ.pop(_k, None)
 
 # --- the fleet services, mounted in-process -----------------------------------
@@ -75,14 +75,29 @@ USAGE_TEST_TOKEN = "conductor-suite-usage-token"
 NOTIFY_TEST_TOKEN = "conductor-suite-notify-token"
 WATCH_TEST_TOKEN = "conductor-suite-watch-token"
 LIFEWORLD_TEST_TOKEN = "conductor-suite-lifeworld-token"
+MODGRAPH_TEST_TOKEN = "conductor-suite-modgraph-token"
 _KNOWLEDGE_URL = "http://knowledge.test"
 _LIFEWORLD_URL = "http://lifeworld.test"
 _USAGE_URL = "http://usage.test"
 _NOTIFY_URL = "http://notify.test"
 _WATCH_URL = "http://watch.test"
+_MODGRAPH_URL = "http://modgraph.test"
 os.environ["KNOWLEDGE_URL"] = _KNOWLEDGE_URL
 os.environ["USAGE_URL"] = _USAGE_URL
 os.environ["NOTIFY_URL"] = _NOTIFY_URL
+# Set BEFORE `from app import ...`: the modgraph shim decides its mode at import
+# (URL set = client, unset = the vendored pre-P5 body), and a process boots into
+# one world and stays there.
+#
+# MODGRAPH_ROLLBACK=1 runs the WHOLE suite in the other mode — the between-commits
+# rollback, exercised rather than asserted. It exists only for the strangler
+# window and goes with the vendored body in commit B. Everything P5-specific
+# (the drills, the service's own store) skips itself; everything else must pass
+# unchanged, because "unset the URL and you are back where you were" is either
+# true of the whole suite or it is not true.
+MODGRAPH_ROLLBACK = os.environ.pop("MODGRAPH_ROLLBACK", "") == "1"
+if not MODGRAPH_ROLLBACK:
+    os.environ["MODGRAPH_URL"] = _MODGRAPH_URL
 # Set BEFORE `from app import ...` below: the logs and monitor shims decide their
 # mode at import (URL set = client, unset = the vendored pre-P3 body), and a
 # process boots into one world and stays there.
@@ -105,10 +120,23 @@ def _mount_service(name: str, token: str, **extra_env):
     Every env var touched is saved and restored: helpers.py and app.py read the
     environment at import, and leaking DB_PATH out of here is how one harness
     deletes another harness's database.
+
+    THE SAME GOES FOR MODULE NAMES. A service is launched as `uvicorn app:app
+    --app-dir services/<name>`, so its own files are TOP-LEVEL modules — `store`,
+    `derive`, `seed`, `helpers`. Two multi-file services in one interpreter
+    therefore collide on any name they share, and the collision is silent: the
+    lifeworld mounts first, so `import store` inside the modgraph service's app.py
+    handed it the LIFEWORLD's store and every table it wanted was missing. So each
+    load owns those names for the length of the load and gives them back after —
+    exactly what was already being done for `helpers`, generalised to every file
+    in the service directory. The loaded modules keep direct references to each
+    other, which is why the service's own code imports at module level and never
+    inside a function.
     """
     service_dir = REPO / "services" / name
     keys = ("DB_PATH", "SERVICE_TOKEN", "SERVICE_NAME", "LEGACY_DB_PATH",
-            "CONDUCTOR_URL", "GITHUB_TOKEN", "NOTIFY_GITHUB", "NOTIFY_MAX_PER_HOUR")
+            "CONDUCTOR_URL", "GITHUB_TOKEN", "NOTIFY_GITHUB", "NOTIFY_MAX_PER_HOUR",
+            "REPO_ROOT")
     saved = {k: os.environ.get(k) for k in keys}
     os.environ["DB_PATH"] = str(Path(_TMP) / f"{name}-service.db")
     os.environ["SERVICE_TOKEN"] = token
@@ -118,7 +146,8 @@ def _mount_service(name: str, token: str, **extra_env):
     os.environ["LEGACY_DB_PATH"] = str(Path(_TMP) / "absent-legacy.db")
     for k, v in extra_env.items():
         os.environ[k] = v
-    prior_helpers = sys.modules.pop("helpers", None)
+    own = sorted(p.stem for p in service_dir.glob("*.py"))
+    prior_mods = {m: sys.modules.pop(m, None) for m in own}
     # app.py puts its own directory FIRST on sys.path so `uvicorn app:app` works
     # from any cwd. Left there, `from app import auth` in this very file would
     # resolve to the SERVICE's app.py instead of the conductor package — so the
@@ -130,9 +159,11 @@ def _mount_service(name: str, token: str, **extra_env):
         return _load_module(f"{name}_svc_app", service_dir / "app.py")
     finally:
         sys.path[:] = prior_path
-        sys.modules.pop("helpers", None)
-        if prior_helpers is not None:
-            sys.modules["helpers"] = prior_helpers
+        for _m in own:
+            sys.modules.pop(_m, None)
+        for _m, _mod in prior_mods.items():
+            if _mod is not None:
+                sys.modules[_m] = _mod
         for _k, _v in saved.items():
             if _v is None:
                 os.environ.pop(_k, None)
@@ -155,11 +186,18 @@ watch_service = _mount_service("watch", WATCH_TEST_TOKEN)
 # knowledge store), because a lifeworld that cannot reach a model is not the thing
 # any of these tests are about. Those are wired below.
 lifeworld_service = _mount_service("lifeworld", LIFEWORLD_TEST_TOKEN)
+# The module graph's six tables (P5). REPO_ROOT is pinned at the real checkout on
+# purpose: the seed's whole job is to describe the tree that is actually there, and
+# tests/test_module_graph.py holds every claim in it against those files.
+modgraph_service = (None if MODGRAPH_ROLLBACK
+                    else _mount_service("modgraph", MODGRAPH_TEST_TOKEN,
+                                        REPO_ROOT=str(REPO)))
 
 from app import auth, db  # noqa: E402
 from app import knowledge as _knowledge  # noqa: E402
 from app import lifeworld_client as _lifeworld  # noqa: E402
 from app import logs as _logs  # noqa: E402
+from app import modgraph as _modgraph  # noqa: E402
 from app import monitor as _monitor  # noqa: E402
 from app import notify as _notify  # noqa: E402
 from app import usage as _usage  # noqa: E402
@@ -195,6 +233,42 @@ _lifeworld._TRANSPORT = httpx.ASGITransport(app=lifeworld_service.app)
 # shape. `*a` because production passes a timeout.
 _lifeworld._sync_client = lambda *_a, **_k: _svc_client(
     lifeworld_service, _LIFEWORLD_URL, LIFEWORLD_TEST_TOKEN)
+
+if not MODGRAPH_ROLLBACK:
+    _modgraph._TOKEN = MODGRAPH_TEST_TOKEN
+    # The shim is sync all the way down (every caller is a plain function), so one
+    # factory covers it. `*a` because production passes a timeout.
+    _modgraph._client = lambda *_a, **_k: _svc_client(modgraph_service, _MODGRAPH_URL,
+                                                      MODGRAPH_TEST_TOKEN)
+
+
+def graph_rows(sql: str, params: tuple = ()) -> list[dict]:
+    """The graph's rows, wherever they currently live.
+
+    Several drills assert about the ROWS rather than the answer — a superseded plan
+    that was not edited, a pure selection that wrote nothing — and P5 moved them into
+    another process. In rollback mode they are the conductor's again, which IS the
+    rollback, so the same drills read them there and stay meaningful in both modes."""
+    if MODGRAPH_ROLLBACK:
+        return db._rows(sql, params)
+    return [dict(r) for r in
+            modgraph_service.helpers.db().execute(sql, params).fetchall()]
+
+
+def patch_self_manifest(monkeypatch, make) -> None:
+    """Inject a drifted manifest where it is actually BUILT — the service in
+    client mode, the vendored body in rollback mode. Faking it on the client's
+    side would fake its opinion of an answer it does not compute.
+
+    `make(real)` returns the replacement, and it is given the REAL builder for
+    the mode it is running in. Letting the caller reach for it instead would mean
+    reaching through the client in rollback mode, where the client IS the builder
+    — a wrapper calling itself, which recurses until the stack gives out."""
+    if MODGRAPH_ROLLBACK:
+        monkeypatch.setattr(_modgraph, "_self_manifest", make(_modgraph._self_manifest))
+    else:
+        monkeypatch.setattr(modgraph_service.seed, "self_manifest",
+                            make(modgraph_service.seed.self_manifest))
 
 _logs._TOKEN = WATCH_TEST_TOKEN
 _logs._client = lambda: _svc_client(watch_service, _WATCH_URL, WATCH_TEST_TOKEN)
@@ -400,8 +474,13 @@ def fresh_db():
     # first-boot copy. Here there is no legacy db to copy from, so the service
     # settles immediately and the drop is a no-op — the point is that the real
     # conditional path runs, in the order a real boot runs it.
-    from app import lifeworld_client
+    from app import lifeworld_client, modgraph
     lifeworld_client.init()
+    # In client mode this is the documented no-op of commit A: the six graph_*
+    # tables stay in the conductor's database untouched (they are the rollback),
+    # and the service owns the rows the platform actually reads. Called anyway, in
+    # the order a real boot calls it.
+    modgraph.init()
     # The mounted services outlive any one test's database, so empty their stores
     # here too — a test that recalls must see only what it remembered, and a test
     # that meters must not inherit the previous test's spend.
@@ -411,6 +490,11 @@ def fresh_db():
     _logs._QUEUE.clear()
     _logs._LAST.clear()
     _logs._degraded_read = False
+    # ...and the graph client's, for the same reason: a test that drilled the
+    # outage would otherwise leave the next test's payload flagged `degraded`.
+    # (Absent in rollback mode, where nothing can be unreachable.)
+    if not MODGRAPH_ROLLBACK:
+        _modgraph._degraded_read = False
     for svc, tables in ((knowledge_service, ("knowledge",)),
                         (usage_service, ("usage_rows",)),
                         (notify_service, ("notify_seen", "notify_sent")),
@@ -419,10 +503,23 @@ def fresh_db():
                         # worse here than anywhere else: the crew's kv record is a
                         # POINTER at a world id, so a leftover world with the right
                         # id would be silently adopted by the next test's crew.
-                        (lifeworld_service, ("lw_worlds",))):
+                        (lifeworld_service, ("lw_worlds",)),
+                        # A leftover plan is worse than a leftover row: `active_plan`
+                        # returns the newest active one whatever database made it, so
+                        # one test's seed would silently become the next test's graph.
+                        (modgraph_service, ("graph_plans", "graph_nodes", "graph_edges",
+                                            "graph_node_runs", "graph_node_tests",
+                                            "graph_assign"))):
+        if svc is None:
+            continue                       # rollback mode: the rows are db.init()'s again
         for table in tables:
             svc.helpers.db().execute(f"DELETE FROM {table}")
         svc.helpers.db().commit()
+    if modgraph_service is not None:
+        # ...and the layouts, which are kv and keyed by plan id, so a recycled id
+        # would inherit somebody else's drag.
+        modgraph_service.helpers.db().execute("DELETE FROM kv WHERE key LIKE 'graph:pos:%'")
+        modgraph_service.helpers.db().commit()
     # ...and the standing decision, which is not a table row: a suite that
     # inherited `auto` from an earlier test would start approving by itself.
     watch_service.helpers.db().execute("DELETE FROM kv WHERE key = 'auto'")

@@ -1,0 +1,2365 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "modgraph",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "description": "Readiness, not liveness: ok only when the service could actually answer \u2014 its own\ndatabase opens and the plans table reads.\n\n`backfilled` rides alongside rather than inside `checks`, because it is not a\nreadiness condition: a box with no legacy database to copy from is perfectly\nhealthy. It is the conductor's signal that its own six `graph_*` tables are\nfinally safe to drop \u2014 see store.settled(), and note that dropping them early\nwould lose the TRACE, and mastery is computed from the trace.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "Openapi Spec",
+        "description": "The committed contract. Regenerate after changing routes:\n`python app.py --spec > openapi.json` \u2014 and let oasdiff judge the diff.",
+        "operationId": "openapi_spec_openapi_json_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/plans/active": {
+      "get": {
+        "summary": "Plan Active",
+        "description": "The one plan on the wall for a project, or null. `null` is a real answer \u2014\na box that has never seeded has no plan, and inventing one would be worse.",
+        "operationId": "plan_active_plans_active_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Active Plans Active Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/plans": {
+      "post": {
+        "summary": "Plan Create",
+        "operationId": "plan_create_plans_post",
+        "parameters": [
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewPlan"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Create Plans Post"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/plans/{plan_id}": {
+      "get": {
+        "summary": "Plan Get",
+        "operationId": "plan_get_plans__plan_id__get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Get Plans  Plan Id  Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/plans/{plan_id}/activate": {
+      "post": {
+        "summary": "Plan Activate",
+        "operationId": "plan_activate_plans__plan_id__activate_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Activate Plans  Plan Id  Activate Post"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/import-plan": {
+      "post": {
+        "summary": "Plan Import",
+        "description": "A whole plan version in one call and one transaction. The two bulk writers\n\u2014 the manager's authoring pass and the operator removing a node \u2014 use this\ninstead of fifty round trips that could each be the one that fails.\n\nNOT under `/plans/`: every literal there collides with `GET /plans/{plan_id}`,\nwhich would answer a wrong-method request with 422 (\"import is not an integer\")\nwhere the contract promises 405. `/plans/active` gets away with it because it\nIS a GET; this one is not.",
+        "operationId": "plan_import_import_plan_post",
+        "parameters": [
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportPlan"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Import Import Plan Post"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/plans/{plan_id}/manifest": {
+      "get": {
+        "summary": "Plan Manifest",
+        "description": "The stored plan re-shaped for comparison with the tree's own manifest \u2014\nthe authoring pass's \"did anything actually change\" test, which is dict\nequality and nothing cleverer.",
+        "operationId": "plan_manifest_plans__plan_id__manifest_get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Manifest Plans  Plan Id  Manifest Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/plans/{plan_id}/nodes": {
+      "get": {
+        "summary": "Plan Nodes",
+        "operationId": "plan_nodes_plans__plan_id__nodes_get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Nodes Plans  Plan Id  Nodes Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      },
+      "post": {
+        "summary": "Plan Add Node",
+        "operationId": "plan_add_node_plans__plan_id__nodes_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewNode"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Add Node Plans  Plan Id  Nodes Post"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/plans/{plan_id}/edges": {
+      "get": {
+        "summary": "Plan Edges",
+        "operationId": "plan_edges_plans__plan_id__edges_get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Edges Plans  Plan Id  Edges Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      },
+      "post": {
+        "summary": "Plan Add Edge",
+        "operationId": "plan_add_edge_plans__plan_id__edges_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewEdge"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Add Edge Plans  Plan Id  Edges Post"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/runs": {
+      "post": {
+        "summary": "Run Open",
+        "description": "One appended trace row per attempt at a node. The two callers are the\nself-repair engine's build/verify hooks and the BFF's verify route.",
+        "operationId": "run_open_runs_post",
+        "parameters": [
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewRun"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Run Open Runs Post"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/runs/{run_id}": {
+      "patch": {
+        "summary": "Run Close",
+        "operationId": "run_close_runs__run_id__patch",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloseRun"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Run Close Runs  Run Id  Patch"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/plans/{plan_id}/runs": {
+      "get": {
+        "summary": "Plan Runs",
+        "operationId": "plan_runs_plans__plan_id__runs_get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "node_key",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 200,
+              "default": "",
+              "title": "Node Key"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Runs Plans  Plan Id  Runs Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/plans/{plan_id}/tests": {
+      "get": {
+        "summary": "Plan Tests",
+        "operationId": "plan_tests_plans__plan_id__tests_get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "node_key",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 200,
+              "default": "",
+              "title": "Node Key"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Tests Plans  Plan Id  Tests Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      },
+      "post": {
+        "summary": "Plan Map Test",
+        "operationId": "plan_map_test_plans__plan_id__tests_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewTest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Map Test Plans  Plan Id  Tests Post"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/plans/{plan_id}/test-result": {
+      "post": {
+        "summary": "Plan Test Result",
+        "description": "What a run of this file said, recorded everywhere the file is mapped. The\nrun itself happened in the conductor's checkout; this is only the verdict.",
+        "operationId": "plan_test_result_plans__plan_id__test_result_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestResult"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Test Result Plans  Plan Id  Test Result Post"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/plans/{plan_id}/affected": {
+      "get": {
+        "summary": "Plan Affected",
+        "description": "The files a change to this node obliges the conductor to run.",
+        "operationId": "plan_affected_plans__plan_id__affected_get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "node_key",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 200,
+              "default": "",
+              "title": "Node Key"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Affected Plans  Plan Id  Affected Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/plans/{plan_id}/assigns": {
+      "get": {
+        "summary": "Plan Assigns",
+        "description": "Every assignment on the plan, by node key \u2014 one call for the payload and\nthe engine's node matcher, which both want all of them.",
+        "operationId": "plan_assigns_plans__plan_id__assigns_get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Assigns Plans  Plan Id  Assigns Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/plans/{plan_id}/assign": {
+      "get": {
+        "summary": "Plan Assign Get",
+        "operationId": "plan_assign_get_plans__plan_id__assign_get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "node_key",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 200,
+              "default": "",
+              "title": "Node Key"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Assign Get Plans  Plan Id  Assign Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      },
+      "post": {
+        "summary": "Plan Assign Set",
+        "operationId": "plan_assign_set_plans__plan_id__assign_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Assign"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Assign Set Plans  Plan Id  Assign Post"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/plans/{plan_id}/positions": {
+      "get": {
+        "summary": "Plan Positions",
+        "operationId": "plan_positions_plans__plan_id__positions_get",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Positions Plans  Plan Id  Positions Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      },
+      "post": {
+        "summary": "Plan Save Positions",
+        "operationId": "plan_save_positions_plans__plan_id__positions_post",
+        "parameters": [
+          {
+            "name": "plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Plan Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Positions"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Plan Save Positions Plans  Plan Id  Positions Post"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/derive-group-edges": {
+      "post": {
+        "summary": "Derive Group Edges",
+        "description": "The top tier, reconciled. Pure: no rows are read and none are written \u2014\nthe BFF hands in the stored child edges and the stored authored tier and gets\nback the arrows that are actually backed by a crossing.",
+        "operationId": "derive_group_edges_derive_group_edges_post",
+        "parameters": [
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeriveBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Derive Group Edges Derive Group Edges Post"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/mastery": {
+      "get": {
+        "summary": "Mastery",
+        "description": "{node_key: {agent_id, runs, master}} \u2014 earned from the trace, never stored.",
+        "operationId": "mastery_mastery_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Mastery Mastery Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/seed": {
+      "post": {
+        "summary": "Do Seed",
+        "description": "Ensure project 0 has an active plan; return its id. Idempotent \u2014 an\nunchanged tree reseeds to zero writes, and a plan the manager authored\noutranks the seed entirely.",
+        "operationId": "do_seed_seed_post",
+        "parameters": [
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Do Seed Seed Post"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/manifest": {
+      "get": {
+        "summary": "Manifest",
+        "description": "The repo's real module inventory, read from the working tree. The manager's\nauthoring pass is given this as its INVENTORY, so its plan and the offline\nseed describe the same tree.",
+        "operationId": "manifest_manifest_get",
+        "parameters": [
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Manifest Manifest Get"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    },
+    "/tests-for-nodes": {
+      "post": {
+        "summary": "Tests For Nodes",
+        "description": "Which test files exercise which node, for a set of AUTHORED boundaries.\nSets are not JSON, so the map goes over the wire as sorted lists.\n\nFiltered to the keys that were ASKED about. The parser also credits the\nfrontend and worker leaves by their file reads (`dashboard_js`, `index.html`,\n`canvas2`, `worker/`) rather than by imports, and those key names are the\nSEED's. A manager-authored plan that named its layers differently would\notherwise get rows for nodes it does not have.",
+        "operationId": "tests_for_nodes_tests_for_nodes_post",
+        "parameters": [
+          {
+            "name": "x-service-token",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Service-Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestsForNodes"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Tests For Nodes Tests For Nodes Post"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "no X-Service-Token, or the wrong one"
+          },
+          "400": {
+            "description": "the request body could not be parsed as JSON"
+          },
+          "409": {
+            "description": "that node key or edge already exists in this plan \u2014 plan rows are immutable, so a duplicate is a conflict and never an overwrite"
+          },
+          "422": {
+            "description": "a body or query parameter the contract does not declare, or one of the wrong shape"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Assign": {
+        "properties": {
+          "node_key": {
+            "type": "string",
+            "title": "Node Key"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "home_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Home Id"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "autonomy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Autonomy"
+          }
+        },
+        "type": "object",
+        "required": [
+          "node_key"
+        ],
+        "title": "Assign"
+      },
+      "AssignIn": {
+        "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "home_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Home Id"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "autonomy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Autonomy"
+          }
+        },
+        "type": "object",
+        "title": "AssignIn"
+      },
+      "CloseRun": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "ok"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "CloseRun"
+      },
+      "DeriveBody": {
+        "properties": {
+          "child_edges": {
+            "items": {
+              "$ref": "#/components/schemas/EdgeIn"
+            },
+            "type": "array",
+            "title": "Child Edges"
+          },
+          "parent_of": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Parent Of"
+          },
+          "group_edges": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/EdgeIn"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Edges"
+          }
+        },
+        "type": "object",
+        "title": "DeriveBody",
+        "description": "The pure derivation, over the wire. `parent_of` is {child key: group key}."
+      },
+      "EdgeIn": {
+        "properties": {
+          "src": {
+            "type": "string",
+            "title": "Src"
+          },
+          "dst": {
+            "type": "string",
+            "title": "Dst"
+          },
+          "edge_type": {
+            "type": "string",
+            "title": "Edge Type",
+            "default": "depends"
+          },
+          "contract": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Contract"
+          },
+          "contract_test": {
+            "type": "string",
+            "title": "Contract Test",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "src",
+          "dst"
+        ],
+        "title": "EdgeIn",
+        "description": "An edge, in the shape the derivation and the import both speak: `src`/`dst`\nrather than the rows' `src_key`/`dst_key`, because that is the shape the\nmanifest has always used and the seed compares against."
+      },
+      "ImportPlan": {
+        "properties": {
+          "project_id": {
+            "type": "integer",
+            "title": "Project Id",
+            "default": 0
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "default": "template"
+          },
+          "authored_by": {
+            "type": "string",
+            "title": "Authored By",
+            "default": "manager"
+          },
+          "notes": {
+            "type": "string",
+            "title": "Notes",
+            "default": ""
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/NodeIn"
+            },
+            "type": "array",
+            "title": "Nodes"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/EdgeIn"
+            },
+            "type": "array",
+            "title": "Edges"
+          },
+          "tests": {
+            "items": {
+              "$ref": "#/components/schemas/TestIn"
+            },
+            "type": "array",
+            "title": "Tests"
+          },
+          "assigns": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AssignIn"
+            },
+            "type": "object",
+            "title": "Assigns"
+          },
+          "positions": {
+            "additionalProperties": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Positions"
+          },
+          "activate": {
+            "type": "boolean",
+            "title": "Activate",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "ImportPlan",
+        "description": "A whole plan version, written in one transaction \u2014 see store.import_plan."
+      },
+      "NewEdge": {
+        "properties": {
+          "src_key": {
+            "type": "string",
+            "title": "Src Key"
+          },
+          "dst_key": {
+            "type": "string",
+            "title": "Dst Key"
+          },
+          "edge_type": {
+            "type": "string",
+            "title": "Edge Type",
+            "default": "depends"
+          },
+          "contract": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Contract"
+          },
+          "contract_test": {
+            "type": "string",
+            "title": "Contract Test",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "src_key",
+          "dst_key"
+        ],
+        "title": "NewEdge"
+      },
+      "NewNode": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
+          "node_type": {
+            "type": "string",
+            "title": "Node Type",
+            "default": "code"
+          },
+          "spec": {
+            "type": "string",
+            "title": "Spec",
+            "default": ""
+          },
+          "join_mode": {
+            "type": "string",
+            "title": "Join Mode",
+            "default": "all_of"
+          },
+          "parent_key": {
+            "type": "string",
+            "title": "Parent Key",
+            "default": ""
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Paths"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key"
+        ],
+        "title": "NewNode"
+      },
+      "NewPlan": {
+        "properties": {
+          "project_id": {
+            "type": "integer",
+            "title": "Project Id",
+            "default": 0
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "default": "template"
+          },
+          "authored_by": {
+            "type": "string",
+            "title": "Authored By",
+            "default": "seed"
+          },
+          "notes": {
+            "type": "string",
+            "title": "Notes",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "NewPlan"
+      },
+      "NewRun": {
+        "properties": {
+          "plan_id": {
+            "type": "integer",
+            "title": "Plan Id"
+          },
+          "node_key": {
+            "type": "string",
+            "title": "Node Key"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "default": "build"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "running"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "plan_id",
+          "node_key"
+        ],
+        "title": "NewRun"
+      },
+      "NewTest": {
+        "properties": {
+          "node_key": {
+            "type": "string",
+            "title": "Node Key"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "default": "suite"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "mapped"
+          }
+        },
+        "type": "object",
+        "required": [
+          "node_key",
+          "path"
+        ],
+        "title": "NewTest"
+      },
+      "NodeIn": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "default": ""
+          },
+          "node_type": {
+            "type": "string",
+            "title": "Node Type",
+            "default": "code"
+          },
+          "spec": {
+            "type": "string",
+            "title": "Spec",
+            "default": ""
+          },
+          "join_mode": {
+            "type": "string",
+            "title": "Join Mode",
+            "default": "all_of"
+          },
+          "parent_key": {
+            "type": "string",
+            "title": "Parent Key",
+            "default": ""
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Tags"
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Paths"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key"
+        ],
+        "title": "NodeIn",
+        "description": "A node in a whole-plan import. Typed rather than a bare dict, because a\n`dict` in the contract means \"any JSON object\" and the fuzzer is right to send\none: `n[\"key\"]` on an object without one is a KeyError, and a KeyError reaches\na caller as a 500 for what is really a malformed request."
+      },
+      "Positions": {
+        "properties": {
+          "positions": {
+            "additionalProperties": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Positions"
+          }
+        },
+        "type": "object",
+        "title": "Positions",
+        "description": "A pair per key. The store drops junk anyway \u2014 absent-means-unset only stays\ntrue if nothing writes a fabricated coordinate \u2014 but the schema is the first\nline, and the two together are why [0,0] can only mean \"someone put it there\"."
+      },
+      "TestIn": {
+        "properties": {
+          "node": {
+            "type": "string",
+            "title": "Node"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "default": "suite"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "mapped"
+          }
+        },
+        "type": "object",
+        "required": [
+          "node",
+          "path"
+        ],
+        "title": "TestIn"
+      },
+      "TestResult": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "last_result": {
+            "type": "string",
+            "title": "Last Result",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "path",
+          "status"
+        ],
+        "title": "TestResult"
+      },
+      "TestsForNodes": {
+        "properties": {
+          "by_key": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "By Key"
+          }
+        },
+        "type": "object",
+        "title": "TestsForNodes",
+        "description": "{node key: boundary paths} \u2192 which test files exercise which node. The\nmanager authors boundaries; it never authors which tests exist."
+      }
+    }
+  }
+}

@@ -15,10 +15,14 @@ from pathlib import Path
 
 import pytest
 
-from conftest import make_project
+from conftest import MODGRAPH_ROLLBACK, graph_rows as _svc_rows, make_project
+from conftest import patch_self_manifest
 from app import auth, db, modgraph
 
 REPO = Path(__file__).resolve().parent.parent
+
+GRAPH_TABLES = ("graph_plans", "graph_nodes", "graph_edges", "graph_node_runs",
+                "graph_node_tests", "graph_assign")
 
 
 def _seeded(fresh_db) -> int:
@@ -27,27 +31,39 @@ def _seeded(fresh_db) -> int:
 
 
 # --------------------------------------------------------------------------
-# schema + the about-page gate
+# the schema left, and the about-page gate had to move with it
 # --------------------------------------------------------------------------
 
-def test_the_schema_initialises_and_the_table_gate_counts_it(fresh_db):
-    """Six tables of our own, knowledge.py-style — zero entries in db.py's
-    append-only migration tuple, so the gate that polices the handbook's table
-    count must now sum modgraph in or the count it defends is a lie."""
+@pytest.mark.skipif(MODGRAPH_ROLLBACK,
+                    reason="rollback mode is the pre-P5 world: the tables are back")
+def test_the_six_tables_left_and_the_table_gate_followed(fresh_db):
+    """P5: the six graph tables are the modgraph SERVICE's, so the conductor's
+    declared count drops from 33 to 27.
+
+    The count is the honest half of the accounting; the other half is that the
+    conductor must not still be DECLARING them. `init()` is a no-op in client
+    mode, and the tables it used to create are absent from a fresh conductor
+    database — which is exactly what makes the commit-B drop conditional rather
+    than cosmetic on a box that has them from before."""
     modgraph.init()
-    assert modgraph.SCHEMA.count("CREATE TABLE IF NOT EXISTS") == 6
-    names = {r["name"] for r in db._rows("SELECT name FROM sqlite_master WHERE type='table'")}
-    for t in ("graph_plans", "graph_nodes", "graph_edges", "graph_node_runs",
-              "graph_node_tests", "graph_assign"):
-        assert t in names, f"{t} was not created"
-    # knowledge's table moved out with the P1 extraction and lw_worlds with P4 (their
-    # services own them now) — the conductor's declared count is 33 without the two.
+    names = {r["name"] for r in
+             _svc_rows("SELECT name FROM sqlite_master WHERE type='table'")}
+    for t in GRAPH_TABLES:
+        assert t in names, f"{t} is not the service's"
+    assert not hasattr(modgraph, "SCHEMA"), \
+        "the conductor's client still declares a schema for another process's tables"
+    conductor_tables = {r["name"] for r in
+                        db._rows("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert not (set(GRAPH_TABLES) & conductor_tables), \
+        "a fresh conductor database still creates the graph tables"
+    # knowledge's table left with P1, lw_worlds with P4, and these six with P5 —
+    # each is a SERVICE's now, and the handbook has to say where every one went.
     from app import auth as auth_mod, findings
     declared = sum(mod.SCHEMA.count("CREATE TABLE IF NOT EXISTS")
-                   for mod in (db, auth_mod, findings, modgraph))
-    assert declared == 33
+                   for mod in (db, auth_mod, findings))
+    assert declared == 27
     gate = (REPO / "tests" / "test_about_page.py").read_text()
-    assert "modgraph" in gate, "the about-page table gate does not count modgraph"
+    assert "modgraph" in gate, "the about-page table gate no longer mentions modgraph"
 
 
 # --------------------------------------------------------------------------
@@ -254,18 +270,14 @@ def test_every_leaf_shows_its_real_suites_routes_included(fresh_db):
     pid = _seeded(fresh_db)
     routes_suites = [t for t in modgraph.tests(pid, "routes") if t["kind"] == "suite"]
     assert routes_suites, "the routes leaf must map its real suites in the seed"
-
-    # the mechanic itself, pinned on a synthetic source: indented imports count
-    src = ("def test_x():\n"
-           "    from app.routes import Settings\n"
-           "    from app import shell\n")
-    mods: set[str] = set()
-    for m in modgraph._IMPORT_RES[0].findall(src):
-        mods.update(name.strip().split(" as ")[0].strip() for name in m.split(","))
-    for pat in modgraph._IMPORT_RES[1:]:
-        mods.update(pat.findall(src))
-    assert {"routes", "shell"} <= mods, \
-        "an import four spaces deep is still an import — the parser must see it"
+    # ...and the same parser answers over the wire for an AUTHORED boundary, which
+    # is how the manager's plan gets its test mapping without authoring one.
+    # (The parser's own mechanic — that an import four spaces deep still counts —
+    # is drilled on a synthetic source in services/modgraph/tests, beside the
+    # regexes, since P5 moved them there.)
+    mapped = modgraph._tests_for_nodes({"routes": ["conductor/app/routes/"]})
+    assert any("routes" in keys for keys in mapped.values()), \
+        "the seed sees routes' indented imports but the authoring path does not"
 
 
 # --------------------------------------------------------------------------
@@ -274,11 +286,12 @@ def test_every_leaf_shows_its_real_suites_routes_included(fresh_db):
 
 def test_reseeding_an_unchanged_tree_writes_nothing(fresh_db):
     pid = _seeded(fresh_db)
-    counts = {t: db._rows(f"SELECT COUNT(*) AS n FROM {t}")[0]["n"]
+    counts = {t: _svc_rows(f"SELECT COUNT(*) AS n FROM {t}")[0]["n"]
               for t in ("graph_plans", "graph_nodes", "graph_edges", "graph_node_tests")}
     assert modgraph.seed_self_graph() == pid
     for t, n in counts.items():
-        assert db._rows(f"SELECT COUNT(*) AS n FROM {t}")[0]["n"] == n, f"{t} grew on a no-op reseed"
+        assert _svc_rows(f"SELECT COUNT(*) AS n FROM {t}")[0]["n"] == n, \
+            f"{t} grew on a no-op reseed"
 
 
 def test_drift_makes_a_new_version_and_never_touches_the_old_rows(fresh_db, monkeypatch):
@@ -286,16 +299,20 @@ def test_drift_makes_a_new_version_and_never_touches_the_old_rows(fresh_db, monk
     built' must stay answerable. So a drifted tree produces a NEW plan, and the
     only byte that changes on the old one is its status."""
     v1 = _seeded(fresh_db)
-    before = {t: db._rows(f"SELECT * FROM {t} WHERE plan_id=? ORDER BY id", (v1,))
+    before = {t: _svc_rows(f"SELECT * FROM {t} WHERE plan_id=? ORDER BY id", (v1,))
               for t in ("graph_nodes", "graph_edges", "graph_node_tests")}
-    plan1_before = db._rows("SELECT * FROM graph_plans WHERE id=?", (v1,))[0]
+    plan1_before = _svc_rows("SELECT * FROM graph_plans WHERE id=?", (v1,))[0]
 
-    real = modgraph._self_manifest
-    def drifted():
-        man = real()
-        man["nodes"][1]["spec"] = "the backend layer, freshly reworded"
-        return man
-    monkeypatch.setattr(modgraph, "_self_manifest", drifted)
+    # The drift is injected where the manifest is actually BUILT — the service in
+    # client mode, the vendored body in rollback mode. Faking it on the client's
+    # side would fake its opinion of an answer it does not compute any more.
+    def make(real):
+        def drifted():
+            man = real()
+            man["nodes"][1]["spec"] = "the backend layer, freshly reworded"
+            return man
+        return drifted
+    patch_self_manifest(monkeypatch, make)
 
     v2 = modgraph.seed_self_graph()
     assert v2 != v1
@@ -304,10 +321,10 @@ def test_drift_makes_a_new_version_and_never_touches_the_old_rows(fresh_db, monk
     assert plan2["authored_by"] == "seed"
     # v1's graph rows: byte-identical
     for t, rows in before.items():
-        assert db._rows(f"SELECT * FROM {t} WHERE plan_id=? ORDER BY id", (v1,)) == rows, \
+        assert _svc_rows(f"SELECT * FROM {t} WHERE plan_id=? ORDER BY id", (v1,)) == rows, \
             f"{t} rows of the superseded plan were edited"
     # v1's plan row: only status moved
-    plan1_after = db._rows("SELECT * FROM graph_plans WHERE id=?", (v1,))[0]
+    plan1_after = _svc_rows("SELECT * FROM graph_plans WHERE id=?", (v1,))[0]
     assert plan1_after["status"] == "superseded"
     assert {k: v for k, v in plan1_after.items() if k != "status"} == \
            {k: v for k, v in plan1_before.items() if k != "status"}
@@ -346,7 +363,7 @@ def test_affected_selection_is_the_suite_plus_every_touched_contract(fresh_db):
     modgraph.add_edge(pid, "c", "a", edge_type="data", contract_test="tests/t_ca.py")
     modgraph.add_edge(pid, "b", "c", edge_type="depends", contract_test="tests/t_bc.py")
 
-    runs_before = db._rows("SELECT COUNT(*) AS n FROM graph_node_runs")[0]["n"]
+    runs_before = _svc_rows("SELECT COUNT(*) AS n FROM graph_node_runs")[0]["n"]
     got = modgraph.affected_tests(pid, "a")
     assert got == sorted(["tests/t_a.py", "tests/t_a2.py", "tests/t_ab.py", "tests/t_ca.py"])
     assert "tests/t_bc.py" not in got, "an edge not touching the node was selected"
@@ -357,7 +374,7 @@ def test_affected_selection_is_the_suite_plus_every_touched_contract(fresh_db):
         set(modgraph.affected_tests(pid, "a")) | set(modgraph.affected_tests(pid, "b")))
     assert "tests/t_b.py" in modgraph.affected_tests(pid, "g")
     # pure: selection wrote nothing
-    assert db._rows("SELECT COUNT(*) AS n FROM graph_node_runs")[0]["n"] == runs_before
+    assert _svc_rows("SELECT COUNT(*) AS n FROM graph_node_runs")[0]["n"] == runs_before
 
 
 # --------------------------------------------------------------------------
@@ -367,17 +384,26 @@ def test_affected_selection_is_the_suite_plus_every_touched_contract(fresh_db):
 def test_a_failing_result_writes_only_the_test_rows(fresh_db):
     """V1's promise to the owner: a red suite embarrasses, it does not brick.
     Mechanically that means a failure may touch the test rows and nothing else —
-    no task rows, no project status, no kv flag anybody acts on."""
+    no task rows, no project status, no kv flag anybody acts on, and (since P5)
+    no row of the graph store's own five OTHER tables either."""
     pid = _seeded(fresh_db)
+    # graph_node_tests is the one table this verb IS allowed to touch, so it is
+    # out of the snapshot — in rollback mode it is one of the conductor's again.
     tables = [r["name"] for r in db._rows(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name != 'graph_node_tests'")]
+        "SELECT name FROM sqlite_master WHERE type='table'")
+        if r["name"] != "graph_node_tests"]
     snap = {t: db._rows(f"SELECT * FROM {t}") for t in tables}
+    svc_tables = [t for t in GRAPH_TABLES if t != "graph_node_tests"]
+    svc_snap = {t: _svc_rows(f"SELECT * FROM {t}") for t in svc_tables}
     changed = modgraph.update_test_result(pid, "tests/test_knowledge_service.py", "failing", "1 failed — boom")
     assert changed >= 1
     rows = [t for t in modgraph.tests(pid) if t["path"] == "tests/test_knowledge_service.py"]
     assert rows and all(t["status"] == "failing" for t in rows)
     for t in tables:
         assert db._rows(f"SELECT * FROM {t}") == snap[t], f"advisory result wrote to {t}"
+    for t in svc_tables:
+        assert _svc_rows(f"SELECT * FROM {t}") == svc_snap[t], \
+            f"advisory result wrote to the store's {t}"
 
 
 # --------------------------------------------------------------------------
@@ -388,11 +414,20 @@ def test_the_store_and_seed_never_call_a_model():
     """The research verdict the plan locked in: no LLM in the scheduler layer.
     The store, the seed and the selection are deterministic reads of rows and
     files — pinned at source level so a helpful future refactor cannot slip a
-    completion call in."""
-    src = inspect.getsource(modgraph)
-    assert "providers." not in src
-    assert "complete(" not in src
-    assert "claude_agent_sdk" not in src
+    completion call in.
+
+    Pinned on BOTH sides of the P5 wire: the conductor's client, and the service
+    that now holds the rows. The service is the stronger half of the claim — it
+    holds no credential and declares no `model` door in services.yaml, so a
+    completion call there could not even be made — and the ONE thing that ever
+    wanted a model (the manager authoring a plan) is the thing that deliberately
+    stayed behind in modgraph_author."""
+    for src in [inspect.getsource(modgraph)] + \
+            [(REPO / "services" / "modgraph" / f).read_text()
+             for f in ("app.py", "store.py", "derive.py", "seed.py")]:
+        assert "providers." not in src
+        assert "complete(" not in src
+        assert "claude_agent_sdk" not in src
 
 
 # --------------------------------------------------------------------------

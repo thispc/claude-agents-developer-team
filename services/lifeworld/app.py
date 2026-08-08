@@ -273,8 +273,16 @@ def worlds(p: Principal = Depends(principal)) -> dict:
     return {"worlds": store.listing(p.owner_id)}
 
 
-@app.post("/worlds", dependencies=AUTH)
+@app.post("/worlds", dependencies=AUTH,
+          responses={400: {"description": "a body that is not JSON at all — the "
+                                          "framework's own answer, before any model "
+                                          "sees it"}})
 def make_world(body: NewWorld, p: Principal = Depends(principal)) -> dict:
+    """The one POST that hangs off `app` rather than `wr`, because it has no world
+    id to be scoped by — so it does not inherit COMMON and has to say the 400
+    itself. (Found by the contract fuzzer during P5, on a spec written in P4: a
+    documented answer set that omits the framework's own is a contract with a hole
+    in it, whichever phase notices.)"""
     w = store.create(p.owner_id, body.name)       # flags default sandbox internally
     return {"world": {"id": w.id, "name": w.name}}
 

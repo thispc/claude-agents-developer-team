@@ -58,8 +58,9 @@ root) is the registry, `tools/gen_fleet.py` generates the process-compose config
 per-service env/tokens/topology from it, and `./run-local.sh` boots everything under
 **process-compose** (readiness probes, restarts, a token-authed REST API on 8899).
 Managed today: the conductor, **knowledge** (8881, P1), **usage** (8882, P2),
-**notify** (8883, P2), **watch** (8884, P3) and **lifeworld** (8885, P4); modgraph joins
-next, each meeting `SERVICE_CONTRACT.md` and reached same-origin via the conductor's
+**notify** (8883, P2), **watch** (8884, P3), **lifeworld** (8885, P4) and **modgraph**
+(8886, P5) — all six extracted, each meeting `SERVICE_CONTRACT.md` and reached same-origin
+via the conductor's
 `/svc/<name>/…` gateway. Traffic runs one way — the conductor calls its services — with
 five narrow doors back: `POST /internal/bus` (a service putting an event on the platform
 bus; the events table keeps its single writer), `GET /internal/tuning` (one of the owner's
@@ -230,6 +231,66 @@ service's directory may import inside it, and a conductor suite that unit-tested
 process's objects would be testing a copy of them. The conductor kept the DOORWAY and the
 SEAM: `/api/lw/*` end to end, the crew drills, and the source-level claims that read the
 engine's files rather than importing them.
+
+**modgraph (8886, P5).** The last extraction before the Atlas is rewired. The six
+`graph_*` tables — the immutable plan versions, their nodes and typed edges, the
+append-only TRACE, the test mapping and the per-node assignment — moved into
+`services/modgraph`, which owns `data/modgraph.db` alone, together with the layout kv and
+the three things computed FROM those rows: the derived group tier, affected-only test
+selection, and mastery.
+
+*Where the cut went, and why the derivations came too.* A derivation performed on a copy of
+a table you no longer own can disagree with the table. `derive_group_edges` is the clearest
+case: the SEED calls it to build the plan it writes and the PAYLOAD calls it again to
+reconcile what a manager authored, so two copies on two sides of a wire is how the stored
+plan and the rendered graph start telling different stories about the same repository.
+`mastery` came for the opposite reason — it is a JOIN (`graph_node_runs ⋈ graph_plans`) and
+both its tables went, so it stayed a join instead of becoming HTTP composition. A join you
+can still write is a join that was inside the boundary.
+
+*The cycle breaks here.* `modgraph_author` — the crew's hidden manager authoring the plan
+its specialists will work — did NOT move, and that is the point of the phase. It needs
+`providers.complete` with the owner's resolved settings, the repair engine's headroom and
+ledger, the crew's roster, a tuning knob and the bus: the conductor, five times over. It is
+a BRAIN and the service is a STORE, so `modgraph_author ↔ repair` — the one genuine import
+cycle in the whole decomposition — became one HTTP call in one direction. The service
+declares **no doors, no peers and no extra env**; it asks the conductor for nothing, and a
+grep test pins that nothing inside the directory imports it.
+
+*Two things stayed with the conductor for the same kind of reason.* The affected-tests
+RUNNER shells out to the repo's own pytest over real files in the checkout the conductor is
+serving from — the store says which files and records the verdict, but a store that spawned
+pytest in another process's working tree would have imported that tree's whole world. And
+`modgraph_health`'s per-module probes import the very modules they check; P6 deletes them
+outright in favour of process-compose's live state, so P5 left the health model alone
+deliberately — a phase that also rewrote it would have made "did the Atlas render
+identically" unanswerable.
+
+*The screen did not move.* `routes/graph.py` stays the BFF, every `/api/graph/*` path is
+unchanged (the Atlas hardcodes them), and the payload is still composed there from the
+service's rows plus facts only the conductor has. Two shapes are new because the boundary
+changed what is expensive or safe: `GET /plans/{id}/assigns` answers for every node in one
+call (per-node reads would be fourteen round trips on a payload that is polled), and
+`POST /plans/import` writes a whole version in one transaction — both bulk writers, the
+authoring pass and the operator removing a node, used to write fifty-odd rows in one
+process, and over a wire that is fifty chances to be interrupted with the plan already
+ACTIVE and half its edges missing.
+
+*Degraded — and this is the phase's one judgement call.* **A trace gap is recorded as a
+gap, never as a block.** When the lifeworld is down the crew PAUSES, because a crew without
+its specialists would still be spending, anonymously. When the module graph is down the
+crew must NOT: the code still gets written, the tests still run, the commit still lands, and
+all that is lost is the record of which module it happened on. The graph is observability,
+not the substrate, and a platform that stopped improving itself because its map was
+unavailable would have the priority backwards. So `note_run` returns 0 (falsy on purpose —
+a fabricated id would close somebody else's row on recovery), `close_run` is a no-op, reads
+are empty with `degraded: true`, and `/api/graph/self` answers **200 with an honest "the map
+is unavailable"** rather than a 503 — the opposite of the Studio's call, because nothing the
+Atlas draws is ever saved back. Two shapes are chosen against the grain: `mastery` degrades
+to `None` and not `{}`, since an outage reading as "nobody has earned anything" would let
+one reshuffle undo every earned continuity; and the authoring pass REFUSES before it spends,
+because a real model call to author a decomposition of an unreadable inventory would produce
+a plan with nowhere to land.
 
 ---
 

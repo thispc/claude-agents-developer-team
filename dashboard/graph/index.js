@@ -347,7 +347,35 @@ function setRoomNow(i, level) {
 }
 
 // ---- painting -------------------------------------------------------------------
+/** The store is a SERVICE since P5, and when it is not answering the payload says
+ * so instead of arriving empty: `degraded: true`, no plan, no nodes. Drawing that
+ * as a bare room would read as "this repository has no modules", which is the one
+ * thing it does not mean — so the room says it out loud, and says what is still
+ * true (the crew is unaffected; only the map is gone). Returns true when it took
+ * over the stage. */
+function paintUnavailable(i, data) {
+  if (!data || !data.degraded || (data.nodes || []).length) return false;
+  i.data = data;
+  i.byKey = new Map();
+  i.roomKeys = new Set();
+  i.cards = new Map();
+  i.inEdges = [];
+  i.room.style.setProperty("--gr-cols", "1");
+  i.room.innerHTML =
+    `<div class="gr-unavailable" role="status">` +
+    `<p class="gr-unavailable-head">The map is unavailable.</p>` +
+    `<p>${esc(data.reason || "the module graph's store is not answering.")}</p>` +
+    `</div>`;
+  const planInfo = document.getElementById("graphPlanInfo");
+  if (planInfo) planInfo.textContent = "store unavailable";
+  renderCrumb(i);
+  renderGoalChip(i);
+  renderLegend(i);
+  return true;
+}
+
 function paint(i, data) {
+  if (paintUnavailable(i, data)) return;
   i.data = data;
   deriveGroupHealth(data);
   i.byKey = new Map((data.nodes || []).map((n) => [String(n.key), n]));

@@ -21,6 +21,15 @@ from app import auth, config, db, modgraph, modgraph_author, repair, tuning
 from app import repair_builder as rb
 
 
+def _svc_rows(sql: str, params: tuple = ()) -> list[dict]:
+    """The graph's rows, wherever they currently live — another process's since
+    P5, the conductor's again under MODGRAPH_ROLLBACK. The drills below assert
+    about the ROWS (a superseded plan not edited, a no-op that wrote nothing),
+    and asking through the client would only prove it agrees with itself."""
+    from conftest import graph_rows
+    return graph_rows(sql, params)
+
+
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
     from app import launcher
@@ -209,11 +218,11 @@ def test_the_manager_authors_the_plan_once_and_identical_is_a_noop(fresh_db, mon
         sorted(f["id"] for f in repair.enabled_factors())
 
     # identical answer -> no writes, no events, version unchanged; still one call
-    n_plans = db._rows("SELECT COUNT(*) AS n FROM graph_plans")[0]["n"]
+    n_plans = _svc_rows("SELECT COUNT(*) AS n FROM graph_plans")[0]["n"]
     calls.clear()
     pid2 = asyncio.run(modgraph_author.author_self_plan())
     assert pid2 == pid and len(calls) == 1
-    assert db._rows("SELECT COUNT(*) AS n FROM graph_plans")[0]["n"] == n_plans
+    assert _svc_rows("SELECT COUNT(*) AS n FROM graph_plans")[0]["n"] == n_plans
     ready = [e for e in db.list_events(0) if e["kind"] == "graph_plan_ready"]
     assert len(ready) == 1, "an unchanged plan must not re-fire the reveal"
 

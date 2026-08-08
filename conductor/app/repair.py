@@ -737,7 +737,10 @@ def _graph_node_for(task: dict) -> tuple[int, str] | None:
 
     LEAVES only: a group's boundary is the union of its children's, so letting
     groups into the match would swallow every build their children should own —
-    runs land on modules, the payload rolls them up to the layer."""
+    runs land on modules, the payload rolls them up to the layer.
+
+    None when the store cannot be read (P5): the build proceeds untraced. A gap in
+    the map is a gap; it is never a reason not to build."""
     from . import modgraph
     plan = modgraph.active_plan(0)
     if not plan:
@@ -754,8 +757,13 @@ def _graph_node_for(task: dict) -> tuple[int, str] | None:
             return pid, n["key"]
     hid = _graph_specialist_id(task)
     if hid:
+        # One call for every assignment on the plan, not one per node: this runs
+        # on the build hook of every sprint task, and since P5 each row read is a
+        # round trip. Still walked in NODE order, so a specialist assigned to two
+        # modules gets the same answer it always did.
+        assign_by = modgraph.assigns(pid)
         for n in nodes:
-            a = modgraph.get_assign(pid, n["key"])
+            a = assign_by.get(n["key"])
             if a and a.get("agent_id") == hid:
                 return pid, n["key"]
     return None

@@ -173,6 +173,7 @@
       },
       "post": {
         "summary": "Make World",
+        "description": "The one POST that hangs off `app` rather than `wr`, because it has no world\nid to be scoped by \u2014 so it does not inherit COMMON and has to say the 400\nitself. (Found by the contract fuzzer during P5, on a spec written in P4: a\ndocumented answer set that omits the framework's own is a contract with a hole\nin it, whichever phase notices.)",
         "operationId": "make_world_worlds_post",
         "parameters": [
           {
@@ -294,6 +295,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "a body that is not JSON at all \u2014 the framework's own answer, before any model sees it"
           },
           "422": {
             "description": "Validation Error",
