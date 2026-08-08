@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import MODGRAPH_ROLLBACK, dashboard_js  # the split dashboard JS, in load order
+from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
 
 DASH = Path(__file__).resolve().parent.parent / "dashboard"
 HTML = (DASH / "index.html").read_text()
@@ -139,8 +139,6 @@ def test_the_about_page_says_keys_never_leave_the_conductor():
     assert "without the key ever going out" in HTML
 
 
-@pytest.mark.skipif(MODGRAPH_ROLLBACK,
-                    reason="rollback mode is the pre-P5 world: the six are back")
 def test_the_table_count_matches_the_schema():
     # knowledge's one table left with P1, lw_worlds with P4, and the module graph's
     # SIX with P5: each is a SERVICE's now (services/knowledge → data/knowledge.db,

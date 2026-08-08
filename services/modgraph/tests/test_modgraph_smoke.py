@@ -444,3 +444,231 @@ def test_the_first_boot_copy_keeps_the_ids_and_settles_either_way(tmp_path):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+
+# --------------------------------------------------------------------------
+# the seed, against the repository that actually exists
+# --------------------------------------------------------------------------
+#
+# These MOVED here with the P5 cutover, from tests/test_module_graph.py. They are
+# claims about the tree, computed by seed.py from the tree, and nothing outside a
+# service's directory may import inside it — a conductor suite asserting them
+# would be asserting them about code it can only read as text. What stayed
+# conductor-side is the seam and the screen: the BFF's payload, the verify runner,
+# the authoring brain, the Atlas pins.
+
+def test_the_seed_matches_reality(clean_store):
+    """A fallback graph that names files which are not there is worse than no
+    graph: every claim in it — boundaries, test mapping, contracts, specs — is
+    checked against the working tree, because the seed's one job is to be true."""
+    c = client()
+    pid = c.post("/seed").json()["plan_id"]
+    nodes = c.get(f"/plans/{pid}/nodes").json()["nodes"]
+    keys = [n["key"] for n in nodes]
+    assert keys[0] == "aim" and keys[-1] == "conclusion"
+    groups = {n["key"] for n in nodes if n["node_type"] == "group"}
+    leaves = {n["key"] for n in nodes if n["node_type"] == "code"}
+    assert groups == {"backend", "frontend", "data", "agents", "selfrepair"}
+    assert leaves == {"routes", "guards", "shell", "db", "manager",
+                      "orchestration", "repair", "lifeworld", "knowledge", "ops",
+                      "worker", "dash-core", "dash-views", "canvas"}
+    assert set(keys) == groups | leaves | {"aim", "conclusion"}
+
+    # TWO LEVELS, structurally: every top node between aim and conclusion is a
+    # GROUP; every module is the child of exactly one group; a group's boundary
+    # is precisely the union of its children's — an architecture diagram whose
+    # zoomed-out level cannot drift from the modules underneath it.
+    by = {n["key"]: n for n in nodes}
+    for n in nodes:
+        if n["node_type"] in ("aim", "conclusion", "group"):
+            assert n["parent_key"] == "", f"{n['key']} must sit at the top level"
+        else:
+            assert by.get(n["parent_key"], {}).get("node_type") == "group", \
+                f"module {n['key']} is not parented to a group"
+    for g in sorted(groups):
+        kids = [x for x in nodes if x["parent_key"] == g]
+        assert kids, f"group {g} has no children"
+        assert by[g]["paths"] == sorted({p for x in kids for p in x["paths"]}), \
+            f"group {g}'s paths are not the union of its children's"
+        assert by[g]["spec"], f"group {g} carries no spec"
+
+    for n in nodes:                        # every boundary entry exists in the repo
+        for p in n["paths"]:
+            assert (REPO / p).exists(), f"node {n['key']} claims missing path {p}"
+    for t in c.get(f"/plans/{pid}/tests").json()["tests"]:
+        assert (REPO / t["path"]).exists(), f"mapped test {t['path']} does not exist"
+
+    # the specs are the modules' real docstrings, not a seed file's memory of them
+    specs = {n["key"]: n["spec"] for n in nodes}
+    assert "the ownership gates every router leans on" in specs["guards"]
+    assert "stored so it can be found again" in specs["knowledge"]
+    assert "Native SVG/DOM hit-testing" in specs["canvas"]
+
+    # the ports contract is LITERALLY true: `from ..` only behind the one door
+    edges = c.get(f"/plans/{pid}/edges").json()["edges"]
+    ports = next(e for e in edges
+                 if e["src_key"] == "lifeworld" and e["dst_key"] == "routes")
+    ct = ports["contract"]
+    assert ct["kind"] == "ports"
+    offenders = [f.name for f in (REPO / ct["package"]).glob("*.py")
+                 if ct["pattern"] in f.read_text() and f.name != ct["door"]]
+    assert not offenders, f"the ports contract is no longer true: {offenders}"
+    assert ct["pattern"] in (REPO / ct["package"] / ct["door"]).read_text(), \
+        "the contract is vacuous — the door itself no longer uses the pattern"
+
+    # the dashboard load-order edges agree with index.html's actual script order
+    html = (REPO / "dashboard" / "index.html").read_text()
+    for e in edges:
+        lc = e["contract"]
+        if lc.get("kind") != "load-order":
+            continue
+        before = html.index(f'src="{lc["before"]}"')
+        for name in lc["after"]:
+            assert html.index(f'src="{name}"') > before, \
+                f"{name} loads before {lc['before']} — the " \
+                f"{e['src_key']}→{e['dst_key']} edge lies"
+
+
+def test_the_seeds_top_level_edges_are_exactly_the_derivation(clean_store):
+    """The stored group-to-group edges are the derivation over the stored child
+    edges — no hand-curated arrow at the top level — and the frame holds: the aim
+    feeds every layer, every layer feeds the conclusion, and no edge mixes a group
+    with a leaf (the canvas clips by level)."""
+    c = client()
+    pid = c.post("/seed").json()["plan_id"]
+    nodes = c.get(f"/plans/{pid}/nodes").json()["nodes"]
+    parent_of = {n["key"]: n["parent_key"] for n in nodes if n["parent_key"]}
+    groups = {n["key"] for n in nodes if n["node_type"] == "group"}
+    edges = [{"src": e["src_key"], "dst": e["dst_key"], "edge_type": e["edge_type"],
+              "contract": e["contract"], "contract_test": e["contract_test"]}
+             for e in c.get(f"/plans/{pid}/edges").json()["edges"]]
+    child = [e for e in edges if e["src"] in parent_of and e["dst"] in parent_of]
+    stored = [e for e in edges if e["src"] in groups and e["dst"] in groups]
+    derived = c.post("/derive-group-edges",
+                     json={"child_edges": child, "parent_of": parent_of}).json()["edges"]
+    assert stored == derived
+    assert stored, "the layers of a working platform cannot be unconnected"
+    for g in sorted(groups):
+        assert any(e["src"] == "aim" and e["dst"] == g for e in edges)
+        assert any(e["src"] == g and e["dst"] == "conclusion" for e in edges)
+    for e in edges:
+        assert (e["src"] in groups) == (e["dst"] in groups) or \
+            e["src"] == "aim" or e["dst"] == "conclusion", \
+            f"{e['src']}→{e['dst']} mixes the two levels"
+
+
+def test_every_leaf_shows_its_real_suites_routes_included(clean_store):
+    """The live defect: the `routes` leaf claimed "no tests mapped" while its
+    group rolled up 22, because the import parser anchored at column 0 and every
+    routes import in the tests is INDENTED (inside a test function). Named here
+    because routes is where it was caught lying."""
+    c = client()
+    pid = c.post("/seed").json()["plan_id"]
+    got = c.get(f"/plans/{pid}/tests", params={"node_key": "routes"}).json()["tests"]
+    assert [t for t in got if t["kind"] == "suite"], \
+        "the routes leaf must map its real suites in the seed"
+
+
+def test_group_edges_are_derived_and_the_input_is_not_mutated(clean_store):
+    """Group A → group B iff any child of A touches any child of B, the first
+    crossing edge in input order riding up as the representative; an edge inside
+    one layer is that layer's private business, and an endpoint with no parent
+    derives nothing. Pure: lists in, list out."""
+    c = client()
+    parent_of = {"a1": "A", "a2": "A", "b1": "B", "c1": "C"}
+    child = [
+        {"src": "a1", "dst": "a2", "edge_type": "interface",
+         "contract": {"rule": "in-house"}, "contract_test": "tests/t_aa.py"},
+        {"src": "a1", "dst": "b1", "edge_type": "data",
+         "contract": {"rule": "first crossing"}, "contract_test": "tests/t_ab.py"},
+        {"src": "a2", "dst": "b1", "edge_type": "interface",
+         "contract": {"rule": "second crossing, not the representative"},
+         "contract_test": ""},
+        {"src": "b1", "dst": "c1", "edge_type": "depends", "contract": {},
+         "contract_test": ""},
+        {"src": "b1", "dst": "orphan", "edge_type": "depends", "contract": {},
+         "contract_test": ""},
+    ]
+    before = [dict(e) for e in child]
+    got = c.post("/derive-group-edges",
+                 json={"child_edges": child, "parent_of": parent_of}).json()["edges"]
+    assert got == [
+        {"src": "A", "dst": "B", "edge_type": "data",
+         "contract": {"rule": "first crossing"}, "contract_test": "tests/t_ab.py"},
+        {"src": "B", "dst": "C", "edge_type": "depends", "contract": {},
+         "contract_test": ""},
+    ]
+    assert child == before, "the derivation must not mutate its input"
+
+
+def test_drift_makes_a_new_version_and_never_touches_the_old_rows(clean_store,
+                                                                  monkeypatch):
+    """The whole reason plans are versions: 'what did we believe when this was
+    built' must stay answerable. So a drifted tree produces a NEW plan, and the
+    only byte that changes on the old one is its status."""
+    c = client()
+    v1 = c.post("/seed").json()["plan_id"]
+    con = svc.helpers.db()
+    before = {t: [dict(r) for r in con.execute(
+        f"SELECT * FROM {t} WHERE plan_id=? ORDER BY id", (v1,)).fetchall()]
+        for t in ("graph_nodes", "graph_edges", "graph_node_tests")}
+    plan1 = dict(con.execute("SELECT * FROM graph_plans WHERE id=?", (v1,)).fetchone())
+
+    real = svc.seed.self_manifest
+
+    def drifted():
+        man = real()
+        man["nodes"][1]["spec"] = "the backend layer, freshly reworded"
+        return man
+    monkeypatch.setattr(svc.seed, "self_manifest", drifted)
+
+    v2 = c.post("/seed").json()["plan_id"]
+    assert v2 != v1
+    plan2 = c.get("/plans/active", params={"project_id": 0}).json()["plan"]
+    assert plan2["id"] == v2 and plan2["version"] == plan1["version"] + 1
+    assert plan2["authored_by"] == "seed"
+    for t, rows in before.items():
+        now = [dict(r) for r in con.execute(
+            f"SELECT * FROM {t} WHERE plan_id=? ORDER BY id", (v1,)).fetchall()]
+        assert now == rows, f"{t} rows of the superseded plan were edited"
+    after = dict(con.execute("SELECT * FROM graph_plans WHERE id=?", (v1,)).fetchone())
+    assert after["status"] == "superseded"
+    assert {k: v for k, v in after.items() if k != "status"} == \
+           {k: v for k, v in plan1.items() if k != "status"}
+
+
+def test_the_seed_never_overwrites_a_managers_plan(clean_store):
+    """The fallback is the floor, not the ceiling: the day the crew's manager
+    authors a plan, reseeding must leave it in charge."""
+    c = client()
+    pid = c.post("/plans", json={"project_id": 0, "authored_by": "manager",
+                                 "notes": "the crew's own plan"}).json()["plan_id"]
+    c.post(f"/plans/{pid}/nodes", json={"key": "aim", "title": "the crew's aim",
+                                        "node_type": "aim"})
+    c.post(f"/plans/{pid}/activate")
+    assert c.post("/seed").json()["plan_id"] == pid
+    assert c.get("/plans/active",
+                 params={"project_id": 0}).json()["plan"]["authored_by"] == "manager"
+
+
+def test_an_advisory_result_touches_only_the_test_rows(clean_store):
+    """V1's promise: a red suite embarrasses, it does not brick. On this side of
+    the wire that means the verdict may touch graph_node_tests and none of the
+    store's other five tables. (The conductor keeps the other half of the claim —
+    that no task row, project status or kv flag moved either.)"""
+    c = client()
+    pid = c.post("/seed").json()["plan_id"]
+    con = svc.helpers.db()
+    others = [t for t in svc.store.TABLES if t != "graph_node_tests"]
+    snap = {t: [dict(r) for r in con.execute(f"SELECT * FROM {t}").fetchall()]
+            for t in others}
+    changed = c.post(f"/plans/{pid}/test-result",
+                     json={"path": "tests/test_module_graph.py", "status": "failing",
+                           "last_result": "1 failed — boom"}).json()["updated"]
+    assert changed >= 1
+    rows = [t for t in c.get(f"/plans/{pid}/tests").json()["tests"]
+            if t["path"] == "tests/test_module_graph.py"]
+    assert rows and all(t["status"] == "failing" for t in rows)
+    for t in others:
+        now = [dict(r) for r in con.execute(f"SELECT * FROM {t}").fetchall()]
+        assert now == snap[t], f"an advisory result wrote to {t}"

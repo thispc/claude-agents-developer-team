@@ -24,10 +24,10 @@ def _fresh_beats():
 
 
 def _svc_rows(sql: str, params: tuple = ()) -> list[dict]:
-    """The graph's rows, wherever they currently live — another process's since
-    P5, the conductor's again under MODGRAPH_ROLLBACK. The drills below assert
-    about the ROWS (a superseded plan not edited, a no-op that wrote nothing),
-    and asking through the client would only prove it agrees with itself."""
+    """Rows straight out of the modgraph SERVICE's own database. The drills below
+    assert about the ROWS (a superseded plan not edited, a no-op that wrote
+    nothing), and since the P5 cutover those rows are another process's — asking
+    through the client would only prove it agrees with itself."""
     from conftest import graph_rows
     return graph_rows(sql, params)
 
@@ -285,8 +285,18 @@ def test_assignment_validates_pool_membership_and_refuses_groups(root_client):
 
 
 # --------------------------------------------------------------------------
-# mastery: earned at 3, kept on ties, taken only by exceeding, replan-proof
+# mastery ON THE PAYLOAD — the decoration, not the arithmetic
 # --------------------------------------------------------------------------
+#
+# The COUNTING moved to services/modgraph with the trace it reads (the tie rule,
+# the exceed rule, wrong kinds and open runs earning nothing, surviving a replan
+# by node key): it is a JOIN over two tables that are both that service's, and a
+# conductor drill would be asserting arithmetic this process no longer performs.
+# What is left here is what only the conductor can say — that the payload carries
+# mastery per node, decorated with WHO the agent id is from the crew's own
+# record, and that a node with no history answers an honest null rather than a
+# zero-run master. The rule that OUTRANKS the manager's reshuffle stays below,
+# because that is the authoring brain, and the brain did not move.
 
 def _ok_run(pid: int, key: str, agent_id: int, kind: str = "build"):
     rid = modgraph.note_run(pid, key, kind, agent_id=agent_id, status="running")
@@ -294,7 +304,7 @@ def _ok_run(pid: int, key: str, agent_id: int, kind: str = "build"):
     return rid
 
 
-def test_mastery_appears_at_three_verified_runs(root_client):
+def test_the_payload_carries_mastery_and_an_honest_null(root_client):
     plan = modgraph.active_plan(0)
     pid = plan["id"]
     _ok_run(pid, "knowledge", 71)
@@ -307,47 +317,20 @@ def test_mastery_appears_at_three_verified_runs(root_client):
     assert _nodes(root_client)[0]["knowledge"]["mastery"]["master"] is True
 
 
-def test_failed_and_still_open_runs_earn_nothing(root_client):
-    plan = modgraph.active_plan(0)
-    pid = plan["id"]
-    rid = modgraph.note_run(pid, "db", "build", agent_id=71, status="running")
-    modgraph.close_run(rid, "failed", "red suite")
-    modgraph.note_run(pid, "db", "build", agent_id=71, status="running")   # never closed
-    _ok_run(pid, "db", 71, kind="judge")                                    # wrong kind
-    assert mh.mastery(0).get("db") is None
-
-
-def test_a_challenger_must_exceed_the_master_not_merely_match(root_client):
-    plan = modgraph.active_plan(0)
-    pid = plan["id"]
-    for _ in range(3):
-        _ok_run(pid, "knowledge", 71)
-    for _ in range(3):
-        _ok_run(pid, "knowledge", 72)      # the challenger catches up…
-    m = mh.mastery(0)["knowledge"]
-    assert m["agent_id"] == 71 and m["master"] is True, \
-        "a tie keeps the incumbent — later runs do not steal at equal count"
-    _ok_run(pid, "knowledge", 72)          # …and now exceeds
-    m = mh.mastery(0)["knowledge"]
-    assert m["agent_id"] == 72 and m["runs"] == 4 and m["master"] is True
-
-
-def test_mastery_survives_a_replan_by_node_key(root_client):
+def test_a_replan_keeps_mastery_on_the_payload_by_node_key(root_client):
+    """The arithmetic is the service's; that it SURVIVES a replan is the thing an
+    operator sees on the card, so the payload half is drilled here."""
     v1 = modgraph.active_plan(0)["id"]
     for _ in range(3):
         _ok_run(v1, "knowledge", 71)
-    # a replan: NEW version, same key — the old rows stay, the count carries
     v2 = modgraph.create_plan(0, authored_by="manager", notes="replanned")
     modgraph.add_node(v2, "aim", "aim", node_type="aim")
     modgraph.add_node(v2, "knowledge", "What agents have learned")
     modgraph.add_node(v2, "conclusion", "done", node_type="conclusion")
     modgraph.activate(v2)
-    m = mh.mastery(0)["knowledge"]
-    assert m == {"agent_id": 71, "runs": 3, "master": True}
     by, _ = _nodes(root_client)
-    assert by["knowledge"]["mastery"]["master"] is True
-    _ok_run(v2, "knowledge", 71)           # runs on the new version keep adding up
-    assert mh.mastery(0)["knowledge"]["runs"] == 4
+    assert by["knowledge"]["mastery"]["master"] is True, \
+        "a replan amnestied the trace on the screen"
 
 
 def test_the_authoring_pass_keeps_the_master_over_the_managers_pick(fresh_db, monkeypatch):

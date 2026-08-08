@@ -9,7 +9,8 @@
 # live in that script), tools/gen_fleet.py regenerates process-compose.yaml +
 # data/env + data/tokens + data/fleet_topology.json from services.yaml, then
 # process-compose boots every managed service (the conductor plus knowledge 8881,
-# usage 8882, notify 8883, watch 8884 and lifeworld 8885) with readiness probes, restarts, and its
+# usage 8882, notify 8883, watch 8884, lifeworld 8885 and modgraph 8886) with
+# readiness probes, restarts, and its
 # REST API token-authed on the fleet_api port (8899 — see services.yaml; token in
 # data/tokens/fleet-api.token).
 #
@@ -59,7 +60,7 @@ if [[ "${1:-}" == "--legacy" || "${RUN_LEGACY:-}" == "1" ]]; then
 
   # Each extracted service, started as a child of this shell. One loop rather than
   # a copy per service: the next extraction adds a name here and nothing else, and
-  # five drifting copies of a readiness wait is exactly how one of them quietly
+  # six drifting copies of a readiness wait is exactly how one of them quietly
   # stops waiting. Order does not matter — the conductor is the only caller, and it is
   # started last. (watch is the one the conductor would most like started first,
   # since it holds the log ring, but it does not NEED to be: rows written before
@@ -70,7 +71,7 @@ if [[ "${1:-}" == "--legacy" || "${RUN_LEGACY:-}" == "1" ]]; then
   # crash rather than as "this service did not come up" — and on the meter it
   # would be worse than a crash, because a conductor that cannot see the quota
   # must not be guessing about it.
-  for svc in knowledge usage notify watch lifeworld; do
+  for svc in knowledge usage notify watch lifeworld modgraph; do
     svc_port="$(.venv/bin/python -c "import json,sys; print(json.load(open('data/fleet_topology.json'))['services'][sys.argv[1]]['port'])" "${svc}")"
     svc_url="http://127.0.0.1:${svc_port}"
     if curl -fsS --max-time 2 "${svc_url}/health" >/dev/null 2>&1; then
@@ -94,7 +95,7 @@ if [[ "${1:-}" == "--legacy" || "${RUN_LEGACY:-}" == "1" ]]; then
   done
 
   echo "devteam conductor (legacy: outside process-compose) → http://127.0.0.1:${PORT}   (login: ${ROOT_USERNAME:-root} / ${ROOT_PASSWORD:-devteam})"
-  echo "data: $(pwd)/devteam.db · services: $(pwd)/data/{knowledge,usage,notify,watch,lifeworld}.db · stop with Ctrl-C"
+  echo "data: $(pwd)/devteam.db · services: $(pwd)/data/{knowledge,usage,notify,watch,lifeworld,modgraph}.db · stop with Ctrl-C"
   exec .venv/bin/uvicorn app.main:app --app-dir conductor --host 127.0.0.1 --port "${PORT}"
 fi
 

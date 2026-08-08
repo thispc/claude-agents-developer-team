@@ -159,20 +159,33 @@ the priority exactly backwards. **The graph is observability, not the substrate.
 
 ## Tests
 
-`pytest services/modgraph/tests` — offline, no sockets:
+`pytest services/modgraph/tests` — offline, no sockets, and since the cutover it
+is where the STORAGE and DERIVATION suites live too:
 
 - `test_modgraph_smoke.py` — the contract, the token, the no-conductor-import
-  grep, the seed's idempotence, immutable versions, the one-transaction import,
-  the reconciled tier, affected-only selection, mastery across plan versions, and
-  the first-boot copy with the ids preserved
+  grep; the seed against the real working tree (every boundary path, every mapped
+  suite, the ports contract, the dashboard load order); immutable versions and the
+  drift rule; the one-transaction import and its rollback; the reconciled top
+  tier; affected-only selection; mastery across plan versions; and the first-boot
+  copy with the ids preserved
 - `test_modgraph_contract.py` — Schemathesis against the **committed** spec over ASGI
 
-What stays conductor-side is the seam and the screen: `tests/test_module_graph.py`
-(the seed against the real tree, the payload), `tests/test_module_runtime.py` and
-`tests/test_graph_author.py` (the authoring brain, which did not move), and
-`tests/test_modgraph_service.py` — every endpoint's auth, the derivation across
-the wire, every degraded shape, and the drill that matters most: **the crew keeps
-building with this service stopped.**
+Those seed, derivation, immutability and mastery drills MOVED here with the P5
+cutover, from `tests/test_module_graph.py` and `tests/test_module_runtime.py`.
+They are claims about rows and files this process owns, and nothing outside a
+service's directory may import inside it — a conductor suite asserting them would
+be asserting them about code it can only read as text.
+
+What stayed conductor-side is the SEAM and the SCREEN: `tests/test_module_graph.py`
+(the BFF's payload, the verify runner that shells out to that checkout's pytest,
+the advisory promise about the conductor's OWN tables, the operator gates),
+`tests/test_module_runtime.py` (the payload's mastery decoration, node removal,
+the probes and switches P6 will replace), `tests/test_graph_author.py` (the
+authoring brain, entire — it did not move), `tests/test_module_graph_ui.py` (the
+Atlas pins), and `tests/test_modgraph_service.py` — every endpoint's auth, the
+derivation across the wire, every degraded shape, the loud door, the conditional
+drop, and the drill that matters most: **the crew keeps building with this service
+stopped.**
 
 ## UI
 

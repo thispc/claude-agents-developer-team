@@ -22,10 +22,10 @@ from app import repair_builder as rb
 
 
 def _svc_rows(sql: str, params: tuple = ()) -> list[dict]:
-    """The graph's rows, wherever they currently live — another process's since
-    P5, the conductor's again under MODGRAPH_ROLLBACK. The drills below assert
-    about the ROWS (a superseded plan not edited, a no-op that wrote nothing),
-    and asking through the client would only prove it agrees with itself."""
+    """Rows straight out of the modgraph SERVICE's own database. The drills below
+    assert about the ROWS (a superseded plan not edited, a no-op that wrote
+    nothing), and since the P5 cutover those rows are another process's — asking
+    through the client would only prove it agrees with itself."""
     from conftest import graph_rows
     return graph_rows(sql, params)
 

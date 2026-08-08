@@ -85,19 +85,7 @@ _MODGRAPH_URL = "http://modgraph.test"
 os.environ["KNOWLEDGE_URL"] = _KNOWLEDGE_URL
 os.environ["USAGE_URL"] = _USAGE_URL
 os.environ["NOTIFY_URL"] = _NOTIFY_URL
-# Set BEFORE `from app import ...`: the modgraph shim decides its mode at import
-# (URL set = client, unset = the vendored pre-P5 body), and a process boots into
-# one world and stays there.
-#
-# MODGRAPH_ROLLBACK=1 runs the WHOLE suite in the other mode — the between-commits
-# rollback, exercised rather than asserted. It exists only for the strangler
-# window and goes with the vendored body in commit B. Everything P5-specific
-# (the drills, the service's own store) skips itself; everything else must pass
-# unchanged, because "unset the URL and you are back where you were" is either
-# true of the whole suite or it is not true.
-MODGRAPH_ROLLBACK = os.environ.pop("MODGRAPH_ROLLBACK", "") == "1"
-if not MODGRAPH_ROLLBACK:
-    os.environ["MODGRAPH_URL"] = _MODGRAPH_URL
+os.environ["MODGRAPH_URL"] = _MODGRAPH_URL
 # Set BEFORE `from app import ...` below: the logs and monitor shims decide their
 # mode at import (URL set = client, unset = the vendored pre-P3 body), and a
 # process boots into one world and stays there.
@@ -188,10 +176,11 @@ watch_service = _mount_service("watch", WATCH_TEST_TOKEN)
 lifeworld_service = _mount_service("lifeworld", LIFEWORLD_TEST_TOKEN)
 # The module graph's six tables (P5). REPO_ROOT is pinned at the real checkout on
 # purpose: the seed's whole job is to describe the tree that is actually there, and
-# tests/test_module_graph.py holds every claim in it against those files.
-modgraph_service = (None if MODGRAPH_ROLLBACK
-                    else _mount_service("modgraph", MODGRAPH_TEST_TOKEN,
-                                        REPO_ROOT=str(REPO)))
+# services/modgraph's own suite holds every claim in it against those files. The
+# conductor mounts it because since the cutover /api/graph/* has nothing else to
+# read — the payload, the verify runner and the engine's build hooks are all
+# clients of this app.
+modgraph_service = _mount_service("modgraph", MODGRAPH_TEST_TOKEN, REPO_ROOT=str(REPO))
 
 from app import auth, db  # noqa: E402
 from app import knowledge as _knowledge  # noqa: E402
@@ -234,41 +223,23 @@ _lifeworld._TRANSPORT = httpx.ASGITransport(app=lifeworld_service.app)
 _lifeworld._sync_client = lambda *_a, **_k: _svc_client(
     lifeworld_service, _LIFEWORLD_URL, LIFEWORLD_TEST_TOKEN)
 
-if not MODGRAPH_ROLLBACK:
-    _modgraph._TOKEN = MODGRAPH_TEST_TOKEN
-    # The shim is sync all the way down (every caller is a plain function), so one
-    # factory covers it. `*a` because production passes a timeout.
-    _modgraph._client = lambda *_a, **_k: _svc_client(modgraph_service, _MODGRAPH_URL,
-                                                      MODGRAPH_TEST_TOKEN)
+_modgraph._TOKEN = MODGRAPH_TEST_TOKEN
+# The shim is sync all the way down (every caller is a plain function), so one
+# factory covers it. `*a` because production passes a timeout.
+_modgraph._client = lambda *_a, **_k: _svc_client(modgraph_service, _MODGRAPH_URL,
+                                                  MODGRAPH_TEST_TOKEN)
 
 
 def graph_rows(sql: str, params: tuple = ()) -> list[dict]:
-    """The graph's rows, wherever they currently live.
+    """Rows straight out of the modgraph SERVICE's own database.
 
-    Several drills assert about the ROWS rather than the answer — a superseded plan
-    that was not edited, a pure selection that wrote nothing — and P5 moved them into
-    another process. In rollback mode they are the conductor's again, which IS the
-    rollback, so the same drills read them there and stay meaningful in both modes."""
-    if MODGRAPH_ROLLBACK:
-        return db._rows(sql, params)
+    A handful of conductor-side drills assert about the ROWS rather than about the
+    answer — that a verify's verdict really landed, that an advisory result touched
+    nothing else. Since the cutover those rows are another process's, so the drills
+    read them where they are; asking through the client would only prove the client
+    agrees with itself."""
     return [dict(r) for r in
             modgraph_service.helpers.db().execute(sql, params).fetchall()]
-
-
-def patch_self_manifest(monkeypatch, make) -> None:
-    """Inject a drifted manifest where it is actually BUILT — the service in
-    client mode, the vendored body in rollback mode. Faking it on the client's
-    side would fake its opinion of an answer it does not compute.
-
-    `make(real)` returns the replacement, and it is given the REAL builder for
-    the mode it is running in. Letting the caller reach for it instead would mean
-    reaching through the client in rollback mode, where the client IS the builder
-    — a wrapper calling itself, which recurses until the stack gives out."""
-    if MODGRAPH_ROLLBACK:
-        monkeypatch.setattr(_modgraph, "_self_manifest", make(_modgraph._self_manifest))
-    else:
-        monkeypatch.setattr(modgraph_service.seed, "self_manifest",
-                            make(modgraph_service.seed.self_manifest))
 
 _logs._TOKEN = WATCH_TEST_TOKEN
 _logs._client = lambda: _svc_client(watch_service, _WATCH_URL, WATCH_TEST_TOKEN)
@@ -476,10 +447,11 @@ def fresh_db():
     # conditional path runs, in the order a real boot runs it.
     from app import lifeworld_client, modgraph
     lifeworld_client.init()
-    # In client mode this is the documented no-op of commit A: the six graph_*
-    # tables stay in the conductor's database untouched (they are the rollback),
-    # and the service owns the rows the platform actually reads. Called anyway, in
-    # the order a real boot calls it.
+    # modgraph.init() drops the six graph_* tables (and the layout kv keys) once
+    # the service says it has settled its first-boot copy. Here there is no legacy
+    # db to copy from, so the service settles immediately and the drop is a no-op
+    # on a fresh database — the point is that the real conditional path runs, in
+    # the order a real boot runs it.
     modgraph.init()
     # The mounted services outlive any one test's database, so empty their stores
     # here too — a test that recalls must see only what it remembered, and a test
@@ -492,9 +464,7 @@ def fresh_db():
     _logs._degraded_read = False
     # ...and the graph client's, for the same reason: a test that drilled the
     # outage would otherwise leave the next test's payload flagged `degraded`.
-    # (Absent in rollback mode, where nothing can be unreachable.)
-    if not MODGRAPH_ROLLBACK:
-        _modgraph._degraded_read = False
+    _modgraph._degraded_read = False
     for svc, tables in ((knowledge_service, ("knowledge",)),
                         (usage_service, ("usage_rows",)),
                         (notify_service, ("notify_seen", "notify_sent")),
@@ -510,16 +480,13 @@ def fresh_db():
                         (modgraph_service, ("graph_plans", "graph_nodes", "graph_edges",
                                             "graph_node_runs", "graph_node_tests",
                                             "graph_assign"))):
-        if svc is None:
-            continue                       # rollback mode: the rows are db.init()'s again
         for table in tables:
             svc.helpers.db().execute(f"DELETE FROM {table}")
         svc.helpers.db().commit()
-    if modgraph_service is not None:
-        # ...and the layouts, which are kv and keyed by plan id, so a recycled id
-        # would inherit somebody else's drag.
-        modgraph_service.helpers.db().execute("DELETE FROM kv WHERE key LIKE 'graph:pos:%'")
-        modgraph_service.helpers.db().commit()
+    # ...and the layouts, which are kv and keyed by plan id, so a recycled id
+    # would inherit somebody else's drag.
+    modgraph_service.helpers.db().execute("DELETE FROM kv WHERE key LIKE 'graph:pos:%'")
+    modgraph_service.helpers.db().commit()
     # ...and the standing decision, which is not a table row: a suite that
     # inherited `auto` from an earlier test would start approving by itself.
     watch_service.helpers.db().execute("DELETE FROM kv WHERE key = 'auto'")

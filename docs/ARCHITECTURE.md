@@ -213,7 +213,7 @@ not recorded; room members answer `None`, so the Atlas panel and the assignment 
 "unavailable" rather than "empty".
 
 *The cutover.* `LIFEWORLD_URL` is required, `lifeworld_client.init()` refuses without it
-naming `run-local.sh`, and `--legacy` starts all five services. The `lw_worlds` table left
+naming `run-local.sh`, and `--legacy` gained it as its fifth child. The `lw_worlds` table left
 the conductor's schema — and it is dropped **conditionally**, exactly like watch's four kv
 keys in P3: nothing orders the two processes, so `init()` asks `GET /health` for
 `backfilled` first, and a service that has not settled its first-boot copy keeps the table
@@ -291,6 +291,30 @@ to `None` and not `{}`, since an outage reading as "nobody has earned anything" 
 one reshuffle undo every earned continuity; and the authoring pass REFUSES before it spends,
 because a real model call to author a decomposition of an unreadable inventory would produce
 a plan with nowhere to land.
+
+*The cutover.* `MODGRAPH_URL` is required, `modgraph.init()` refuses without it naming
+`run-local.sh`, and `--legacy` starts all six services. The six `graph_*` tables left the
+conductor's schema (33 declared tables → 27) — and they are dropped **conditionally**, like
+watch's four kv keys in P3 and `lw_worlds` in P4: nothing orders the two processes, so
+`init()` asks `GET /health` for `backfilled` first, and a service that has not settled its
+first-boot copy keeps them alive for the next boot to try again. The stakes are narrower
+than the lifeworld's and worth naming exactly: plans, nodes and edges regenerate from the
+tree in under a second and the manager re-authors on the next lineup change, but
+`graph_node_runs` does not — it is every build and verify any specialist has closed, and
+MASTERY IS COUNTED FROM IT rather than stored. Dropping it early would silently un-master
+every module, so the next authoring pass would reshuffle specialists off work they had
+earned, with nothing anywhere reporting the loss; `graph_assign`, the operator's own
+steering, would go the same way. The layout keys (`graph:pos:{plan_id}`) are dropped with
+them because they are keyed to a plan id that now lives in another process's database.
+Three graph kv keys deliberately STAY conductor-side, because they were never storage: the
+operator's directives to the manager (`graph:notes:0`), the authoring staleness stamp, and
+the assignment-pool pointer. P5-A also did not rename the tables aside, because the rollback
+then was the vendored body, which read them by name.
+
+*The tests split where the code did.* `services/modgraph/tests/` gained the seed's claims
+about the working tree, the immutable-version rules, the pure derivation and mastery's
+arithmetic. The conductor kept the seam and the screen: the payload, the verify runner, the
+authoring brain entire, the Atlas pins, and the boundary drills.
 
 ---
 

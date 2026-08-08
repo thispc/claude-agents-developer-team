@@ -15,15 +15,14 @@ that no other file would notice:
                  **THE CREW KEEPS BUILDING WITH THIS SERVICE STOPPED.** That is
                  the deliberate opposite of P4's honest pause, and the reason is
                  one sentence: the graph is observability, not the substrate.
-  rollback       unsetting the URL puts the conductor back in the monolith
-  the drop       commit B's condition, drilled here in commit A so the shape of
-                 the answer is settled before anything is dropped
+  the door       MODGRAPH_URL is required, and init() is where that is said
+  the drop       the six tables leave the conductor's schema — but only once the
+                 service says it has the rows, because what a premature drop
+                 costs is the TRACE, and mastery is counted from the trace
 """
 
 import asyncio
-import importlib
 import json
-import os
 import re
 import sys
 from pathlib import Path
@@ -33,16 +32,9 @@ import pytest
 from starlette.testclient import TestClient
 
 from app import db, logs, modgraph, modgraph_health, repair
-from conftest import (MODGRAPH_ROLLBACK, MODGRAPH_TEST_TOKEN, _MODGRAPH_URL,
-                      modgraph_service, login)
+from conftest import MODGRAPH_TEST_TOKEN, _MODGRAPH_URL, modgraph_service
 
 REPO = Path(__file__).resolve().parent.parent
-
-# Every drill here is about the BOUNDARY. Under MODGRAPH_ROLLBACK there is no
-# boundary — that is what the rollback means — so the file skips itself rather
-# than asserting things about a service the conductor is not talking to.
-pytestmark = pytest.mark.skipif(
-    MODGRAPH_ROLLBACK, reason="rollback mode: the store is in-process again")
 
 
 def _svc_client(*_a, **_k):
@@ -398,54 +390,112 @@ def test_authoring_refuses_before_it_spends_when_the_store_is_unreachable(
 
 
 # --------------------------------------------------------------------------
-# rollback, and the drop commit B will make
+# the cutover itself: a loud door, and a drop that waits
 # --------------------------------------------------------------------------
+#
+# `test_unsetting_the_url_puts_the_conductor_back_in_the_monolith` lived here
+# between the two commits and is GONE, along with the vendored body it exercised.
+# The rollback after the cutover is `git revert`, not an environment variable, and
+# the service's own database survives it either way because the rows were copied
+# out and never moved.
 
-def test_unsetting_the_url_puts_the_conductor_back_in_the_monolith(monkeypatch):
-    """The between-commits rollback, and the only one there is until commit B
-    deletes the vendored body. Unset MODGRAPH_URL and the shim BECOMES
-    `_modgraph_legacy` — the pre-P5 module, same functions, same six tables in
-    devteam.db, same introspectable source."""
-    import app as app_pkg
-    # Put the SAME object back afterwards, not a fresh import of it. Every lazy
-    # `from . import modgraph` (repair's build hooks, the BFF) resolves through
-    # sys.modules at CALL time, so a re-imported client would be a second module
-    # with no test transport wired into it — and the symptom is five unrelated
-    # mastery drills failing later in the file, which is how this was found.
-    original = sys.modules["app.modgraph"]
-    monkeypatch.delenv("MODGRAPH_URL", raising=False)
-    for name in ("app.modgraph", "app._modgraph_legacy"):
-        sys.modules.pop(name, None)
-    try:
-        fallback = importlib.import_module("app.modgraph")
-        assert hasattr(fallback, "SCHEMA"), "the fallback is not the legacy body"
-        assert fallback.SCHEMA.count("CREATE TABLE IF NOT EXISTS") == 6
-        assert fallback.__name__ == "app._modgraph_legacy"
-        for verb in ("create_plan", "nodes", "edges", "note_run", "close_run",
-                     "map_test", "set_assign", "positions", "affected_tests",
-                     "derive_group_edges", "seed_self_graph", "self_manifest"):
-            assert callable(getattr(fallback, verb)), f"{verb} is missing from the rollback"
-    finally:
-        os.environ["MODGRAPH_URL"] = _MODGRAPH_URL
-        sys.modules.pop("app._modgraph_legacy", None)
-        sys.modules["app.modgraph"] = original
-        app_pkg.modgraph = original
+def test_the_conductor_refuses_to_boot_without_the_service(monkeypatch):
+    """One clear message naming run-local.sh, at the honest moment. IMPORTING this
+    module must stay free — tools, tests and the seed do it without ever reaching
+    the store — so the refusal lives in init(), not at import."""
+    monkeypatch.setattr(modgraph, "_URL", "")
+    with pytest.raises(RuntimeError) as e:
+        modgraph.init()
+    assert "MODGRAPH_URL" in str(e.value) and "run-local.sh" in str(e.value)
 
 
-def test_commit_a_leaves_the_legacy_tables_exactly_where_they_are(mg):
-    """A DEPARTURE FROM P1-P3, and the same call P4 made. Those phases renamed
-    their legacy table aside; here the rollback is `_modgraph_legacy.py`, which
-    reads `graph_plans` and its five siblings BY NAME. Renaming would make a
-    rollback find six empty tables, reseed a fresh plan, and lose every closed run
-    the crew earned its mastery from.
+def test_nothing_reaches_for_the_deleted_fallback():
+    """The file is gone; what matters is that no code still reaches for it. (The
+    client names it in a docstring as history — a comment cannot import.)"""
+    assert not (REPO / "conductor" / "app" / "_modgraph_legacy.py").exists()
+    importers = [str(f) for f in (REPO / "conductor").rglob("*.py")
+                 if re.search(r"^\s*(from|import).*_modgraph_legacy", f.read_text(), re.M)]
+    assert importers == [], f"_modgraph_legacy still has importers: {importers}"
 
-    So `init()` is a documented no-op in client mode, and the drop waits for
-    commit B — and for the service to say it has the rows."""
-    assert modgraph.init() is None
+
+def test_the_client_has_one_mode_and_no_branch_left_to_take():
+    """A `sys.modules` swap surviving the cutover would mean a conductor that
+    silently kept its own six tables on a box where MODGRAPH_URL happened to be
+    unset — green tests, and a graph nobody else could see."""
+    src = (REPO / "conductor" / "app" / "modgraph.py").read_text()
+    assert "sys.modules[__name__]" not in src
+    assert not hasattr(modgraph, "SCHEMA"), "the client declares a schema again"
+    assert modgraph.__name__ == "app.modgraph"
+
+
+def test_the_six_tables_are_dropped_only_once_the_service_has_copied(fresh_db,
+                                                                     monkeypatch):
+    """NOTHING ORDERS THE TWO PROCESSES. The fleet starts the conductor and the
+    service together, so init() can easily run before the service has attached —
+    and what a premature drop costs is THE TRACE, which is the one part that
+    cannot be rebuilt.
+
+    Plans, nodes and edges regenerate from the working tree in under a second and
+    the manager re-authors on the next lineup change. `graph_node_runs` does not:
+    it is every build and verify any specialist has closed, and MASTERY IS COUNTED
+    FROM IT, never stored. Drop it early and every module silently loses its
+    master, so the next authoring pass reshuffles specialists off the modules they
+    had earned — with nothing anywhere reporting the loss. `graph_assign` goes the
+    same way: the operator's own steering. So the drop asks first.
+    """
+    db._execute("CREATE TABLE IF NOT EXISTS graph_node_runs (id INTEGER PRIMARY KEY,"
+                " plan_id INTEGER NOT NULL, node_key TEXT NOT NULL, kind TEXT,"
+                " task_id INTEGER, agent_id INTEGER, status TEXT, detail TEXT,"
+                " started_at REAL NOT NULL, ended_at REAL)")
+    db._execute("CREATE TABLE IF NOT EXISTS graph_assign (id INTEGER PRIMARY KEY,"
+                " plan_id INTEGER NOT NULL, node_key TEXT NOT NULL, agent_id INTEGER,"
+                " home_id INTEGER, model TEXT, autonomy TEXT)")
+    db._execute("INSERT INTO graph_node_runs (id, plan_id, node_key, kind, agent_id,"
+                " status, detail, started_at, ended_at)"
+                " VALUES (1, 9, 'db', 'build', 71, 'ok', '', 1.0, 2.0)")
+    db.kv_set("graph:pos:9", {"db": [1, 2]})
+    # Three graph kv keys are the CONDUCTOR's own and must survive: the operator's
+    # directives to the manager, the authoring staleness stamp, and the assignment
+    # pool pointer. Only the layouts moved, because only they are keyed to a plan
+    # id in another process's database.
+    db.kv_set("graph:notes:0", [{"ts": 1.0, "note": "do not reintroduce 'canvas'"}])
+    db.kv_set("graph:authored:0", {"factors": ["speed"], "plan_id": 9})
+    db.kv_set("graph:pool:0", {"world_id": 2, "room_id": 29})
+
+    def _not_settled(*_a, **_k):
+        return _FakeHealth({"ok": True, "backfilled": False})
+    monkeypatch.setattr(modgraph, "_client", _not_settled)
+    modgraph.init()
+    assert db._rows("SELECT COUNT(*) AS n FROM graph_node_runs")[0]["n"] == 1, \
+        "the trace was dropped before the service had it — mastery cannot be rebuilt"
+    assert db.kv_get("graph:pos:9") is not None
+
+    # ...and an unreachable service is not fatal either: a conductor that refused
+    # to boot because a PEER was still starting is how a fleet takes itself down
+    # in a ring.
+    def _dead(*_a, **_k):
+        raise httpx.ConnectError("connection refused")
+    monkeypatch.setattr(modgraph, "_client", _dead)
+    modgraph.init()
+    assert db._rows("SELECT COUNT(*) AS n FROM graph_node_runs")[0]["n"] == 1
+
+    # Once it says it is settled — which includes "there was nothing to copy" —
+    # all six go, and the layouts with them: a `graph:pos:{plan_id}` left behind
+    # names a plan id in another process's database, which is not a layout.
+    monkeypatch.setattr(modgraph, "_client", _svc_client)
+    modgraph.init()
     names = {r["name"] for r in
              db._rows("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert not any(n.startswith("graph_") and n.endswith("_legacy") for n in names), \
-        "commit A renamed a table the rollback reads by name"
+    assert not (names & set(modgraph._LEGACY_TABLES)), \
+        f"the conductor still declares {sorted(names & set(modgraph._LEGACY_TABLES))}"
+    assert db.kv_get("graph:pos:9") is None
+    assert modgraph._LEGACY_KV_PREFIX == "graph:pos:"
+    # ...and the conductor's own graph kv is untouched. A prefix sweep that took
+    # `graph:notes:0` with it would silently un-say an explicit human directive —
+    # the manager would reintroduce the module the operator removed.
+    assert db.kv_get("graph:notes:0")[0]["note"] == "do not reintroduce 'canvas'"
+    assert db.kv_get("graph:authored:0")["factors"] == ["speed"]
+    assert db.kv_get("graph:pool:0")["room_id"] == 29
 
 
 def test_health_reports_the_first_boot_decision_the_drop_will_wait_on(mg):
@@ -481,3 +531,19 @@ def test_the_registry_generates_this_services_env_and_token(tmp_path):
     assert (tmp_path / "data/tokens/modgraph.token").exists()
     compose = (tmp_path / "process-compose.yaml").read_text()
     assert "services/modgraph" in compose and "8886" in compose
+
+
+class _FakeHealth:
+    """The two lines of an httpx client the drop path actually uses."""
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get(self, _path, **_kw):
+        return httpx.Response(200, json=self.payload)
