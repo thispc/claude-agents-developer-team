@@ -21,3 +21,17 @@ deployments/
 
 # filled-in k8s secrets must never be committed
 deploy/k8s/secrets.yaml
+
+# the fleet's generated artifacts (tools/gen_fleet.py, from services.yaml) and
+# fetched binaries. Deliberately NOT the whole data/ dir: devteam.db lives at the
+# repo root, and future services keep their stores in data/*.db (already covered
+# by *.db above) — only env, minted tokens, logs and the derived topology are
+# generated/secret and must never be committed.
+process-compose.yaml
+data/env/
+data/tokens/
+data/logs/
+data/fleet_topology.json
+tools/bin/
+# hypothesis's example cache (the template's Schemathesis contract tests)
+.hypothesis/

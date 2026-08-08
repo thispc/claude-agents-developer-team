@@ -31,6 +31,7 @@ from . import boss                                              # noqa: F401,E40
 from . import tasks                                             # noqa: F401,E402
 from . import internal                                          # noqa: F401,E402
 from . import graph                                             # noqa: F401,E402  the module graph
+from . import svc                                               # noqa: F401,E402  the /svc fleet gateway
 
 # Names other code imports from app.routes directly.
 from .session import Settings                                   # noqa: F401,E402

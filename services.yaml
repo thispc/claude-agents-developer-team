@@ -1,0 +1,53 @@
+# services.yaml — the service registry, and the single source the fleet is generated
+# from. tools/gen_fleet.py reads this file and writes process-compose.yaml,
+# data/env/<name>.env, data/tokens/<name>.token and data/fleet_topology.json.
+# Edit HERE and re-run the generator (run-local.sh does) — never edit the outputs.
+#
+# kinds:
+#   core      — the conductor. Managed by process-compose.
+#   service   — an extracted microservice (P1+: knowledge 8881, usage 8882, ...).
+#               Managed by process-compose.
+#   ephemeral — short-lived children a platform component spawns and reaps itself.
+#   external  — processes a platform component owns on a reserved port range;
+#               probed, never started, by the fleet.
+# Only core/service entries become process-compose processes; the rest are topology
+# facts for the Atlas and the /svc gateway (which refuses to proxy them).
+#
+# ui: whether the service ships its own panel at /ui/* (proxied same-origin at
+# /svc/<name>/ui/ — see SERVICE_CONTRACT.md). false everywhere until a service
+# actually serves one; ui_screen: true additionally claims a routed page.
+
+defaults:
+  host: 127.0.0.1
+  health_path: /health
+  venv: .venv
+
+fleet_api:
+  port: 8899        # process-compose's own REST API, token-authed via data/tokens/fleet-api.token
+
+services:
+  conductor:
+    kind: core
+    port: 8787
+    health_path: /api/health
+    db: devteam.db          # repo root, NOT under data/ — the legacy monolith store
+    cmd: .venv/bin/uvicorn app.main:app --app-dir conductor --host 127.0.0.1 --port ${PORT}
+    accepts: [worker, verify]   # the shared-token doors it answers (X-Worker-Token, VERIFY_TOKEN)
+    ui: false                   # the dashboard IS the shell, not a /svc panel
+
+  worker-pool:
+    kind: ephemeral
+    managed_by: launcher        # launcher.py spawns and reaps workers; never in process-compose
+    ui: false
+
+  sandbox:
+    kind: external
+    managed_by: sandbox         # sandbox.py boots/kills the candidate build itself
+    port_range: [8500, 8599]
+    ui: false
+
+  apps:
+    kind: external
+    managed_by: deploy          # deploy.py runs project apps on bind-reserved ports
+    port_range: [8600, 8799]
+    ui: false

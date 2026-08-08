@@ -507,10 +507,10 @@ def test_the_conclusion_carries_the_platforms_vitals(root_client, monkeypatch):
     assert c["boot_sha"] and c["head_sha"], "the shas are the honest code identity"
     assert c["cluster"] == {"available": True, "running": False}
     monkeypatch.setattr(sandbox, "status",
-                        lambda: {"running": True, "url": "http://127.0.0.1:8700/"})
+                        lambda: {"running": True, "url": "http://127.0.0.1:8500/"})
     _, out = _nodes(root_client)
     assert out["conclusion"]["cluster"] == {"available": True, "running": True,
-                                            "url": "http://127.0.0.1:8700/"}
+                                            "url": "http://127.0.0.1:8500/"}
 
 
 def test_a_failing_leaf_fails_the_conclusions_beat(root_client, monkeypatch):

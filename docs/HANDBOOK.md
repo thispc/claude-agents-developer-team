@@ -175,7 +175,7 @@ is not.
 
 ### The API, in families
 
-An *API* is the list of requests a program will answer. There are 150; the
+An *API* is the list of requests a program will answer. There are 151; the
 dashboard uses them for you.
 
 | Family | Example | For |
@@ -190,6 +190,7 @@ dashboard uses them for you.
 | Deployment | `/api/projects/1/deploy` | Run an app, preview a branch, roll back |
 | Self-repair | `/api/self/…` | Findings, staging, update, rollback. Owner only |
 | Health | `/api/health` | Answers only if the database answers. Watched from outside |
+| The fleet gateway | `/svc/<name>/…` | A fleet service's API and UI, same-origin; signed-in callers only, service token added server-side |
 
 ### Three doors, three different keys
 

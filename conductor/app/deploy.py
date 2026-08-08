@@ -40,7 +40,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import bus, config, db, provider, rollout, shell
+from . import bus, config, db, netports, provider, rollout, shell
 
 # Next to the workspaces, which means ON THE VOLUME in a container. It used to
 # default under the repo root — /app/deployments — which is ephemeral: every
@@ -147,26 +147,15 @@ def detect(root: Path) -> dict[str, Any]:
 def _free_port() -> tuple[int, socket.socket]:
     """Reserve a free port, returning it still bound.
 
-    connect_ex-then-close tells you a port was free a moment ago, not that it
-    still is: the gap before the child actually binds it can be as long as the
-    build (docker build, npm install, ...), so two deploys started together can
-    scan, both see the same port free, and both be handed it. Binding it here
-    with SO_REUSEADDR and handing back the open socket makes the OS the referee
-    — a concurrent call's bind() on that port fails outright — and the caller
-    holds the reservation until moments before the child starts.
+    The bind-reservation body moved verbatim to netports.reserve_port so the
+    sandbox could stop using its racy connect_ex probe; behaviour here is
+    unchanged — same range, same skip of ports RUNNING already holds (which
+    includes branch previews), same error message.
     """
-    for p in range(PORT_RANGE_START, PORT_RANGE_START + 200):
-        if p in {r["port"] for r in RUNNING.values()}:      # includes branch previews
-            continue
-        s = socket.socket()
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            s.bind(("127.0.0.1", p))
-        except OSError:
-            s.close()
-            continue
-        return p, s
-    raise RuntimeError("no free port available for a deployment")
+    return netports.reserve_port(
+        PORT_RANGE_START, 200,
+        skip={r["port"] for r in RUNNING.values()},
+        label="a deployment")
 
 
 def _child_env(port: int) -> dict[str, str]:

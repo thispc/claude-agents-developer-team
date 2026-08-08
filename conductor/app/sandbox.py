@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import config, db, selfops, shell
+from . import config, db, netports, selfops, shell
 
 SANDBOX_DIR = selfops.LIVE_TREE / ".sandbox"
 TREE = SANDBOX_DIR / "tree"
@@ -35,7 +35,9 @@ DB = SANDBOX_DIR / "sandbox.db"
 PID_FILE = SANDBOX_DIR / "sandbox.json"
 LOG = SANDBOX_DIR / "sandbox.log"
 
-PORT_START = int(config._env("SANDBOX_PORT", "8700"))
+# 8500-8599 (services.yaml). It was 8700+, which sat INSIDE deploy's 8600-8799
+# range — a sandbox and a deployed app could be handed the same port.
+PORT_START = int(config._env("SANDBOX_PORT", "8500"))
 BOOT_TIMEOUT = 60
 
 
@@ -77,13 +79,11 @@ def _dirty(root: Path) -> int:
     return len([ln for ln in r.stdout.splitlines() if ln.strip()])
 
 
-def _free_port() -> int:
-    import socket
-    for p in range(PORT_START, PORT_START + 100):
-        with socket.socket() as s:
-            if s.connect_ex(("127.0.0.1", p)) != 0:
-                return p
-    raise RuntimeError("no free port for the sandbox")
+def _free_port():
+    """Bind-reserved via netports, not the old connect_ex probe — that one told you
+    the port WAS free, then let it go while the tree was still being copied. The
+    caller holds the returned socket until moments before uvicorn starts."""
+    return netports.reserve_port(PORT_START, 100, label="the sandbox")
 
 
 def _state() -> dict[str, Any]:
@@ -264,13 +264,14 @@ def start(source: str) -> dict[str, Any]:
     ref = source
 
     DB.unlink(missing_ok=True)          # a fresh database every time, by design
-    port = _free_port()
+    port, reservation = _free_port()
     env = _child_env(port)
     python = str(selfops.LIVE_TREE / ".venv" / "bin" / "python")
     if not Path(python).exists():
         python = "python3"
     LOG.parent.mkdir(exist_ok=True)
     logf = open(LOG, "w")
+    reservation.close()                 # released only now — uvicorn binds it next
     proc = subprocess.Popen(
         [python, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)],
         cwd=str(TREE / "conductor"), env=env, stdout=logf, stderr=subprocess.STDOUT,

@@ -53,6 +53,15 @@ Three rules keep the diagram true: the substrate reaches the platform only throu
 `ports.py`; every subprocess goes through `shell.py`; every router gets its guards from
 `guards.py`. The full refactor record is in `REFACTOR_PLAN.md`.
 
+**The fleet.** The process above is becoming a fleet of processes: `services.yaml` (repo
+root) is the registry, `tools/gen_fleet.py` generates the process-compose config plus
+per-service env/tokens/topology from it, and `./run-local.sh` boots everything under
+**process-compose** (readiness probes, restarts, a token-authed REST API on 8899).
+Today only the conductor is managed; extracted services (knowledge, usage, …) join the
+registry phase by phase, each meeting `SERVICE_CONTRACT.md` and reached same-origin via
+the conductor's `/svc/<name>/…` gateway. The diagram keeps its current shape until the
+Atlas's cards become those services (P6).
+
 ---
 
 ## The one-paragraph version

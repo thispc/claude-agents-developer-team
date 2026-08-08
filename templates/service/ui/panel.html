@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>service panel</title>
+<style>
+  /* Minimal on purpose — this demonstrates the CONVENTION (a panel the Atlas can
+     embed at /svc/<name>/ui/panel.html), not a design system. */
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 1.25rem; color: #1d2a26; }
+  .ok   { color: #2E6E5B; }
+  .bad  { color: #A9503A; }
+  code  { background: #f0f1ef; padding: 0 .3em; border-radius: 3px; }
+</style>
+</head>
+<body>
+<h2 id="name">service</h2>
+<p>status: <strong id="status">checking…</strong></p>
+<p><small>Served by the service itself at <code>/ui/panel.html</code>, reached
+same-origin through the conductor at <code>/svc/&lt;name&gt;/ui/panel.html</code>.
+All fetches are RELATIVE so both routes work.</small></p>
+<script>
+  fetch("../health")
+    .then(r => r.json())
+    .then(h => {
+      document.getElementById("name").textContent = h.service;
+      const el = document.getElementById("status");
+      el.textContent = h.ok ? "healthy" : "unhealthy: " + JSON.stringify(h.checks);
+      el.className = h.ok ? "ok" : "bad";
+    })
+    .catch(e => {
+      const el = document.getElementById("status");
+      el.textContent = "unreachable: " + e;
+      el.className = "bad";
+    });
+</script>
+</body>
+</html>
