@@ -530,10 +530,18 @@
         <svg class="gr-wires" id="graphWires" aria-hidden="true"></svg>
         <div class="gr-room" id="graphRoom"></div>
       </div>
-      <div class="gr-legend" id="graphLegend" hidden></div>
       <div class="gr-atlas" id="graphAtlas" hidden aria-label="the Atlas map — every room at once"></div>
     </div>
-    <aside id="graphAside"><p class="dim">loading the graph…</p></aside>
+    <!-- The side column: the ONE panel, with the health key pinned under it. The
+         legend used to float over the stage's bottom-left and printed straight
+         over the cards there — and no amount of reserved padding can fix that
+         while the room scrolls, because the room's bottom and the viewport's
+         bottom are different places. Out of the stage entirely is the only
+         version that cannot occlude a card. -->
+    <div class="graph-side">
+      <aside id="graphAside"><p class="dim">loading the graph…</p></aside>
+      <div class="gr-legend" id="graphLegend" hidden></div>
+    </div>
   </div>
 </section>
 
@@ -556,7 +564,12 @@
 <main hidden>
   <div id="left">
     <div class="view-toggle">
-      <button class="chip vchip active" data-v="command">👑 Command</button>
+      <!-- The Atlas is a project's DEFAULT view, so it leads the toggle and Command
+           sits beside it — "the classic view is one chip away", from the other side.
+           Hidden when MODULE_GRAPH is off and in Devteam HQ (which has its own
+           #graphLink in the bar); projects.js owns both. -->
+      <button class="chip vchip active" data-v="graph" id="atlasChip" hidden>🗺 Atlas</button>
+      <button class="chip vchip" data-v="command">👑 Command</button>
       <button class="chip vchip" data-v="board">Board</button>
       <button class="chip vchip" data-v="dag">Dependencies</button>
       <button class="chip vchip" data-v="artifacts">📦 Artifacts</button>

@@ -22,8 +22,8 @@ from claude_agent_sdk import (
     tool,
 )
 
-from . import (ambition, bus, config, db, github_client, interview, process,
-               review, scheduler, team, tuning)
+from . import (ambition, bus, config, db, github_client, interview, logs, process,
+               projgraph, review, scheduler, team, tuning)
 
 
 def role_catalog_text(project: dict) -> str:
@@ -317,6 +317,17 @@ def build_team_server(project_id: int):
             created = db.get_task(task_id) or {}
             lines.append(f"created task {created.get('seq', task_id)} [{item['role']}] "
                          f"'{item['title']}'{dep_note}{issue_line}")
+        # The Atlas fills in AS THE MANAGER PLANS. One re-derivation per batch, not
+        # per task: `graph_node_planned` per new node is what makes the boss's screen
+        # stage the reveal in dependency order, and a batch of eight tasks announced
+        # eight times over would replay the animation eight times. Guarded and
+        # idempotent — the graph is observability, and a project must never fail to
+        # plan because the map's store is asleep.
+        try:
+            projgraph.sync(project_id, announce=True)
+        except Exception as e:
+            logs.warn("lifecycle", "project_graph_sync_failed", str(e)[:200],
+                      project=project_id)
         return "\n".join(lines)
 
     @tool("create_tasks", "Create the project's initial task DAG in one call. Pass a JSON "
@@ -394,6 +405,15 @@ def build_team_server(project_id: int):
                 f"CAPACITY: {cap['free_slots']} worker slot(s) free and {who} idle, with "
                 f"nothing planned to give them. If there is genuinely independent work "
                 f"left in this sprint, add_tasks now rather than letting the slots idle.")
+        # WHO THE BOSS CLAIMED, from the Atlas. The manager cannot dispatch — the
+        # scheduler does, and it already honours these claims — so this is context it
+        # plans AROUND (do not re-assign this task away from them, do not give the
+        # same person three claimed tasks at once), never an instruction it executes.
+        claimed = projgraph.claim_lines(project_id)
+        if claimed:
+            lines.append("BOSS'S OWN ASSIGNMENTS (made on the Atlas; the scheduler "
+                         "already honours them — plan around them, do not undo them):")
+            lines.extend("  " + c for c in claimed)
         return _text("\n".join(lines + [_task_line(t) for t in tasks]))
 
     @tool("wait", "Sleep until a task needs your attention — a worker finished (PR opened "

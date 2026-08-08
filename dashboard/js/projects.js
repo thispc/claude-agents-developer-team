@@ -740,6 +740,9 @@ function scheduleRefresh() {
 // renderers may branch on which — anything source-specific lives here.
 let projSrc = null;
 
+// The kanban skeleton #board ships with, snapshotted before HQ overwrites it.
+let boardSkeleton = null;
+
 const DEVTEAM_SRC = {
   board: () => api("/api/repair/as-project"),
   question: async () => (lastProject && lastProject.question) || {},
@@ -790,6 +793,11 @@ const DEVTEAM_SRC = {
     const d = p.repair || {};
     const board = $("#board");
     if (board) {
+      // HQ BORROWS THE BOARD, so it has to give it back. Snapshot the kanban
+      // skeleton the first time, before overwriting it — `leave()` restores it, and
+      // without that an ordinary project opened after HQ found no columns to draw
+      // its tasks into.
+      if (boardSkeleton === null) boardSkeleton = board.innerHTML;
       board.innerHTML = `<div class="rp-hq">${rpBoardPanel(d)}</div>`;
       if (typeof rpWireQueue === "function") rpWireQueue(board);
       board.querySelectorAll("[data-revert]").forEach((b) => b.addEventListener("click", async () => {
@@ -828,9 +836,15 @@ const DEVTEAM_SRC = {
   },
   leave: () => {
     projSrc = null;
+    if (boardSkeleton !== null) {
+      const b = $("#board");
+      if (b) b.innerHTML = boardSkeleton;      // hand the kanban columns back
+    }
     if (DEVTEAM_SRC._timer) { clearInterval(DEVTEAM_SRC._timer); DEVTEAM_SRC._timer = null; }
     for (const sel of ['[data-v="dag"]', '[data-v="artifacts"]', '[data-v="blockers"]'])
       { const c = document.querySelector(sel); if (c) c.hidden = false; }
+    // The Atlas chip is re-shown by refreshBoard (it also depends on the flag), so
+    // leaving HQ must not force it visible on a server where the graph is off.
     const u = $("#usageChip"); if (u) u.hidden = true;
     const sel2 = $("#projectSelect"); if (sel2) sel2.hidden = false;
   },
@@ -846,7 +860,8 @@ function openDevteamHQ(view, skipHash) {
   $("main").hidden = false;
   projSrc = DEVTEAM_SRC;
   currentProject = "devteam";
-  for (const sel of ['[data-v="dag"]', '[data-v="artifacts"]', '[data-v="blockers"]'])
+  for (const sel of ['[data-v="dag"]', '[data-v="artifacts"]', '[data-v="blockers"]',
+                     '[data-v="graph"]'])
     { const c = document.querySelector(sel); if (c) c.hidden = true; }
   const u = $("#usageChip"); if (u) u.hidden = false;
   // The bar carries the badges HQ needs (status, the runs meter, team → the hexagon);
@@ -922,6 +937,11 @@ async function refreshBoard() {
     gl.hidden = !(projSrc && me && me.module_graph);
     gl.onclick = () => openModuleGraph();
   }
+  // ...and the project's own Atlas chip, which is the opposite case: an ORDINARY
+  // project with the flag on. HQ keeps its bar link (the crew's graph is the whole
+  // fleet, not this "project"), and the flag off hides both.
+  const ac = $("#atlasChip");
+  if (ac) ac.hidden = !!projSrc || !(me && me.module_graph);
   const sb = $("#sprintBadge");
   if (sb) {
     const total = p.sprints ?? 1;
@@ -943,6 +963,12 @@ async function refreshBoard() {
   if (projSrc) { projSrc.renderExtras(p); return; }   // HQ's board/notices/usage panels
   for (const [col, statuses] of Object.entries(COLS)) {
     const box = document.querySelector(`.col[data-col="${col}"] .cards`);
+    // HQ REPLACES #board's whole innerHTML with its own panels, so the four kanban
+    // columns can genuinely be gone by the time an ordinary project asks for them.
+    // `leave()` puts the skeleton back; this is the belt to that pair of braces —
+    // a null here used to be an uncaught TypeError that killed the rest of the
+    // refresh (the badges, the question, the artifacts) on every HQ → project hop.
+    if (!box) continue;
     box.innerHTML = "";
     for (const t of p.tasks.filter((t) => statuses.includes(t.status))) {
       const card = document.createElement("div");

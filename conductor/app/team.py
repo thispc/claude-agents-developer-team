@@ -100,9 +100,17 @@ def assign(task: dict) -> dict | None:
     1. Whoever already worked this task. A retry going to a different person
        throws away everything the first attempt learned, which is exactly the
        waste `prior_attempt()` was added to stop.
-    2. An idle teammate in the right role, least-loaded first, so one person does
+    2. THE BOSS'S OWN CLAIM, made on the project's Atlas. This is what makes the
+       "team claims modules" button mean something: a card claimed for a teammate
+       dispatches to that teammate, above the round-robin below. It sits under the
+       prior worker for the same reason a teammate's model sits under escalation —
+       a retry is about finishing what was started, and moving it mid-thread throws
+       away the attempt that is being retried. Cross-role on purpose: the boss
+       choosing an unusual person is a decision, not a mistake. The role still
+       writes the prompt, so nothing is misdescribed.
+    3. An idle teammate in the right role, least-loaded first, so one person does
        not absorb the whole project while colleagues sit out.
-    3. The least-loaded teammate in the role even if busy — better a queue behind
+    4. The least-loaded teammate in the role even if busy — better a queue behind
        someone real than a nameless session.
 
     Returns None when the project has no team rows at all, which is the case for
@@ -114,6 +122,13 @@ def assign(task: dict) -> dict | None:
         prior = db.get_agent(task["agent_id"])
         if prior:
             return prior
+    # Lazy import: projgraph reaches the modgraph SERVICE, and `team` is imported by
+    # the launcher on a path that must stay importable with the graph store down.
+    # A claim that cannot be read is no claim — never an error.
+    from . import projgraph
+    claimed = projgraph.claimed_agent(task)
+    if claimed:
+        return claimed
     candidates = db.list_agents(task["project_id"], task["role"])
     if not candidates:
         return None

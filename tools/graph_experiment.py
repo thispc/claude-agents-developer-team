@@ -14,7 +14,14 @@ Run with the fleet up:  ./run-local.sh  then  python tools/graph_experiment.py
 Environment knobs:  BASE (default http://127.0.0.1:8787), USERNAME/PASSWORD
 (default root/devteam), SKIP_REPLAN=1 to skip the one step that spends a real
 model call, SKIP_FLEET=1 to skip the start/stop round trip (it needs the fleet
-manager — the `--legacy` boot has none). Exit code 1 when any FINDING was recorded.
+manager — the `--legacy` boot has none), SKIP_CREATE=1 to skip the throwaway
+project the second pass creates and deletes. Exit code 1 when any FINDING was
+recorded.
+
+SINCE THE PROJECT TENANT there are TWO passes: the fleet's Atlas (everything
+above) and then `project_pass` — the same screen, a project's task DAG behind
+it. The second pass is the proof that the seam is real: if a renderer had
+learned which tenant it was drawing, the project pass is where it shows.
 """
 
 from __future__ import annotations
@@ -31,6 +38,9 @@ USERNAME = os.environ.get("USERNAME", "root")
 PASSWORD = os.environ.get("PASSWORD", "devteam")
 SKIP_REPLAN = os.environ.get("SKIP_REPLAN", "") == "1"
 SKIP_FLEET = os.environ.get("SKIP_FLEET", "") == "1"
+# The project pass creates ONE throwaway project (and deletes it again) to prove a
+# project has an Atlas the instant it exists. SKIP_CREATE=1 writes no project row.
+SKIP_CREATE = os.environ.get("SKIP_CREATE", "") == "1"
 # The card the round trip stops. `notify` is the safest process in the fleet to
 # take away for four seconds: nothing blocks on it, its shim degrades to
 # {"sent": false} and the only thing lost while it is down is a GitHub issue
@@ -65,6 +75,60 @@ def room_keys(page) -> list[str]:
         ".map(c => c.getAttribute('data-key'))")
 
 
+def legend_overlap(page) -> list[str]:
+    """Which cards the health legend is printing ON TOP OF — measured, in real
+    pixels, in the real browser.
+
+    THE OWNER FOUND THIS IN A SCREENSHOT, which is the only way it was ever going to
+    be found: the legend is stage-absolute at the bottom-left and every source-level
+    test in the suite passed while it sat over the first column's cards. A rectangle
+    intersection is the only assertion that can tell you it stopped. Run in BOTH
+    tenants and BOTH themes — the safe area is one CSS variable, and a variable is
+    exactly the kind of thing that gets right in one place and wrong in another."""
+    return page.evaluate("""() => {
+        const lg = document.getElementById('graphLegend');
+        if (!lg || lg.hidden) return [];
+        const l = lg.getBoundingClientRect();
+        if (!l.width || !l.height) return [];
+        return [...document.querySelectorAll('#graphRoom .gr-card')].filter(c => {
+            const r = c.getBoundingClientRect();
+            // a genuine overlap, not a shared border pixel
+            return r.right > l.left + 1 && r.left < l.right - 1
+                && r.bottom > l.top + 1 && r.top < l.bottom - 1;
+        }).map(c => c.getAttribute('data-key'));
+    }""")
+
+
+def check_legend(page, where: str) -> None:
+    """The legend must clear every card in BOTH themes — the toggle is one data
+    attribute, but the reserved strip is laid out by the grid and a theme that
+    changed a font size could eat it."""
+    for theme in ("blueprint", "paper"):
+        page.evaluate("""(t) => {
+            const s = document.getElementById('graphScreen');
+            if (s && s.dataset.gtheme !== t) document.getElementById('graphTheme').click();
+        }""", theme)
+        page.wait_for_timeout(350)
+        # A legend nobody can see "overlaps nothing", which is how the first version
+        # of this check passed while the whole side column hung below the fold.
+        seen = page.evaluate("""() => {
+            const lg = document.getElementById('graphLegend');
+            if (!lg || lg.hidden) return 'hidden';
+            const r = lg.getBoundingClientRect();
+            if (!r.width || !r.height) return 'zero-sized';
+            if (r.bottom > innerHeight + 1 || r.top < 0) return 'off-screen';
+            return '';
+        }""")
+        if seen:
+            finding(f"[{where}/{theme}] the legend is {seen} — a key you cannot read")
+            continue
+        hit = legend_overlap(page)
+        if hit:
+            finding(f"[{where}/{theme}] the legend is printing over {hit}")
+        else:
+            ok(f"[{where}/{theme}] the legend is visible and clears every card")
+
+
 def card_center(page, key):
     return page.evaluate("""(k) => {
         const c = [...document.querySelectorAll('#graphRoom .gr-card')]
@@ -81,6 +145,8 @@ def api(page, method: str, path: str, body: dict | None = None):
     req = page.context.request
     if method == "GET":
         r = req.get(BASE + path, timeout=30_000)
+    elif method == "DELETE":
+        r = req.delete(BASE + path, timeout=60_000)
     else:
         r = req.post(BASE + path, data=json.dumps(body or {}),
                      headers={"Content-Type": "application/json"},
@@ -89,6 +155,212 @@ def api(page, method: str, path: str, body: dict | None = None):
         return r.status, r.json()
     except Exception:
         return r.status, {}
+
+
+def project_pass(page) -> None:
+    """THE SECOND TENANT: the same Atlas, a project's own truth.
+
+    Two subjects, deliberately, because they prove different halves:
+
+      a REAL project    whichever of the boss's projects has the most tasks. Only a
+                        project with a planned DAG can prove the cards, the wiring,
+                        the panel and the claim — and creating one that has those
+                        would mean running a manager and spending real money for a
+                        drill.
+      a THROWAWAY       created and deleted here, to prove the half the real one
+                        cannot: that a project has a graph the INSTANT it exists,
+                        before any manager has planned anything. It is cancelled the
+                        moment it is created so its manager session stops at its
+                        first await — the drill is not here to build software.
+
+    Set SKIP_CREATE=1 to skip the throwaway entirely (no project row is written).
+    """
+    print("== TENANT TWO: a project's own Atlas")
+    st, projects = api(page, "GET", "/api/projects")
+    if st != 200:
+        finding(f"the project list answered {st} — cannot drill the project tenant")
+        return
+    # Prefer a project that has BOTH tasks and a named roster: only that one can
+    # exercise the claim, which is the half of this phase the owner actually asked
+    # for ("the team of agents selected for a project can choose to work on specific
+    # modules"). Most-tasks is the fallback.
+    real = sorted([p for p in projects if p.get("task_count")],
+                  key=lambda p: -p["task_count"])
+    def _has_roster(p):
+        st_r, t = api(page, "GET", f"/api/graph/project/{p['id']}/team")
+        return st_r == 200 and bool((t or {}).get("members"))
+    subject = next((p for p in real if _has_roster(p)), real[0] if real else None)
+    if not subject:
+        print("  (no project with tasks on this box — the card drills are skipped)")
+
+    throwaway = None
+    if not SKIP_CREATE:
+        st, out = api(page, "POST", "/api/projects", {
+            "name": "atlas drill (throwaway)",
+            "brief": "A throwaway project created by tools/graph_experiment.py to "
+                     "prove the Atlas exists the moment a project does. Safe to delete.",
+            "repo": "", "budget_usd": 0.01, "max_workers": 1, "max_runs": 1,
+            "team": [], "sprints": 1})
+        if st != 200:
+            print(f"  (could not create a throwaway project: {st} "
+                  f"{str(out.get('detail'))[:120]}) — skipping the seed drill")
+        else:
+            throwaway = out["id"]
+            # Stop its manager before it does anything: this drill is not here to
+            # build software, and a session left running would spend on a graph test.
+            api(page, "POST", f"/api/projects/{throwaway}/cancel")
+            ok(f"throwaway project #{throwaway} created and its manager stopped")
+
+    try:
+        if throwaway:
+            print("== a project has a graph the moment it exists")
+            st, g = api(page, "GET", f"/api/graph/project/{throwaway}")
+            if st != 200:
+                finding(f"a brand-new project's graph answered {st}: {g.get('detail')}")
+            else:
+                keys = {n["key"] for n in g.get("nodes", [])}
+                if keys != {"aim", "conclusion"}:
+                    finding(f"a freshly-created project's graph is {sorted(keys)}, "
+                            "wanted exactly the aim and the deliverable")
+                else:
+                    ok("seeded on creation: an aim and a deliverable, before any plan")
+                aim = next((n for n in g["nodes"] if n["node_type"] == "aim"), {})
+                if "throwaway" not in str(aim.get("spec", "")):
+                    finding("the aim card does not carry the project's own brief")
+
+        if not subject:
+            return
+        pid = subject["id"]
+        print(f"== the Atlas of project #{pid} ({subject['name']!r}, "
+              f"{subject['task_count']} tasks)")
+
+        # --- the DEFAULT view: #/p/<id> with no view named must BE the Atlas ------
+        page.evaluate("(h) => { location.hash = h; }", f"#/p/{pid}")
+        page.wait_for_timeout(1500)
+        vis = visible_screens(page)
+        if vis != ["#graphScreen"]:
+            finding(f"opening a project landed on {vis}, wanted the Atlas — the "
+                    "owner's ask is that it IS the main screen")
+        else:
+            ok("opening a project lands on its Atlas, no view named")
+
+        try:
+            page.wait_for_selector("#graphRoom .gr-card", timeout=10_000)
+        except Exception:
+            finding("the project Atlas drew no cards at all")
+            return
+        page.wait_for_timeout(1600)              # the staged reveal + wire sweep
+        keys = room_keys(page)
+        st, payload = api(page, "GET", f"/api/graph/project/{pid}")
+        want = {n["key"] for n in payload.get("nodes", [])
+                if n["node_type"] != "conclusion" and not n.get("parent_key")}
+        missing = want - set(keys)
+        if missing:
+            finding(f"the payload has cards the room never drew: {sorted(missing)}")
+        else:
+            ok(f"{len(keys)} card(s) on the wall, matching the payload")
+        if not any(k.startswith("task-") for k in keys):
+            finding("no TASK cards on a project with tasks")
+
+        # every card must refuse its switch, and say why — the honesty pin, live
+        liars = [n["key"] for n in payload["nodes"]
+                 if (n.get("service") or {}).get("control") is not False]
+        if liars:
+            finding(f"project cards claiming a switch they do not have: {liars}")
+        else:
+            ok("every project card refuses Start/Stop with a reason on it")
+
+        check_legend(page, f"project #{pid}")
+
+        # --- the panel ------------------------------------------------------------
+        leaf = next((n for n in payload["nodes"] if n["key"].startswith("task-")
+                     and not n.get("parent_key")), None)
+        if leaf:
+            c = card_center(page, leaf["key"])
+            if not c:
+                # it lives in a role room — walk in
+                page.evaluate("(h) => { location.hash = h; }",
+                              f"#/p/{pid}/graph/{leaf['parent_key']}")
+                page.wait_for_timeout(1200)
+                c = card_center(page, leaf["key"])
+            if c:
+                page.mouse.click(c["x"], c["y"])
+                page.wait_for_timeout(900)
+                aside = page.inner_text("#graphAside")
+                if "work, not a process" not in aside:
+                    finding("the panel does not say why this card has no switch")
+                elif "Start" in aside and "no switch" not in aside.lower():
+                    finding("the panel drew a Start button on a task")
+                else:
+                    ok("the panel is honest: a task promises a deliverable, not a port")
+
+        # --- claim a card for a teammate, through the real endpoint ---------------
+        st, t = api(page, "GET", f"/api/graph/project/{pid}/team")
+        members = (t or {}).get("members") or []
+        if st != 200 or not members:
+            print(f"  (project #{pid} has no named roster — the claim drill is skipped)")
+        elif not leaf:
+            print("  (no task card to claim)")
+        else:
+            was = (leaf.get("agent") or {}).get("agent_id")
+            pick = next((m for m in members if m["agent_id"] != was), members[0])
+            st, out = api(page, "POST",
+                          f"/api/graph/project/{pid}/node/{leaf['key']}/agent",
+                          {"agent_id": pick["agent_id"]})
+            if st != 200:
+                finding(f"claiming a card answered {st}: {out.get('detail')}")
+            else:
+                _st, after = api(page, "GET", f"/api/graph/project/{pid}")
+                n = next((x for x in after["nodes"] if x["key"] == leaf["key"]), {})
+                if (n.get("agent") or {}).get("agent_id") != pick["agent_id"]:
+                    finding("the claim did not land on the card")
+                elif "claimed by you" not in (n.get("agent") or {}).get("note", ""):
+                    finding("the card does not say the name is the boss's own claim")
+                else:
+                    ok(f"{pick['name']} claimed {leaf['key']} — and the card says so")
+                if was and was != pick["agent_id"]:      # put it back as we found it
+                    api(page, "POST",
+                        f"/api/graph/project/{pid}/node/{leaf['key']}/agent",
+                        {"agent_id": was})
+
+        # --- the Command view is genuinely one chip away ---------------------------
+        page.evaluate("(h) => { location.hash = h; }", f"#/p/{pid}/graph")
+        page.wait_for_timeout(1200)
+        chip = page.evaluate(
+            "(e => !!e && !e.hidden)(document.querySelector('#atlasChip'))")
+        page.evaluate("""() => {
+            const b = document.querySelector('#graphBack'); if (b) b.click(); }""")
+        page.wait_for_timeout(1200)
+        vis = visible_screens(page)
+        if vis != ["main"]:
+            finding(f"'← Command' from the project Atlas landed on {vis}")
+        elif page.evaluate("document.querySelector('#command').hidden"):
+            finding("'← Command' left the Command panel hidden")
+        else:
+            ok("'← Command' walks back to the classic project view")
+        if not chip:
+            finding("the Atlas chip is missing from the project's view toggle")
+        else:
+            page.evaluate("""() => document.querySelector('#atlasChip').click()""")
+            page.wait_for_timeout(1400)
+            if visible_screens(page) != ["#graphScreen"]:
+                finding("the Atlas chip did not open the graph")
+            else:
+                ok("the Atlas chip and the Command view are one click apart, both ways")
+
+        # --- the fleet's own graph is untouched by any of this ----------------------
+        st, self_out = api(page, "GET", "/api/graph/self")
+        if st != 200 or not self_out.get("nodes"):
+            finding("the FLEET's graph stopped answering during the project pass")
+        else:
+            ok("the fleet's own Atlas is unaffected")
+    finally:
+        if throwaway:
+            st, _ = api(page, "DELETE", f"/api/projects/{throwaway}")
+            if st != 200:
+                finding(f"could not delete throwaway project #{throwaway} ({st})")
+            else:
+                ok(f"throwaway project #{throwaway} deleted — the box is as we found it")
 
 
 def main() -> int:
@@ -117,6 +389,11 @@ def main() -> int:
         if page.evaluate("location.hash") != "#/graph":
             finding(f"opening the Atlas landed on {page.evaluate('location.hash')}")
         ok("the Atlas open at #/graph")
+
+        # THE LEGEND MUST NOT SIT ON A CARD. Measured here, in the fleet's own room,
+        # before anything else moves the layout — the owner's screenshot was of this
+        # exact view.
+        check_legend(page, "fleet")
 
         st, payload = api(page, "GET", "/api/graph/self")
         nodes = payload.get("nodes", [])
@@ -748,6 +1025,8 @@ def main() -> int:
             finding(f"at #/hq the visible screens are {vis}, wanted ['main'] only")
         else:
             ok("back-nav lands on #/hq with ONLY main visible")
+
+        project_pass(page)
 
         browser.close()
 

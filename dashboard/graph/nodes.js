@@ -23,11 +23,15 @@ export const GLYPH = { aim: "🎯", code: "📦", research: "🔬", data: "🗄"
 
 // Tri-state health — every field OPTIONAL (the payload may predate the backend):
 // green = calm glow, yellow = amber pulse, red = urgent slow strobe.
-const HS_STATES = ["green", "yellow", "red"];
+// GREY is the fourth state and it is not "unknown": it means "not started", which
+// only a tenant whose cards are WORK can be. A fleet card is never grey (a service
+// either beats or it does not), so nothing about the fleet's rendering changes.
+const HS_STATES = ["green", "yellow", "red", "grey"];
 const HS_TIP = {
   green: "healthy — heartbeat ok, tests green",
   yellow: "tests failing, heartbeat fine",
   red: "heartbeat failing",
+  grey: "not started",
 };
 export function healthClass(n) {
   const s = n && n.health && n.health.status;
@@ -37,7 +41,11 @@ function syncHealth(el, n) {
   HS_STATES.forEach((s) => el.classList.remove("gr-hs-" + s));
   const c = healthClass(n);
   if (c) el.classList.add(c);
-  const tip = n && n.health && HS_TIP[n.health.status];
+  // `health.note` is the PAYLOAD saying what its own colour means on this card —
+  // "delivered", "in flight, a teammate is on it now". Optional, so a payload that
+  // sends none (the fleet's) falls back to the tri-state's own words exactly as before.
+  const h = (n && n.health) || null;
+  const tip = (h && h.note) || (h && HS_TIP[h.status]);
   if (tip) el.title = tip;
 }
 
@@ -50,6 +58,11 @@ function elem(tag, cls, text) {
 
 function testsBrief(tests) {
   const t = tests || {};
+  // `tests.brief` is the payload wording its OWN evidence line. A fleet card's
+  // evidence is a mapped suite; a project task's is the harness verification the
+  // worker ran, and "no tests mapped" would be the wrong sentence for it. Optional,
+  // so the fleet (which sends none) keeps the computed line it always had.
+  if (t.brief) return String(t.brief);
   if (!t.total) return "no tests mapped";
   // "0/2 passing" reads as "everything is broken" when it actually means nobody has
   // pressed Verify yet. A suite that has never run is not a suite that failed, and the

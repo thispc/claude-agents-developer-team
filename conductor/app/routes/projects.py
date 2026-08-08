@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from .. import (ambition, artifacts, auth, bus, config, db, deliverables, deploy,
                 feedback, github_client, launcher, logs, manager, planner,
-                preview, process, providers, scheduler, team)
+                preview, process, projgraph, providers, scheduler, team)
 from .base import (_manager_tasks, can_see, current_user, owned_project,
                    owned_table, owned_task, router)
 
@@ -178,6 +178,18 @@ async def create_project(body: NewProject, request: Request) -> dict:
                 (process.normalise(body.process),
                  ambition.normalise(body.ambition), project_id))
     bus.emit(project_id, None, "system", "project_created", {"name": body.name})
+    # THE ATLAS IS THE PROJECT'S FIRST SCREEN, so it must have something to show
+    # before the manager has planned anything: the aim (this brief) and the
+    # deliverable, with one honest arrow between them. Every task the manager lands
+    # afterwards joins the same graph and animates in, because `_create_batch`
+    # re-syncs and announces. Guarded: a project must never fail to start because
+    # the map's store is asleep — `sync` returns 0 and the screen heals on its own
+    # first read.
+    try:
+        projgraph.sync(project_id, announce=True)
+    except Exception as e:
+        logs.warn("lifecycle", "project_graph_seed_failed", str(e)[:200],
+                  project=project_id)
     await _staff_from_team(project_id, body, owner)
     team.hire(project_id, roster)
     if scaled:

@@ -50,11 +50,44 @@ const SEEN = new Set();
 let inst = null;                       // this screen's one live instance
 
 // ---- the source seam ------------------------------------------------------------
-// projSrc's discipline: renderers never branch on where the truth comes from.
-// V1 ships the devteam source; V2 adds a project source with the same verbs.
-// (No layout-save verb any more: the Atlas has no draggable positions to save.)
+// projSrc's discipline, and it is now load-bearing rather than aspirational: THE
+// RENDERERS NEVER BRANCH ON WHICH TENANT THEY ARE DRAWING. There are two sources —
+// the DEVTEAM's fleet and a PROJECT's task DAG — and everything that differs
+// between them is either a field on the payload (health.note, tests.brief,
+// conclusion.lines/links, agent.note) or a property of the source object below
+// (its hash space, its legend, its back link, its tip). Nothing in this file may
+// ask "is this a project?", and tests/test_project_graph.py fails if it starts to.
+//
+// The verbs a tenant genuinely does not have REFUSE, in words, right here: a
+// project's tasks are not processes and cannot be started, verified as a suite,
+// removed from the DAG by the graph or replanned by a model. Every caller already
+// prints a rejection where the result would have gone, so an honest refusal costs
+// no UI and tells the truth at the exact moment somebody asks for the thing.
+const refuse = (msg) => () => Promise.reject(new Error(msg));
+
 const DEVTEAM_GRAPH_SRC = {
   name: "self",
+  hash: (level) => (level ? "#/graph/" + encodeURIComponent(level) : "#/graph"),
+  backLabel: "← Devteam HQ",
+  backHash: "#/hq",
+  homeLabel: "🏢 Open HQ",
+  homeHash: "#/hq",
+  goalTitle: "The Artifact — the running platform",
+  staffLabel: "Have the manager plan now",
+  legend: [
+    ["green", "green — calm glow: heartbeat and tests both fine"],
+    ["yellow", "amber — pulsing: tests failing, heartbeat fine"],
+    ["red", "red — strobing: the heartbeat itself is failing"],
+  ],
+  tip: `<b>The Atlas</b> — your platform as the parts it actually runs.
+    Every card is a SERVICE: its own process, its own port, its own contract, its
+    own Start and Stop. <b>Click</b> a capillary card and what it promises, how it
+    is doing, who works it and what it last printed opens here — never what is
+    inside it. <b>Click</b> a chamber card (a room) or press <kbd>Enter</kbd> to walk in;
+    <kbd>Esc</kbd> or the breadcrumb climbs back out. Arrow keys move the
+    focus. Door chips on a card ("→ Data › db") are its real cross-room
+    dependencies — click one to travel there. <kbd>M</kbd> opens the full map.
+    Right-click a card for its verbs.`,
   fetch: () => W.api("/api/graph/self"),
   verify: (key) => W.api("/api/graph/self/verify", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -90,7 +123,76 @@ const DEVTEAM_GRAPH_SRC = {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action }) }),
 };
-const SOURCES = { self: DEVTEAM_GRAPH_SRC };
+
+// ---- tenant two: ONE PROJECT ----------------------------------------------------
+// A project has a task DAG, a team and a deliverable — not a fleet. So the four
+// verbs that only make sense against running services refuse in words, and the
+// three that are real (claim an agent, pin a model, re-derive the plan) go to
+// /api/graph/project/{id}/… behind the project's own ownership gate.
+function PROJECT_GRAPH_SRC(id) {
+  const base = `/api/graph/project/${encodeURIComponent(id)}`;
+  const post = (path, body) => W.api(base + path, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}) });
+  return {
+    name: "project:" + id,
+    projectId: Number(id),
+    hash: (level) => `#/p/${id}/graph` + (level ? "/" + encodeURIComponent(level) : ""),
+    backLabel: "← Command",
+    backHash: `#/p/${id}/command`,
+    homeLabel: "👑 Open the Command view",
+    homeHash: `#/p/${id}/command`,
+    goalTitle: "The Deliverable — what this project produced",
+    staffLabel: "Re-read the plan from the task list",
+    legend: [
+      ["green", "green — delivered"],
+      ["yellow", "amber — in flight, or wants a look"],
+      ["red", "red — stopped: it needs you"],
+      ["grey", "grey — not started yet"],
+    ],
+    tip: `<b>The Atlas</b> — this project as the work it actually is. Every card is
+      a TASK your team is building, wired by its real dependencies; the last card is
+      the DELIVERABLE they all add up to. <b>Click</b> a card and its brief, who
+      works it, what the project's own checks said and its whole feed opens here.
+      <b>Change agent</b> claims a card for one teammate — the scheduler dispatches
+      that task to them next. Arrow keys move the focus, <kbd>M</kbd> opens the full
+      map, right-click a card for its verbs.
+      <span class="dim">A project's modules are not running services yet, so these
+      cards have no Start/Stop and no contract of their own — the Atlas says so on
+      each card rather than showing a button that would fail.</span>`,
+    fetch: () => W.api(base),
+    inspect: (key) => W.api(`${base}/node/${encodeURIComponent(key)}`),
+    setAgent: (key, agentId) => post(`/node/${encodeURIComponent(key)}/agent`,
+                                     { agent_id: agentId }),
+    setConfig: (key, cfg) => post(`/node/${encodeURIComponent(key)}/config`, cfg),
+    team: () => W.api(`${base}/team`),
+    // "Replan" here costs nothing and calls no model: a project's graph is DERIVED
+    // from its tasks, so re-reading them IS the replan.
+    replan: () => post("/resync"),
+    verify: refuse("a task has no test suite of its own to run from here — the "
+                   + "project's own checks run inside the worker when the task "
+                   + "finishes, and this card shows their verdict."),
+    service: refuse("a task is work, not a process — there is nothing here to start "
+                    + "or stop."),
+    removeNode: refuse("the manager owns this project's task list — ask it in the "
+                       + "Manager tab to drop the task. A card removed here would "
+                       + "come straight back when the plan is re-read."),
+    replaceAspect: refuse("Replace files a ticket to the crew that builds the "
+                          + "platform itself. To change THIS project's work, tell "
+                          + "its manager in the Manager tab."),
+    setTeam: refuse("a project's cards are staffed from its own roster — hire on "
+                    + "the Command view."),
+    cluster: refuse("a project has no mini cluster."),
+  };
+}
+
+/** Resolve a source NAME to its object. "self" is the fleet; "project:<id>" is one
+ * project. Kept as a name (not an object) because the name is what open() compares
+ * to decide navigation-vs-remount, and what the shell passes from the hash. */
+function srcFor(name) {
+  const m = /^project:(\d+)$/.exec(String(name || ""));
+  return m ? PROJECT_GRAPH_SRC(Number(m[1])) : DEVTEAM_GRAPH_SRC;
+}
 
 // ---- small helpers --------------------------------------------------------------
 const esc = (s) => (W.escapeHtml ? W.escapeHtml(String(s ?? "")) : String(s ?? ""));
@@ -98,6 +200,17 @@ const esc = (s) => (W.escapeHtml ? W.escapeHtml(String(s ?? "")) : String(s ?? "
 /** src/dst regardless of which serializer produced the edge. */
 function edgeEnds(e) {
   return [String(e.src ?? e.src_key ?? ""), String(e.dst ?? e.dst_key ?? "")];
+}
+
+/** The screen is exactly the space left below whatever chrome is above it —
+ * MEASURED, never assumed. The CSS used to say `100vh - 54px`, which is true only
+ * for the fleet tenant on a box with no update banner; a project also shows the
+ * project bar, and the difference pushed the side column's pinned footer (the
+ * health legend) clean below the fold. One rect read, on open, on paint and on
+ * resize. */
+function fitScreen(i) {
+  const top = i.screen.getBoundingClientRect().top;
+  i.screen.style.setProperty("--gr-h", Math.max(240, W.innerHeight - top) + "px");
 }
 
 function svgMk(tag, attrs) {
@@ -127,7 +240,7 @@ function open(sourceName, sub) {
   const aside = document.getElementById("graphAside");
   if (!screen || !wrap || !room || !wires || !aside) return;
   inst = {
-    src: SOURCES[sourceName] || DEVTEAM_GRAPH_SRC,
+    src: srcFor(sourceName),
     srcName: sourceName || "self",
     screen, wrap, room, wires, aside,
     level,                     // null = the top room, else the open group's key
@@ -160,7 +273,13 @@ function open(sourceName, sub) {
   asideDefault(inst);
   loadTeam(inst);
   const back = document.getElementById("graphBack");
-  if (back) back.onclick = () => { location.hash = "#/hq"; };
+  if (back) {
+    // Where "back" goes is the SOURCE's business — the fleet climbs out to HQ, a
+    // project climbs out to its own Command view, which is the "one chip away"
+    // promise from the other side.
+    back.textContent = inst.src.backLabel || "← Devteam HQ";
+    back.onclick = () => { location.hash = (inst && inst.src.backHash) || "#/hq"; };
+  }
   // Live updates: the classic scripts own the socket; connectWs re-broadcasts
   // graph/repair kinds as DOM CustomEvents, which a module CAN hear.
   inst._onGraphEvent = (ev) => { if (inst) onGraphEvent(inst, ev.detail || {}); };
@@ -172,6 +291,7 @@ function open(sourceName, sub) {
     if (!inst || inst.inspectKey || inst.transition || inst.atlasOpen) return;
     refetch(inst);
   }, 6000);
+  fitScreen(inst);
   screen.focus({ preventScroll: true });
   refetch(inst);
 }
@@ -245,17 +365,23 @@ function roomNodes(data, level) {
   return ns.filter((n) => !String(n.parent_key || ""));
 }
 
-/** The GOAL's display name. The owner renamed it; the payload may still carry an
- * older title — override client-side ONLY when the backend has not renamed it. */
-function goalTitle(n) {
+/** The GOAL's display name: the payload's own title when it named one, else the
+ * SOURCE's default. Both tenants have a conclusion and each calls it something
+ * different — the fleet's Artifact, a project's Deliverable — and that difference
+ * is a property of the source, never a branch in here. */
+function goalTitle(i, n) {
   const t = String((n && n.title) || "");
-  return /artifact/i.test(t) ? t : "The Artifact — the running platform";
+  const fallback = (i && i.src && i.src.goalTitle) || "The Artifact — the running platform";
+  return t && !/^conclusion$/i.test(t) ? t : fallback;
 }
 
 // Group health rolls WORST-OF its children, derived client-side whenever the
 // payload has not rolled it itself (every health field is optional — the Atlas
 // must render gracefully against a backend that predates the contract).
-const HS_RANK = { green: 0, yellow: 1, red: 2 };
+// GREY ranks BELOW green on purpose: a room of work nobody has started is not
+// healthy, it is simply not begun, and the card says so by staying unlit.
+const HS_ORDER = ["grey", "green", "yellow", "red"];
+const HS_RANK = { grey: 0, green: 1, yellow: 2, red: 3 };
 function deriveGroupHealth(data) {
   const worst = {};
   for (const n of (data && data.nodes) || []) {
@@ -266,7 +392,7 @@ function deriveGroupHealth(data) {
   for (const n of (data && data.nodes) || []) {
     if (n.node_type !== "group" || (n.health && n.health.status)) continue;
     const r = worst[String(n.key)];
-    if (r != null) n.health = { status: ["green", "yellow", "red"][r] };
+    if (r != null) n.health = { status: HS_ORDER[r] };
   }
 }
 
@@ -288,7 +414,10 @@ function drillTo(i, key) {
       return;
     }
   }
-  const want = key ? "#/graph/" + encodeURIComponent(key) : "#/graph";
+  // The hash SPACE belongs to the source: #/graph/<room> for the fleet,
+  // #/p/<id>/graph/<room> for a project. Travel still funnels through the hash for
+  // both, so the address bar, the back button and a pasted link keep meaning one room.
+  const want = i.src.hash(key || null);
   // Never rewrite an already-correct hash: assigning it again mints a duplicate
   // history entry, and the first browser-back then appears to do nothing.
   if (location.hash !== want) location.hash = want;
@@ -371,6 +500,10 @@ function setRoomNow(i, level) {
  * true (the crew is unaffected; only the map is gone). Returns true when it took
  * over the stage. */
 function paintUnavailable(i, data) {
+  // Every paint funnels through here first, which makes it the one place the
+  // screen's measured height can be refreshed on BOTH paths — the chrome above the
+  // Atlas (the project bar, the update banner) can appear between two polls.
+  fitScreen(i);
   if (!data || !data.degraded || (data.nodes || []).length) return false;
   i.data = data;
   i.byKey = new Map();
@@ -401,7 +534,8 @@ function paint(i, data) {
   // REPLACE the history entry rather than pushing one (the back-button lesson).
   if (i.level && !roomNodes(data, i.level).length) {
     i.level = null;
-    if (location.hash !== "#/graph") history.replaceState(null, "", "#/graph");
+    const top = i.src.hash(null);
+    if (location.hash !== top) history.replaceState(null, "", top);
   }
   const counts = {};
   for (const n of data.nodes || []) {
@@ -452,7 +586,7 @@ function paint(i, data) {
     const colEl = document.createElement("div");
     colEl.className = "gr-col gr-col-artifact";
     const key = String(conclusion.key);
-    const el = buildArtifactCard(conclusion, data.conclusion, goalTitle(conclusion));
+    const el = buildArtifactCard(conclusion, data.conclusion, goalTitle(i, conclusion));
     if (!SEEN.has(planId + ":" + key)) el.classList.add("gr-hidden");
     place(colEl, key, el);
     i.room.appendChild(colEl);
@@ -721,11 +855,11 @@ function renderGoalChip(i) {
   flag.textContent = "🏁";
   const name = document.createElement("span");
   name.className = "gr-goalchip-name";
-  name.textContent = goalTitle(node);
+  name.textContent = goalTitle(i, node);
   const dot = document.createElement("span");
   dot.className = "gr-goal-dot gr-goaldot-" + String(c.health || "unknown");
   el.append(flag, name, dot);
-  el.title = goalTitle(node) + " — back to the top room";
+  el.title = goalTitle(i, node) + " — back to the top room";
   el.hidden = false;
   el.onclick = () => {
     if (node) i.flashKey = String(node.key);
@@ -733,17 +867,26 @@ function renderGoalChip(i) {
   };
 }
 
-// ---- the health legend: three states, one line each -----------------------------
+// ---- the health legend: one line per state, and a SAFE AREA under it -------------
+/** The rows come from the SOURCE (a fleet's tri-state and a project's four states
+ * mean different things), never from a branch in here.
+ *
+ * THE OVERLAP FIX LIVES IN CSS AND IS DELIBERATE. This box is stage-absolute at the
+ * bottom-left and used to sit ON TOP of the first column's cards — a card you could
+ * see but not read, and on a narrow window not click either. `graph.css` now
+ * reserves `--gr-legend-h` as bottom padding on `.gr-room`, so the room's own
+ * content box ENDS above the legend, and caps the legend at that same height so it
+ * can never grow into the space it was promised. One variable, both halves; a test
+ * pins that both selectors still reference it, and tools/graph_experiment.py
+ * measures real rectangles in both tenants. */
 function renderLegend(i) {
   const el = document.getElementById("graphLegend");
   if (!el) return;
-  if (el.childElementCount) { el.hidden = false; return; }   // built once per mount
+  const rows = (i.src && i.src.legend) || DEVTEAM_GRAPH_SRC.legend;
+  if (el.dataset.src === i.srcName) { el.hidden = false; return; }  // built per source
+  el.dataset.src = i.srcName;
   el.innerHTML = "";
-  for (const [k, line] of [
-    ["green", "green — calm glow: heartbeat and tests both fine"],
-    ["yellow", "amber — pulsing: tests failing, heartbeat fine"],
-    ["red", "red — strobing: the heartbeat itself is failing"],
-  ]) {
+  for (const [k, line] of rows) {
     const row = document.createElement("div");
     row.className = "gr-legend-row";
     const dot = document.createElement("span");
@@ -883,16 +1026,11 @@ function reselect(i) {
 
 // ---- the aside (this screen's own panel/action host) ----------------------------
 function asideDefault(i) {
-  i.aside.innerHTML = `<div class="gr-tip">
-    <p class="dim"><b>The Atlas</b> — your platform as the parts it actually runs.
-    Every card is a SERVICE: its own process, its own port, its own contract, its
-    own Start and Stop. <b>Click</b> a capillary card and what it promises, how it
-    is doing, who works it and what it last printed opens here — never what is
-    inside it. <b>Click</b> a chamber card (a room) or press <kbd>Enter</kbd> to walk in;
-    <kbd>Esc</kbd> or the breadcrumb climbs back out. Arrow keys move the
-    focus. Door chips on a card ("→ Data › db") are its real cross-room
-    dependencies — click one to travel there. <kbd>M</kbd> opens the full map.
-    Right-click a card for its verbs.</p></div>`;
+  // The tip is the one place the screen explains WHAT A CARD IS, and that answer
+  // genuinely differs between tenants — so it is a property of the source, and this
+  // renderer only decides where it goes.
+  i.aside.innerHTML = `<div class="gr-tip"><p class="dim">${
+    (i.src && i.src.tip) || DEVTEAM_GRAPH_SRC.tip}</p></div>`;
 }
 
 function testsLine(tests) {
@@ -914,16 +1052,22 @@ function agentRow(i, n, d) {
       <div class="dim">a room is staffed through what is inside it — agents live on the cards in there</div></div>`;
   }
   const a = d.agent;
+  // `agent.note` is the payload saying WHY this name is here — "the specialist
+  // working this service", or "claimed by you in the Atlas". Optional by contract,
+  // so the fleet payload (which sends none) reads exactly as it always did.
   if (a) {
     const name = String(a.name || "").trim() || `agent #${a.agent_id ?? a.home_id}`;
+    const note = String(a.note || "the specialist working this service");
     return `<div class="gr-agent-row">
       <span class="gr-agent-avatar">${esc((name.trim()[0] || "?").toUpperCase())}</span>
-      <div><b>${esc(name)}</b><div class="dim">the specialist working this service</div></div></div>`;
+      <div><b>${esc(name)}</b>${a.role ? ` <span class="dim">· ${esc(a.role)}</span>` : ""}
+        <div class="dim">${esc(note)}</div></div></div>`;
   }
   return `<div class="gr-agent-row gr-agent-none">
     <span class="gr-agent-avatar">?</span>
-    <div><b>Unassigned</b> — the manager staffs modules when it authors the plan
-      <div class="gr-actions"><button class="rp-mini" id="grStaff">Have the manager plan now</button>
+    <div><b>Unassigned</b> — nobody is claimed for this card yet
+      <div class="gr-actions"><button class="rp-mini" id="grStaff">${
+        esc((i.src && i.src.staffLabel) || "Have the manager plan now")}</button>
       <span class="dim" id="grStaffOut"></span></div></div></div>`;
 }
 
@@ -985,15 +1129,40 @@ function wireCluster(i) {
   if (st) st.onclick = () => go("stop", st);
 }
 
-/** The GOAL panel — the Artifact card's click. Live beat, uptime and shas when
- * the backend sends them (all optional), plus the mini cluster. */
+/** Two optional, tenant-neutral halves of the conclusion contract. `lines` is
+ * label/value facts, `links` is every real way to GET at what was produced. The
+ * fleet sends neither (it sends fleet/cluster/uptime/repair instead) and a project
+ * sends only these — which is how one panel serves both goals with no branch on
+ * which one it is looking at. Links open in a new tab and are rendered as text, so
+ * a URL a project's own manager wrote can never become markup. */
+function concLines(c) {
+  return ((c.lines) || []).map((l) => `<p class="dim">${esc(l.label)}: <b>${esc(l.value)}</b></p>`).join("");
+}
+function concLinks(c) {
+  const rows = ((c.links) || []).map((l) => {
+    let href = "";
+    try {
+      const u = new URL(String(l.url || ""), location.href);
+      if (/^https?:$/.test(u.protocol)) href = u.href;
+    } catch (e) { /* not a URL we will follow */ }
+    if (!href) return "";
+    return `<a class="gr-conclink" target="_blank" rel="noopener" href="${esc(href)}">${esc(l.label)}</a>`;
+  }).join("");
+  return rows ? `<div class="gr-conclinks">${rows}</div>` : "";
+}
+
+/** The GOAL panel — the conclusion card's click. Every field is OPTIONAL and each
+ * is rendered only when the payload carries it: the fleet's beat/uptime/shas/crew
+ * and mini cluster, a project's lines and links. A missing key prints nothing at
+ * all, which is what keeps a sentence about a mini cluster off a project's panel
+ * without either payload knowing the other exists. */
 function asideConclusion(i) {
   const c = (i.data && i.data.conclusion) || {};
   const node = ((i.data && i.data.nodes) || []).find((n) => n.node_type === "conclusion");
   const rep = c.repair || {};
   i.aside.innerHTML = `
     <div class="gr-light gr-conclusion">
-      <div class="gr-light-head"><span class="gr-light-glyph">🏁</span><div><b>${esc(goalTitle(node))}</b>
+      <div class="gr-light-head"><span class="gr-light-glyph">🏁</span><div><b>${esc(goalTitle(i, node))}</b>
         <div class="dim">the GOAL — what all of it adds up to</div></div></div>
       <p>health: <b class="gr-health gr-health-${esc(c.health || "unknown")}">${esc(c.health || "unknown")}</b>${
         c.beat != null ? ` · beat: <b>${esc(String(c.beat))}</b>` : ""}</p>
@@ -1003,13 +1172,16 @@ function asideConclusion(i) {
         : `<span class="dim">the fleet manager is not answering on ${esc(c.fleet.api || "")} — the switches are invisible, which is not the same as the services being down</span>`}</p>` : ""}
       ${c.uptime_s != null ? `<p class="dim">up ${esc(fmtUptime(c.uptime_s))}</p>` : ""}
       ${c.boot_sha ? `<p class="dim">boot <code>${esc(String(c.boot_sha).slice(0, 10))}</code></p>` : ""}
-      <p class="dim">crew: ${esc(rep.phase || "idle")}${rep.sprint ? ` · sprint ${esc(rep.sprint)}` : ""}</p>
-      <div class="gr-sec"><div class="gr-sec-h">Mini cluster</div><div id="grCluster">${clusterHtml(c)}</div></div>
-      <button class="rp-mini" id="grOpenHq">🏢 Open HQ</button>
+      ${c.repair ? `<p class="dim">crew: ${esc(rep.phase || "idle")}${rep.sprint ? ` · sprint ${esc(rep.sprint)}` : ""}</p>` : ""}
+      ${concLines(c)}
+      ${c.note ? `<p class="dim">${esc(c.note)}</p>` : ""}
+      ${concLinks(c)}
+      ${c.cluster ? `<div class="gr-sec"><div class="gr-sec-h">Mini cluster</div><div id="grCluster">${clusterHtml(c)}</div></div>` : ""}
+      <button class="rp-mini" id="grOpenHq">${esc((i.src && i.src.homeLabel) || "🏢 Open HQ")}</button>
     </div>`;
   wireCluster(i);
   const b = i.aside.querySelector("#grOpenHq");
-  if (b) b.onclick = () => { location.hash = "#/hq"; };
+  if (b) b.onclick = () => { location.hash = (i.src && i.src.homeHash) || "#/hq"; };
 }
 
 /** THE panel: one side panel with everything, opened by a SINGLE click on any
@@ -1324,7 +1496,11 @@ function wireEvents(i) {
   };
   const onKey = (e) => keyDown(i, e);
   const onCtx = (e) => contextMenu(i, e);
-  const onResize = () => { if (inst === i && !i.transition) drawWires(i, false); };
+  const onResize = () => {
+    if (inst !== i || i.transition) return;
+    fitScreen(i);
+    drawWires(i, false);
+  };
 
   i.room.addEventListener("click", onClick);
   if (i.atlas) i.atlas.addEventListener("click", onAtlasClick);
@@ -1600,8 +1776,14 @@ async function agentPicker(i, key) {
   box.appendChild(note);
   let members = [];
   let failed = null;
-  try { members = teamMembers(await i.src.team()); }
-  catch (er) { failed = (er && er.message) || String(er); }
+  try {
+    const r = await i.src.team();
+    members = teamMembers(r);
+    // The pool's OWN sentence when it has one: a project's roster is not switchable
+    // from the header bar, and telling the boss to look there would send them to a
+    // dropdown that is (correctly) hidden.
+    if (r && r.note) note.textContent = String(r.note);
+  } catch (er) { failed = (er && er.message) || String(er); }
   if (inst !== i) { box.remove(); return; }
   if (failed || !members.length) {
     const p = document.createElement("p");

@@ -476,6 +476,31 @@ function openModuleGraph(skipHash) {
   window.ModuleGraph.open("self", (location.hash.match(/^#\/graph\/([^/]+)/) || [])[1] || "");
 }
 
+/** The PROJECT tenant of the Atlas — the same screen, the same module, one source
+ * name apart. It is a project's DEFAULT view now (the owner: "Atlas is the main
+ * screen, it should appear immediately when someone creates a project"), and the
+ * classic Command view is one chip away in the toggle — plus this screen's own
+ * "← Command" back button, which the source supplies.
+ *
+ * The project BAR stays visible here, unlike the fleet's: its status badge, its
+ * runs meter and its project switcher are all still true on this screen, and taking
+ * them away would make the Atlas feel like somewhere else rather than like the
+ * project's front page. With the flag off (or the module unloaded) this lands on the
+ * classic Command view — never a blank screen. */
+function openProjectGraph(id, sub, skipHash) {
+  if (!(me && me.module_graph) || !window.ModuleGraph) {
+    openProject(id, "command", skipHash);
+    return;
+  }
+  hideScreens("#graphScreen");
+  const g = $("#graphScreen");
+  if (g) g.hidden = false;
+  $("#projectBar").hidden = false;
+  currentProject = Number(id);
+  if (!skipHash) setHash(`#/p/${id}/graph`);
+  window.ModuleGraph.open("project:" + Number(id), sub || "");
+}
+
 function openProject(id, view, skipHash) {
   hideScreens("main");
   $("main").hidden = false;
@@ -485,6 +510,11 @@ function openProject(id, view, skipHash) {
   // Must finish before selectProject sets .value, or the assignment lands on an
   // empty <select> and is silently dropped (the dropdown then shows the wrong project).
   const filled = loadProjects();
+  // THE ATLAS IS A PROJECT'S DEFAULT VIEW. Opening a project with no view named
+  // lands on its graph, exactly as MODULE_GRAPH made the fleet's graph the default
+  // for devteam while leaving the old screen one click away. `openProjectGraph`
+  // falls back to Command by itself when the flag is off, so this stays safe.
+  view = view || (me && me.module_graph && window.ModuleGraph ? "graph" : "command");
   if (view) switchView(view, true);
   filled.then(() => { $("#projectSelect").value = String(id); });
   if (!skipHash) setHash(`#/p/${id}${view && view !== "command" ? "/" + view : ""}`);
@@ -504,6 +534,17 @@ function setHash(h) {
 function switchView(view, skipHash) {
   document.querySelectorAll(".vchip").forEach((c) =>
     c.classList.toggle("active", c.dataset.v === view));
+  // The Atlas is a chip like any other, but it is a SCREEN rather than a panel
+  // inside `main` — so it hands off instead of unhiding a div. Every other chip
+  // falls through and re-shows `main`, which is what makes Command genuinely one
+  // chip away from the graph.
+  if (view === "graph") {
+    if (currentProject && currentProject !== "devteam")
+      openProjectGraph(currentProject, "", skipHash);
+    else openModuleGraph(skipHash);
+    return;
+  }
+  if ($("main").hidden) { hideScreens("main"); $("main").hidden = false; }
   for (const id of ["command", "board", "dag", "artifacts", "agents", "chat", "blockers",
                     "notices", "usage", "self"])
     $("#" + id).hidden = id !== view;
@@ -560,7 +601,12 @@ function route() {
   }
   // Same discipline for the module graph: routing away destroys its instance (its
   // timers, its listeners) — close() is idempotent, so this is safe to say every time.
-  if (!location.hash.startsWith("#/graph") && window.ModuleGraph) window.ModuleGraph.close();
+  // TWO hash spaces now open it: #/graph (the fleet) and #/p/<id>/graph (a project).
+  // Missing the second here is how the project Atlas would tear itself down on its
+  // own first route and leave a blank screen behind.
+  const onGraph = location.hash.startsWith("#/graph")
+    || /^#\/p\/\d+\/graph(\/|$)/.test(location.hash);
+  if (!onGraph && window.ModuleGraph) window.ModuleGraph.close();
   const plan = location.hash.match(/^#\/plan(?:\/(\d+))?/);
   if (plan) {
     openPlan();
@@ -589,8 +635,18 @@ function route() {
     const ag = location.hash.match(/^#\/agent\/(\d+)(?:\/(\w+))?/);
     if (ag) { openAgentPage(Number(ag[1]), ag[2] || "now", true); return; }
   }
+  // A project's Atlas carries a ROOM in its hash the same way the fleet's does —
+  // #/p/9/graph/role-backend — so this branch is matched before the generic project
+  // route, which would otherwise swallow the room segment.
+  {
+    const pg = location.hash.match(/^#\/p\/(\d+)\/graph(?:\/(.+))?/);
+    if (pg) { openProjectGraph(Number(pg[1]), pg[2] || "", true); return; }
+  }
   const m = location.hash.match(/^#\/p\/(\d+)(?:\/(\w+))?/);
-  if (m) openProject(Number(m[1]), m[2] || "command", true);
+  // No view named = the project's DEFAULT, which openProject now resolves to the
+  // Atlas when the flag allows it. Passing "command" here would have made the
+  // address bar the one place the old default survived.
+  if (m) openProject(Number(m[1]), m[2] || "", true);
   else showHome(true);
 }
 window.addEventListener("hashchange", route);

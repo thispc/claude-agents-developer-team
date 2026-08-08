@@ -79,7 +79,14 @@ def test_drill_state_lives_in_the_hash():
     address bar, the back button and a pasted link all mean the same room."""
     mod = _read("graph/index.js")
     assert "function open(sourceName, sub)" in mod, "open() must accept the room sub-path"
-    assert '"#/graph/" + encodeURIComponent(key)' in mod, "travel must write the hash"
+    # The hash SPACE moved onto the source when the project tenant landed (the fleet
+    # owns #/graph, a project owns #/p/<id>/graph), but travel must still funnel
+    # through the hash — that is what makes back/forward and a pasted link work.
+    assert '"#/graph/" + encodeURIComponent(level)' in mod, \
+        "the fleet source must still own #/graph/<room>"
+    drill = mod.split("function drillTo(", 1)[1].split("\nfunction ", 1)[0]
+    assert "i.src.hash(" in drill and "location.hash = want" in drill, \
+        "travel must write the hash the SOURCE names"
     js = dashboard_js()
     assert 'ModuleGraph.open("self", ' in js, \
         "core.js must pass the hash's sub-path through to the module"
@@ -388,9 +395,16 @@ def test_the_panel_puts_the_agent_front_and_center():
     assert "function agentRow" in mod
     rp = mod.split("function renderPanel(", 1)[1].split("\nfunction ", 1)[0]
     assert "${agentRow(" in rp, "the panel must render the agent row"
-    assert "the specialist working this service" in mod
-    assert "the manager staffs modules when it authors the plan" in mod, \
-        "the unassigned fallback must say WHO assigns and WHEN"
+    assert "the specialist working this service" in mod, \
+        "the fleet's default note must survive as the fallback when a payload sends none"
+    assert "a.note" in mod, \
+        "the agent line must prefer the PAYLOAD's own note, so a project can say " \
+        "'claimed by you in the Atlas' without a tenant branch"
+    assert "nobody is claimed for this card yet" in mod, \
+        "the unassigned fallback must say what is missing"
+    assert "i.src.staffLabel" in mod, \
+        "the unassigned button's LABEL is the source's — a project re-reads its DAG, " \
+        "it does not ask a model to author a plan"
     assert "Have the manager plan now" in mod
     assert "i.src.replan()" in mod, "the unassigned button must call the replan verb"
 
@@ -595,16 +609,26 @@ def test_tri_state_health_classes_with_reduced_motion_stand_down():
         "a payload-rolled group health must win over the client's derivation"
 
 
-def test_health_legend_bottom_left():
+def test_health_legend_is_a_pinned_key_that_covers_nothing():
+    """WAS `test_health_legend_bottom_left`, and the rename IS the fix. Bottom-left
+    of the stage is exactly where it printed over the cards — see
+    tests/test_project_graph.py for the measurement that killed the reserved-strip
+    version. The legend is now a pinned footer of the side column."""
     html = _read("index.html")
     assert 'id="graphLegend"' in html
     mod = _read("graph/index.js")
-    lg = mod.split("function renderLegend(", 1)[1].split("\nfunction ", 1)[0]
+    # The ROWS moved onto the source (a fleet's tri-state and a project's four
+    # states mean different things), so the wording is pinned where it now lives.
+    fleet = mod.split("const DEVTEAM_GRAPH_SRC = {", 1)[1].split("\n};", 1)[0]
     for line in ("calm glow", "tests failing, heartbeat fine", "heartbeat itself is failing"):
-        assert line in lg, "the legend must explain each state in one line"
+        assert line in fleet, "the legend must explain each state in one line"
+    lg = mod.split("function renderLegend(", 1)[1].split("\nfunction ", 1)[0]
+    assert "i.src && i.src.legend" in lg, \
+        "the legend rows must come from the source, never a tenant branch"
     css = _read("graph/graph.css")
     leg = css.split(".gr-legend {", 1)[1].split("}", 1)[0]
-    assert "left: 14px" in leg and "bottom: 14px" in leg
+    assert "position:" not in leg, "a positioned legend can float back over the room"
+    assert "border-top" in leg, "it reads as a footer of the panel above it"
 
 
 # --------------------------------------------------------------------------
@@ -617,9 +641,12 @@ def test_conclusion_is_the_artifact_card_and_the_goal_chip():
     assert 'n.node_type !== "conclusion"' in rn, \
         "the conclusion must never be an ordinary room card"
     gt = mod.split("function goalTitle(", 1)[1].split("\nfunction ", 1)[0]
-    assert "The Artifact — the running platform" in gt
-    assert "/artifact/i" in gt, \
-        "override the display client-side ONLY when the backend has not renamed it"
+    assert "i.src.goalTitle" in gt, \
+        "the conclusion's name is the source's, so a project may call it a Deliverable"
+    fleet = mod.split("const DEVTEAM_GRAPH_SRC = {", 1)[1].split("\n};", 1)[0]
+    assert "The Artifact — the running platform" in fleet
+    assert "i.src.goalTitle" in gt, \
+        "the conclusion's name falls back to the SOURCE's, never to a hardcoded one"
     paint = mod.split("function paint(", 1)[1].split("\nfunction ", 1)[0]
     assert "gr-col-artifact" in paint and "buildArtifactCard" in paint, \
         "the Artifact is the top room's always-last column"
