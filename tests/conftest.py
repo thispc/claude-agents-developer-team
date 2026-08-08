@@ -46,20 +46,20 @@ for _k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GEMINI_API_KEY",
            "GITHUB_REPO", "REQUIRE_STAGING", "CUSTOM_MODEL_ENDPOINTS",
            # Pinned below to MOUNTED services, never to whatever a shell that
            # sourced data/env/conductor.env happens to point at — the suite must
-           # not reach a real 8881/8882/8883 (or fail because nothing is
+           # not reach a real 8881/8882/8883/8884 (or fail because nothing is
            # listening there).
-           "KNOWLEDGE_URL", "USAGE_URL", "NOTIFY_URL"):
+           "KNOWLEDGE_URL", "USAGE_URL", "NOTIFY_URL", "WATCH_URL"):
     os.environ.pop(_k, None)
 
 # --- the fleet services, mounted in-process -----------------------------------
 #
-# Since P1 (knowledge) and P2 (usage, notify) the conductor has no in-process
-# store, meter or notifier: recall, note and report_error are HTTP calls. So the
-# suite MOUNTS each service — the real app, its own temp database — and points
-# the shim's httpx client at it. No sockets, no fleet, nothing to start: the
-# offline invariant holds, and every conductor test that recalls, meters or
-# reports exercises the real client path against the real service instead of a
-# mock that can drift from it.
+# Since P1 (knowledge), P2 (usage, notify) and P3 (watch) the conductor has no
+# in-process store, meter, notifier or log ring: recall, note, report_error and
+# every log row are HTTP calls. So the suite MOUNTS each service — the real app,
+# its own temp database — and points the shim's httpx client at it. No sockets,
+# no fleet, nothing to start: the offline invariant holds, and every conductor
+# test that recalls, meters, reports or LOGS exercises the real client path
+# against the real service instead of a mock that can drift from it.
 #
 # Mounting matters more than it sounds. Leaving a *_URL set with nothing
 # listening would not fail the suite — every verb would degrade, silently, and
@@ -71,12 +71,18 @@ for _k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GEMINI_API_KEY",
 KNOWLEDGE_TEST_TOKEN = "conductor-suite-knowledge-token"
 USAGE_TEST_TOKEN = "conductor-suite-usage-token"
 NOTIFY_TEST_TOKEN = "conductor-suite-notify-token"
+WATCH_TEST_TOKEN = "conductor-suite-watch-token"
 _KNOWLEDGE_URL = "http://knowledge.test"
 _USAGE_URL = "http://usage.test"
 _NOTIFY_URL = "http://notify.test"
+_WATCH_URL = "http://watch.test"
 os.environ["KNOWLEDGE_URL"] = _KNOWLEDGE_URL
 os.environ["USAGE_URL"] = _USAGE_URL
 os.environ["NOTIFY_URL"] = _NOTIFY_URL
+# Set BEFORE `from app import ...` below: the logs and monitor shims decide their
+# mode at import (URL set = client, unset = the vendored pre-P3 body), and a
+# process boots into one world and stays there.
+os.environ["WATCH_URL"] = _WATCH_URL
 
 
 def _load_module(name: str, path: Path):
@@ -136,9 +142,12 @@ usage_service = _mount_service("usage", USAGE_TEST_TOKEN)
 # is blanked above with every other one.
 notify_service = _mount_service("notify", NOTIFY_TEST_TOKEN,
                                 GITHUB_TOKEN="test-github-token-not-real")
+watch_service = _mount_service("watch", WATCH_TEST_TOKEN)
 
 from app import auth, db  # noqa: E402
 from app import knowledge as _knowledge  # noqa: E402
+from app import logs as _logs  # noqa: E402
+from app import monitor as _monitor  # noqa: E402
 from app import notify as _notify  # noqa: E402
 from app import usage as _usage  # noqa: E402
 
@@ -165,6 +174,18 @@ _usage._client = lambda: _svc_client(usage_service, _USAGE_URL, USAGE_TEST_TOKEN
 _notify._TRANSPORT = httpx.ASGITransport(app=notify_service.app)
 _notify._TOKEN = NOTIFY_TEST_TOKEN
 _notify._sync_client = lambda: _svc_client(notify_service, _NOTIFY_URL, NOTIFY_TEST_TOKEN)
+
+_logs._TOKEN = WATCH_TEST_TOKEN
+_logs._client = lambda: _svc_client(watch_service, _WATCH_URL, WATCH_TEST_TOKEN)
+_monitor._TOKEN = WATCH_TEST_TOKEN
+_monitor._client = lambda: _svc_client(watch_service, _WATCH_URL, WATCH_TEST_TOKEN)
+# The log shim batches rows onto a queue that a DAEMON THREAD posts. Here the
+# thread never starts, so every row is posted on the calling test's own thread
+# inside logs.flush() — which each read verb calls first anyway, so a test still
+# reads its own writes. A background thread racing `fresh_db` as it empties the
+# service's tables is a flake, not a test; the thread, its 500ms timer and its
+# 100-row trigger are drilled deliberately in tests/test_watch_service.py.
+_logs.AUTOFLUSH = False
 
 
 # The usage service reads the owner's dials through the conductor's
@@ -214,12 +235,23 @@ def fresh_db():
     # The mounted services outlive any one test's database, so empty their stores
     # here too — a test that recalls must see only what it remembered, and a test
     # that meters must not inherit the previous test's spend.
+    # Anything still queued in the log shim belongs to the PREVIOUS test and would
+    # flush into this one's clean ring on its first read. Dropped before the
+    # tables are emptied, not after.
+    _logs._QUEUE.clear()
+    _logs._LAST.clear()
+    _logs._degraded_read = False
     for svc, tables in ((knowledge_service, ("knowledge",)),
                         (usage_service, ("usage_rows",)),
-                        (notify_service, ("notify_seen", "notify_sent"))):
+                        (notify_service, ("notify_seen", "notify_sent")),
+                        (watch_service, ("log_rows", "error_rows", "decisions"))):
         for table in tables:
             svc.helpers.db().execute(f"DELETE FROM {table}")
         svc.helpers.db().commit()
+    # ...and the standing decision, which is not a table row: a suite that
+    # inherited `auto` from an earlier test would start approving by itself.
+    watch_service.helpers.db().execute("DELETE FROM kv WHERE key = 'auto'")
+    watch_service.helpers.db().commit()
     from app import bus
     bus._loop = None          # don't inherit a closed loop from a prior TestClient
     yield db
@@ -336,6 +368,20 @@ def make_task(project_id, role="backend", title="t", desc="d", status="planned",
     if status != "planned":
         db.update_task(tid, status=status)
     return tid
+
+
+def clear_logs():
+    """Empty the ring the way a test used to empty the kv blob.
+
+    Since P3 `logs.RING_KEY` does not exist: the rows live in the mounted watch
+    service, and some of them are still on the shim's queue. Both have to go, in
+    that order, or the next read flushes the rows a test just cleared.
+    """
+    _logs._QUEUE.clear()
+    con = watch_service.helpers.db()
+    con.execute("DELETE FROM log_rows")
+    con.execute("DELETE FROM error_rows")
+    con.commit()
 
 
 def dashboard_js() -> str:

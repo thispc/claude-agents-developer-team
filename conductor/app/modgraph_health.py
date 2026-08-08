@@ -88,8 +88,21 @@ def _probe_repair() -> bool:
 
 
 def _probe_ops() -> bool:
-    """The self-watching record rides shell for everything it does — same real spawn."""
-    return _probe_shell()
+    """The self-watching record: a real spawn through shell, AND the ring answering.
+
+    Since P3 the log ring and the monitor are a SERVICE, so the honest beat has two halves.
+    An ops module reporting green while every row written to it is being dropped is exactly
+    the dishonesty the knowledge probe was fixed for — the stdout echo survives an outage,
+    but the searchable record does not, and this card is where someone looks to find that
+    out. Asked through the conductor's own door, never around it."""
+    from . import logs
+    if not _probe_shell():
+        return False
+    # `health` exists only on the client. In the strangler window's fallback mode the ring is
+    # back in this process, where "is it reachable" is not a question — commit B deletes this
+    # branch along with the vendored body.
+    ask = getattr(logs, "health", None)
+    return ask() if ask else True
 
 
 _WORKER_SRC: dict = {"mtime": None, "ok": False}

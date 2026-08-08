@@ -27,6 +27,15 @@
 #   data/env/<name>.env. The escape hatch for a credential that genuinely had to
 #   move with the code (notify's GITHUB_TOKEN) — keep every list as short as it
 #   can be, and never put a model credential in one.
+# public: whether a SIGNED-IN NON-ROOT user may reach this service through the
+#   /svc gateway. Absent means false: the gate fails closed, exactly like doors:.
+#   Every service here holds operator data — what agents have learned, what the
+#   subscription was spent on, what broke — and the conductor's own routes for it
+#   are all root-gated. `/api/logs` is root-only because logs name file paths,
+#   branch names and the shape of the owner's own work; a gateway that forwarded
+#   /svc/watch/logs to any account would hand over the same rows by another door.
+#   A project's service that genuinely serves its users declares public: true in
+#   one reviewed line, instead of every service leaking by omission.
 
 defaults:
   host: 127.0.0.1
@@ -84,6 +93,23 @@ services:
     # ceiling. Nothing else — and no model credential ever.
     env: [GITHUB_TOKEN, GIT_API, GIT_PROVIDER, NOTIFY_GITHUB, NOTIFY_MAX_PER_HOUR]
     ui: false                   # headless — it speaks in GitHub issues
+
+  watch:
+    kind: service
+    port: 8884
+    dir: services/watch
+    db: data/watch.db
+    cmd: .venv/bin/uvicorn app:app --app-dir services/watch --host 127.0.0.1 --port ${PORT}
+    callers: [conductor]        # via two shims. conductor/app/logs.py batches rows onto an
+                                # in-memory queue and a daemon thread posts them, so a log
+                                # call never waits on this service and stdout keeps working
+                                # when it is down; conductor/app/monitor.py composes its
+                                # notices with the two local rules and degrades to those.
+    # NO doors. Detection reads log rows and nothing else — the one rule that used
+    # to quote a tuning knob says the same thing without it, and a service that
+    # could reach back into the conductor is not the isolation this bought. It
+    # emits no events either: the actions a notice proposes all run conductor-side.
+    ui: false                   # headless — the Improve screen is its face
 
   worker-pool:
     kind: ephemeral

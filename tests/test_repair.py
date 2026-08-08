@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import dashboard_js
+from conftest import clear_logs, dashboard_js
 from app import auth, config, db, launcher, repair, tuning
 from app import repair_builder as rb
 
@@ -958,10 +958,15 @@ def test_level_filtering_is_a_floor_not_an_equality(fresh_db, monkeypatch):
 
 def test_errors_survive_a_chatty_hour(fresh_db, monkeypatch):
     """The ring is bounded, so a loop that logs every tick would otherwise push the one row
-    anyone actually wants out of the record."""
+    anyone actually wants out of the record.
+
+    The cap moved with the ring (P3): it is the watch service's table that is bounded now, so
+    the drill turns ITS dial and asks through the conductor's door — which is the path that
+    has to keep the promise."""
+    from conftest import watch_service
     from app import logs
     monkeypatch.setattr(logs, "ECHO", False)
-    monkeypatch.setattr(logs, "MAX_ROWS", 10)
+    monkeypatch.setattr(watch_service, "MAX_ROWS", 10)
     logs.error("sandbox", "escape", "wrote into the live checkout")
     for i in range(30):
         logs.info("sprint", f"noise_{i}")
@@ -1041,7 +1046,13 @@ def test_every_way_a_task_can_end_leaves_a_log_row(fresh_db, tmp_repo, no_spend,
 
 def test_a_repeated_warning_is_counted_not_repeated(fresh_db, monkeypatch):
     """A never-die loop that finds the same thing wrong every 20 seconds writes 180 identical
-    lines an hour, and the record becomes unreadable exactly when someone needs it."""
+    lines an hour, and the record becomes unreadable exactly when someone needs it.
+
+    Since P3 the RING's half of this happens in the watch service, against the stored row, so
+    two processes hitting the same fault collapse into one line instead of two that each look
+    like a single incident. `_LAST` here is only the ECHO's half — it keeps the 3am terminal
+    from repeating itself, and clearing it therefore no longer starts a new ring row."""
+    from conftest import watch_service
     from app import logs
     monkeypatch.setattr(logs, "ECHO", False)
     logs._LAST.clear()
@@ -1050,7 +1061,9 @@ def test_a_repeated_warning_is_counted_not_repeated(fresh_db, monkeypatch):
     rows = [r for r in logs.rows() if r["event"] == "lease_held_elsewhere"]
     assert len(rows) == 1, "the repetition must collapse"
     assert rows[0]["repeats"] == 5, "but the count has to survive"
-    logs._LAST.clear()                       # a later window is news again
+    con = watch_service.helpers.db()          # a later window is news again
+    con.execute("UPDATE log_rows SET ts = ts - 1200")
+    con.commit()
     logs.log("lifecycle", "lease_held_elsewhere", "standing down", level="warn", dedupe_s=600)
     assert len([r for r in logs.rows() if r["event"] == "lease_held_elsewhere"]) == 2
 
@@ -1085,7 +1098,7 @@ def test_a_notice_that_stops_applying_stops_being_reported(fresh_db, monkeypatch
     monkeypatch.setattr(logs, "ECHO", False)
     logs.error("sandbox", "escape", "wrote outside", files="x.py")
     assert any(n["kind"] == "sandbox" for n in monitor.scan())
-    db.kv_set(logs.RING_KEY, [])
+    clear_logs()
     assert not any(n["kind"] == "sandbox" for n in monitor.scan())
 
 
@@ -1125,13 +1138,15 @@ def test_nothing_acts_without_approval(fresh_db, no_spend, monkeypatch):
     assert repair.enabled() is True, "scanning must never change anything"
 
 
-def test_a_broken_rule_cannot_blind_the_others(fresh_db, monkeypatch):
+def test_a_broken_local_rule_cannot_blind_the_service_half(fresh_db, monkeypatch):
+    """Half the rules run here and half run in the watch service; a failure on either side
+    must not empty the list. (The service's own half is drilled in services/watch/tests.)"""
     from app import logs, monitor
     monkeypatch.setattr(logs, "ECHO", False)
 
-    def boom(_rows):
+    def boom():
         raise ValueError("bad rule")
-    monkeypatch.setattr(monitor, "RULES", [boom] + list(monitor.RULES))
+    monkeypatch.setattr(monitor, "LOCAL_RULES", [boom] + list(monitor.LOCAL_RULES))
     logs.error("http", "boom", "something broke")
     assert any(n["kind"] == "errors" for n in monitor.scan())
 
@@ -1179,7 +1194,7 @@ def test_every_api_failure_lands_in_the_pipeline(client, fresh_db, monkeypatch):
     from app import logs
     monkeypatch.setattr(logs, "ECHO", False)
     logs._LAST.clear()
-    db.kv_set(logs.RING_KEY, [])
+    clear_logs()
     client.get("/api/repair/status")                       # 401/403 — nobody is logged in
     events = {(r["cat"], r["event"]) for r in logs.rows()}
     assert ("auth", "refused") in events, f"nothing recorded the refusal: {events}"
@@ -1187,7 +1202,7 @@ def test_every_api_failure_lands_in_the_pipeline(client, fresh_db, monkeypatch):
     # failures buried under ten thousand 200s is how logs become unreadable
     from conftest import login
     login(client, "root", "testpass")
-    db.kv_set(logs.RING_KEY, [])
+    clear_logs()
     client.get("/api/repair/status")
     assert not [r for r in logs.rows() if r["cat"] == "http"], "a 200 must be silent"
 
@@ -1197,7 +1212,7 @@ def test_a_dashboard_javascript_error_becomes_a_log_row(client, fresh_db, monkey
     from conftest import login
     monkeypatch.setattr(logs, "ECHO", False)
     login(client, "root", "testpass")
-    db.kv_set(logs.RING_KEY, [])
+    clear_logs()
     client.post("/api/client-error", json={"message": "x is not a function",
                                            "stack": "at rpHtml", "url": "#/improve"})
     row = next(r for r in logs.rows() if r["event"] == "dashboard_error")
@@ -1206,12 +1221,18 @@ def test_a_dashboard_javascript_error_becomes_a_log_row(client, fresh_db, monkey
 
 def test_a_zombie_that_has_been_killed_stops_being_reported(fresh_db, monkeypatch):
     """A live zombie heartbeats every tick; a dead one stops. Reporting a problem that has
-    already been solved is how a monitor loses the right to be believed."""
+    already been solved is how a monitor loses the right to be believed.
+
+    The rule reads only log rows, so since P3 it lives in the watch service — but the notice
+    still has to arrive through the conductor's composed list, which is what this drills."""
+    from conftest import watch_service
     from app import logs, monitor
     monkeypatch.setattr(logs, "ECHO", False)
-    old = time.time() - monitor.ZOMBIE_FRESH_S - 60
     logs.log("lifecycle", "lease_held_elsewhere", "standing down", level="warn", holder=999)
-    db.kv_set(logs.RING_KEY, [{**logs.rows()[-1], "ts": old}])
+    logs.flush()
+    con = watch_service.helpers.db()
+    con.execute("UPDATE log_rows SET ts = ?", (time.time() - watch_service.ZOMBIE_FRESH_S - 60,))
+    con.commit()
     assert not [n for n in monitor.scan() if n["kind"] == "zombie"]
     logs.log("lifecycle", "lease_held_elsewhere", "standing down now", level="warn", holder=999)
     assert [n for n in monitor.scan() if n["kind"] == "zombie"]

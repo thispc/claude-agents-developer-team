@@ -95,8 +95,19 @@ process-compose on first boot. These nine rules are the whole deal — the
 A service may ship its own face. If a `ui/` directory sits beside `app.py`, the
 service serves it statically at `GET /ui/*` (no build step — same rules as the
 dashboard), and the conductor's gateway proxies the whole service **same-origin**
-at `/svc/<name>/…` — API and UI both, with the caller's session checked
-conductor-side and the service token added server-side. Conventions:
+at `/svc/<name>/…` — API and UI both, with the caller checked conductor-side and
+the service token added server-side.
+
+**The gateway is root-only unless the registry says otherwise.** `public: true` in
+`services.yaml` is the opt-out, and its absence means no: being signed in is not a
+permission, exactly as with `doors:`. Every service in the fleet today holds
+operator data, and the conductor's own routes for it are all root-gated — `/api/logs`
+is root-only because logs name file paths, branch names and the shape of the
+owner's own work, so a gateway that forwarded `/svc/watch/logs` to any account
+would hand over the same rows through a different door. A project's service that
+genuinely serves its users declares it in one reviewed line.
+
+Conventions:
 
 - `ui/panel.html` — the embeddable card panel. Declare `ui: true` in the service's
   `services.yaml` entry and the Atlas embeds `/svc/<name>/ui/panel.html` (P6).

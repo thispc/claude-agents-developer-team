@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from conftest import make_project, make_task
 
@@ -28,7 +29,10 @@ def test_the_registry_parses_and_the_ports_are_the_locked_ones():
     svcs = reg["services"]
     assert svcs["conductor"]["kind"] == "core" and svcs["conductor"]["port"] == 8787
     assert svcs["conductor"]["accepts"] == ["worker", "verify"]
-    assert svcs["worker-pool"] == {"kind": "ephemeral", "managed_by": "launcher", "ui": False}
+    assert svcs["watch"]["kind"] == "service" and svcs["watch"]["port"] == 8884
+    assert not svcs["watch"].get("doors"), "detection reads log rows and asks for nothing"
+    assert svcs["worker-pool"] == {"kind": "ephemeral", "managed_by": "launcher",
+                                   "ui": False, "public": False}
     assert svcs["sandbox"]["port_range"] == [8500, 8599]
     assert svcs["apps"]["port_range"] == [8600, 8799]
     # the defect-2 fix holds structurally: the two external ranges are disjoint
@@ -175,6 +179,40 @@ def test_svc_requires_a_signed_in_user_before_anything_resolves(client):
     assert r.status_code == 401
 
 
+def test_svc_is_root_only_unless_the_registry_says_otherwise(client, make_user, tmp_path,
+                                                             monkeypatch):
+    """Being signed in is not a permission — the same rule the door allowlist keeps.
+
+    Every service in the fleet holds operator data, and the conductor's own routes for it are
+    all root-gated. P3 made that concrete: `/api/logs` is root-only because logs name file
+    paths, branch names, model errors and the shape of the owner's own work, so a gateway
+    that forwarded `/svc/watch/logs` to any account would hand over the same rows through a
+    different door. The gate fails closed and a service opts out in one reviewed line.
+    """
+    from app.routes import svc
+    (tmp_path / "fleet_topology.json").write_text(json.dumps({"services": {
+        "watch": {"kind": "service", "managed": True, "url": "http://127.0.0.1:9",
+                  "public": False},
+        "shop": {"kind": "service", "managed": True, "url": "http://127.0.0.1:9",
+                 "public": True}}}))
+    monkeypatch.setattr(svc, "_DATA", tmp_path)
+    _uid, other = make_user("nosy")
+    assert other.get("/svc/watch/logs").status_code == 403, "the log ring leaked"
+    # ...an unknown name is still a 404, not a 403 that confirms it exists
+    assert other.get("/svc/ghost/logs").status_code == 404
+    # ...and a service that declared itself public is reachable (502 = it was actually
+    # forwarded to a port with nothing on it, which is the far side of the gate)
+    assert other.get("/svc/shop/anything").status_code == 502
+
+
+def test_every_service_in_the_registry_today_is_operator_only():
+    """A pin, not a preference. If a future service becomes public it should be a
+    line someone wrote and a test someone changed, never a default nobody noticed."""
+    reg = yaml.safe_load((REPO / "services.yaml").read_text())["services"]
+    public = [n for n, s in reg.items() if s.get("public")]
+    assert public == [], f"{public} would be reachable by any signed-in account"
+
+
 def test_svc_404s_unknown_external_and_ephemeral_names(root_client):
     for name in ("nope", "sandbox", "apps", "worker-pool"):
         r = root_client.get(f"/svc/{name}/health")
@@ -194,7 +232,8 @@ def test_the_resolver_reads_topology_and_token(tmp_path, monkeypatch):
                                    "url": "http://127.0.0.1:8881"},
                      "sandbox": {"kind": "external", "managed": False}}}))
     monkeypatch.setattr(svc, "_DATA", tmp_path)
-    assert svc.resolve("knowledge") == {"url": "http://127.0.0.1:8881", "token": "tok-123"}
+    assert svc.resolve("knowledge") == {"url": "http://127.0.0.1:8881", "token": "tok-123",
+                                        "public": False}
     assert svc.resolve("sandbox") is None
     assert svc.resolve("conductor") is None
     assert svc.resolve("ghost") is None

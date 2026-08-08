@@ -57,10 +57,10 @@ Three rules keep the diagram true: the substrate reaches the platform only throu
 root) is the registry, `tools/gen_fleet.py` generates the process-compose config plus
 per-service env/tokens/topology from it, and `./run-local.sh` boots everything under
 **process-compose** (readiness probes, restarts, a token-authed REST API on 8899).
-Managed today: the conductor, **knowledge** (8881, P1), **usage** (8882, P2) and
-**notify** (8883, P2); the rest (watch, lifeworld, modgraph) join the registry phase by
-phase, each meeting `SERVICE_CONTRACT.md` and reached same-origin via the conductor's
-`/svc/<name>/…` gateway. Traffic runs one way — the conductor calls its services — with
+Managed today: the conductor, **knowledge** (8881, P1), **usage** (8882, P2),
+**notify** (8883, P2) and **watch** (8884, P3); the rest (lifeworld, modgraph) join the
+registry phase by phase, each meeting `SERVICE_CONTRACT.md` and reached same-origin via the
+conductor's `/svc/<name>/…` gateway. Traffic runs one way — the conductor calls its services — with
 two narrow doors back: `POST /internal/bus` (a service putting an event on the platform
 bus; the events table keeps its single writer) and `GET /internal/tuning` (one of the
 owner's knobs). Both check the caller's own minted token against the `doors:`/`knobs:`
@@ -117,6 +117,37 @@ text through `/issue`. A filed issue is announced back through `POST /internal/b
 without it and drops the migrated `notify_seen:*` records and the `notify_sent` window.
 Degraded: every verb answers `{"sent": false, "reason": "notify service down"}` — silence
 is this module's designed failure mode, and the daily self-check completes without it.
+
+**watch (8884).** The log ring and the monitor, which were always one idea. `data/watch.db`
+holds `log_rows` (capped 3000), `error_rows` (capped 300) and `decisions`; before P3 all of
+that was four kv values, the ring rewritten whole on every single line. `POST /logs` takes a
+**batch**; `/logs`, `/logs/stats`, `/notices`, `/notices/{fp}/decide`, `/auto`, `/summary`.
+It is the only extracted service with **no doors** — detection reads log rows and nothing
+else, so it asks the conductor for nothing.
+
+*The split.* watch owns FACTS + DETECTION: the two rings, the seven log-derived rules, the
+notices, the decisions store and the standing `auto` flag. The conductor keeps JUDGMENT +
+ACTION, because every action a notice can propose targets conductor-resident machinery —
+`ACTIONS` (repair.toggle, tuning.set, repair.abort, repair.save_backlog), `approve()`,
+`sweep()`, `AUTO_SAFE`. The two rules whose evidence is not a log row stayed as **local
+rules** (`_rule_queue` on `repair:queue`, `_rule_stuck` on `repair.state()`), which is what
+erased the platform's last cross-owner kv read: had they moved, another module's key would
+have been opened by another *process*. So `/api/logs/notices` is a **composition** — watch's
+notices plus the local ones, one list, one sort order, deduped by fingerprint — and
+`approve(fp)` resolves from either source, runs the action locally, then POSTs the decision.
+Nothing on the screen says which half a notice came from.
+
+*The hot path.* 64 fire-and-forget log call sites, some inside exception handlers, some in a
+20s tick — none can afford a round-trip. `conductor/app/logs.py` keeps the **stdout echo
+local** (process-compose collects it; the 3am terminal must not depend on another process),
+queues the row in memory, and lets a daemon thread POST batches of ≤100 rows or every 500ms.
+Overflow beyond 1000 queued rows drops the newest with one stderr note — never through
+`logs.*` itself, which would recurse — and an outage holds what it has until recovery
+flushes it. Reads flush first, so a caller always sees its own writes. `logs.log()` returns
+in under a millisecond always: `LOG_CALL_BUDGET_S`, timed with the service unreachable.
+Degraded: stdout keeps working, reads are `[]`, stats are zeros with `degraded: true`, and
+the notice list falls back to the local rules with a `banner` the screen shows — an empty
+inbox during an outage must never read as "the platform has been behaving".
 
 ---
 

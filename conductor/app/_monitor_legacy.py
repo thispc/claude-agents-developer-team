@@ -1,0 +1,440 @@
+"""The pre-P3 in-process monitor, vendored for the strangler window.
+
+This file exists only between commit A (extract) and commit B (cutover) of the
+watch extraction: conductor/app/monitor.py is the dual-mode shim, and when
+WATCH_URL is unset it hands the whole surface to this module — byte-for-byte the
+old behaviour, including the `monitor:decisions` and `monitor:auto` kv keys and
+the cross-owner read of `repair:queue` that the split erased. Commit B deletes
+this file and the fallback branch with it.
+
+What went where: the seven LOG-DERIVED rules moved to services/watch/app.py,
+which is also where the decisions store and the standing `auto` flag now live.
+The two rules that read the conductor's own repair state (`_rule_queue`,
+`_rule_stuck`) stayed, and so did every lever — ACTIONS, approve, sweep,
+AUTO_SAFE — because each one targets conductor-resident machinery.
+
+--- the original module docstring follows ---
+
+monitor.py — the platform watching itself, and asking before it acts.
+
+The log pipeline records what happened. Nobody reads 3000 rows. This turns them into a short
+list of NOTICES: things a person would want to know, each with the evidence behind it and,
+where there is an obvious next move, a PROPOSAL — which is offered, never taken. Root approves
+or dismisses.
+
+Two ideas borrowed from `blockers.py`, which solved the same problem for projects:
+
+    Derived on read.  A notice is recomputed from the logs every time it is asked for, so one
+                      that no longer applies simply stops being reported. Nothing to clean up,
+                      and the list can never show a problem that has already gone away.
+
+    Decisions persist. What DOES need remembering is the human's answer. Dismissing a notice
+                      silences that fingerprint; approving one records that its action ran.
+                      Otherwise the same question is asked every thirty seconds forever.
+
+The proposal is the point. "14 build sessions died on turns" is an observation; "…so lower
+repair_max_turns to 35 — approve?" is something you can act on without going to read the code.
+Nothing here ever acts on its own: the model (and the rules) propose, the human disposes, and
+the only things a proposal may do are listed in ACTIONS — a fixed, small, reversible set.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import time
+from typing import Any, Callable
+
+from . import db, logs
+
+DECISIONS_KEY = "monitor:decisions"
+AUTO_KEY = "monitor:auto"
+
+# Which proposals may run unattended. NOT every action: `pause_repair` and `abort_task` stop
+# work that is running, and a rule misfiring at 3am should not be able to silently switch the
+# crew off — you would find it off in the morning with no memory of deciding that. What is
+# safe to automate is what only ADDS: filing a bug, and nudging a knob that is itself capped.
+AUTO_SAFE = ("file_task", "set_knob")
+SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
+
+# How far back a rule looks. Long enough to see a pattern, short enough that a problem fixed
+# an hour ago stops shouting.
+WINDOW_S = 6 * 3600
+
+
+def _fp(kind: str, *parts: Any) -> str:
+    raw = "|".join([kind, *[str(p) for p in parts]])
+    return hashlib.sha1(raw.encode()).hexdigest()[:12]
+
+
+def decisions() -> dict[str, dict]:
+    d = db.kv_get(DECISIONS_KEY) or {}
+    return d if isinstance(d, dict) else {}
+
+
+def decide(fp: str, state: str, note: str = "") -> dict:
+    d = decisions()
+    d[fp] = {"state": state, "ts": time.time(), "note": note[:300]}
+    db.kv_set(DECISIONS_KEY, d)
+    return d[fp]
+
+
+def _notice(kind: str, severity: str, title: str, detail: str, *, fp_parts: tuple = (),
+            evidence: list | None = None, proposal: str = "", action: str = "",
+            params: dict | None = None, count: int = 1, since: float = 0.0) -> dict:
+    return {"fp": _fp(kind, *fp_parts), "kind": kind, "severity": severity,
+            "title": title, "detail": detail,
+            "evidence": [{"ts": r.get("ts"), "level": r.get("level"),
+                          "cat": r.get("cat"), "event": r.get("event"),
+                          "msg": r.get("msg", "")[:200]} for r in (evidence or [])[-5:]],
+            "proposal": proposal, "action": action, "params": params or {},
+            "count": count, "since": since}
+
+
+# --- the rules -------------------------------------------------------------
+#
+# Each takes the window's log rows and returns notices. They are deliberately dumb and
+# readable: a rule nobody can check is a rule nobody trusts, and every one of these came from
+# a failure that actually happened on this box.
+
+def _rule_sandbox(rows: list[dict]) -> list[dict]:
+    hits = [r for r in rows if r.get("cat") == "sandbox"]
+    if not hits:
+        return []
+    files = sorted({str(r.get("files") or r.get("path") or "") for r in hits if r.get("files") or r.get("path")})
+    return [_notice(
+        "sandbox", "critical",
+        f"{len(hits)} isolation breach{'es' if len(hits) > 1 else ''}",
+        "A build session touched something outside its worktree, or a protected path. "
+        "Nothing was reverted — that tree may hold your own work — so the files are still "
+        "there to look at: " + (", ".join(files)[:300] or "see the evidence below"),
+        fp_parts=("|".join(files),), evidence=hits, count=len(hits),
+        since=min(float(r.get("ts", 0)) for r in hits),
+        proposal="Stop self-repair until you have looked at those files.",
+        action="pause_repair")]
+
+
+# A live zombie heartbeats every tick; a dead one stops. Anything older than this is a
+# problem that has already been solved, and reporting it is how a monitor loses its
+# credibility — the whole promise of deriving on read is that what you see is still true.
+ZOMBIE_FRESH_S = 300
+
+
+def _rule_zombie(rows: list[dict]) -> list[dict]:
+    fresh = time.time() - ZOMBIE_FRESH_S
+    hits = [r for r in rows if r.get("event") == "lease_held_elsewhere"
+            and float(r.get("ts", 0)) >= fresh]
+    if not hits:
+        return []
+    holder = hits[-1].get("holder")
+    n = sum(int(r.get("repeats") or 1) for r in hits)
+    return [_notice(
+        "zombie", "critical", f"another process (pid {holder}) is driving the engine",
+        f"A server that no longer answers requests is still ticking the self-repair engine "
+        f"against this database — {n} times in the window. It is running whatever code it "
+        f"started with. Kill it: `kill -9 {holder}`.",
+        fp_parts=(holder,), evidence=hits, count=n,
+        since=min(float(r.get("ts", 0)) for r in hits),
+        proposal="", action="")]
+
+
+def _rule_build_deaths(rows: list[dict]) -> list[dict]:
+    hits = [r for r in rows if r.get("event") == "build_died"]
+    if len(hits) < 2:
+        return []
+    turns = [r for r in hits if "turn" in str(r.get("msg", "")).lower()]
+    if len(turns) >= 2:
+        from . import tuning
+        now = int(tuning.get("repair_max_turns"))
+        return [_notice(
+            "build_turns", "warning", f"{len(turns)} build sessions ran out of turns",
+            "Tasks are being planned bigger than one session can finish, so the quota is "
+            "spent and nothing lands.",
+            fp_parts=(len(turns) // 3,), evidence=turns, count=len(turns),
+            since=min(float(r.get("ts", 0)) for r in turns),
+            proposal=f"Ask the crew for smaller slices — drop repair_tasks_per_sprint to 1 "
+                     f"so each sprint plans less at once (turns stay at {now}).",
+            action="set_knob", params={"name": "repair_tasks_per_sprint", "value": 1})]
+    return [_notice(
+        "build_deaths", "warning", f"{len(hits)} build sessions died",
+        "Sessions are failing before they produce anything. The last one said: "
+        + str(hits[-1].get("msg", ""))[:200],
+        fp_parts=(len(hits) // 3,), evidence=hits, count=len(hits),
+        since=min(float(r.get("ts", 0)) for r in hits),
+        proposal="Pause self-repair until the cause is understood — every dead session "
+                 "still spends quota.",
+        action="pause_repair")]
+
+
+def _rule_red_streak(rows: list[dict]) -> list[dict]:
+    verdicts = [r for r in rows if r.get("cat") == "verify" and r.get("event") in ("suite_green", "suite_red")]
+    tail: list[dict] = []
+    for r in reversed(verdicts):
+        if r.get("event") == "suite_green":
+            break
+        tail.append(r)
+    if len(tail) < 3:
+        return []
+    return [_notice(
+        "red_streak", "warning", f"the suite has been red {len(tail)} times running",
+        "No task has verified green recently. Either the crew is picking work it cannot "
+        "finish, or something on main is broken for everyone.",
+        fp_parts=(len(tail) // 3,), evidence=list(reversed(tail)), count=len(tail),
+        since=min(float(r.get("ts", 0)) for r in tail),
+        proposal="Pause self-repair and run the suite yourself.",
+        action="pause_repair")]
+
+
+def _rule_dashboard(rows: list[dict]) -> list[dict]:
+    """A broken screen, reported by the screen itself.
+
+    This is the loop the owner asked for and did not get: a JavaScript error sat visible in
+    the UI for an hour without ever becoming a bug, because the code that caught it also hid
+    it. Now it arrives here — and the obvious next move is not "look into it", it is "put it
+    in front of the crew", so the proposal queues it as a P2 bug for the next sprint.
+    """
+    hits = [r for r in rows if r.get("event") in ("dashboard_error", "request_crashed")]
+    if not hits:
+        return []
+    out = []
+    by_msg: dict[str, list[dict]] = {}
+    for r in hits:
+        by_msg.setdefault(str(r.get("msg", ""))[:120], []).append(r)
+    for msg, group in by_msg.items():
+        where = str(group[-1].get("page") or group[-1].get("path") or "")
+        out.append(_notice(
+            "dashboard", "critical" if len(group) > 2 else "warning",
+            f"the app is throwing: {msg[:80]}",
+            f"Reported {len(group)}× by the page itself{f' on {where}' if where else ''}. "
+            "It is a real defect in code that shipped, not a transient.",
+            fp_parts=(msg,), evidence=group, count=len(group),
+            since=min(float(r.get("ts", 0)) for r in group),
+            proposal="Queue it as a bug for the crew's next sprint.",
+            action="file_task",
+            params={"title": f"Fix: {msg[:100]}", "type": "bug", "priority": "p2",
+                    "factor": "correctness",
+                    "brief": f"The dashboard reported this error {len(group)} times"
+                             f"{f' on {where}' if where else ''}: {msg}. "
+                             "Find the cause, fix it, and add the test that would have caught it."}))
+    return out
+
+
+def _rule_errors(rows: list[dict]) -> list[dict]:
+    """Anything logged at error level that no other rule has a better story for."""
+    claimed = {"sandbox", "session"}
+    claimed_events = {"dashboard_error", "request_crashed"}
+    groups: dict[tuple, list[dict]] = {}
+    for r in rows:
+        if r.get("level") != "error" or r.get("cat") in claimed \
+                or r.get("event") in claimed_events:
+            continue
+        groups.setdefault((r.get("cat"), r.get("event")), []).append(r)
+    out = []
+    for (cat, event), hits in groups.items():
+        out.append(_notice(
+            "errors", "warning" if len(hits) < 3 else "critical",
+            f"{len(hits)}× {cat}/{event}",
+            str(hits[-1].get("msg", ""))[:300] or "see the evidence below",
+            fp_parts=(cat, event, len(hits) // 3), evidence=hits, count=len(hits),
+            since=min(float(r.get("ts", 0)) for r in hits),
+            proposal="", action=""))
+    return out
+
+
+def _rule_quota(rows: list[dict]) -> list[dict]:
+    hits = [r for r in rows if r.get("event") == "rate_limited"]
+    if not hits:
+        return []
+    models = sorted({str(r.get("model") or "?") for r in hits})
+    return [_notice(
+        "quota", "info", f"hit the limit on {', '.join(models)}",
+        "The crew backed off and will wake when the provider says so — nothing to do, but "
+        "it explains a quiet period.",
+        fp_parts=(",".join(models), len(hits) // 3), evidence=hits, count=len(hits),
+        since=min(float(r.get("ts", 0)) for r in hits),
+        proposal="", action="")]
+
+
+def _rule_queue(_rows: list[dict]) -> list[dict]:
+    q = db.kv_get("repair:queue") or []
+    if not q:
+        return []
+    oldest = min(float(x.get("created_at") or 0) for x in q)
+    if time.time() - oldest < 3600:
+        return []
+    return [_notice(
+        "queue", "warning", f"{len(q)} change{'s' if len(q) > 1 else ''} waiting for you",
+        "Green work the crew could not land on its own — usually because your own tree was "
+        "dirty at the time. It is finished and sitting on a branch: "
+        + ", ".join(str(x.get("title", ""))[:60] for x in q[:3]),
+        fp_parts=(len(q),), count=len(q), since=oldest,
+        proposal="Open the Board tab and approve or discard each one.", action="")]
+
+
+def _rule_stuck(_rows: list[dict]) -> list[dict]:
+    from . import repair
+    if not repair.enabled():
+        return []
+    st = repair.state()
+    age = time.time() - float(st.get("updated_at") or 0)
+    if st.get("phase") in ("sleeping", "idle") or age < 3600:
+        return []
+    return [_notice(
+        "stuck", "warning", f"stuck in {st.get('phase')} for {int(age // 60)} minutes",
+        "The engine writes its phase down before every transition, so a phase this old means "
+        "the work in it never finished or never failed.",
+        fp_parts=(st.get("phase"),), since=float(st.get("updated_at") or 0),
+        proposal="Abort the task in flight so the sprint can move on.",
+        action="abort_task")]
+
+
+RULES: list[Callable[[list[dict]], list[dict]]] = [
+    _rule_sandbox, _rule_zombie, _rule_dashboard, _rule_build_deaths, _rule_red_streak,
+    _rule_errors, _rule_quota, _rule_queue, _rule_stuck,
+]
+
+
+def scan(window_s: int = WINDOW_S, include_decided: bool = False) -> list[dict]:
+    """Every notice that currently applies, worst first, with dismissed ones filtered out."""
+    since = time.time() - max(300, int(window_s))
+    rows = [r for r in logs.rows() if float(r.get("ts", 0)) >= since]
+    out: list[dict] = []
+    for rule in RULES:
+        try:
+            out.extend(rule(rows))
+        except Exception as e:                     # a broken rule must not blind the rest
+            logs.error("http", "monitor_rule_failed", f"{rule.__name__}: {e}")
+    seen = decisions()
+    for n in out:
+        n["decision"] = seen.get(n["fp"], {})
+    if not include_decided:
+        out = [n for n in out if n.get("decision", {}).get("state") != "dismissed"]
+    out.sort(key=lambda n: (SEVERITY_RANK.get(n["severity"], 9), -n.get("since", 0)))
+    return out
+
+
+def summary(window_s: int = WINDOW_S) -> dict:
+    ns = scan(window_s)
+    return {"total": len(ns),
+            "critical": sum(1 for n in ns if n["severity"] == "critical"),
+            "warning": sum(1 for n in ns if n["severity"] == "warning"),
+            "needs_approval": sum(1 for n in ns if n.get("action")
+                                  and not n.get("decision", {}).get("state"))}
+
+
+# --- what an approval is allowed to do -------------------------------------
+#
+# A fixed, small, reversible set. The rules propose in prose, but the only things that can
+# actually happen are these — so reading this list tells you the whole blast radius of
+# pressing Approve, without trusting any rule's description of itself.
+
+async def _act_pause_repair(_p: dict) -> str:
+    from . import repair
+    repair.toggle(False)
+    return "self-repair is off"
+
+
+async def _act_set_knob(p: dict) -> str:
+    from . import tuning
+    name, value = str(p.get("name")), p.get("value")
+    tuning.set(name, value)
+    return f"{name} is now {value}"
+
+
+async def _act_abort_task(_p: dict) -> str:
+    from . import repair
+    await repair.abort()
+    return "the task in flight was aborted"
+
+
+async def _act_file_task(p: dict) -> str:
+    """Put a task at the FRONT of the crew's backlog, so the next sprint picks it up.
+
+    The front, not the back: a notice reaches a human because something is actually broken,
+    and burying it under six planned improvements would answer "queue it as a bug" with
+    "eventually". It goes in as a proper typed task, so it looks exactly like planned work
+    on the board — because from the crew's side it is."""
+    from . import repair
+    b = repair.backlog()
+    task = repair._typed({
+        "slug": repair._slug(str(p.get("title", "reported defect"))),
+        "title": str(p.get("title", "reported defect"))[:140],
+        "type": p.get("type"), "priority": p.get("priority"),
+        "factor": str(p.get("factor", "correctness"))[:24],
+        "brief": str(p.get("brief", ""))[:800], "acceptance": [],
+        "branch": "", "status": "pending", "worktree": None, "verification": None,
+        "landed_sha": None, "attempts": 0, "evidence": "", "from_monitor": True})
+    b["tasks"] = [task] + [t for t in b.get("tasks", []) if t.get("slug") != task["slug"]]
+    b["ts"] = b.get("ts") or time.time()
+    repair.save_backlog(b)
+    return f"queued for the next sprint: {task['title'][:60]}"
+
+
+ACTIONS: dict[str, Callable] = {
+    "pause_repair": _act_pause_repair,
+    "set_knob": _act_set_knob,
+    "abort_task": _act_abort_task,
+    "file_task": _act_file_task,
+}
+
+
+def auto_on() -> bool:
+    return bool(db.kv_get(AUTO_KEY))
+
+
+def set_auto(on: bool) -> bool:
+    db.kv_set(AUTO_KEY, bool(on))
+    logs.warn("lifecycle", "monitor_auto",
+              "unattended approval is ON — additive proposals will run without asking"
+              if on else "unattended approval is off — proposals wait for you")
+    return bool(on)
+
+
+async def sweep() -> list[dict]:
+    """Run the proposals that are safe to run unattended, if the owner has asked for that.
+
+    Called from the engine's own tick, so it happens whether or not anyone has the screen
+    open — which is the point of the setting. Every action still goes through `approve`, so
+    it is recorded, logged and visible in exactly the same place a hand-pressed one is:
+    "the platform did it while I was asleep" must never mean "and left no trace".
+    """
+    if not auto_on():
+        return []
+    done = []
+    for n in scan():
+        if n.get("action") not in AUTO_SAFE or n.get("decision", {}).get("state"):
+            continue
+        out = await approve(n["fp"])
+        if out.get("ok"):
+            done.append({"title": n["title"], "did": out.get("did", "")})
+    return done
+
+
+async def approve(fp: str) -> dict:
+    """Run one notice's proposal. Unknown or action-less notices are simply acknowledged —
+    plenty of notices are worth reading and have nothing to press."""
+    n = next((x for x in scan(include_decided=True) if x["fp"] == fp), None)
+    if not n:
+        return {"ok": False, "reason": "that notice no longer applies"}
+    fn = ACTIONS.get(n.get("action") or "")
+    if not fn:
+        decide(fp, "acknowledged")
+        return {"ok": True, "did": "acknowledged"}
+    did = await fn(n.get("params") or {})
+    decide(fp, "approved", did)
+    logs.warn("lifecycle", "monitor_action", f"root approved: {n['title']} → {did}",
+              fp=fp, action=n.get("action"))
+    return {"ok": True, "did": did}
+
+
+# --- the P3 route surface, adapted --------------------------------------------
+#
+# logs_routes.py asks for the notice inbox in one call now, because in URL mode
+# that saves a round-trip to the watch service. Here there is no wire, so it is
+# scan + summary with the two degraded fields answered honestly: this mode cannot
+# be degraded, because the detector is the process asking. Commit B deletes this
+# whole file, and this with it.
+
+def compose(window_s: int = 0, include_decided: bool = False) -> dict:
+    w = int(window_s or WINDOW_S)
+    return {"notices": scan(w, include_decided=include_decided),
+            "summary": summary(w), "degraded": False, "banner": ""}

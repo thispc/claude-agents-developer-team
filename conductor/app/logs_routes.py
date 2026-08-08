@@ -4,6 +4,13 @@ so the handbook's endpoint-count gate on the routes package keeps meaning what i
 Root-gated in full. Logs are the most revealing surface a system has: they name file paths,
 model errors, branch names and the shape of the operator's own work, and none of that is a
 user feature.
+
+Since P3 the rows and most of the notices come from a service (services/watch, 8884) and this
+file is a thin conductor-side surface over two shims: `logs` for the ring, `monitor` for the
+COMPOSED notice list (watch's notices plus the conductor's two local rules, one sort order,
+one fingerprint space). Not one path or response shape changed — the dashboard reads exactly
+what it read before, plus a `degraded`/`banner` pair so an empty answer during an outage
+cannot be misread as a quiet system.
 """
 
 from __future__ import annotations
@@ -32,8 +39,9 @@ def list_logs(request: Request, level: str = "", cat: str = "", event: str = "",
     """The tail, filtered. `level` is a FLOOR — asking for warn gives warnings AND errors,
     because the question is always "show me things at least this bad"."""
     _root(request)
-    return {"logs": logs.recent(level=level, cat=cat, event=event, q=q, limit=limit),
-            "categories": logs.CATEGORIES, "levels": list(logs.LEVELS)}
+    rows = logs.recent(level=level, cat=cat, event=event, q=q, limit=limit)
+    return {"logs": rows, "categories": logs.CATEGORIES, "levels": list(logs.LEVELS),
+            "degraded": logs.degraded(), "banner": logs.BANNER if logs.degraded() else ""}
 
 
 @router.get("/stats")
@@ -58,12 +66,22 @@ def list_errors(request: Request, limit: int = 100) -> dict:
 @router.get("/notices")
 def list_notices(request: Request, window_s: int = 0, all: bool = False) -> dict:
     """What a person would want to know, distilled from the log rows nobody reads. Derived on
-    read, so a notice that no longer applies simply stops appearing."""
+    read, so a notice that no longer applies simply stops appearing.
+
+    One COMPOSED list: the watch service's log-derived notices merged with the conductor's two
+    local rules (the review queue, a stuck engine), deduped by fingerprint and sorted once.
+    `compose` makes both halves in a single call to the service, which also brings back the
+    decisions map the local half is filtered against — a panel that polls should not pay two
+    round-trips for one screen.
+    """
     _root(request)
-    ns = monitor.scan(window_s or monitor.WINDOW_S, include_decided=bool(all))
-    return {"notices": ns, "summary": monitor.summary(window_s or monitor.WINDOW_S),
+    got = monitor.compose(window_s or monitor.WINDOW_S, include_decided=bool(all))
+    return {"notices": got["notices"], "summary": got["summary"],
             "actions": sorted(monitor.ACTIONS), "auto": monitor.auto_on(),
-            "auto_safe": list(monitor.AUTO_SAFE)}
+            "auto_safe": list(monitor.AUTO_SAFE),
+            # An empty inbox during an outage must not read as "the platform has
+            # been behaving" — that is the one lie this screen could tell.
+            "degraded": got["degraded"], "banner": got["banner"]}
 
 
 @router.post("/notices/approve")

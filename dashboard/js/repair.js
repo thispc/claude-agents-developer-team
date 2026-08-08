@@ -161,8 +161,19 @@ function rpNoticesPanel(d) {
           anything that STOPS work — pausing the crew, aborting a task — always waits for you,
           because a rule misfiring at 3am must not be able to switch the crew off overnight</span></span>
     </label>
+    <div id="rpBanner" class="rp-banner" hidden></div>
     <div id="repairNotices"><p class="dim">…</p></div>
   </div>`;
+}
+
+/** "Nothing needs you" and "nobody is watching" look identical on this screen, and only one
+ * of them is good news. The server says which — `degraded` plus a sentence — and this is
+ * where it gets said, above the list rather than inside it, because it is about the LIST and
+ * not about any notice in it. */
+function rpBanner(id, text) {
+  const el = $(id); if (!el) return;
+  el.textContent = text || "";
+  el.hidden = !text;
 }
 
 function rpNoticeHtml(n) {
@@ -195,6 +206,7 @@ async function rpNotices() {
     const r = await api("/api/logs/notices");
     const auto = $("#rpAuto");
     if (auto) auto.checked = !!r.auto;
+    rpBanner("#rpBanner", r.degraded ? r.banner : "");
     el.innerHTML = (r.notices || []).map(rpNoticeHtml).join("")
       || `<p class="dim">Nothing needs you. The platform has been behaving.</p>`;
     el.querySelectorAll("[data-approve-fp]").forEach((b) => b.addEventListener("click", async () => {
@@ -467,6 +479,7 @@ function rpActivityPanel() {
         <input id="rpLogQ" class="rp-search" placeholder="search…" value="${escapeHtml(rpLogQ)}">
       </span>
     </div>
+    <div id="rpActBanner" class="rp-banner" hidden></div>
     <div id="repairActivity" class="rp-act rp-act-tall"><p class="dim">…</p></div>
   </div>`;
 }
@@ -1027,12 +1040,14 @@ async function rpActivity() {
       if (rpLogQ) qs.set("q", rpLogQ);
       const r = await api(`/api/logs?${qs}`);
       rpFillCats(r.categories || {});
+      rpBanner("#rpActBanner", r.degraded ? r.banner : "");
       const note = $("#rpActNote");
       if (note) note.textContent = `${(r.logs || []).length} lines — what the system did, and whether it worked`;
       el.innerHTML = (r.logs || []).map(rpLogLine).join("")
         || `<p class="dim">nothing matches that filter</p>`;
     } else {
       const r = await api("/api/repair/activity?limit=200");
+      rpBanner("#rpActBanner", "");
       const note = $("#rpActNote");
       if (note) note.textContent = "everything the crew does, as it does it";
       el.innerHTML = rpCollapse(r.events || []).map((g) => rpActLine(g.e, g.n)).join("")

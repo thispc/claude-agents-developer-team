@@ -9,8 +9,8 @@
 # live in that script), tools/gen_fleet.py regenerates process-compose.yaml +
 # data/env + data/tokens + data/fleet_topology.json from services.yaml, then
 # process-compose boots every managed service (the conductor plus knowledge 8881,
-# usage 8882 and notify 8883) with readiness probes, restarts, and its REST API
-# token-authed on the fleet_api port (8899 — see services.yaml; token in
+# usage 8882, notify 8883 and watch 8884) with readiness probes, restarts, and its
+# REST API token-authed on the fleet_api port (8899 — see services.yaml; token in
 # data/tokens/fleet-api.token).
 #
 # --legacy is the FALLBACK for a machine where process-compose misbehaves, and the
@@ -22,9 +22,13 @@
 # with no memory, no meter, or no way to tell you something broke.
 #
 # So this path still runs tools/gen_fleet.py (pure Python — no vendored binaries,
-# which is the tooling that was misbehaving) for env and tokens, then starts ALL
-# THREE services itself as children, waits for each /health, exports the URLs, and
-# execs the conductor in the foreground. A service already listening on its port
+# which is the tooling that was misbehaving) for env and tokens, then starts the
+# three CUT-OVER services itself as children, waits for each /health, exports the
+# URLs, and execs the conductor in the foreground. `watch` (8884, P3) is not in
+# that loop yet: it is mid-strangler, so a legacy boot leaves WATCH_URL unset and
+# the conductor runs the vendored pre-P3 ring in-process — which is exactly the
+# rollback the extract commit is supposed to leave armed. The cutover commit adds
+# it here and deletes the fallback. A service already listening on its port
 # (a half-running fleet, a second terminal) is REUSED, never duplicated.
 # The children share this terminal's process group, so Ctrl-C stops everything; a
 # plain SIGTERM to the conductor alone can leave them, which the reuse check then
@@ -88,7 +92,7 @@ if [[ "${1:-}" == "--legacy" || "${RUN_LEGACY:-}" == "1" ]]; then
   done
 
   echo "devteam conductor (legacy: outside process-compose) → http://127.0.0.1:${PORT}   (login: ${ROOT_USERNAME:-root} / ${ROOT_PASSWORD:-devteam})"
-  echo "data: $(pwd)/devteam.db · services: $(pwd)/data/{knowledge,usage,notify}.db · stop with Ctrl-C"
+  echo "data: $(pwd)/devteam.db · services: $(pwd)/data/{knowledge,usage,notify}.db · logs: in-process (no WATCH_URL) · stop with Ctrl-C"
   exec .venv/bin/uvicorn app.main:app --app-dir conductor --host 127.0.0.1 --port "${PORT}"
 fi
 

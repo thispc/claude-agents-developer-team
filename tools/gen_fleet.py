@@ -17,10 +17,10 @@ Reads the repo's services.yaml and writes four things:
                             re-running the generator never rotates a token.
                             Also mints fleet-api.token for process-compose's REST API.
   data/fleet_topology.json  every service (managed or not) with kind/port/health/
-                            depends_on/ui, plus the doors/knobs allowlists the
-                            conductor's /internal/bus and /internal/tuning check
-                            — what the /svc gateway resolves against and what the
-                            Atlas will render (P6).
+                            depends_on/ui/public, plus the doors/knobs allowlists
+                            the conductor's /internal/bus and /internal/tuning
+                            check — what the /svc gateway resolves against and
+                            what the Atlas will render (P6).
 
 Deterministic: same services.yaml + same environment → byte-identical outputs, so
 re-runs never churn diffs. The one environment input is PORT, which overrides the
@@ -77,6 +77,9 @@ def load_registry(path: Path) -> dict:
         if not all(isinstance(k, str) for k in svc.get("env") or []):
             raise ValueError(f"service {name!r} has a non-string env key")
         svc.setdefault("ui", False)
+        if not isinstance(svc.get("public", False), bool):
+            raise ValueError(f"service {name!r} has a non-boolean public:")
+        svc.setdefault("public", False)
     return reg
 
 
@@ -188,6 +191,9 @@ def _topology(reg: dict, root: Path, env: dict) -> str:
             # service may use, and which tuning knobs it may read through one.
             entry["doors"] = sorted(svc.get("doors") or [])
             entry["knobs"] = sorted(svc.get("knobs") or [])
+            # The /svc gateway's gate. False by default and written explicitly, so
+            # a topology never leaves the answer to whoever reads it.
+            entry["public"] = bool(svc.get("public"))
         else:
             entry["managed_by"] = svc.get("managed_by", "")
             if "port_range" in svc:
