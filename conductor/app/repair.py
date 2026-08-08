@@ -1698,7 +1698,12 @@ def _hold_lease() -> bool:
 async def loop() -> None:
     """The never-die background loop (upkeep.py's contract): errors are recorded and
     reported, never fatal — a self-repair engine that can crash itself is a joke."""
-    usage.backfill_repair()          # one-shot: the crew's own history into the shared meter
+    # The crew's own pre-meter history (`repair:ledger`) used to be imported into
+    # the shared meter from here, once, guarded by a kv flag. The P2 cutover moved
+    # that job into the usage service's first-boot copy — same one-shot marker,
+    # same read-only ATTACH that brings the old ledger across — so there is
+    # nothing left for the engine to do about it. `repair:ledger` itself stays:
+    # it is still this module's own call counter and the backstop meter.
     try:
         from . import knowledge
         seeded = await knowledge.backfill_from_sprints(_root_settings())

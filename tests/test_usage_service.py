@@ -11,6 +11,7 @@ What the meter DOES with what it is given lives in services/usage/tests.
 """
 
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -238,15 +239,6 @@ def test_degraded_rows_are_empty(dead_shim):
     assert dead_shim.rows(0) == []
 
 
-def test_a_degraded_backfill_keeps_the_marker_unset_for_a_retry(dead_shim):
-    from app import db
-    db.kv_set("repair:ledger", [{"ts": time.time(), "kind": "build", "model": "m",
-                                 "usd": 1.25, "n": 1}])
-    assert dead_shim.backfill_repair() == 0
-    assert not db.kv_get("usage:backfilled"), \
-        "a degraded backfill must not mark itself done — the import would be lost forever"
-
-
 def test_the_outage_is_logged_once_per_window_not_once_per_call(dead_shim):
     """A sleep loop that asks every tick would otherwise write the same warn 180
     times an hour, and the record is unreadable exactly when someone needs it."""
@@ -393,22 +385,80 @@ def test_a_registry_that_asks_for_an_unknown_door_is_refused(tmp_path):
     assert "tunning" in str(e.value)
 
 
-# --- the rollback path still exists (deleted in commit B) ---------------------
+# --- the cutover: no fallback left, and the kv keys go ------------------------
 
-def test_the_vendored_fallback_still_runs_in_process(fresh_db):
-    """Between commit A and commit B, unsetting USAGE_URL must give back the
-    pre-P2 behaviour exactly — that IS the rollback. Exercised here rather than
-    assumed, because a rollback nobody has run is a hope."""
-    from app import _usage_legacy as legacy
+def test_without_the_url_init_refuses_and_says_where_to_look(fresh_db, monkeypatch):
+    """There is no in-process meter any more, so a conductor with no service
+    configured must fail at the door — loudly, naming the boot script — instead
+    of running blind against the owner's subscription."""
+    from app import usage
+    monkeypatch.setattr(usage, "_URL", "")
+    with pytest.raises(RuntimeError) as e:
+        usage.init()
+    msg = str(e.value)
+    assert "USAGE_URL" in msg and "run-local.sh" in msg and "services.yaml" in msg
+
+
+def test_the_verbs_still_degrade_when_the_url_is_missing(fresh_db, monkeypatch):
+    """init() is the loud door; the verbs stay soft. A door that also killed
+    every later call would turn one misconfigured process into a crash loop —
+    and the verdict still fails safe, which is the shape that matters."""
+    from app import usage
+    monkeypatch.setattr(usage, "_URL", "")
+    monkeypatch.setattr(usage, "_client",
+                        lambda: httpx.Client(base_url="", transport=_DeadTransport()))
     now = time.time()
-    legacy.note("manager", "m", tok=1234, ts=now - 30)
-    u = legacy.snapshot(now)
-    assert u["owner_tok"] == 1234 and u["used_tok"] == 1234
-    from app import db
-    assert db.kv_get(legacy.LEDGER_KEY), "the fallback still writes the old kv blob"
+    usage.note("repair", "m", tok=1)          # no raise IS the assertion
+    assert usage.rows() == []
+    assert usage.snapshot(now)["degraded"] is True
+    ok, why, wake = usage.verdict(now)
+    assert ok is False and wake == now + usage.FAILSAFE_WAKE_S
 
 
-def test_the_shim_is_dual_mode_until_the_cutover():
-    src = (REPO / "conductor" / "app" / "usage.py").read_text()
-    assert "_usage_legacy" in src and 'os.environ.get("USAGE_URL")' in src
-    assert (REPO / "conductor" / "app" / "_usage_legacy.py").exists()
+def test_init_drops_the_migrated_kv_keys(fresh_db):
+    """usage:ledger was the pre-P2 meter and usage:backfilled the guard on the
+    one-shot import that fed it. The service copied the first and inherited the
+    second's job; keeping either would be a staler copy of numbers another
+    process owns, and a flag nobody reads."""
+    from app import db, usage
+    db.kv_set("usage:ledger", [{"ts": 1.0, "source": "repair", "tok": 5}])
+    db.kv_set("usage:backfilled", True)
+    usage.init()
+    assert db.kv_get("usage:ledger") is None
+    assert db.kv_get("usage:backfilled") is None
+    usage.init()          # and a box that never had them boots fine
+
+
+def test_the_crews_own_counter_is_not_collateral(fresh_db):
+    """repair:ledger is the crew's own call counter and still the backstop meter
+    for boxes whose SDK reports no tokens. It was never usage's to drop."""
+    from app import db, usage
+    db.kv_set("repair:ledger", [{"ts": 1.0, "kind": "build", "model": "m", "usd": 1.0}])
+    usage.init()
+    assert db.kv_get("repair:ledger"), "the backstop meter was dropped with the blob"
+
+
+def test_nothing_imports_the_deleted_fallback():
+    """The file is gone; what matters is that no code still reaches for it.
+    (The shim's docstring names it as history — a comment cannot import.)"""
+    assert not (REPO / "conductor" / "app" / "_usage_legacy.py").exists()
+    importers = [str(p) for p in (REPO / "conductor").rglob("*.py")
+                 if re.search(r"^\s*(from|import).*_usage_legacy", p.read_text(), re.M)]
+    assert importers == []
+
+
+def test_the_engine_no_longer_runs_its_own_backfill():
+    """backfill_repair() moved INTO the service's first-boot copy. Left here it
+    would re-import the crew's ledger on every boot with its guard key dropped —
+    which is exactly how a meter starts double-counting."""
+    from app import usage
+    assert not hasattr(usage, "backfill_repair")
+    assert "backfill_repair" not in (REPO / "conductor" / "app" / "repair.py").read_text()
+
+
+def test_the_conductor_boots_the_three_extracted_stores_loudly():
+    """Each init() is the door that refuses. A store whose init is never called
+    would degrade silently forever instead of failing on the first boot."""
+    main = (REPO / "conductor" / "app" / "main.py").read_text()
+    for mod in ("knowledge", "usage", "notify"):
+        assert f"{mod}.init()" in main, f"{mod}.init() is not called at boot"

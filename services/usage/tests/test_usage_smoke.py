@@ -106,6 +106,23 @@ def test_rows_since_is_a_window_not_the_whole_history(clean_store):
     assert [r["tok"] for r in recent] == [2]
 
 
+def test_a_repeated_query_parameter_is_refused(clean_store):
+    """`?now=1&now=2` was answered 200: Starlette keeps the last value and
+    FastAPI validated only that one, so the service quietly disagreed with its
+    own spec about what it accepts. The contract fuzzer's negative phase found
+    it. `now` is the instant the sleep decision is computed against, and
+    "whichever you sent last" is not an answer anyone can reason about at 3am.
+    """
+    for path, name in (("/snapshot", "now"), ("/verdict", "now"), ("/rows", "since")):
+        assert client.get(f"{path}?{name}=1", headers=TOKEN).status_code == 200
+        r = client.get(f"{path}?{name}=1&{name}=2", headers=TOKEN)
+        assert r.status_code == 422, f"{path} accepted a repeated {name}"
+        # ...in FastAPI's own HTTPValidationError shape, or the refusal is itself
+        # a spec violation
+        (detail,) = r.json()["detail"]
+        assert detail["loc"] == ["query", name] and "more than once" in detail["msg"]
+
+
 def test_the_source_is_required_and_never_guessed(clean_store):
     """No contextvar, no default, no opinion: this service is TOLD who spent."""
     assert client.post("/note", json={"tok": 1}, headers=TOKEN).status_code == 422
@@ -239,15 +256,23 @@ def test_a_meter_that_never_reached_the_conductor_uses_the_stated_defaults(clean
 
 # --- first boot: the legacy blob becomes rows ---------------------------------
 
-def _legacy_db(tmp_path, ledger) -> Path:
+def _legacy_db(tmp_path, ledger, repair_ledger=None) -> Path:
     p = tmp_path / "devteam.db"
     con = sqlite3.connect(p)
     con.execute("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL, ts REAL)")
     con.execute("INSERT INTO kv (k, v, ts) VALUES ('usage:ledger', ?, 0)",
                 (json.dumps(ledger),))
+    if repair_ledger is not None:
+        con.execute("INSERT INTO kv (k, v, ts) VALUES ('repair:ledger', ?, 0)",
+                    (json.dumps(repair_ledger),))
     con.commit()
     con.close()
     return p
+
+
+def _unmark(svc_):
+    svc_.helpers.db().execute("DELETE FROM kv WHERE key='backfilled_from'")
+    svc_.helpers.db().commit()
 
 
 def test_first_boot_expands_the_conductors_kv_blob_into_rows(tmp_path, monkeypatch,
@@ -258,9 +283,7 @@ def test_first_boot_expands_the_conductors_kv_blob_into_rows(tmp_path, monkeypat
          "usd": 0.5, "calls": 1},
         {"ts": now - 50, "source": "repair", "model": "m", "tok": 20, "calls": 2},
     ]))
-    svc.helpers.kv_set("backfilled_from", "")       # pretend it never ran
-    svc.helpers.db().execute("DELETE FROM kv WHERE key='backfilled_from'")
-    svc.helpers.db().commit()
+    _unmark(svc)                                    # pretend it never ran
     assert svc.backfill_from_legacy() == 2
     rows = client.get("/rows", headers=TOKEN).json()["rows"]
     assert [r["source"] for r in rows] == ["manager", "repair"]
@@ -280,8 +303,7 @@ def test_rows_from_before_the_work_cache_split_arrive_as_zero_tokens(tmp_path, m
     monkeypatch.setattr(svc, "LEGACY_DB_PATH", _legacy_db(tmp_path, [
         {"ts": now - 60, "source": "repair", "model": "m", "usd": 1.7,
          "tokens": 3_018_222, "calls": 1}]))
-    svc.helpers.db().execute("DELETE FROM kv WHERE key='backfilled_from'")
-    svc.helpers.db().commit()
+    _unmark(svc)
     assert svc.backfill_from_legacy() == 1
     u = client.get("/snapshot", params={"now": now}, headers=TOKEN).json()
     assert u["used_tok"] == 0 and u["frac"] == 0
@@ -291,7 +313,51 @@ def test_rows_from_before_the_work_cache_split_arrive_as_zero_tokens(tmp_path, m
 
 def test_no_legacy_database_is_not_an_error(tmp_path, monkeypatch, clean_store):
     monkeypatch.setattr(svc, "LEGACY_DB_PATH", tmp_path / "nothing-here.db")
-    svc.helpers.db().execute("DELETE FROM kv WHERE key='backfilled_from'")
-    svc.helpers.db().commit()
+    _unmark(svc)
     assert svc.backfill_from_legacy() == 0
     assert client.get("/health").json()["ok"] is True
+
+
+def test_first_boot_also_imports_the_crews_own_pre_meter_ledger(tmp_path, monkeypatch,
+                                                                clean_store):
+    """`repair:ledger` is the self-repair crew's own call counter, older than the
+    shared meter. Until its rows show up here the meter reads "nothing used" on a
+    box that has been working all week, and the crude call-counter fallback keeps
+    deciding.
+
+    The conductor used to do this import itself, once, behind a second kv flag;
+    the P2 cutover deleted that code and the flag with it, so the job landed here
+    — same marker, same ATTACH. Those rows predate per-call token reporting and
+    carry only a cost, so they arrive as CALLS with no tokens: an honest zero
+    beats an invented number.
+    """
+    now = time.time()
+    monkeypatch.setattr(svc, "LEGACY_DB_PATH", _legacy_db(tmp_path, [], [
+        {"ts": now - 60, "kind": "build", "model": "m", "usd": 1.25, "n": 1},
+        {"ts": now - 30, "kind": "plan", "model": "m", "usd": 0, "n": 8},
+    ]))
+    _unmark(svc)
+    assert svc.backfill_from_legacy() == 1, "only rows with a cost are worth importing"
+    u = client.get("/snapshot", params={"now": now}, headers=TOKEN).json()
+    assert u["calls"] == 1 and u["repair_tok"] == 0
+    assert u["by_source"]["repair"]["calls"] == 1
+    # ...and exactly once: twice would double the crew's apparent spend
+    assert svc.backfill_from_legacy() == 0
+    assert client.get("/snapshot", params={"now": now},
+                      headers=TOKEN).json()["calls"] == 1
+
+
+def test_both_ledgers_ride_across_under_one_marker(tmp_path, monkeypatch, clean_store):
+    """One ATTACH, one marker, two sources — so a half-copied first boot cannot
+    leave the meter holding the owner's history without the crew's."""
+    now = time.time()
+    monkeypatch.setattr(svc, "LEGACY_DB_PATH", _legacy_db(
+        tmp_path,
+        [{"ts": now - 100, "source": "manager", "model": "m", "tok": 10, "calls": 1}],
+        [{"ts": now - 50, "kind": "build", "model": "m", "usd": 2.0, "n": 3}]))
+    _unmark(svc)
+    assert svc.backfill_from_legacy() == 2
+    marker = json.loads(svc.helpers.kv_get("backfilled_from"))
+    assert marker["rows"] == 2 and marker["crew_rows"] == 1
+    u = client.get("/snapshot", params={"now": now}, headers=TOKEN).json()
+    assert u["owner_tok"] == 10 and u["by_source"]["repair"]["calls"] == 3

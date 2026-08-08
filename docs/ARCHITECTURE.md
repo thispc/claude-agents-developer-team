@@ -87,10 +87,16 @@ number that authorises spending someone else's subscription — and it is now a 
 `usage_rows` table in `data/usage.db`, one INSERT per call. `/note`, `/snapshot`,
 `/verdict`, `/rows`. Attribution is **explicit on the wire**: `providers.complete` gained
 a `source` argument resolved at its top, so the conductor's `usage.attributed` contextvar
-is read at the call site and never crosses the boundary. The service reads the four dials
-it runs on (window, budget, idle share, quiet period) through `GET /internal/tuning`,
-cached ~30s, keeping the last value it actually saw rather than falling back to a default
-that could re-widen an allowance the owner narrowed. Degraded: `note` is dropped (metering
+is read at the call site and never crosses the boundary. `conductor/app/usage.py` keeps
+every public name it always had and is now a pure client; `USAGE_URL` is required and
+`init()` refuses to boot without it, naming `run-local.sh`, then drops the two kv keys the
+strangler left behind (`usage:ledger`, `usage:backfilled`). The crew's own `repair:ledger`
+counter stays — it is the backstop meter, not the meter — and importing its pre-meter
+history moved into the service's one-shot first-boot copy, so there is exactly one
+importer. The service reads the four dials it runs on (window, budget, idle share, quiet
+period) through `GET /internal/tuning`, cached ~30s, keeping the last value it actually
+saw rather than falling back to a default that could re-widen an allowance the owner
+narrowed. Degraded: `note` is dropped (metering
 must never break the thing being metered), `snapshot` is zeros with `degraded: true`, and
 `verdict` **fails safe** — `(False, "usage meter unreachable", now + 300)`. That one verb
 refuses rather than shrugs, because "I cannot see the quota" and "the quota is free" are
@@ -107,6 +113,8 @@ in `services.yaml`'s `env:` list and named as the contract's one exception. The 
 repo is derived from the git remote, so it rides each request instead; `sprint_digest`
 stays conductor-side because it is a JOIN over projects and tasks, and posts its finished
 text through `/issue`. A filed issue is announced back through `POST /internal/bus`.
+`conductor/app/notify.py` is a pure client too: `NOTIFY_URL` is required, `init()` refuses
+without it and drops the migrated `notify_seen:*` records and the `notify_sent` window.
 Degraded: every verb answers `{"sent": false, "reason": "notify service down"}` — silence
 is this module's designed failure mode, and the daily self-check completes without it.
 

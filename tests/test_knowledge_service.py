@@ -298,20 +298,29 @@ def test_gen_fleet_wires_the_url_and_the_gateway_by_construction(tmp_path):
 
 
 @pytest.mark.hostonly
-def test_both_boot_paths_export_the_url_before_starting_the_conductor():
-    """--legacy runs the conductor outside process-compose, but the store is a
-    service either way: the script must hand it the URL on BOTH paths, or the
-    legacy path boots into the RuntimeError above."""
+def test_both_boot_paths_start_every_service_before_the_conductor():
+    """--legacy runs the conductor outside process-compose, but the stores are
+    services either way: the script must start each one and hand over its URL on
+    BOTH paths, or the legacy path boots into the RuntimeError above.
+
+    Asserted against the loop rather than three literal export lines, because
+    that is what the script actually has since P2 — one readiness wait, one list
+    of names. Three copies of a wait is how one of them quietly stops waiting.
+    """
     script = (REPO / "run-local.sh").read_text()
     conductor_exec = script.index("exec .venv/bin/uvicorn app.main:app")
-    export_at = script.find("export KNOWLEDGE_URL")
-    assert export_at >= 0, "run-local.sh never exports KNOWLEDGE_URL"
-    assert export_at < conductor_exec, \
-        "the legacy path execs the conductor without a knowledge URL"
-    # and it starts (or reuses) the service before claiming the URL is good
-    assert script.index("--app-dir services/knowledge") < export_at
+    loop_at = script.find("for svc in ")
+    assert loop_at >= 0, "run-local.sh no longer starts the fleet's services itself"
+    names = script[loop_at:script.index(";", loop_at)]
+    for svc in ("knowledge", "usage", "notify"):
+        assert svc in names, f"the legacy path never starts {svc}"
+    export_at = script.index("_URL=${svc_url}")
+    assert loop_at < export_at < conductor_exec, \
+        "the legacy path execs the conductor without the service URLs"
+    # and it starts (or reuses) each service before claiming its URL is good
+    assert script.index('--app-dir "services/${svc}"') < export_at
     assert "/health" in script[:export_at], "no readiness wait before the URL is exported"
-    # the fleet path gets the URL the other way: gen_fleet writes it into the env
-    # file process-compose sources, so the conductor process has it either way
+    # the fleet path gets the URLs the other way: gen_fleet writes them into the
+    # env file process-compose sources, so the conductor has them either way
     assert "data/env/conductor.env" in (REPO / "tools" / "gen_fleet.py").read_text() \
         or "data/env/" in script

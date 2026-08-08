@@ -73,9 +73,12 @@ def _phases() -> list[tuple[str, str]]:
 def _kv_keys() -> list[tuple[str, str]]:
     """Every kv key the engine reads or writes, with the comment that introduced it (the
     module docstring block lists them; this finds the real string literals)."""
-    keys = {"usage:ledger"}      # behind a module constant, so the regex below cannot see it
-    for path in ("conductor/app/repair.py", "conductor/app/repair_routes.py",
-                 "conductor/app/usage.py"):
+    # conductor/app/usage.py used to be scanned too, for `usage:ledger` and
+    # `usage:backfilled`. The P2 cutover dropped both: the shared quota meter is a
+    # service with a real table, and the shim's init() deletes the leftovers. What
+    # remains here is the ENGINE's own state, which is all it ever should have been.
+    keys = set()
+    for path in ("conductor/app/repair.py", "conductor/app/repair_routes.py"):
         for m in re.finditer(r'kv_(?:get|set)\(\s*[f]?"([a-z]+:[a-z_:{}\w]+)"', _src(path)):
             keys.add(m.group(1))
     notes = {
@@ -91,12 +94,6 @@ def _kv_keys() -> list[tuple[str, str]]:
         "repair:backlog": "tasks banked by one scout+deliberation, drained over later sprints",
         "repair:lease": "which process drives the engine (pid + heartbeat)",
         "repair:last_error": "the last phase failure, shown on the screen",
-        "usage:ledger": "the PRE-P2 meter blob. The usage SERVICE owns the meter now "
-                        "(data/usage.db, one `usage_rows` row per call); this key "
-                        "survives only as the service's first-boot copy source and as "
-                        "the rollback path, and commit B drops it",
-        "usage:backfilled": "one-shot guard for importing the crew's pre-meter history "
-                            "(repair:ledger) into the usage service",
     }
     dyn = {"repair:sprint:": "one record per sprint: scout digest, memo, tasks, retro"}
     rows = [(k, notes.get(k, "")) for k in sorted(keys) if not k.endswith("{")]
@@ -286,10 +283,12 @@ def build() -> str:
     add("")
     add("## State (all in kv — no new tables)")
     add("")
-    add("The engine's own state is kv, and stays kv. The two `usage:` keys are the "
-        "exception on their way out: since P2 the shared quota meter is a separate "
-        "service with a real table (`services/usage`, `data/usage.db`), and what is "
-        "left here is the blob it copied from plus the guard on that copy.")
+    add("The engine's own state is kv, and stays kv. What is NOT here any more is the "
+        "shared quota meter: since the P2 cutover it is a separate service with a real "
+        "table (`services/usage`, one `usage_rows` row per call), the conductor's "
+        "`usage:ledger` blob and its `usage:backfilled` guard are dropped on boot, and "
+        "the crew's own `repair:ledger` counter below is what stayed — it is the "
+        "backstop meter, not the meter.")
     add("")
     add(_table(["key", "holds"], _kv_keys()))
     add("")

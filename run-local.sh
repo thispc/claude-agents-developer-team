@@ -8,32 +8,27 @@
 # Fleet path: tools/fetch-bins.sh vendors process-compose + oasdiff (pinned versions
 # live in that script), tools/gen_fleet.py regenerates process-compose.yaml +
 # data/env + data/tokens + data/fleet_topology.json from services.yaml, then
-# process-compose boots every managed service (today: the conductor alone) with
-# readiness probes, restarts, and its REST API token-authed on the fleet_api port
-# (8899 — see services.yaml; token in data/tokens/fleet-api.token).
+# process-compose boots every managed service (the conductor plus knowledge 8881,
+# usage 8882 and notify 8883) with readiness probes, restarts, and its REST API
+# token-authed on the fleet_api port (8899 — see services.yaml; token in
+# data/tokens/fleet-api.token).
 #
 # --legacy is the FALLBACK for a machine where process-compose misbehaves, and the
-# P1 cutover RE-SCOPED it: it now means "the conductor outside process-compose,
-# the fleet's services still required". It cannot mean "no services", because the
-# knowledge store IS a service since P1 — the in-process fallback is deleted, and
-# a conductor without KNOWLEDGE_URL refuses to boot rather than run with no memory.
+# P1 cutover RE-SCOPED it: it means "the conductor outside process-compose, the
+# fleet's services still required". It cannot mean "no services". Since P1 the
+# knowledge store is a service; since the P2 cutover so are the quota meter and
+# the notifier, and all three in-process fallbacks are deleted — a conductor
+# missing KNOWLEDGE_URL, USAGE_URL or NOTIFY_URL refuses to boot rather than run
+# with no memory, no meter, or no way to tell you something broke.
 #
 # So this path still runs tools/gen_fleet.py (pure Python — no vendored binaries,
-# which is the tooling that was misbehaving) for env and tokens, then starts the
-# knowledge service ITSELF as a child, waits for its /health, exports the URL, and
-# execs the conductor in the foreground. A knowledge service already listening on
-# the port (a half-running fleet, a second terminal) is REUSED, never duplicated.
-#
-# P2 (usage 8882, notify 8883) is mid-strangler: their shims are DUAL-MODE, so a
-# conductor started without USAGE_URL/NOTIFY_URL runs the vendored in-process
-# bodies instead — which is exactly the between-commits rollback. This path
-# therefore leaves them unset on purpose and stays a working boot; the fleet path
-# below gets both URLs from data/env/conductor.env and is the real mode. When the
-# P2 cutover lands (commit B) this path starts all three services as children,
-# for the same reason it already starts knowledge: there will be no fallback left.
-# The child shares this terminal's process group, so Ctrl-C stops both; a plain
-# SIGTERM to the conductor alone can leave it, which the reuse check then absorbs
-# on the next boot. Both paths serve http://127.0.0.1:$PORT.
+# which is the tooling that was misbehaving) for env and tokens, then starts ALL
+# THREE services itself as children, waits for each /health, exports the URLs, and
+# execs the conductor in the foreground. A service already listening on its port
+# (a half-running fleet, a second terminal) is REUSED, never duplicated.
+# The children share this terminal's process group, so Ctrl-C stops everything; a
+# plain SIGTERM to the conductor alone can leave them, which the reuse check then
+# absorbs on the next boot. Both paths serve http://127.0.0.1:$PORT.
 #
 # Data lives in ./devteam.db (the repo root) and persists across restarts.
 # Live mode (agents genuinely think) uses, in order: your Settings-page key, the
@@ -57,28 +52,43 @@ fi
 if [[ "${1:-}" == "--legacy" || "${RUN_LEGACY:-}" == "1" ]]; then
   # The registry still generates env + tokens; only process-compose is skipped.
   .venv/bin/python tools/gen_fleet.py >/dev/null
-  KNOWLEDGE_PORT="$(.venv/bin/python -c "import json; print(json.load(open('data/fleet_topology.json'))['services']['knowledge']['port'])")"
-  KURL="http://127.0.0.1:${KNOWLEDGE_PORT}"
-  if curl -fsS --max-time 2 "${KURL}/health" >/dev/null 2>&1; then
-    echo "knowledge: already up on ${KNOWLEDGE_PORT} — reusing it"
-  else
-    echo "knowledge: starting as a child on ${KNOWLEDGE_PORT} (no process-compose in legacy mode)"
-    ( set -a; . data/env/knowledge.env; set +a
-      exec .venv/bin/uvicorn app:app --app-dir services/knowledge \
-           --host 127.0.0.1 --port "${KNOWLEDGE_PORT}" ) &
-    for _ in $(seq 1 40); do
-      curl -fsS --max-time 2 "${KURL}/health" >/dev/null 2>&1 && break
-      sleep 0.25
-    done
-    if ! curl -fsS --max-time 2 "${KURL}/health" >/dev/null 2>&1; then
-      echo "knowledge did not come up on ${KNOWLEDGE_PORT} — the conductor has no store to recall from." >&2
-      echo "check services/knowledge and data/env/knowledge.env, or run the full fleet: ./run-local.sh" >&2
-      exit 1
+
+  # Each extracted service, started as a child of this shell. One loop rather than
+  # three copies: the next extraction adds a name here and nothing else, and three
+  # drifting copies of a readiness wait is exactly how one of them quietly stops
+  # waiting. Order does not matter — the conductor is the only caller, and it is
+  # started last.
+  #
+  # The FAILURE here is deliberately fatal. Letting the conductor start anyway
+  # would hand it a RuntimeError from init() a second later, which reads as a
+  # crash rather than as "this service did not come up" — and on the meter it
+  # would be worse than a crash, because a conductor that cannot see the quota
+  # must not be guessing about it.
+  for svc in knowledge usage notify; do
+    svc_port="$(.venv/bin/python -c "import json,sys; print(json.load(open('data/fleet_topology.json'))['services'][sys.argv[1]]['port'])" "${svc}")"
+    svc_url="http://127.0.0.1:${svc_port}"
+    if curl -fsS --max-time 2 "${svc_url}/health" >/dev/null 2>&1; then
+      echo "${svc}: already up on ${svc_port} — reusing it"
+    else
+      echo "${svc}: starting as a child on ${svc_port} (no process-compose in legacy mode)"
+      ( set -a; . "data/env/${svc}.env"; set +a
+        exec .venv/bin/uvicorn app:app --app-dir "services/${svc}" \
+             --host 127.0.0.1 --port "${svc_port}" ) &
+      for _ in $(seq 1 40); do
+        curl -fsS --max-time 2 "${svc_url}/health" >/dev/null 2>&1 && break
+        sleep 0.25
+      done
+      if ! curl -fsS --max-time 2 "${svc_url}/health" >/dev/null 2>&1; then
+        echo "${svc} did not come up on ${svc_port} — the conductor refuses to boot without it." >&2
+        echo "check services/${svc} and data/env/${svc}.env, or run the full fleet: ./run-local.sh" >&2
+        exit 1
+      fi
     fi
-  fi
-  export KNOWLEDGE_URL="${KURL}"
+    export "$(echo "${svc}" | tr '[:lower:]-' '[:upper:]_')_URL=${svc_url}"
+  done
+
   echo "devteam conductor (legacy: outside process-compose) → http://127.0.0.1:${PORT}   (login: ${ROOT_USERNAME:-root} / ${ROOT_PASSWORD:-devteam})"
-  echo "data: $(pwd)/devteam.db · knowledge: $(pwd)/data/knowledge.db · stop with Ctrl-C"
+  echo "data: $(pwd)/devteam.db · services: $(pwd)/data/{knowledge,usage,notify}.db · stop with Ctrl-C"
   exec .venv/bin/uvicorn app.main:app --app-dir conductor --host 127.0.0.1 --port "${PORT}"
 fi
 

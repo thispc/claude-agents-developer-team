@@ -64,7 +64,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import httpx
-from fastapi import Depends, FastAPI, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
@@ -106,6 +106,13 @@ SPEC = HERE / "openapi.json"
 # the cwd process-compose runs from (the repo root) — same convention as DB_PATH.
 LEGACY_DB_PATH = Path(os.environ.get("LEGACY_DB_PATH", "devteam.db"))
 LEGACY_LEDGER_KEY = "usage:ledger"
+# The crew's OWN call counter, which predates the shared meter. The conductor used
+# to import it into the blob above from `repair.loop`, once, behind a second kv
+# flag; the P2 cutover deleted that code and the flag with it, so the import lands
+# here instead — same one-shot marker, same ATTACH, one less thing on the far side
+# of the seam. Boxes where the old import already ran carry those rows inside
+# `usage:ledger` and never reach this: the copy is marked done before either read.
+LEGACY_REPAIR_LEDGER_KEY = "repair:ledger"
 
 CONDUCTOR_URL = (os.environ.get("CONDUCTOR_URL") or "").strip().rstrip("/")
 
@@ -220,20 +227,40 @@ def init_store() -> None:
     con.commit()
 
 
+def _legacy_blob(con: sqlite3.Connection, key: str) -> list:
+    """One kv value out of the conductor's attached database, as a list."""
+    got = con.execute("SELECT v FROM legacy.kv WHERE k=?", (key,)).fetchone()
+    if not got:
+        return []
+    try:
+        value = json.loads(got[0])
+    except Exception:
+        return []
+    return value if isinstance(value, list) else []
+
+
 def backfill_from_legacy() -> int:
-    """First boot only: expand the conductor's kv blob into rows, once.
+    """First boot only: expand the conductor's kv blobs into rows, once.
 
-    The blob is `usage:ledger` in devteam.db's kv table — a JSON list of exactly
-    the dicts this table's columns are named after. Any failure (the conductor
-    mid-write, a locked file) leaves the marker unset and the next boot simply
-    tries again; the copy is idempotent because it only ever runs against an
-    empty table.
+    Two sources, one marker, one ATTACH:
 
-    Rows written before work and cache were separated carry a `tokens` field that
-    summed all four kinds — one build's 3M cache reads inside it. They arrive
-    with tok=0, deliberately: they still count as CALLS, which is what the
-    session-count backstop is for, and an honest zero beats a number we know is
-    wrong.
+    `usage:ledger` is the pre-P2 meter — a JSON list of exactly the dicts this
+    table's columns are named after. Rows written before work and cache were
+    separated carry a `tokens` field that summed all four kinds, one build's 3M
+    cache reads inside it; they arrive with tok=0 deliberately, still counting as
+    CALLS, because that is what the session-count backstop is for and an honest
+    zero beats a number we know is wrong.
+
+    `repair:ledger` is the self-repair crew's own call counter, which predates the
+    shared meter entirely. Until its rows show up here the meter reads "nothing
+    used" on a box that has been working all week, and the crude call-counter
+    fallback keeps deciding. Those rows carry only a cost, so they are imported as
+    CALLS with no tokens — the same honest zero. Only rows with a cost are worth
+    importing: a zero-cost row records nothing the backstop cannot already see.
+
+    Any failure (the conductor mid-write, a locked file) leaves the marker unset
+    and the next boot simply tries again; the copy is idempotent because it only
+    ever runs against an empty table.
     """
     if helpers.kv_get("backfilled_from"):
         return 0
@@ -246,25 +273,32 @@ def backfill_from_legacy() -> int:
     try:
         con.execute("ATTACH DATABASE ? AS legacy", (f"file:{LEGACY_DB_PATH}?mode=ro",))
         try:
-            got = con.execute("SELECT v FROM legacy.kv WHERE k=?",
-                              (LEGACY_LEDGER_KEY,)).fetchone()
-            ledger = json.loads(got[0]) if got else []
-            if isinstance(ledger, list):
-                for r in ledger:
-                    if not isinstance(r, dict):
-                        continue
-                    con.execute(
-                        "INSERT INTO usage_rows (ts, source, model, tok, cache, usd, calls)"
-                        " VALUES (?,?,?,?,?,?,?)",
-                        (float(r.get("ts") or 0), str(r.get("source") or "?")[:24],
-                         str(r.get("model") or "")[:60], max(0, int(r.get("tok") or 0)),
-                         max(0, int(r.get("cache") or 0)), round(float(r.get("usd") or 0), 4),
-                         max(1, int(r.get("calls") or 1))))
-                    copied += 1
-                con.commit()
+            insert = ("INSERT INTO usage_rows (ts, source, model, tok, cache, usd, calls)"
+                      " VALUES (?,?,?,?,?,?,?)")
+            for r in _legacy_blob(con, LEGACY_LEDGER_KEY):
+                if not isinstance(r, dict):
+                    continue
+                con.execute(insert,
+                            (float(r.get("ts") or 0), str(r.get("source") or "?")[:24],
+                             str(r.get("model") or "")[:60], max(0, int(r.get("tok") or 0)),
+                             max(0, int(r.get("cache") or 0)),
+                             round(float(r.get("usd") or 0), 4),
+                             max(1, int(r.get("calls") or 1))))
+                copied += 1
+            crew = 0
+            for r in _legacy_blob(con, LEGACY_REPAIR_LEDGER_KEY):
+                if not isinstance(r, dict) or float(r.get("usd") or 0) <= 0:
+                    continue
+                con.execute(insert,
+                            (float(r.get("ts") or 0), "repair",
+                             str(r.get("model") or "")[:60], 0, 0,
+                             round(float(r["usd"]), 4), max(1, int(r.get("n") or 1))))
+                crew += 1
+            con.commit()
+            copied += crew
             helpers.kv_set("backfilled_from", json.dumps(
                 {"db": str(LEGACY_DB_PATH), "key": LEGACY_LEDGER_KEY,
-                 "rows": copied, "ts": time.time()}))
+                 "rows": copied, "crew_rows": crew, "ts": time.time()}))
         finally:
             con.execute("DETACH DATABASE legacy")
     except Exception:
@@ -417,6 +451,31 @@ class NoteBody(StrictBody):
     ts: JsonFloat = Field(0.0, ge=0, le=_MAX_TS)   # 0 = now
 
 
+def one_value_only(request: Request) -> None:
+    """A query parameter the contract types as a NUMBER must arrive once.
+
+    `?now=1&now=2` was answered 200: Starlette keeps the last value and FastAPI
+    validates only that one, so the service quietly disagreed with its own spec
+    about what it accepts. Found by the contract fuzzer's negative phase — the
+    second thing it caught that reading the code would not have.
+
+    It matters here more than it would elsewhere. `now` is the instant the sleep
+    decision is computed against, and "whichever of the two you sent last" is not
+    an answer anyone can reason about at 3am; refusing is.
+    """
+    for name in ("now", "since"):
+        if len(request.query_params.getlist(name)) > 1:
+            # The 422 body is FastAPI's own `HTTPValidationError` shape — a LIST
+            # of {loc, msg, type} — and not a bare string. A hand-rolled refusal
+            # that answers the right status with the wrong body is still a spec
+            # violation, and the fuzzer says so on the very next run.
+            raise HTTPException(422, [{
+                "loc": ["query", name],
+                "msg": f"{name} was given more than once; the contract types it "
+                       f"as a single number",
+                "type": "value_error.multiple_values"}])
+
+
 @app.get("/health")
 def health() -> dict:
     """Readiness, not liveness: ok only when the service could actually answer —
@@ -453,17 +512,20 @@ def note_route(body: NoteBody) -> dict:
                        usd=body.usd, calls=body.calls, ts=body.ts or None)}
 
 
-@app.get("/snapshot", dependencies=[Depends(helpers.require_token)])
+@app.get("/snapshot", dependencies=[Depends(helpers.require_token),
+                                    Depends(one_value_only)])
 async def snapshot_route(now: float = Query(0, ge=0, le=_MAX_TS)) -> dict:
     return await snapshot(now or None)
 
 
-@app.get("/verdict", dependencies=[Depends(helpers.require_token)])
+@app.get("/verdict", dependencies=[Depends(helpers.require_token),
+                                   Depends(one_value_only)])
 async def verdict_route(now: float = Query(0, ge=0, le=_MAX_TS)) -> dict:
     return await verdict(now or None)
 
 
-@app.get("/rows", dependencies=[Depends(helpers.require_token)])
+@app.get("/rows", dependencies=[Depends(helpers.require_token),
+                                Depends(one_value_only)])
 def rows_route(since: float = Query(0, ge=0, le=_MAX_TS)) -> dict:
     return {"rows": rows(since)}
 

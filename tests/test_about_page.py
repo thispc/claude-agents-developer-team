@@ -155,13 +155,21 @@ def test_the_table_count_matches_the_schema():
 
 def test_the_kv_inventory_admits_the_meter_left():
     """docs/SELF_REPAIR.md is generated from the code, and its kv table is the
-    one place a reader looks for "where is the spend recorded". Saying
-    `usage:ledger` holds "every model call on the box" stopped being true the
-    moment the meter became a service."""
+    one place a reader looks for "where is the spend recorded". After the P2
+    cutover the `usage:` keys are not merely stale — they are DROPPED on boot, so
+    listing them at all would send a reader looking in an empty table.
+
+    The prose has to carry what the table no longer can: the meter is a service,
+    and `repair:ledger` (which survives, and is still listed) is the backstop
+    meter rather than the meter.
+    """
     doc = (Path(__file__).resolve().parent.parent / "docs" / "SELF_REPAIR.md").read_text()
-    row = [l for l in doc.splitlines() if l.startswith("| usage:ledger")]
-    assert row and "PRE-P2" in row[0], "the kv inventory still calls the blob the meter"
+    rows = [l for l in doc.splitlines() if l.startswith("| usage:")]
+    assert rows == [], f"the kv inventory still lists dropped keys: {rows}"
     assert "services/usage" in doc and "usage_rows" in doc
+    assert "backstop meter, not the meter" in doc
+    assert any(l.startswith("| repair:ledger") for l in doc.splitlines()), \
+        "the crew's own counter stayed and must still be listed"
 
 
 def test_the_round_table_range_matches_the_limits():

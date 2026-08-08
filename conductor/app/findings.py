@@ -86,6 +86,20 @@ def init() -> None:
     db._conn.commit()
 
 
+def _head(detail: str, limit: int) -> str:
+    """The first line of a fault, safely.
+
+    `.strip().splitlines()[0]` is the obvious way to write this and it is wrong:
+    a detail of "\\r" is truthy, strips to "", and splits to an EMPTY list — so
+    recording a fault raised IndexError instead of recording it. The notify
+    service's contract fuzzer found the identical bug in its own copy of this
+    line (P2); this is the last one in the conductor, and it is now the only
+    place either module computes a head.
+    """
+    lines = (detail or "").strip().splitlines()
+    return lines[0][:limit] if lines else ""
+
+
 def _fingerprint(kind: str, detail: str) -> str:
     """What makes two faults the same one.
 
@@ -94,8 +108,7 @@ def _fingerprint(kind: str, detail: str) -> str:
     and a fingerprint that kept them would file a fresh finding for every single
     occurrence — which is exactly the counting problem this exists to solve.
     """
-    head = (detail or "").strip().splitlines()[0][:200] if detail else ""
-    normalised = re.sub(r"\d+", "#", head).lower()
+    normalised = re.sub(r"\d+", "#", _head(detail, 200)).lower()
     return hashlib.sha256(f"{kind}|{normalised}".encode()).hexdigest()[:12]
 
 
@@ -123,7 +136,7 @@ def record(kind: str, detail: str, *, severity: str = "", project_id: int | None
                      {"title": row["title"], "count": row["count"] + 1})
         return db._rows("SELECT * FROM findings WHERE id=?", (row["id"],))[0]
 
-    head = (detail or "").strip().splitlines()[0][:120] if detail else label
+    head = _head(detail, 120) or label
     db._execute(
         "INSERT INTO findings (fingerprint, kind, title, detail, severity, count, "
         "first_seen, last_seen, project_id, task_id) VALUES (?,?,?,?,?,?,?,?,?,?)",

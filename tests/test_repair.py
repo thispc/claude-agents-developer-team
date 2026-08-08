@@ -639,19 +639,28 @@ def test_the_call_counter_is_a_fallback_not_a_veto(fresh_db, no_spend):
     assert not ok and "share of this window" in why
 
 
-def test_the_crews_own_history_reaches_the_shared_meter_once(fresh_db):
-    """Until the crew's existing ledger shows up in the shared meter, utilization reads
-    '$0 used' on a box that has spent real money all week — and the crude counter keeps
-    deciding. It must also run exactly once: twice would double the crew's apparent spend."""
+def test_the_engine_does_not_import_its_own_ledger_any_more(fresh_db):
+    """The crew's pre-meter history still has to reach the shared meter — otherwise
+    utilization reads '$0 used' on a box that has spent real money all week and the crude
+    counter keeps deciding. But the import moved INTO the usage service's first-boot copy
+    at the P2 cutover, under the same one-shot marker, so the engine must not also do it:
+    two importers is how a meter starts double-counting. Drilled where it now lives,
+    services/usage/tests/test_usage_smoke.py."""
+    src = (Path(__file__).resolve().parents[1] / "conductor" / "app" / "repair.py").read_text()
+    assert "backfill_repair" not in src
+    from app import usage
+    assert not hasattr(usage, "backfill_repair"), "the shim still offers a second importer"
+
+
+def test_the_crews_own_call_counter_survives_the_extraction(fresh_db):
+    """repair:ledger is this module's own counter and still the backstop meter for boxes
+    whose SDK reports no tokens. It was never usage's, and the cutover must not take it."""
     from app import usage
     now = time.time()
-    db.kv_set("repair:ledger", [{"ts": now - 60, "kind": "build", "model": "m", "usd": 1.25, "n": 1},
-                                {"ts": now - 30, "kind": "plan", "model": "m", "usd": 0, "n": 8}])
-    assert usage.backfill_repair() == 1, "only rows with a cost are worth importing"
-    assert usage.snapshot(now)["calls"] == 1, "imported as calls — those rows carry no tokens"
-    assert usage.snapshot(now)["repair_tok"] == 0, "an honest zero beats an invented number"
-    assert usage.backfill_repair() == 0
-    assert usage.snapshot(now)["calls"] == 1, "must not double-count"
+    db.kv_set("repair:ledger", [{"ts": now - 60, "kind": "build", "model": "m", "usd": 1.25, "n": 1}])
+    usage.init()
+    assert len(db.kv_get("repair:ledger") or []) == 1
+    assert repair.meters(now)["s5h"]["used"] == 1, "the backstop still reads it"
 
 
 def test_a_sprints_provider_calls_are_billed_to_the_crew(fresh_db, no_spend, monkeypatch):

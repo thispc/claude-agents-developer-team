@@ -10,6 +10,7 @@ fingerprint's coarseness — lives in services/notify/tests.
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -326,19 +327,73 @@ def test_no_model_credential_follows_the_git_one(tmp_path):
             assert forbidden not in env, f"{forbidden} reached {name}'s env"
 
 
-# --- the rollback path still exists (deleted in commit B) ---------------------
+# --- the cutover: no fallback left, and the kv keys go ------------------------
 
-def test_the_vendored_fallback_still_runs_in_process(fresh_db):
-    """Between commit A and commit B, unsetting NOTIFY_URL must give back the
-    pre-P2 behaviour exactly — that IS the rollback."""
-    from app import _notify_legacy as legacy
-    fp = legacy._fingerprint("crash", "boom\nat line 3")
-    legacy._remember(fp, {"count": 2, "first": 0, "last": 0, "issue": 9})
-    assert legacy._seen(fp)["issue"] == 9, "the fallback still uses the old kv keys"
-    assert legacy.forget(fp) == 1
+def test_without_the_url_init_refuses_and_says_where_to_look(fresh_db, monkeypatch):
+    """There is no in-process notifier any more, so a conductor with none
+    configured must fail at the door — loudly, naming the boot script — rather
+    than run all night unable to tell anyone that something broke."""
+    from app import notify
+    monkeypatch.setattr(notify, "_URL", "")
+    with pytest.raises(RuntimeError) as e:
+        notify.init()
+    msg = str(e.value)
+    assert "NOTIFY_URL" in msg and "run-local.sh" in msg and "services.yaml" in msg
 
 
-def test_the_shim_is_dual_mode_until_the_cutover():
-    src = (REPO / "conductor" / "app" / "notify.py").read_text()
-    assert "_notify_legacy" in src and 'os.environ.get("NOTIFY_URL")' in src
-    assert (REPO / "conductor" / "app" / "_notify_legacy.py").exists()
+async def test_the_verbs_still_degrade_when_the_url_is_missing(fresh_db, monkeypatch):
+    """init() is the loud door; the verbs stay soft. Silence is this module's
+    designed failure mode, and a misconfigured URL must not become a crash loop."""
+    from app import notify
+    monkeypatch.setattr(notify, "_URL", "")
+    monkeypatch.setattr(notify, "_TRANSPORT", _DeadTransport())
+    monkeypatch.setattr(notify, "_sync_client",
+                        lambda: httpx.Client(base_url="", transport=_DeadTransport()))
+    monkeypatch.setattr(notify, "_repo", lambda: "o/r")
+    assert (await notify.report_error("k", "x"))["reason"] == "notify service down"
+    assert notify.status()["degraded"] is True
+    assert notify.forget() == 0
+
+
+def test_init_drops_the_migrated_kv_keys(fresh_db):
+    """notify_seen:* was the dedup memory the service copied on first boot;
+    notify_sent was the rolling hour it deliberately did not. Keeping either
+    would let a reader conclude the dedup still happens here."""
+    from app import db, notify
+    db.kv_set("notify_sent", [1.0, 2.0])
+    db.kv_set("notify_seen:abc123", {"count": 3, "first": 0, "last": 0, "issue": 12})
+    db.kv_set("notify_seen:def456", {"count": 1, "first": 0, "last": 0, "issue": None})
+    notify.init()
+    assert db.kv_get("notify_sent") is None
+    assert db.kv_prefix("notify_seen:") == {}
+    notify.init()          # and a box that never had them boots fine
+
+
+def test_nothing_imports_the_deleted_fallback():
+    """The file is gone; what matters is that no code still reaches for it."""
+    assert not (REPO / "conductor" / "app" / "_notify_legacy.py").exists()
+    importers = [str(p) for p in (REPO / "conductor").rglob("*.py")
+                 if re.search(r"^\s*(from|import).*_notify_legacy", p.read_text(), re.M)]
+    assert importers == []
+
+
+def test_the_first_line_crash_the_fuzzer_found_is_gone_from_the_conductor_too():
+    """`"\r".strip().splitlines()` is an EMPTY list, so `[0]` raised — on code
+    whose whole promise is that it never raises. The notify service's contract
+    fuzzer found it in its copy; findings.py had the same two lines and is the
+    copy that SURVIVED the deletions."""
+    from app import findings
+    assert findings._head("\r", 200) == ""
+    assert findings._fingerprint("crash", "\r")          # no raise IS the assertion
+    assert findings.record("crash", "\r", severity="warning") is not None
+    offenders = []
+    for path in (REPO / "conductor").rglob("*.py"):
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            if ".strip().splitlines()[0]" not in line:
+                continue
+            if "`" in line:                     # prose ABOUT the bug, not the bug
+                continue
+            if "if rough.strip()" in line:      # selfops guards its own read
+                continue
+            offenders.append(f"{path.name}:{n}")
+    assert offenders == [], f"the unguarded first-line read survives at {offenders}"

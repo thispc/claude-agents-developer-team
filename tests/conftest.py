@@ -202,9 +202,15 @@ def fresh_db():
         dbfile.unlink()
     db.init()
     auth.init()
-    from app import findings, knowledge
+    from app import findings, knowledge, notify, usage
     findings.init()
-    knowledge.init()          # no schema of its own any more: it drops the legacy table
+    # None of the three has a schema of its own any more — each init() drops what
+    # its strangler left behind (knowledge's legacy table, usage's and notify's
+    # migrated kv keys) and refuses when its service is not configured. Called
+    # here so every test starts from the state a real boot produces.
+    knowledge.init()
+    usage.init()
+    notify.init()
     # The mounted services outlive any one test's database, so empty their stores
     # here too — a test that recalls must see only what it remembered, and a test
     # that meters must not inherit the previous test's spend.

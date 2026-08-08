@@ -14,8 +14,11 @@ in TOKENS, with cache reads counted separately, because on a subscription there
 is no bill and a dollar figure answers no question the owner has.
 
 Owns `data/usage.db` alone. On first boot it expands the conductor's legacy kv
-blob (`usage:ledger` in devteam.db) into rows over a read-only ATTACH, exactly
-once.
+blobs into rows over a read-only ATTACH, exactly once: `usage:ledger` (the pre-P2
+meter) and `repair:ledger` (the crew's own call counter, cost-only rows imported
+as calls). The second used to be the conductor's job, run from `repair.loop`
+behind its own flag; the cutover folded it in here so there is one importer, one
+marker, and no way to double-count.
 
 **Why it is a table.** The meter used to be one kv blob rewritten whole on every
 note — read the list, append, write it back, under a *thread* lock. A thread lock
@@ -76,7 +79,9 @@ hop answered by a stub transport) + Schemathesis against the committed spec.
 
 ## Degraded mode (every CLIENT documents this)
 
-The one caller is the conductor's client, `conductor/app/usage.py`. `note` is
+The one caller is the conductor's client, `conductor/app/usage.py` — since the P2
+cutover a pure client with no in-process fallback, so the conductor requires
+`USAGE_URL` and refuses to boot without it. `note` is
 dropped with a deduped warn (metering must never break the thing being metered),
 `rows` is `[]`, `snapshot` is every number zero plus `degraded: true`, and
 `verdict` **fails safe**: `(False, "usage meter unreachable", now + 300)`. That

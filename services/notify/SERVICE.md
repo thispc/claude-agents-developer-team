@@ -76,7 +76,9 @@ rather than a fixture somebody can forget to request.
 
 ## Degraded mode (every CLIENT documents this)
 
-The one caller is the conductor's client, `conductor/app/notify.py`. Every verb
+The one caller is the conductor's client, `conductor/app/notify.py` — since the P2
+cutover a pure client with no in-process fallback, so the conductor requires
+`NOTIFY_URL` and refuses to boot without it. Every verb
 answers `{"sent": false, "reason": "notify service down"}` with a deduped warn;
 `status()` adds `degraded: true` so the UI can tell "nothing went wrong" from
 "the notifier is broken", and `forget()` returns 0. Silence is this module's
