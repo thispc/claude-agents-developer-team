@@ -179,6 +179,12 @@ async def _no_stale_dashboard(request, call_next):
 
 app.include_router(router)
 from .lifeworld_routes import router as lifeworld_router   # the Lifeworld: its own router
+from .lifeworld_routes import compose_router as lifeworld_compose_router
+# The two routes the conductor ANSWERS (the world list minus the crew's own world;
+# the agent panel plus root's log rows) go first, so they win over the dual-mode
+# routes that would otherwise forward them blind. Every other /api/lw path is a
+# thin authenticated proxy onto services/lifeworld — see lifeworld_routes.py.
+app.include_router(lifeworld_compose_router)
 app.include_router(lifeworld_router)
 from .repair_routes import router as repair_router         # self-repair v2: its own router
 app.include_router(repair_router)

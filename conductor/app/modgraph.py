@@ -373,9 +373,13 @@ _SELF_MODULES: list[tuple[str, str, str, list[str], list[str]]] = [
      ["backend", "domain"],
      ["conductor/app/repair.py", "conductor/app/repair_builder.py",
       "conductor/app/repair_routes.py"]),
-    ("lifeworld", "The Lifeworld", "conductor/app/lifeworld/__init__.py",
+    # P4 moved the substrate into services/lifeworld; conductor/app/lifeworld/ is
+    # the rollback until the cutover, and lifeworld_client.py is the door to the
+    # service. All three are this node's boundary while that is true.
+    ("lifeworld", "The Lifeworld", "services/lifeworld/app.py",
      ["backend", "domain"],
-     ["conductor/app/lifeworld/", "conductor/app/lifeworld_routes.py"]),
+     ["services/lifeworld/", "conductor/app/lifeworld/",
+      "conductor/app/lifeworld_routes.py", "conductor/app/lifeworld_client.py"]),
     ("knowledge", "What agents have learned", "conductor/app/knowledge.py",
      ["backend", "domain"],
      ["conductor/app/knowledge.py"]),
@@ -437,10 +441,11 @@ _SELF_EDGES: list[tuple[str, str, str, dict]] = [
      {"rule": "every route resolves who-may-see through app.guards; missing and "
               "forbidden both answer 404, so a guessed id learns nothing"}),
     ("lifeworld", "routes", "interface",
-     {"kind": "ports", "package": "conductor/app/lifeworld", "door": "ports.py",
+     {"kind": "ports", "package": "services/lifeworld/substrate", "door": "ports.py",
       "pattern": "from ..",
-      "rule": "`from ..` appears nowhere in conductor/app/lifeworld/ except ports.py — "
-              "the substrate talks to the app through one door"}),
+      "rule": "a parent-package import appears nowhere in services/lifeworld/substrate/ "
+              "except ports.py — the substrate talks to the platform through one door, "
+              "and since P4 that door is HTTP"}),
     ("db", "orchestration", "data",
      {"rule": "the scheduler's whole world view — tasks, deps, budgets — is rows; "
               "no scheduling state lives in memory"}),

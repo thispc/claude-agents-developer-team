@@ -47,7 +47,12 @@ MANAGED_KINDS = ("core", "service")
 # The conductor's service doors (routes/internal.py). Validated here rather than
 # discovered at runtime: a typo in `doors:` would otherwise grant nothing at all
 # and show up as a 403 at 3am instead of as a broken registry at generation time.
-KNOWN_DOORS = ("bus", "tuning")
+#
+#   bus      POST /internal/bus          put an event on the platform bus
+#   tuning   GET  /internal/tuning       read one allowlisted knob of the owner's
+#   model    POST /internal/complete     ask for a completion WITHOUT holding a key
+#   agents   /internal/agents/…          write and read the activity register
+KNOWN_DOORS = ("bus", "tuning", "model", "agents")
 
 
 def load_registry(path: Path) -> dict:
@@ -74,6 +79,13 @@ def load_registry(path: Path) -> dict:
                                  f"the conductor has {list(KNOWN_DOORS)}")
         if svc.get("knobs") and "tuning" not in (svc.get("doors") or []):
             raise ValueError(f"service {name!r} lists knobs but not the tuning door")
+        for peer in svc.get("peers") or []:
+            other = reg["services"].get(peer)
+            if not other or other.get("kind") not in MANAGED_KINDS:
+                raise ValueError(f"service {name!r} declares peer {peer!r}, "
+                                 f"which is not a managed service")
+            if peer == name:
+                raise ValueError(f"service {name!r} declares itself as a peer")
         if not all(isinstance(k, str) for k in svc.get("env") or []):
             raise ValueError(f"service {name!r} has a non-string env key")
         svc.setdefault("ui", False)
@@ -164,6 +176,15 @@ def _env_file(name: str, svc: dict, reg: dict, root: Path, env: dict) -> str:
             continue
         key = peer.upper().replace("-", "_") + "_URL"
         lines.append(f"{key}=http://{host}:{_port_of(peer, psvc, env)}")
+    # A peer's TOKEN, and only for a peer this service DECLARED. An address is
+    # public inside the fleet; the credential that opens it is not, and writing
+    # every token into every env file would make "which services can call which"
+    # unanswerable. `peers: [knowledge]` is one reviewed line, exactly like
+    # `doors:` — the lifeworld service calls the knowledge service directly
+    # (asking the conductor to ask would be two hops for one answer), and that
+    # is the only such edge in the fleet today.
+    for peer in sorted(svc.get("peers") or []):
+        lines.append(f"{peer.upper().replace('-', '_')}_TOKEN={_token(root, peer)}")
     # Declared passthrough, and ONLY declared: a service's env is a list somebody
     # reviewed in services.yaml, never "whatever the operator happened to export".
     # An unset key is written empty rather than skipped, so the file's shape does
@@ -191,6 +212,9 @@ def _topology(reg: dict, root: Path, env: dict) -> str:
             # service may use, and which tuning knobs it may read through one.
             entry["doors"] = sorted(svc.get("doors") or [])
             entry["knobs"] = sorted(svc.get("knobs") or [])
+            # Service→service edges, declared. The Atlas draws them (P6) and the
+            # env file above carries exactly these peers' tokens.
+            entry["peers"] = sorted(svc.get("peers") or [])
             # The /svc gateway's gate. False by default and written explicitly, so
             # a topology never leaves the answer to whoever reads it.
             entry["public"] = bool(svc.get("public"))

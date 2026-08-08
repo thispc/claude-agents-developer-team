@@ -88,9 +88,7 @@ async def _staff_from_team(project_id: int, body, owner) -> None:
     choice = (getattr(body, "staff_team", "") or "").strip()
     if not choice:
         return
-    from ..lifeworld import store
-    from ..lifeworld_routes import ManifestAgent, ManifestBody, materialise_manifest
-    uid = (owner or {}).get("id") or 0
+    from .. import lifeworld_client
     try:
         if choice != "new":
             wid, _, rid = choice.partition(":")
@@ -98,22 +96,23 @@ async def _staff_from_team(project_id: int, body, owner) -> None:
             return
         # "new": one team, named after the project, staffed from the roster the wizard
         # already resolved — the same people, arranged where you can see and rewire them.
-        w = store.create(uid, f"{body.name} team")
+        # Two calls to the lifeworld service: a world, then the manifest that fills it.
+        wid = await lifeworld_client.create_world(owner, f"{body.name} team")
         names = [str(m.role or "").strip() or f"agent {i+1}"
                  for i, m in enumerate(getattr(body, "team", []) or [])][:8]
         if not names:
             names = ["Lead", "Builder", "Reviewer"]
-        s_ = materialise_manifest(w, ManifestBody(
-            name=body.name[:60] or "team",
-            agents=[ManifestAgent(name=n, brief=f"{n} on {body.name[:40]}") for n in names],
-            edges=[[names[i], names[(i + 1) % len(names)]] for i in range(len(names))]
-                  if len(names) > 1 else [],
-            rules=body.brief[:400], manager={"model": "", "budget": 2},
-            protocol={"preset": "evidence-2026"}))
-        store.save(w)
-        db.set_team(project_id, w.id, s_.id)
+        out = await lifeworld_client.apply_manifest(owner, wid, {
+            "name": body.name[:60] or "team",
+            "agents": [{"name": n, "brief": f"{n} on {body.name[:40]}"} for n in names],
+            "edges": [[names[i], names[(i + 1) % len(names)]] for i in range(len(names))]
+                     if len(names) > 1 else [],
+            "rules": body.brief[:400], "manager": {"model": "", "budget": 2},
+            "protocol": {"preset": "evidence-2026"}})
+        rid = int((out.get("room") or {}).get("id") or 0)
+        db.set_team(project_id, wid, rid)
         bus.emit(project_id, None, "system", "team_built",
-                 {"world": w.id, "room": s_.id, "agents": len(names)})
+                 {"world": wid, "room": rid, "agents": len(names)})
     except Exception as e:
         # A project must never fail to start because the Studio hiccuped.
         logs.warn("lifecycle", "team_attach_failed", str(e)[:200], project=project_id)

@@ -214,6 +214,58 @@ def get_settings(user: dict) -> dict:
     return s
 
 
+# --- settings REFERENCES: how a service spends without holding a key ---------
+#
+# Since P4 the lifeworld runs in its own process and still has to make model
+# calls on the owner's account. A credential must never cross that wire, so what
+# crosses instead is a REFERENCE: a short signed string naming a principal, minted
+# here, carried by the service exactly where the settings dict used to sit, and
+# resolved back to real settings only at the conductor's model door
+# (POST /internal/complete).
+#
+# SIGNED, not merely opaque. Without the signature the reference would be a bare
+# user id and the door would resolve whatever principal a caller typed — one
+# compromised service could then spend any account's quota. The HMAC is over the
+# conductor's own WORKER_TOKEN, which is the secret every other door on this box
+# already trusts, so there is no new key to distribute or rotate.
+#
+# It carries no expiry on purpose: a live world is loaded and dropped inside one
+# request, and a reference that expired mid-deliberation would fail a sprint for
+# a clock. The bound is the token — rotate WORKER_TOKEN and every outstanding
+# reference stops resolving.
+
+def _ref_sig(body: str) -> str:
+    return hmac.new(config.WORKER_TOKEN.encode(), body.encode(),
+                    hashlib.sha256).hexdigest()[:32]
+
+
+def mint_settings_ref(user: dict | None) -> str:
+    """A signed reference to this user's settings, for a service that must spend
+    on their behalf. Empty string for no user — which every client reads as
+    "free mode", never as "spend anyway"."""
+    if not user or not user.get("id"):
+        return ""
+    body = f"user:{int(user['id'])}"
+    return f"{body}.{_ref_sig(body)}"
+
+
+def resolve_settings_ref(ref: str) -> dict:
+    """The settings a reference names — or {} for anything that does not verify.
+
+    Constant-time comparison: a plain != on the signature leaks it one character
+    at a time to anyone who can measure the response, and this signature is the
+    only thing standing between a service token and every account's credentials.
+    """
+    body, _, sig = str(ref or "").rpartition(".")
+    if not body or not sig or not hmac.compare_digest(sig, _ref_sig(body)):
+        return {}
+    kind, _, ident = body.partition(":")
+    if kind != "user" or not ident.isdigit():
+        return {}
+    u = get_user(int(ident))
+    return get_settings(u) if u else {}
+
+
 def has_own_ai_credentials(user: dict) -> bool:
     """True when this user can run agents on their own account. Root also counts if
     the server itself is authenticated (its own key / token / machine CLI login)."""

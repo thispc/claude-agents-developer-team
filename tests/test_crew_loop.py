@@ -118,11 +118,14 @@ def test_a_specialist_builds_in_its_own_voice_and_learns(fresh_db, tmp_repo, mon
     assert "YOUR EXPERIENCE" not in sys1, "an empty store must confer no fake authority"
     assert rb.BUILDER_SYSTEM in sys1, "the ground rules ride along unchanged"
 
-    # the outcome landed on the specialist, in both stores
+    # the outcome landed on the specialist, in both stores. Read back THROUGH the
+    # boundary (repair.decision_node → the lifeworld service), not by opening a world
+    # blob: since P4 the decision lives in another process, and a check that reached
+    # around the wire would stop proving the thing it is here to prove.
     info = repair.team()
-    w, h = repair._specialist("correctness")
-    node = h.decisions.get(rec1["tasks"][0]["decision_id"])
-    assert node is not None and node.outcome == "good"
+    wid, h = repair._specialist("correctness")
+    node = repair.decision_node("correctness", rec1["tasks"][0]["decision_id"])
+    assert node is not None and node["outcome"] == "good"
     owner = repair.reg_key_for(info["world_id"], h.id)
     rows = [r for r in knowledge.stats(owner)["rows"]]
     assert rows and sum(r["n"] for r in rows) >= 1, "the outcome never reached the knowledge base"
@@ -155,6 +158,18 @@ def test_a_missing_specialist_builds_anonymously(fresh_db, tmp_repo, monkeypatch
 # consults: the arrows are the org chart, enforced
 # --------------------------------------------------------------------------
 
+def _room_log(info) -> list[dict]:
+    """The crew room's log, as the canvas reads it.
+
+    Through `lifeworld_client`, deliberately: the world blob belongs to the lifeworld
+    service since P4, and a drill that opened it directly would stop testing the thing
+    it exists to test — that a consult really lands in the room, across the wire.
+    """
+    from app import lifeworld_client
+    got = lifeworld_client.room_view(info["world_id"], info["room_id"])
+    return (got or {}).get("log") or []
+
+
 def _counting_complete(replies):
     calls = []
 
@@ -186,7 +201,7 @@ def test_a_consult_picks_the_neighbour_that_knows(fresh_db, monkeypatch):
     room, and the answerer genuinely heard the ask."""
     _root_user(); _go_live(monkeypatch)
     info = repair.ensure_team()
-    w, speed = repair._specialist("speed")
+    _wid, speed = repair._specialist("speed")
     asyncio.run(knowledge.remember(
         repair.reg_key_for(info["world_id"], speed.id),
         "ImportError in a fresh worktree during a build",
@@ -200,13 +215,13 @@ def test_a_consult_picks_the_neighbour_that_knows(fresh_db, monkeypatch):
     assert "symlink" in out
     assert len(calls) == 1, "one consult = one bounded call"
     assert t["consults"][0]["who"] == "Speed", t["consults"]
-    # the exchange is on the record everywhere it should be
-    from app.lifeworld import store
-    w2 = store.load(info["world_id"])
-    s2 = w2.scene(info["room_id"])
-    assert any("(consult)" in r["text"] for r in s2.log), "the ask never reached the room"
+    # the exchange is on the record everywhere it should be. The room log is read the
+    # way the canvas reads it — the room view — because the world blob belongs to the
+    # lifeworld service now and a test that opened it would be testing the wrong thing.
+    log = _room_log(info)
+    assert any("(consult)" in r["text"] for r in log), "the ask never reached the room"
     assert any(r["frm"] == speed.id and "symlink" in r["text"]
-               for r in s2.log if r["kind"] == "say"), "the answer is not in the room log"
+               for r in log if r["kind"] == "say"), "the answer is not in the room log"
     events = [e for e in db.list_events(0, limit=50) if e["kind"] == "repair_consult_reply"]
     assert events, "no consult_reply event for the activity feed"
 
@@ -385,12 +400,16 @@ def test_a_dead_room_pointer_heals_by_adoption_not_rebuild(fresh_db, monkeypatch
     """The kv record is only a pointer, and it can lose a race the world file wins (two
     servers each saved their own idea of the world). Rebuilding on a dead pointer would
     re-seat new human ids and orphan every knowledge row keyed to the living ones — the
-    crew's proven lessons above all. Adoption keeps the ids."""
+    crew's proven lessons above all. Adoption keeps the ids.
+
+    Since P4 the seating happens in the lifeworld service, so this drill also proves the
+    heal survives a PROCESS BOUNDARY: the pointer that goes stale is conductor kv, the
+    room that survives is the service's, and the ids that must be preserved cross the
+    wire in a JSON body."""
     _root_user()
     info = repair.ensure_team()
     assert info and repair._team_room_alive(info)
-    w, s = repair._crew_world()
-    old_ids = sorted(h.id for h in s.players())
+    old_ids = sorted(m["agent_id"] for m in repair.crew_members())
     # Corrupt the pointer the way the race did: a room that is nowhere on disk.
     bad = dict(info, room_id=info["room_id"] + 900,
                agents={k: v + 900 for k, v in info["agents"].items()})
@@ -398,8 +417,8 @@ def test_a_dead_room_pointer_heals_by_adoption_not_rebuild(fresh_db, monkeypatch
     assert repair._specialist("correctness")[1] is None, "the corruption must really un-staff"
     healed = repair.ensure_team()
     assert healed["room_id"] == info["room_id"], "must adopt the surviving room, not build anew"
-    w2, s2 = repair._crew_world()
-    assert sorted(h.id for h in s2.players()) == old_ids, "adoption must keep the human ids"
+    assert sorted(m["agent_id"] for m in repair.crew_members()) == old_ids, \
+        "adoption must keep the human ids"
     assert repair._specialist("correctness")[1] is not None
     from app import logs
     assert any(r["event"] == "crew_room_adopted" for r in logs.rows())

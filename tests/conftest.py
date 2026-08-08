@@ -6,6 +6,7 @@ logic — against an isolated temp database, WITHOUT spawning real agent session
 no-ops so route side effects that would start an agent are safe to trigger.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -48,7 +49,12 @@ for _k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GEMINI_API_KEY",
            # sourced data/env/conductor.env happens to point at — the suite must
            # not reach a real 8881/8882/8883/8884 (or fail because nothing is
            # listening there).
-           "KNOWLEDGE_URL", "USAGE_URL", "NOTIFY_URL", "WATCH_URL"):
+           "KNOWLEDGE_URL", "USAGE_URL", "NOTIFY_URL", "WATCH_URL",
+           # P4-A: the suite runs the conductor in ROLLBACK mode — the in-process
+           # lifeworld package — and tests/test_lifeworld_service.py is the one
+           # file that flips the whole app into client mode, per test, against
+           # the mounted service. Commit B deletes the package and this line.
+           "LIFEWORLD_URL"):
     os.environ.pop(_k, None)
 
 # --- the fleet services, mounted in-process -----------------------------------
@@ -72,7 +78,9 @@ KNOWLEDGE_TEST_TOKEN = "conductor-suite-knowledge-token"
 USAGE_TEST_TOKEN = "conductor-suite-usage-token"
 NOTIFY_TEST_TOKEN = "conductor-suite-notify-token"
 WATCH_TEST_TOKEN = "conductor-suite-watch-token"
+LIFEWORLD_TEST_TOKEN = "conductor-suite-lifeworld-token"
 _KNOWLEDGE_URL = "http://knowledge.test"
+_LIFEWORLD_URL = "http://lifeworld.test"
 _USAGE_URL = "http://usage.test"
 _NOTIFY_URL = "http://notify.test"
 _WATCH_URL = "http://watch.test"
@@ -143,6 +151,13 @@ usage_service = _mount_service("usage", USAGE_TEST_TOKEN)
 notify_service = _mount_service("notify", NOTIFY_TEST_TOKEN,
                                 GITHUB_TOKEN="test-github-token-not-real")
 watch_service = _mount_service("watch", WATCH_TEST_TOKEN)
+# Mounted but NOT wired in by default. The lifeworld is the one service whose
+# conductor-side fallback is still present in P4-A (the package, in place, is the
+# rollback), so the suite runs against it and tests/test_lifeworld_service.py
+# flips the whole app into client mode for the drills that belong there. The
+# service's outward doors are wired below either way, because a service that
+# cannot reach a model or a knob is not the thing being drilled.
+lifeworld_service = _mount_service("lifeworld", LIFEWORLD_TEST_TOKEN)
 
 from app import auth, db  # noqa: E402
 from app import knowledge as _knowledge  # noqa: E402
@@ -209,6 +224,98 @@ usage_service.TUNING_TRANSPORT = httpx.MockTransport(_tuning_answer)
 usage_service.KNOB_TTL = 0.0
 
 
+# --- the lifeworld service's four doors, answered in-process ------------------
+#
+# The lifeworld reaches UP for more than any other service: a model (the door
+# that keeps credentials in the conductor), two of the owner's knobs, the agent
+# activity register, and the knowledge store. Each hop is answered here by the
+# conductor's own module, so the service runs its REAL client code — request,
+# JSON, cache, degraded fallback — with only the socket replaced. Driving the
+# conductor's ASGI app from inside a service handler that is itself being driven
+# by the conductor's TestClient would mean two nested portals on one call stack,
+# and a deadlock is not a fixture. The REAL doors (auth, the door allowlist, the
+# knob allowlist, a forged settings reference) are drilled against the running
+# conductor app in tests/test_lifeworld_service.py, which is where they belong.
+
+def _lw_sync_door(request: httpx.Request) -> httpx.Response:
+    """The conductor's SYNC doors: one tuning knob, and the activity register."""
+    path = request.url.path
+    if path == "/internal/tuning":
+        from app import tuning
+        name = request.url.params.get("name", "")
+        return httpx.Response(200, json={"name": name, "value": tuning.get(name)})
+    if path == "/internal/agents/note":
+        from app import agents as reg
+        body = json.loads(request.content or b"{}")
+        return httpx.Response(200, json=reg.note(body["key"], body.get("state", "idle"),
+                                                 body.get("what", ""),
+                                                 **(body.get("fields") or {})))
+    if path.startswith("/internal/agents/"):
+        from app import agents as reg
+        return httpx.Response(200, json=reg.get(path[len("/internal/agents/"):]))
+    return httpx.Response(404, json={"detail": f"no such door: {path}"})
+
+
+async def _lw_model_door(request: httpx.Request) -> httpx.Response:
+    """THE MODEL DOOR, minus the socket. The settings REFERENCE is resolved with the
+    real signature check, so a test that forges one gets the same 403 the door gives —
+    and providers.complete is the same function every other spender calls, which is
+    what lets a test monkeypatch it once and have the substrate see the fake."""
+    from app import auth, providers
+    body = json.loads(request.content or b"{}")
+    settings = auth.resolve_settings_ref(body.get("settings_ref", ""))
+    if not settings:
+        return httpx.Response(403, json={"detail": "the settings reference did not resolve"})
+    try:
+        text = await providers.complete(
+            body.get("provider") or "anthropic", body.get("model", ""),
+            body.get("system", ""), body.get("prompt", ""), settings,
+            max_tokens=int(body.get("max_tokens") or 800),
+            source=body.get("source") or "lifeworld")
+    except Exception as e:
+        return httpx.Response(502, json={"detail": str(e)[:400]})
+    return httpx.Response(200, json={"text": text})
+
+
+def _lw_knowledge_tokens(request: httpx.Request) -> httpx.Response:
+    """knowledge's tokenizer, sync — the leak check runs inside the host's line pass."""
+    body = json.loads(request.content or b"{}")
+    return httpx.Response(200, json={"tokens": knowledge_service._tokens(body.get("text", ""))})
+
+
+def wire_lifeworld_ports() -> None:
+    """Point the substrate's outward clients at this suite's answers.
+
+    Called per test (below), not once at import: `substrate.ports` is module state
+    shared with any other harness that mounted this service in the same
+    interpreter — and services/lifeworld/tests/conftest.py is exactly that, imported
+    during the SAME collection pass. Whichever conftest ran last would otherwise
+    decide where the other one's model door points, and the symptom is a drill
+    that fails only in a whole-repo run.
+    """
+    ports = lifeworld_service.ports
+    ports.CONDUCTOR_URL = "http://conductor.test"
+    ports.KNOWLEDGE_URL = _KNOWLEDGE_URL
+    ports.KNOWLEDGE_TOKEN = KNOWLEDGE_TEST_TOKEN
+    ports.SERVICE_TOKEN = LIFEWORLD_TEST_TOKEN
+    ports.TRANSPORT = httpx.MockTransport(_lw_model_door)
+    ports.SYNC_TRANSPORT = httpx.MockTransport(_lw_sync_door)
+    ports.KNOWLEDGE_TRANSPORT = httpx.ASGITransport(app=knowledge_service.app)
+    ports.SYNC_KNOWLEDGE_TRANSPORT = httpx.MockTransport(_lw_knowledge_tokens)
+    # 0: a test that sets scene_default_model and immediately runs a round must see it.
+    ports.KNOB_TTL = 0.0
+    ports._KNOBS.clear()
+
+
+wire_lifeworld_ports()
+
+
+@pytest.fixture(autouse=True)
+def _lifeworld_doors():
+    wire_lifeworld_ports()
+    yield
+
+
 @pytest.fixture()
 def fresh_db():
     """A clean database for one test. Recreates the schema and reseeds root."""
@@ -244,7 +351,12 @@ def fresh_db():
     for svc, tables in ((knowledge_service, ("knowledge",)),
                         (usage_service, ("usage_rows",)),
                         (notify_service, ("notify_seen", "notify_sent")),
-                        (watch_service, ("log_rows", "error_rows", "decisions"))):
+                        (watch_service, ("log_rows", "error_rows", "decisions")),
+                        # Worlds outlive a test's database too, and a stale one is
+                        # worse here than anywhere else: the crew's kv record is a
+                        # POINTER at a world id, so a leftover world with the right
+                        # id would be silently adopted by the next test's crew.
+                        (lifeworld_service, ("lw_worlds",))):
         for table in tables:
             svc.helpers.db().execute(f"DELETE FROM {table}")
         svc.helpers.db().commit()

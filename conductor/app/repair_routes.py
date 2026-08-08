@@ -113,20 +113,14 @@ async def repair_chat(body: ChatText, request: Request) -> dict:
     info = repair.ensure_team()
     if not info:
         raise HTTPException(409, "no crew yet — enable a factor first")
-    from .lifeworld import store
-    # The engine's sprint does load → await → save on the same world. Without this lock the
-    # two overlap and the last writer wins, so a chat could erase a sprint's memo, or a
-    # sprint could erase the conversation.
-    async with store.lock_for(info["world_id"]):
-        w = store.load(info["world_id"], live=repair._live(),
-                       settings=repair._root_settings() if repair._live() else None)
-        s = w.scene(info["room_id"])
-        t = s.thread(info["thread_id"]) if s else None
-        if t is None:
-            raise HTTPException(409, "the crew's table is missing — toggle repair off and on")
-        res = await s.chat(t, "manager", body.text)
-        store.save(w)
-    return res
+    from . import lifeworld_client
+    # The engine's sprint does load → await → save on the same world, and so does this.
+    # Without a lock the two overlap and the last writer wins, so a chat could erase a
+    # sprint's memo, or a sprint could erase the conversation. Since P4 that lock is held
+    # INSIDE the lifeworld service, by the thread-chat endpoint itself — which is why this
+    # route is now one call instead of a round trip it used to guard from out here.
+    return await lifeworld_client.crew_chat(info["world_id"], info["room_id"],
+                                            info["thread_id"], body.text, repair._live())
 
 
 @router.post("/queue/approve")

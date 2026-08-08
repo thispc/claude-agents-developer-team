@@ -410,7 +410,7 @@
       <thead><tr><th>Door</th><th>Who gets in</th><th>Why separate</th></tr></thead>
       <tbody>
         <tr><td><code>/api/…</code></td><td>You, signed in</td><td>Normal use. Login attempts are limited, and the limit survives a restart.</td></tr>
-        <tr><td><code>/internal/…</code></td><td>Teammates and the platform's own services, each with their own token</td><td>Six requests, and no more. A teammate may report work, post activity, look up a colleague, or run the test suite; a service the platform has been split into may put an event on the shared feed or read one of your dials — and only the ones it declared. A teammate is not a user, and a service is not a teammate.</td></tr>
+        <tr><td><code>/internal/…</code></td><td>Teammates and the platform's own services, each with their own token</td><td>Nine requests, and no more. A teammate may report work, post activity, look up a colleague, or run the test suite; a service the platform has been split into may put an event on the shared feed, read one of your dials, ask for one answer from a model, or write and read the board of what every agent is doing — and only the ones it declared. The model door is why your keys never leave this program: a service sends a prompt and a signed note saying whose account to use, and the answer comes back without the key ever going out. A teammate is not a user, and a service is not a teammate.</td></tr>
         <tr><td><code>/api/health</code></td><td>Anyone</td><td>A monitor that had to sign in could not tell you that signing in was broken.</td></tr>
       </tbody>
     </table>

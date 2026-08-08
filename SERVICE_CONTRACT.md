@@ -33,7 +33,11 @@ process-compose on first boot. These nine rules are the whole deal — the
    `CONDUCTOR_URL` arrive in the environment from `data/env/<name>.env`. No config
    files of your own, no dotenv loader, nothing read from another service's
    directory. Model credentials **never** appear here — inference goes through the
-   conductor's model door.
+   conductor's model door (`POST /internal/complete`, rule 5). A service that
+   needs to spend the owner's quota sends a prompt and a `settings_ref`: a short
+   SIGNED string naming a principal, minted by the conductor and resolvable only
+   by the conductor. The lifeworld runs a whole society of agents on the owner's
+   account and has never held a key.
 
    A service may declare extra keys with `env: [...]` in its `services.yaml`
    block, and the generator copies exactly those from the shell it runs in. There
@@ -53,14 +57,27 @@ process-compose on first boot. These nine rules are the whole deal — the
    websocket with the same per-user visibility filter as every other one. A blank
    `source` is stamped with the calling service's name.
 
-   **Two doors, one allowlist.** `POST /internal/bus` and `GET /internal/tuning`
-   (one of the owner's knobs, for a service that runs on the owner's dials) both
-   identify the caller by its own minted token and then check `services.yaml`:
-   `doors: [bus, tuning]` says which doors, and `knobs: [...]` says which knobs.
-   Being inside the fleet is **not** a permission — the notifier has no business
-   reading the crew's budget, and the meter has no business emitting events.
-   Ask for a door you did not declare and you get a 403 naming the file to edit;
-   ask with a token that is not a service's and you get a 401.
+   **Four doors, one allowlist.** `POST /internal/bus`, `GET /internal/tuning`
+   (one of the owner's knobs, for a service that runs on the owner's dials),
+   `POST /internal/complete` (**the model door** — one completion for a service
+   that holds no credentials) and `/internal/agents/…` (the platform-wide
+   activity register, which has to be ONE board or "is this agent working?" gets
+   a different answer depending on who you ask) all identify the caller by its
+   own minted token and then check `services.yaml`: `doors: [bus, tuning, model,
+   agents]` says which doors, and `knobs: [...]` says which knobs. Being inside
+   the fleet is **not** a permission — the notifier has no business reading the
+   crew's budget, and the meter has no business asking for a completion. Ask for
+   a door you did not declare and you get a 403 naming the file to edit; ask with
+   a token that is not a service's and you get a 401.
+
+   **`peers:` is the same idea sideways.** Almost all traffic is the conductor
+   calling a service, but one edge is service→service: the lifeworld's agents
+   recall what they have learned from the knowledge service directly, because
+   asking the conductor to ask would be two hops for one answer. An address is
+   public inside the fleet; the credential that opens it is not — so
+   `peers: [knowledge]` is what makes the generator write `KNOWLEDGE_TOKEN` into
+   that one service's env file and nowhere else. Undeclared peers have no token
+   to call with, which is the point.
 
 6. **Tests run offline.**
    `tests/` beside the code: a smoke test (in-process ASGI, no sockets) and a

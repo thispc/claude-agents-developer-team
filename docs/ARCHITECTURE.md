@@ -58,14 +58,18 @@ root) is the registry, `tools/gen_fleet.py` generates the process-compose config
 per-service env/tokens/topology from it, and `./run-local.sh` boots everything under
 **process-compose** (readiness probes, restarts, a token-authed REST API on 8899).
 Managed today: the conductor, **knowledge** (8881, P1), **usage** (8882, P2),
-**notify** (8883, P2) and **watch** (8884, P3); the rest (lifeworld, modgraph) join the
-registry phase by phase, each meeting `SERVICE_CONTRACT.md` and reached same-origin via the
-conductor's `/svc/<name>/…` gateway. Traffic runs one way — the conductor calls its services — with
-two narrow doors back: `POST /internal/bus` (a service putting an event on the platform
-bus; the events table keeps its single writer) and `GET /internal/tuning` (one of the
-owner's knobs). Both check the caller's own minted token against the `doors:`/`knobs:`
-allowlists in `services.yaml`. The diagram keeps its current shape until the Atlas's
-cards become those services (P6).
+**notify** (8883, P2), **watch** (8884, P3) and **lifeworld** (8885, P4); modgraph joins
+next, each meeting `SERVICE_CONTRACT.md` and reached same-origin via the conductor's
+`/svc/<name>/…` gateway. Traffic runs one way — the conductor calls its services — with
+five narrow doors back: `POST /internal/bus` (a service putting an event on the platform
+bus; the events table keeps its single writer), `GET /internal/tuning` (one of the owner's
+knobs), `POST /internal/complete` (**the model door** — one completion, for a service that
+holds no credentials), and the two `/internal/agents` requests (the platform-wide activity
+register, which has to be ONE board). Every one checks the caller's own minted token
+against the `doors:`/`knobs:` allowlists in `services.yaml`. `peers:` is the same idea for
+the fleet's one service→service edge: it names which peer a service may call and is why
+the generator writes `KNOWLEDGE_TOKEN` into `data/env/lifeworld.env` and nowhere else. The
+diagram keeps its current shape until the Atlas's cards become those services (P6).
 
 **knowledge (8881).** What agents have learned no longer lives in the conductor's database:
 `services/knowledge` owns `data/knowledge.db` and answers `/recall`, `/remember`,
@@ -157,6 +161,56 @@ four kv keys the strangler left behind (`logs:ring`, `logs:errors`, `monitor:dec
 answer the owner has ever given and ask all of them again at once, which is the exact storm
 the copy exists to prevent. `monitor:auto` is the same hazard wearing a settings hat — its
 absence silently turns unattended approval off.
+
+**lifeworld (8885, P4).** The plan's highest-risk phase: the whole substrate — the
+26-file package, the 35 `/api/lw/*` handler bodies and the `lw_worlds` blob — moved into
+`services/lifeworld`, which owns `data/lifeworld.db` alone. The legacy Studio (`home.py`,
+the `home_*`/`scenes`/`artifact*` tables, `routes/studio_legacy.py`) stayed: the cut was
+clean because `store.py` only ever persisted through `ports.db().list_lw_worlds`.
+
+*The dependency inversion.* `ports.py` was already the substrate's one door upward, so the
+extraction turned each accessor into a client rather than moving anything: `knowledge()`
+calls the P1 service directly (asking the conductor to ask would be two hops for one
+answer), `tuning()` and `agents()` call the conductor's doors, and `providers()` calls
+`POST /internal/complete`. **Model credentials never leave the conductor.** A live world
+carries a `settings_ref` — a short HMAC-signed string naming a principal
+(`auth.mint_settings_ref`) — in the exact place the settings dict used to sit; the
+substrate passes it along and cannot read it, and a forged one resolves to nothing. The
+one honest consequence: a lifeworld recall uses knowledge's free local backend, because
+the embedding key is a credential too. Knowledge re-embeds a row locally when the backends
+differ, so a lesson written with a real embedder is still found — coarser, never absent —
+and the conductor's own recalls (the specialist briefing, the knowledge row written after
+an outcome) keep the key and stay conductor-side.
+
+*The paths did not move.* The dashboard hardcodes `/api/lw/*` in fifty-odd places, so the
+conductor keeps them as an authenticated thin proxy: it resolves the session cookie, stamps
+who the caller is (`X-Lw-Owner`, `X-Lw-Root`, `X-Lw-Settings`, `X-Lw-Source`,
+`X-Lw-Author`), strips the cookie and forwards with the service's token. OWNERSHIP moved
+with the `owner_id` column and is enforced service-side; the conductor authenticates, the
+row authorises, and missing and forbidden are still the same 404. Two routes COMPOSE
+instead of forwarding: the world list hides the crew's own world (a repair fact, whose
+record is conductor kv) and the agent panel adds root's log rows (a watch fact).
+
+*The hardest cut: the crew.* `repair.py` used to import `materialise_manifest` from a route
+module and then perform deep surgery on live `Human` objects. All of it is now WHOLE
+BEHAVIOURS on the service — `crew-seating`, `crew-context`, `crew-decision`,
+`crew-outcome`, `crew-consult`, `crew-review`, `crew-deliberate` — because every one is a
+read-modify-write on a world blob and **`store.lock_for` can only be held on one side of a
+wire**. `ensure_team` is a ~30-line client that keeps its kv record and its adoption
+semantics: a seating that finds a room already seating exactly these personas ADOPTS it,
+ids intact, because every knowledge row the crew has earned hangs off one. Every sentence a
+build session can read (the consult refusal naming its real neighbours) is still composed
+conductor-side, from a machine-readable reason.
+
+*Degraded.* `/api/lw/*` answers an honest 503 rather than an empty world the next save would
+persist. `seat_crew` returns `None`, so the sprint tick logs and **sleeps with the reason
+"lifeworld down"** on a bounded 60-second wake — pausing is the honest behaviour, since a
+crew without its specialists would still be spending, just anonymously — and it resumes
+with no restart and no lost sprint. A consult or review declines and the build carries on
+alone; a decision or outcome is simply not recorded; room members answer `None`, so the
+Atlas panel and the assignment pool read "unavailable" rather than "empty". P4-A keeps
+`conductor/app/lifeworld/` in place as the rollback (`unset LIFEWORLD_URL`), which is why
+this is the one service `--legacy` starts but does not require.
 
 ---
 

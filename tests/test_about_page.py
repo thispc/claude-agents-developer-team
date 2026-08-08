@@ -111,22 +111,32 @@ def test_the_endpoint_count_is_the_real_one():
         f"the handbook does not say {actual} endpoints"
 
 
-def test_the_internal_door_really_has_six_requests_behind_it():
-    """The page tells a reader exactly what is reachable with a non-user token. If
-    a seventh is added, that sentence becomes a false security claim.
+def test_the_internal_door_really_has_nine_requests_behind_it():
+    """The page tells a reader exactly what is reachable with a non-user token. If a
+    tenth is added, that sentence becomes a false security claim.
 
-    Six since P2: four for a teammate or the staging check, and two for an
-    extracted service (POST /internal/bus, GET /internal/tuning) — each gated on
-    the service's own token AND the doors it declared in services.yaml.
+    Nine since P4: four for a teammate or the staging check, and five for an extracted
+    service — POST /internal/bus, GET /internal/tuning, POST /internal/complete (the
+    MODEL DOOR) and the two /internal/agents requests. Each is gated on the service's
+    own token AND the doors it declared in services.yaml, so the count is a ceiling on
+    what any one service can reach, not a list of what all of them can.
     """
     pkg = Path(__file__).resolve().parent.parent / "conductor" / "app" / "routes"
     routes = "\n".join(f.read_text() for f in sorted(pkg.glob("*.py")))
     internal = routes.count('@router.get("/internal/') + routes.count('@router.post("/internal/')
-    assert internal == 6, (
+    assert internal == 9, (
         f"{internal} internal endpoints exist; the About page and handbook both say "
-        "six, and both need updating")
-    assert "Six requests" in _handbook()
-    assert "Six requests, and no more" in HTML
+        "nine, and both need updating")
+    assert "Nine requests" in _handbook()
+    assert "Nine requests, and no more" in HTML
+
+
+def test_the_about_page_says_keys_never_leave_the_conductor():
+    """The model door is the one new power a service got in P4, and it is the reason
+    the lifeworld could be extracted at all. A reader who is told a service can ask for
+    a completion, and NOT told the key stays behind, has been told the scary half."""
+    assert "signed note saying whose account to use" in HTML
+    assert "without the key ever going out" in HTML
 
 
 def test_the_table_count_matches_the_schema():

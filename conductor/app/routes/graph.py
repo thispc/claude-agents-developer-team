@@ -127,31 +127,32 @@ def _agent_out(a: dict | None, names: dict[int, str]) -> dict | None:
             "name": names.get(int(hid), "")}
 
 
-def _room_members(world_id: int, room_id: int) -> dict | None:
+def _room_members(world_id: int, room_id: int, user: dict | None = None) -> dict | None:
     """One Studio room as a pool: {world_id, room_id, name, members} — or None when the
-    room cannot be loaded. Members carry `factor` only when the room IS the crew's own
-    sprint table, because factors are a crew concept, not a Studio one."""
-    from .. import repair
-    from ..lifeworld import store
-    try:
-        w = store.load(int(world_id))
-        s = w.scene(int(room_id)) if w else None
-    except Exception:
-        return None
-    if s is None:
+    room cannot be loaded (or the substrate is down). Members carry `factor` only when
+    the room IS the crew's own sprint table, because factors are a crew concept, not a
+    Studio one — and the crew's record is conductor kv, so the decoration happens here.
+
+    Degraded: None → the caller falls back to an empty pool named "unavailable", which
+    is what an Atlas room panel shows when the lifeworld service is not answering.
+    """
+    from .. import lifeworld_client, repair
+    got = lifeworld_client.room_members(int(world_id), int(room_id),
+                                        user or repair._root_user() or {})
+    if not got:
         return None
     factor_of: dict[int, str] = {}
     info = repair.team() or {}
     if info.get("world_id") == int(world_id) and info.get("room_id") == int(room_id):
         factor_of = {int(hid): fid for fid, hid in (info.get("agents") or {}).items() if hid}
     members = []
-    for h in s.players():
-        m: dict = {"agent_id": h.id, "name": h.name}
-        if h.id in factor_of:
-            m["factor"] = factor_of[h.id]
-        members.append(m)
+    for m in got.get("members") or []:
+        row: dict = {"agent_id": int(m["agent_id"]), "name": m.get("name", "")}
+        if row["agent_id"] in factor_of:
+            row["factor"] = factor_of[row["agent_id"]]
+        members.append(row)
     return {"world_id": int(world_id), "room_id": int(room_id),
-            "name": f"{w.name} · {s.name}" if s.name else w.name, "members": members}
+            "name": got.get("name", ""), "members": members}
 
 
 def _pool_current() -> dict:
@@ -524,31 +525,23 @@ def graph_self_team(request: Request) -> dict:
     re-seats the crew, touches repair:world, or changes who deliberates a sprint.
     Default pool = the crew's own table."""
     u = _gated(request)
-    from .. import repair
-    from ..lifeworld import store
+    from .. import lifeworld_client, repair
     cur = _pool_current()
     info = repair.team() or {}
-    wids = [w["id"] for w in store.listing(u["id"])]
-    if info.get("world_id") and info["world_id"] not in wids:
-        wids.append(info["world_id"])
-    teams = []
-    for wid in wids:
-        try:
-            w = store.load(wid)
-        except Exception:
-            continue
-        if not w:
-            continue
-        for s in w.scenes.values():
-            players = s.players()
-            if not players:
-                continue                       # a room that seats nobody staffs nothing
-            teams.append({"world_id": w.id, "room_id": s.id,
-                          "name": f"{w.name} · {s.name}" if s.name else w.name,
-                          "agents": len(players)})
+    # The crew's own world is owned by ROOT and this route is reachable by any account
+    # the operator granted self-repair to, so it rides along as an explicitly-gated
+    # extra rather than by the caller's ownership. The gate is `_gated` above; the
+    # substrate does not own that decision and does not pretend to.
+    extra = [int(info["world_id"])] if info.get("world_id") else []
+    teams = lifeworld_client.rooms(u, extra)
     return {"current": {"world_id": cur["world_id"], "room_id": cur["room_id"],
                         "name": cur["name"]},
-            "members": cur["members"], "teams": teams}
+            "members": cur["members"],
+            "teams": teams if teams is not None else [],
+            # An empty list because the substrate is down is not the same fact as an
+            # empty list because nobody has built a team, and a picker that cannot tell
+            # them apart invites someone to build a second crew.
+            "degraded": teams is None}
 
 
 @router.post("/api/graph/self/team")

@@ -47,13 +47,23 @@ TEAM_PERSONAS = 3
 _STATE_LOCK = threading.Lock()
 
 
+# The substrate's drive SETPOINTS, as this side of the wire knows them. A copy, and
+# deliberately so: since P4 the substrate is another process, and `hunger()` runs at
+# IMPORT time to build DEFAULT_FACTORS — a module that could not be imported without an
+# HTTP round trip would break every tool, test and module-graph pass that imports it.
+# These are the six numbers the crew's own factor defaults are expressed in; the
+# substrate clamps anything it disagrees with anyway, so a drift here costs a slightly
+# wrong seed, never a wrong world.
+DRIVE_SETPOINTS = {"energy": 0.8, "safety": 0.9, "social": 0.6,
+                   "esteem": 0.6, "curiosity": 0.5, "purpose": 0.7}
+
+
 def hunger(drive: str, deficit: float = 0.35) -> dict:
     """Seed a factor's motivation. A drive is a homeostatic LEVEL, not a wish: pressure is
     setpoint minus level, so the agent that WANTS safety is the one whose safety sits BELOW
     its setpoint. Seeding 0.9 ("very safety-minded") actually says "fully satisfied, wants
     nothing" — which is how six factor agents ended up sharing one default goal."""
-    from .lifeworld.drives import SPEC
-    return {drive: round(max(0.0, SPEC.get(drive, (0.6, 0, 0))[0] - deficit), 3)}
+    return {drive: round(max(0.0, DRIVE_SETPOINTS.get(drive, 0.6) - deficit), 3)}
 
 
 DEFAULT_FACTORS = [
@@ -369,10 +379,21 @@ def team() -> dict | None:
 
 def ensure_team():
     """The IT crew as a lifeworld world: one persona per enabled factor + the hidden manager.
-    Rebuilt (a fresh scene in the same world) whenever the enabled-factor set changes."""
-    from . import auth
-    from .lifeworld import store
-    from .lifeworld_routes import ManifestAgent, ManifestBody, materialise_manifest
+    Rebuilt (a fresh scene in the same world) whenever the enabled-factor set changes.
+
+    SINCE P4 THIS IS A CLIENT. The seating itself — adopt-or-rebuild, the carry-over of
+    everything the crew has earned, the tidy that leaves exactly one sprint table — moved
+    into the lifeworld service as ONE endpoint, because every part of it is a
+    read-modify-write on a world blob and the lock that guards those can only be held on
+    that side of the wire. What stays here is what was always the engine's: the kv record
+    (a POINTER, and the only thing that says which room the crew is in), the freshness
+    check that decides whether to ask at all, and the event that announces a ready crew.
+
+    None when the substrate is unreachable. That is deliberate and it is what makes the
+    sprint tick sleep with an honest reason: a crew that kept sprinting without its
+    specialists would still be spending, just anonymously.
+    """
+    from . import auth, lifeworld_client
     fs = enabled_factors()
     want = sorted(f["id"] for f in fs)
     info = team()
@@ -382,153 +403,118 @@ def ensure_team():
     u = auth.get_user_by_name(auth.ROOT_USERNAME)
     if not u or not fs:
         return None
-    w = None
-    if info and info.get("world_id"):
-        w = store.load(info["world_id"])
-    if w is None:
-        w = store.create(u["id"], "devteam IT crew")
-    # Before materialising a fresh seating, look for one that already exists. The kv record
-    # is only a POINTER, and it can lose a race the world file wins (two servers once each
-    # saved their own idea of this world) — after which the record names a room that is
-    # nowhere on disk while the real crew sits alive in another. Rebuilding then would
-    # orphan everything keyed to the living humans' ids (the knowledge rows above all).
-    # Adopting the surviving room keeps the ids, so the crew keeps what it has learned.
-    adopted = _adopt_crew_room(w, fs, want)
-    if adopted:
-        return adopted
-    # What the crew has EARNED must survive a re-seat. Toggling one factor rebuilds the
-    # scene, and until now that quietly threw away the manager conversation, the deliberation
-    # memos, and — since agents learn — every association each specialist had proved. A
-    # factor toggle is a change of lineup, not amnesia. Carried by NAME, because ids are
-    # reassigned by the rebuild; the psyche is deliberately NOT carried, since re-seeding it
-    # from the dials is the point of the rebuild.
-    keep_agents, keep_thread = {}, {}
-    if w is not None:
-        old = w.scene(info["room_id"]) if (info and info.get("room_id")) else None
-        if old is not None:
-            for h in old.players():
-                keep_agents[h.name] = {"memory": h.memory.to_dict(),
-                                       "decisions": h.decisions.to_dict(),
-                                       "skills": h.skills.to_dict(), "tau": h.tau}
-            t0 = old.threads[0] if old.threads else None
-            if t0:
-                keep_thread = {"chats": t0.get("chats") or {},
-                               "results": t0.get("results") or []}
-    names = [f["name"] for f in fs]
-    body = ManifestBody(
-        name=f"sprint table · {len(fs)} lenses",
-        agents=[ManifestAgent(name=f["name"], brief=f["brief"], dials=f.get("dials") or {},
-                              drives=f.get("drives") or {}) for f in fs],
-        edges=[[names[i], names[(i + 1) % len(names)]] for i in range(len(names))] if len(names) > 1 else [],
-        rules="", manager={"model": str(tuning.get("repair_builder_model")), "budget": 2},
-        protocol={"preset": "evidence-2026"})
-    s = materialise_manifest(w, body)
-    from .lifeworld.decisions import DecisionLog
-    from .lifeworld.memory import Memory
-    from .lifeworld.skills import Skills
-    for h in s.players():
-        prior = keep_agents.get(h.name)
-        if not prior:
-            continue
-        h.memory = Memory.from_dict(prior.get("memory"))
-        h.decisions = DecisionLog.from_dict(prior.get("decisions"))
-        h.skills = Skills.from_dict(prior.get("skills"))
-        h.tau = int(prior.get("tau") or 0)
-    if keep_thread and s.threads:
-        s.threads[0]["chats"] = keep_thread.get("chats") or {}
-        s.threads[0]["results"] = keep_thread.get("results") or []
-    _tidy_crew_world(w, s.id)
-    store.save(w)
-    info = {"world_id": w.id, "room_id": s.id, "personas": TEAM_PERSONAS,
-            "thread_id": s.threads[0]["id"] if s.threads else 0,
-            "agents": {f["id"]: hid for f, hid in zip(fs, s.seats)},
-            "factor_ids": want}
-    db.kv_set("repair:world", info)
-    bus.emit(0, None, "repair", "repair_team_ready", {"world_id": w.id, "agents": len(fs)})
-    return info
+    out = lifeworld_client.seat_crew(
+        int((info or {}).get("world_id") or 0),
+        [{"id": f["id"], "name": f["name"], "brief": f.get("brief", ""),
+          "dials": f.get("dials") or {}, "drives": f.get("drives") or {}} for f in fs],
+        manager={"model": str(tuning.get("repair_builder_model")), "budget": 2},
+        protocol={"preset": "evidence-2026"},
+        scene_name=f"sprint table · {len(fs)} lenses",
+        current_room_id=int((info or {}).get("room_id") or 0))
+    if not out or not out.get("room_id"):
+        logs.warn("lifecycle", "crew_unseated",
+                  "the lifeworld service did not seat the crew — the sprint will sleep "
+                  "until it answers", world=int((info or {}).get("world_id") or 0))
+        return None
+    rec = {"world_id": int(out["world_id"]), "room_id": int(out["room_id"]),
+           "personas": TEAM_PERSONAS, "thread_id": int(out.get("thread_id") or 0),
+           "agents": {str(k): int(v) for k, v in (out.get("agents") or {}).items()},
+           "factor_ids": want}
+    db.kv_set("repair:world", rec)
+    if out.get("outcome") == "adopted":
+        # The kv record is only a POINTER, and it can lose a race the world file wins
+        # (two servers once each saved their own idea of this world) — after which the
+        # record names a room that is nowhere on disk while the real crew sits alive in
+        # another. Rebuilding then would orphan everything keyed to the living humans'
+        # ids (the knowledge rows above all), so the surviving room is adopted and the
+        # ids survive. Logged here because the record that was wrong is this one.
+        logs.info("lifecycle", "crew_room_adopted",
+                  f"the team record pointed at a dead room — adopted surviving room "
+                  f"{rec['room_id']}", room=rec["room_id"], world=rec["world_id"])
+    bus.emit(0, None, "repair", "repair_team_ready",
+             {"world_id": rec["world_id"], "agents": len(fs)})
+    return rec
 
 
 def _team_room_alive(info: dict) -> bool:
     """The freshness check used to trust the pointer if the WORLD loaded; a deleted or
     never-persisted room then 404'd the canvas and silently un-staffed every build (the
     factor→agent ids resolve to nobody) while the check kept saying fine."""
+    from . import lifeworld_client
     try:
-        from .lifeworld import store
-        w = store.load(info["world_id"])
-        return bool(w and w.scene(info.get("room_id")) is not None)
+        return lifeworld_client.room_alive(int(info["world_id"]), int(info.get("room_id") or 0))
     except Exception:
         return False
 
 
-def _adopt_crew_room(w, fs: list[dict], want: list[str]) -> dict | None:
-    """If some scene in this world already seats exactly the crew's personas (matched by
-    NAME — ids are whatever history left), point the record at it instead of rebuilding."""
-    names = {f["name"] for f in fs}
-    for s in w.scenes.values():
-        players = list(s.players())
-        if {h.name for h in players} != names or not s.threads:
-            continue
-        by_name = {h.name: h.id for h in players}
-        info = {"world_id": w.id, "room_id": s.id, "personas": TEAM_PERSONAS,
-                "thread_id": s.threads[0]["id"] if s.threads else 0,
-                "agents": {f["id"]: by_name[f["name"]] for f in fs},
-                "factor_ids": want}
-        db.kv_set("repair:world", info)
-        logs.info("lifecycle", "crew_room_adopted",
-                  f"the team record pointed at a dead room — adopted surviving room {s.id}",
-                  room=s.id, world=w.id)
-        bus.emit(0, None, "repair", "repair_team_ready", {"world_id": w.id, "agents": len(fs)})
-        return info
-    return None
+class CrewAgent:
+    """One seated specialist, as this side of the wire knows it: an id and a name.
 
-
-def _tidy_crew_world(w, keep_room: int) -> int:
-    """Leave exactly one sprint table behind.
-
-    Every rebuild used to materialise a new scene and simply abandon the old one, so the
-    crew's world quietly accumulated a room per persona bump and per factor toggle — six of
-    them, five dead, each still holding six agents. It is not only clutter: the world is one
-    blob, loaded and saved whole, so the dead rooms were being paid for on every tick. This
-    world is entirely ours — nobody authored anything in it by hand — so anything outside
-    the current table can go.
+    Nothing more, on purpose. `_specialist` used to hand back a live `Human` and the
+    engine reached into its memory, its decision log and its skills — which is precisely
+    the coupling that made the lifeworld the last thing extractable. Every one of those
+    reaches is now an endpoint, and what a caller here holds is a pointer at a seat.
     """
-    from .lifeworld.human import Human
-    dropped = 0
-    for sid in [i for i in list(w.scenes) if i != keep_room]:
-        w.scenes.pop(sid, None)
-        dropped += 1
-    seated = set(w.scene(keep_room).seats) if w.scene(keep_room) else set()
-    for eid, ent in list(w.entities.items()):
-        if isinstance(ent, Human) and eid not in seated:
-            w.entities.pop(eid, None)
-    return dropped
+
+    __slots__ = ("id", "name")
+
+    def __init__(self, id: int, name: str = ""):
+        self.id = int(id)
+        self.name = name
+
+    def __repr__(self) -> str:
+        return f"CrewAgent({self.id}, {self.name!r})"
 
 
-def _crew_world():
-    """(world, scene) for the crew, or (None, None). Loaded free — no model, no live flag."""
+def crew_members() -> list[dict]:
+    """Everyone seated at the crew's table: [{agent_id, name}, …]. [] when there is no
+    crew or the substrate is down — the caller cannot tell those apart and does not need
+    to, because both mean "nobody to staff this"."""
+    from . import lifeworld_client
     info = team()
     if not info:
-        return None, None
-    try:
-        from .lifeworld import store
-        w = store.load(info["world_id"])
-        return w, (w.scene(info["room_id"]) if w else None)
-    except Exception:
-        return None, None
+        return []
+    got = lifeworld_client.room_members(int(info["world_id"]), int(info["room_id"]),
+                                        _root_user() or {})
+    return list((got or {}).get("members") or [])
+
+
+def _root_user() -> dict | None:
+    from . import auth
+    return auth.get_user_by_name(auth.ROOT_USERNAME)
+
+
+def decision_node(factor: str, decision_id: int) -> dict | None:
+    """One decision this specialist recorded, read back — `{id, sig, saw, chose,
+    outcome, …}` or None. The engine writes and stamps; this exists so the crew's own
+    drills can prove an outcome landed on the right agent without opening a database
+    that belongs to another process."""
+    from . import lifeworld_client
+    wid, h = _specialist(factor)
+    if not h:
+        return None
+    return lifeworld_client.crew_decision_node(wid, h.id, int(decision_id))
 
 
 def _specialist(factor: str):
-    """The agent that owns a factor. Its decisions and what it learns from them belong to
-    IT — that is what makes the crew's experience inspectable per specialist rather than
-    pooled into one anonymous heap."""
+    """The agent that owns a factor, as (world_id, CrewAgent|None).
+
+    Its decisions and what it learns from them belong to IT — that is what makes the
+    crew's experience inspectable per specialist rather than pooled into one anonymous
+    heap. The seat is resolved against the LIVE room, not against the kv record alone: a
+    record pointing at humans that no longer exist is exactly the corruption
+    `_team_room_alive` and the adoption path exist to heal, and a specialist resolved
+    from a stale pointer would look staffed while building anonymously.
+    """
     info = team()
-    w, _ = _crew_world()
-    if not (info and w):
-        return None, None
+    if not info:
+        return 0, None
     hid = (info.get("agents") or {}).get(factor)
-    h = w.get(hid) if hid else None
-    from .lifeworld.human import Human
-    return (w, h) if isinstance(h, Human) else (w, None)
+    if not hid:
+        return int(info.get("world_id") or 0), None
+    seat = next((m for m in crew_members() if int(m.get("agent_id")) == int(hid)), None)
+    return (int(info["world_id"]),
+            CrewAgent(int(hid), seat.get("name", "")) if seat else None)
 
 
 EXPERIENCE_K = 3   # lessons per build prompt: enough to matter, small enough that the
@@ -552,86 +538,59 @@ async def specialist_context(task: dict) -> dict | None:
     """
     if not _live():
         return None
-    ensure_team()                    # a backlog-driven sprint skips _phase_plan, the only
+    info = ensure_team()             # a backlog-driven sprint skips _phase_plan, the only
     factor = str(task.get("factor") or "")       # other place the world is guaranteed built
-    w, h = _specialist(factor)
-    if not h:
+    hid = int(((info or {}).get("agents") or {}).get(factor) or 0)
+    if not (info and hid):
         return None
     try:
-        from .lifeworld.decisions import signature
-        from .lifeworld.threads import members_of
-        from .lifeworld.world import _persona
-        from . import knowledge
+        from . import knowledge, lifeworld_client
         cue = _task_cue(task)
-        p = _persona(h)
         brief = next((f.get("brief", "") for f in enabled_factors() if f["id"] == factor), "")
+        # The lifeworld half of the briefing, in one call: who this agent is, the exact
+        # association it has already proved about a situation like this, and which
+        # teammates its arrows let it consult (a consult's ANSWER must be able to reach
+        # the asker, so a neighbour is someone the asker hears).
+        ctx = await lifeworld_client.crew_context(info["world_id"], info["room_id"],
+                                                  info["thread_id"], hid, cue)
+        if not ctx:
+            return None
 
         # Experience: proven only, no manufactured authority. The exact association first —
         # its bar (conf ≥ .5, evidence ≥ 2) already guards assumptions. Knowledge hits pass
         # at "held up more often than not": one row per outcome means demanding 2 here would
         # silence the store for its first sprints, and a SUGGESTION may be looser than an
         # assumption.
+        #
+        # The knowledge half stays HERE, not in the service, because the embedding key is
+        # the owner's and never leaves this process — the same reason the model door
+        # exists. The substrate answers what only it knows; the conductor adds what only
+        # it can ask for.
         experience = []
-        exact = h.decisions.recall(signature(cue, kind="task"))
-        if exact is not None:
-            experience.append({"says": exact.says[:200],
-                               "label": f"proven x{exact.evidence}, {exact.confidence:.0%}"})
-        for hit in await knowledge.recall(reg_key_for(info_world(), h.id), cue,
+        exact = ctx.get("exact")
+        if exact:
+            experience.append({"says": exact["says"][:200],
+                               "label": f"proven x{exact['evidence']}, "
+                                        f"{exact['confidence']:.0%}"})
+        for hit in await knowledge.recall(reg_key_for(info["world_id"], hid), cue,
                                           k=EXPERIENCE_K, settings=_root_settings()):
             if hit["good"] > hit["bad"] and hit["evidence"] >= 1                     and hit["says"][:200] not in [e["says"] for e in experience]:
                 experience.append({"says": hit["says"][:200],
                                    "label": f"held up {hit['good']}/{hit['evidence']}"})
 
-        # Teammates via the arrows: a consult's ANSWER must be able to reach the asker, so a
-        # neighbour is someone the asker hears.
-        info = team()
-        s_ = w.scene(info["room_id"]) if info else None
-        t_ = s_.thread(info["thread_id"]) if s_ else None
-        neighbours = []
-        if t_ is not None:
-            for pid in members_of(t_):
-                other = w.get(pid)
-                if pid != h.id and other is not None and s_._hears(t_, pid, h.id):
-                    neighbours.append(other.name)
-
+        neighbours = list(ctx.get("neighbours") or [])
         logs.info("session", "specialist_briefed",
-                  f"{h.name} briefed with {len(experience)} proven lesson(s)"
+                  f"{ctx['name']} briefed with {len(experience)} proven lesson(s)"
                   + (f" and {len(neighbours)} consultable teammate(s)" if neighbours else ""),
                   factor=factor, task=str(task.get("title", ""))[:80], lessons=len(experience))
-        return {"factor": factor, "name": h.name, "brief": brief,
-                "traits": p.get("traits") or {}, "wants": p.get("wants") or "",
+        return {"factor": factor, "name": ctx["name"], "brief": brief,
+                "traits": ctx.get("traits") or {}, "wants": ctx.get("wants") or "",
                 "experience": experience[:EXPERIENCE_K + 1], "neighbours": neighbours,
                 "consults_cap": int(tuning.get("repair_consults_per_task"))}
     except Exception as e:
         # A briefing failure must never cost the build: anonymous is a working fallback.
         logs.warn("session", "briefing_failed", str(e)[:200], factor=factor)
         return None
-
-
-def _resolve_peer(peers: list, who: str):
-    """The NAMED half of picking a neighbour: case-insensitive match, or None — which the
-    caller reads as 'refuse' when a name was given and as 'pick by knowledge' when none was.
-    Returning peers[0] here for the unnamed case looked harmless and quietly disabled the
-    knowledge-scored pick entirely."""
-    if not who:
-        return None
-    wl = who.strip().lower()
-    return next((p for p in peers if p.name.lower() == wl), None)
-
-
-async def _best_informed_peer(peers: list, question: str, world_id: int):
-    from . import knowledge
-    best, score = None, -1.0
-    for p in peers:
-        try:
-            hits = await knowledge.recall(reg_key_for(world_id, p.id), question, k=1,
-                                          settings=_root_settings())
-            s_ = hits[0]["score"] if hits else 0.0
-        except Exception:
-            s_ = 0.0
-        if s_ > score:
-            best, score = p, s_
-    return best
 
 
 async def consult(task: dict, question: str, who: str = "") -> str:
@@ -656,70 +615,44 @@ async def consult(task: dict, question: str, who: str = "") -> str:
     if not ok:
         return f"(no quota room for a consult right now: {reason} — carry on alone)"
     info = team()
-    if not (_live() and info):
+    hid = int(((info or {}).get("agents") or {}).get(str(task.get("factor") or "")) or 0)
+    if not (_live() and info and hid):
         return "(the crew is not available — use your best judgement)"
     try:
-        from .lifeworld import store
-        from .lifeworld.threads import members_of
-        from .lifeworld.decisions import signature
-        from . import knowledge
-        async with store.lock_for(info["world_id"]):
-            w = store.load(info["world_id"], live=True, settings=_root_settings())
-            s_ = w.scene(info["room_id"]) if w else None
-            t_ = s_.thread(info["thread_id"]) if s_ else None
-            hid = (info.get("agents") or {}).get(str(task.get("factor") or ""))
-            me = w.get(hid) if (w and hid) else None
-            if not (t_ is not None and me is not None):
-                return "(the crew is not available — use your best judgement)"
-            peers = [w.get(i) for i in members_of(t_)
-                     if i != me.id and w.get(i) is not None and s_._hears(t_, i, me.id)]
-            if not peers:
+        from . import lifeworld_client
+        # The whole exchange — pick, record, hear, answer, hear back, save — is ONE call,
+        # because it is one read-modify-write on the world blob and the lock that guards
+        # it lives on the other side of the wire. What comes back is machine-readable;
+        # every sentence a build session can read is composed HERE, because those
+        # sentences are the engine's voice and the tests that pin them are the crew's.
+        out = await lifeworld_client.crew_consult(
+            info["world_id"], info["room_id"], info["thread_id"], hid, question, who=who)
+        if not out:
+            return "(the consult failed — use your best judgement)"
+        if not out.get("ok"):
+            reason = out.get("reason")
+            if reason == "no_peers":
                 return "(you have no teammates on the graph — use your best judgement)"
-            nb = _resolve_peer(peers, who)
-            if who and nb is None:
-                names = ", ".join(p.name for p in peers)
+            if reason == "not_a_neighbour":
+                names = ", ".join(out.get("peers") or [])
                 return (f"You can only consult your graph neighbours — the arrows are the "
                         f"org chart. Yours are: {names}.")
-            if nb is None:
-                nb = await _best_informed_peer(peers, question, info["world_id"]) or peers[0]
-            # The ask goes on the ROOM record first — _hear moves the listener's state but
-            # writes no log row, and a consultation that leaves no trace in the room is
-            # invisible on the canvas. Then the neighbour genuinely hears it: a free Tier-0
-            # perceive that files its own memory, exactly as any overheard remark would.
-            s_._record("say", me.id, f"{me.name}: (consult) {question[:180]}", frm=me.id)
-            await s_._hear(me, nb, f"(consult) {question[:200]}")
-            known = nb.decisions.recall(signature(question))
-            recalled = None
-            if known is not None:
-                recalled = {"says": known.says, "confidence": known.confidence,
-                            "seen": known.evidence}
-            else:
-                hits = await knowledge.recall(reg_key_for(info["world_id"], nb.id), question,
-                                              k=1, settings=_root_settings())
-                if hits and hits[0]["score"] >= 0.25:
-                    recalled = {"says": hits[0]["says"], "confidence": hits[0]["confidence"],
-                                "seen": hits[0]["evidence"]}
-            ring = [h for h in (w.get(i) for i in members_of(t_)) if h is not None]
-            answer = await w.agent_reply(
-                nb, question,
-                transcript=s_._thread_transcript(ring, thread=t_, for_agent=nb.id),
-                recalled=recalled)
-            if not answer:
-                return f"({nb.name} could not be reached — use your best judgement)"
-            s_._record("say", nb.id, f"{nb.name}: {answer[:200]}", frm=nb.id)
-            await s_._hear(nb, me, answer)          # the asker absorbs the answer, free
-            store.save(w)
-        consults.append({"who": nb.name, "q": question[:200], "a": answer[:300],
+            if reason == "unreachable":
+                return (f"({out.get('who', 'that teammate')} could not be reached — "
+                        f"use your best judgement)")
+            return "(the crew is not available — use your best judgement)"
+        nb_name, answer = out.get("who", ""), out.get("answer", "")
+        consults.append({"who": nb_name, "q": question[:200], "a": answer[:300],
                          "ts": time.time()})
-        ledger_add("consult", w.model_for(nb) if hasattr(w, "model_for") else "", 0)
+        ledger_add("consult", out.get("model") or "", 0)
         bus.emit(0, None, "repair", "repair_consult",
-                 {"task": str(task.get("title", ""))[:80], "who": nb.name,
+                 {"task": str(task.get("title", ""))[:80], "who": nb_name,
                   "q": question[:160]})
         bus.emit(0, None, "repair", "repair_consult_reply",
-                 {"who": nb.name, "a": answer[:200]})
-        logs.info("session", "consult", f"{task.get('factor', '?')} asked {nb.name}: "
-                  f"{question[:120]}", who=nb.name)
-        logs.info("session", "consult_reply", answer[:160], who=nb.name)
+                 {"who": nb_name, "a": answer[:200]})
+        logs.info("session", "consult", f"{task.get('factor', '?')} asked {nb_name}: "
+                  f"{question[:120]}", who=nb_name)
+        logs.info("session", "consult_reply", answer[:160], who=nb_name)
         return answer
     except Exception as e:
         logs.warn("session", "consult_failed", str(e)[:200])
@@ -733,21 +666,19 @@ def note_decision(task: dict, saw: str) -> None:
     opinion: the suite goes green or it does not. An association trained on that is trained
     on truth, which is the difference between learning and superstition.
     """
+    from . import lifeworld_client
     factor = str(task.get("factor") or "")
-    w, h = _specialist(factor)
+    wid, h = _specialist(factor)
     if not h:
         return
     try:
-        from .lifeworld.decisions import signature
-        d = h.decisions.record(
-            tau=int(getattr(h, "tau", 0)), sig=signature(saw, kind="task"), saw=saw,
-            understood=str(task.get("brief", ""))[:200],
+        out = lifeworld_client.crew_decision(
+            wid, h.id, saw=saw, understood=str(task.get("brief", ""))[:200],
             chose=f"build: {task.get('title', '')}",
             because={"factor": factor, "type": task.get("type"),
                      "priority": task.get("priority"), "attempt": task.get("attempts")})
-        task["decision_id"] = d.id
-        from .lifeworld import store
-        store.save(w)
+        if out and out.get("decision_id"):
+            task["decision_id"] = out["decision_id"]
     except Exception:
         pass
 
@@ -887,28 +818,27 @@ def info_world() -> int:
 
 async def note_outcome(task: dict, ok: bool, says: str = "") -> None:
     """Stamp how it turned out, which is the only thing that moves an association."""
+    from . import lifeworld_client
     did = task.get("decision_id")
     factor = str(task.get("factor") or "")
     if not did:
         return
-    w, h = _specialist(factor)
+    wid, h = _specialist(factor)
     if not h:
         return
-    try:
-        h.decisions.resolve(int(did), "good" if ok else "bad", says=says[:200])
-        from .lifeworld import store
-        store.save(w)
-    except Exception:
-        pass
-    # ...and into the knowledge base, keyed on the SITUATION, so the next task that looks
-    # like this one finds it without needing the same exact signature.
+    # Resolving the decision and learning FROM it are two stores and two owners. The
+    # association lives on the agent, in the substrate, so it is resolved there and the
+    # endpoint hands back the decision's own cue and signature; the knowledge row is
+    # written here, with the owner's embedding key, which never leaves this process.
+    out = await lifeworld_client.crew_outcome(wid, h.id, int(did), bool(ok), says)
+    if not out:
+        return
     try:
         from . import knowledge
-        node = h.decisions.get(int(did))
-        if node and says:
+        if says and out.get("sig") is not None:
             await knowledge.remember(
-                reg_key_for(info_world(), h.id), cue=node.saw or task.get("title", ""),
-                says=says[:400], sig=node.sig, kind="belief",
+                reg_key_for(wid, h.id), cue=out.get("saw") or task.get("title", ""),
+                says=says[:400], sig=out.get("sig", ""), kind="belief",
                 payload={"task": task.get("title", ""), "factor": task.get("factor", "")},
                 good=1 if ok else 0, bad=0 if ok else 1, settings=_root_settings())
     except Exception:
@@ -916,20 +846,26 @@ async def note_outcome(task: dict, ok: bool, says: str = "") -> None:
 
 
 def team_usage() -> list[dict]:
+    """Each specialist's own model-session usage, for the Improve screen.
+
+    The service answers per SEAT (agent id and name); which factor owns which seat is
+    the engine's record, applied here. [] when the substrate is down — the panel shows
+    no crew meters rather than inventing zeros that look like an idle crew.
+    """
+    from . import lifeworld_client
     info = team()
     if not info:
         return []
-    try:
-        from .lifeworld import store
-        w = store.load(info["world_id"])
-        out = []
-        for fid, hid in (info.get("agents") or {}).items():
-            h = w.get(hid) if w else None
-            if h is not None:
-                out.append({"factor": fid, "name": h.name, "usage": h.usage()})
-        return out
-    except Exception:
+    rows = lifeworld_client.crew_usage(int(info["world_id"]), int(info["room_id"]))
+    if not rows:
         return []
+    by_id = {int(r["agent_id"]): r for r in rows}
+    out = []
+    for fid, hid in (info.get("agents") or {}).items():
+        r = by_id.get(int(hid))
+        if r:
+            out.append({"factor": fid, "name": r["name"], "usage": r["usage"]})
+    return out
 
 
 # --- the sprint pipeline -----------------------------------------------------
@@ -977,6 +913,13 @@ def _phase_log(phase: str, st: dict) -> None:
               sprint=st.get("sprint_no"), task=st.get("task_idx"))
 
 
+LIFEWORLD_DOWN = "lifeworld down"
+# Long enough not to hammer a service that is genuinely rebuilding, short enough that a
+# `pc start lifeworld` is followed by work within a minute. Same shape as the meter's
+# bounded wake (P2): a sleep whose reason may clear must never be open-ended.
+LIFEWORLD_WAKE_S = 60
+
+
 async def _advance(st: dict) -> None:
     """One persisted phase transition. Everything it spends is billed to the crew — the
     deliberation goes through the same `providers.complete` a Studio seat uses, and filed as
@@ -984,6 +927,21 @@ async def _advance(st: dict) -> None:
     on its own footsteps."""
     phase = st["phase"]
     _phase_log(phase, st)
+    # THE CREW IS ITS SPECIALISTS. Without them a sprint would still plan, still build and
+    # still spend — anonymously, with nothing learning from the outcome and nobody
+    # reviewing the diff. Pausing is the honest behaviour, and the wake is bounded so the
+    # crew resumes the moment the substrate answers, with no restart and no lost sprint:
+    # `resume` is this very phase, not idle.
+    from . import lifeworld_client
+    if (_live() and enabled_factors() and ensure_team() is None
+            and not lifeworld_client.health()):
+        # Both conditions, deliberately. "No crew" alone also means "no root account yet"
+        # or "every factor disabled", and neither of those is an outage to sleep through;
+        # the health check is what tells an absent crew from an absent SUBSTRATE.
+        logs.warn("lifecycle", "crew_paused", "the lifeworld service is not answering — "
+                  "the crew stands down until it does", phase=phase)
+        return _sleep(LIFEWORLD_DOWN, time.time() + LIFEWORLD_WAKE_S,
+                      kind="cooldown", resume=phase)
     if phase == "idle":
         # a sprint that must scout+plan needs room for the whole plan, not just the scout
         ok, reason, wake = headroom(need=1 if backlog_fresh() else phase_cost("plan") + 1)
@@ -1194,55 +1152,54 @@ async def _phase_plan(st: dict, rec: dict) -> None:
     n_tasks = max(1, int(tuning.get("repair_backlog_size")))    # plan a BACKLOG, not one sprint
     memo = None
     try:
+        from . import lifeworld_client
         info = ensure_team()
         if info:
-            from .lifeworld import store
-            # Held across load…save: the chat route does the same round trip on this world,
-            # and without the lock whichever finished last silently erased the other — a
-            # sprint's memo, or the operator's conversation.
-            async with store.lock_for(info["world_id"]):
-              w = store.load(info["world_id"], live=_live(), settings=_root_settings() if _live() else None)
-              s = w.scene(info["room_id"]) if w else None
-              thread = s.thread(info["thread_id"]) if s else None
-              if thread is not None:
-                  lenses = "\n".join(f"- {f['id']}: {f['brief']}" for f in enabled_factors())
-                  thread["topic"] = f"sprint {rec['no']}: what the devteam platform needs next"
-                  thread["rulebook"] = (
-                      "You are the platform's own IT crew planning the NEXT FEW SPRINTS on the "
-                      "devteam codebase — one shared backlog you will work through in order.\n"
-                      f"Lenses:\n{lenses}\nScout findings:\n{rec['scout']['digest'] or '(none)'}\n"
-                      f"Decide the top {n_tasks} improvements, best first; the recommendation must "
-                      "name each task's title, factor, target files and acceptance checks.")[:2000]
-                  too_big = _recent_too_big()
-                  if too_big:
-                      # The crew kept proposing programme-sized work — "extract a router from
-                      # routes.py" — and each one died on turns. Showing it its own oversized
-                      # tasks is cheaper and more specific than any amount of prompt adjectives.
-                      thread["rulebook"] += (
-                          "\nThese were planned before and DIED because one engineer could not "
-                          "finish them in a single session — do not propose work of this size "
-                          "again; take a first slice instead:\n- " + "\n- ".join(too_big[:5]))
-                  rounds = int(tuning.get("repair_plan_rounds"))
-                  memo = await s.run_deliberation(thread, rounds=rounds)
-                  store.save(w)
-                  # independent init spends one call per agent for the opening round, a host plan
-                  # per later round, and one closing memo — meter what actually went out.
-                  from .lifeworld.threads import protocol_of
-                  per_agent = len(ring_names) if (ring_names := [f for f in enabled_factors()]) and \
-                      protocol_of(thread).get("init") == "independent" else 1
-                  ledger_add("plan", str(tuning.get("repair_builder_model")), 0,
-                             n=per_agent + max(0, rounds - 1) + 1)
-                  # What each specialist actually argued, and what the manager concluded. The
-                  # deliberation lived only in the Studio world's scene log, so from the Improve
-                  # screen the plan appeared out of nowhere — the crew's reasoning is the most
-                  # interesting thing it produces and it was the one thing not on screen.
-                  names = (memo or {}).get("names") or {}
-                  bus.emit(0, None, "repair", "repair_deliberated", {
-                      "sprint": rec["no"],
-                      "positions": [{"who": names.get(str(p.get("who")), "") or p.get("name", ""),
-                                     "text": str(p.get("position") or p.get("text") or "")[:400]}
-                                    for p in ((memo or {}).get("positions") or [])][:12],
-                      "recommendation": str((memo or {}).get("recommendation") or "")[:1200]})
+            lenses = "\n".join(f"- {f['id']}: {f['brief']}" for f in enabled_factors())
+            rulebook = (
+                "You are the platform's own IT crew planning the NEXT FEW SPRINTS on the "
+                "devteam codebase — one shared backlog you will work through in order.\n"
+                f"Lenses:\n{lenses}\nScout findings:\n{rec['scout']['digest'] or '(none)'}\n"
+                f"Decide the top {n_tasks} improvements, best first; the recommendation must "
+                "name each task's title, factor, target files and acceptance checks.")[:2000]
+            too_big = _recent_too_big()
+            if too_big:
+                # The crew kept proposing programme-sized work — "extract a router from
+                # routes.py" — and each one died on turns. Showing it its own oversized
+                # tasks is cheaper and more specific than any amount of prompt adjectives.
+                rulebook += (
+                    "\nThese were planned before and DIED because one engineer could not "
+                    "finish them in a single session — do not propose work of this size "
+                    "again; take a first slice instead:\n- " + "\n- ".join(too_big[:5]))
+            rounds = int(tuning.get("repair_plan_rounds"))
+            # ONE call: the topic, the rulebook, the deliberation and the save all happen
+            # inside the world lock, on the service's side of the wire. The crew chat route
+            # does the same round trip on this world, and without a lock whichever finished
+            # last silently erased the other — a sprint's memo, or the operator's
+            # conversation. That lock cannot be held from here any more, which is exactly
+            # why the whole behaviour is one endpoint.
+            out = await lifeworld_client.crew_deliberate(
+                info["world_id"], info["room_id"], info["thread_id"],
+                topic=f"sprint {rec['no']}: what the devteam platform needs next",
+                rulebook=rulebook, rounds=rounds, live=_live())
+            memo = (out or {}).get("memo")
+            if out and out.get("ok"):
+                # independent init spends one call per agent for the opening round, a host
+                # plan per later round, and one closing memo — meter what actually went out.
+                per_agent = len(enabled_factors()) if out.get("independent") else 1
+                ledger_add("plan", str(tuning.get("repair_builder_model")), 0,
+                           n=per_agent + max(0, rounds - 1) + 1)
+                # What each specialist actually argued, and what the manager concluded. The
+                # deliberation lived only in the Studio world's scene log, so from the Improve
+                # screen the plan appeared out of nowhere — the crew's reasoning is the most
+                # interesting thing it produces and it was the one thing not on screen.
+                names = (memo or {}).get("names") or {}
+                bus.emit(0, None, "repair", "repair_deliberated", {
+                    "sprint": rec["no"],
+                    "positions": [{"who": names.get(str(p.get("who")), "") or p.get("name", ""),
+                                   "text": str(p.get("position") or p.get("text") or "")[:400]}
+                                  for p in ((memo or {}).get("positions") or [])][:12],
+                    "recommendation": str((memo or {}).get("recommendation") or "")[:1200]})
     except Exception as e:
         db.kv_set("repair:last_error", {"ts": time.time(), "phase": "plan", "detail": str(e)[:400]})
     rec["memo"] = memo
@@ -1508,11 +1465,11 @@ async def _review_green(task: dict, rec: dict) -> dict | None:
     if not bool(tuning.get("repair_review")) or task.get("sent_back"):
         return None
     info = team()
-    if not (_live() and info and task.get("worktree")):
+    hid = int(((info or {}).get("agents") or {}).get(str(task.get("factor") or "")) or 0)
+    if not (_live() and info and hid and task.get("worktree")):
         return None
     try:
-        from .lifeworld import store
-        from .lifeworld.threads import members_of
+        from . import lifeworld_client
         # The stat AND a bounded slice of the real diff. The gate's first live reviewer sent
         # a change back with "need the actual diff to verify" — file names and line counts
         # cannot show whether error handling was fixed or merely relocated, and a reviewer
@@ -1530,22 +1487,14 @@ async def _review_green(task: dict, rec: dict) -> dict | None:
              "Is this the RIGHT change — scoped to the task, no collateral edits, nothing "
              "suspicious in what it touched? Reply with exactly APPROVE, or "
              "SEND_BACK: <one concrete, actionable complaint>.")
-        async with store.lock_for(info["world_id"]):
-            w = store.load(info["world_id"], live=True, settings=_root_settings())
-            s_ = w.scene(info["room_id"]) if w else None
-            t_ = s_.thread(info["thread_id"]) if s_ else None
-            hid = (info.get("agents") or {}).get(str(task.get("factor") or ""))
-            me = w.get(hid) if (w and hid) else None
-            if not (t_ is not None and me is not None):
-                return None
-            peers = [w.get(i) for i in members_of(t_)
-                     if i != me.id and w.get(i) is not None and s_._hears(t_, i, me.id)]
-            if not peers:
-                return None
-            reviewer = await _best_informed_peer(peers, _task_cue(task),
-                                                 info["world_id"]) or peers[0]
-            answer = await w.agent_reply(reviewer, q)
-            store.save(w)
+        # The material is built here, where git is; the service picks the best-informed
+        # neighbour and spends the one bounded call, inside the world lock.
+        out = await lifeworld_client.crew_review(
+            info["world_id"], info["room_id"], info["thread_id"], hid, q,
+            cue=_task_cue(task))
+        if not out or not out.get("ok"):
+            return None                     # fail open: absent machinery never blocks green
+        reviewer_name, answer = out.get("who", ""), out.get("answer", "")
         ledger_add("review", "", 0)
         if not answer:
             return None
@@ -1553,11 +1502,12 @@ async def _review_green(task: dict, rec: dict) -> dict | None:
         if text.upper().startswith("SEND_BACK"):
             feedback = text.split(":", 1)[1].strip() if ":" in text else text[9:].strip()
             if feedback:
-                return {"who": reviewer.name, "feedback": feedback[:400]}
+                return {"who": reviewer_name, "feedback": feedback[:400]}
         bus.emit(0, None, "repair", "repair_review",
-                 {"task": task.get("title", ""), "verdict": "approve", "who": reviewer.name})
-        logs.info("verify", "review_approved", f"{reviewer.name} approved: {task.get('title', '')}",
-                  who=reviewer.name)
+                 {"task": task.get("title", ""), "verdict": "approve",
+                  "who": reviewer_name})
+        logs.info("verify", "review_approved",
+                  f"{reviewer_name} approved: {task.get('title', '')}", who=reviewer_name)
         return None
     except Exception as e:
         logs.warn("verify", "review_failed", str(e)[:200])
@@ -1636,20 +1586,13 @@ async def _phase_retro(st: dict, rec: dict) -> None:
 
 def _tell_crew(rec: dict) -> None:
     """Drop the retro into the crew thread's chat so 'chat with the manager' can discuss it."""
+    from . import lifeworld_client
     try:
         info = team()
         if not info:
             return
-        from .lifeworld import store
-        w = store.load(info["world_id"])
-        s = w.scene(info["room_id"]) if w else None
-        thread = s.thread(info["thread_id"]) if s else None
-        if thread is None:
-            return
-        convo = thread.setdefault("chats", {}).setdefault("manager", [])
-        convo.append({"role": "manager", "text": rec["retro"], "ts": time.time()})
-        thread["chats"]["manager"] = convo[-40:]
-        store.save(w)
+        lifeworld_client.crew_chat_note(info["world_id"], info["room_id"],
+                                        info["thread_id"], rec["retro"])
     except Exception:
         pass
 

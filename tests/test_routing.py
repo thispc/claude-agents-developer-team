@@ -148,13 +148,53 @@ def test_a_question_gets_an_answer_not_a_stage_direction(fresh_db):
 def test_the_world_is_locked_across_a_load_and_save(fresh_db):
     """A World is deserialized fresh per request and written back whole, so two overlapping
     cycles are a lost update — the crew's sprint and the operator's chat each erasing the
-    other's work depending on who finished last."""
+    other's work depending on who finished last.
+
+    P4 MOVED THE LOCK, and that is the whole point of the phase. The conductor has no
+    World to hold a lock over any more, so every read-modify-write happens inside the
+    lifeworld service, under ITS per-world lock — which is why `repair` and
+    `repair_routes` now ask for whole behaviours (deliberate, consult, chat) instead of
+    for the pieces. A lock you can only take on one side of a wire is not a lock, so
+    what is asserted here is that NEITHER side straddles it: the conductor holds none,
+    and every mutating handler in the service takes one.
+    """
     from pathlib import Path
-    from app.lifeworld import store
-    assert store.lock_for(7) is store.lock_for(7)
+    repo = Path(__file__).resolve().parents[1]
     for mod in ("conductor/app/repair.py", "conductor/app/repair_routes.py"):
-        src = Path(__file__).resolve().parents[1].joinpath(mod).read_text()
-        assert "store.lock_for(" in src, f"{mod} still races on the world blob"
+        src = repo.joinpath(mod).read_text()
+        assert "store.lock_for(" not in src, \
+            f"{mod} still holds a world lock the conductor cannot honour across the wire"
+        assert "store.load(" not in src and "store.save(" not in src, \
+            f"{mod} still does a load/save round trip on a blob it does not own"
+
+    svc = repo / "services" / "lifeworld"
+    store_src = (svc / "store.py").read_text()
+    assert "def lock_for(" in store_src, "the service must own the per-world lock"
+    # Every save is inside a lock. Read structurally rather than grepped, because the
+    # failure this prevents is silent and is exactly one forgotten `async with` away —
+    # a counted heuristic would pass the day someone adds a handler that saves twice.
+    import ast
+
+    def unlocked_saves(path):
+        def walk(node, locked, fn):
+            out = []
+            for n in ast.iter_child_nodes(node):
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    out += walk(n, locked, n.name)
+                    continue
+                here = locked or (isinstance(n, ast.AsyncWith) and any(
+                    "lock_for" in ast.unparse(i.context_expr) for i in n.items))
+                if (isinstance(n, ast.Call) and not locked
+                        and "store.save" in ast.unparse(n)):
+                    out.append(fn)
+                out += walk(n, here, fn)
+            return out
+        return sorted({f for f in walk(ast.parse(path.read_text()), False, "") if f})
+
+    for f in ("app.py", "crew.py"):
+        offenders = unlocked_saves(svc / f)
+        assert not offenders, (f"services/lifeworld/{f}: {offenders} write a world blob "
+                               "outside the per-world lock — that is the lost update")
 
 
 def test_a_habit_says_what_it_matches_on_not_object_Object():

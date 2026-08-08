@@ -1,4 +1,4 @@
-"""HTTP surface for the Lifeworld — its own router, decoupled from the projects engine.
+"""HTTP surface for the Lifeworld — the `/api/lw/*` paths, which must never move.
 
 A world is a container of registered AGENTS and ARTIFACTS and a set of ROOMS; a room is a
 scene with a relatable type (home, office, casino, …) that sets its look and rules; agents
@@ -6,20 +6,70 @@ and artifacts are created once and placed into rooms. Creation is by BRIEF, not 
 an equalizer: you say who a person is or what a thing is, and a model authors the internals
 (free deterministic fallback when there are no credentials). Operating a room is free by
 default; `?live=1` lets the agents genuinely deliberate on your own credentials.
+
+SINCE P4 THIS FILE IS A DOORWAY, NOT A DESTINATION. The substrate is a service
+(services/lifeworld, 8885) and these paths stay here because the dashboard hardcodes
+them in fifty-odd places across dashboard/js — moving them would be a rewrite of the
+Studio for no benefit anyone can see. So the conductor keeps `/api/lw/*` as an
+AUTHENTICATED THIN PROXY: the session cookie is resolved here, the caller is stamped
+onto the request, and the body is forwarded to the service with its own token. The
+browser never sees a service token and never changes origin.
+
+`DualModeRoute` is how that lands in one commit instead of two broken ones. Every route
+declared on `router` below keeps its ORIGINAL in-process body, and the route class picks
+at REQUEST time: `LIFEWORLD_URL` set → forward; unset → run the body. That is the P4-A
+rollback (`unset LIFEWORLD_URL` and the conductor is the monolith again) and it needs no
+restart to take effect. Commit B deletes the bodies, the route class and this paragraph,
+and leaves one catch-all proxy route.
+
+TWO ROUTES COMPOSE INSTEAD OF FORWARDING, and they live on their own plain router:
+the world LIST hides the crew's own world (a repair concept, whose record is conductor
+kv), and the agent DETAIL panel decorates root's copy with log rows from the watch
+service. Neither belongs to the substrate; both would be a service reaching for
+another service's data to decorate its own answer.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from typing import Callable
+
+from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 
-from . import auth, providers, tuning
+from . import auth, lifeworld_client, providers, tuning
 from .lifeworld import store, authoring
 from .lifeworld.artifact import Deck, Prop
 from .lifeworld.scene import ROOM_TYPES
 from .guards import current_user
 
-router = APIRouter(prefix="/api/lw", tags=["lifeworld"])
+
+class DualModeRoute(APIRoute):
+    """Forward to the service when one is configured; otherwise run the local body.
+
+    Wrapping the ROUTE rather than editing thirty-three handlers is deliberate: the
+    bodies below are the thing being moved, and a diff that also rewrote every one of
+    them would make the move impossible to review. The path the proxy forwards to is
+    derived from the request, so a route added here during the strangler is proxied
+    without anybody remembering to.
+    """
+
+    def get_route_handler(self) -> Callable:
+        local = super().get_route_handler()
+
+        async def handler(request: Request) -> Response:
+            if lifeworld_client.enabled():
+                # "/api/lw/3/room/5" → "3/room/5"; "/api/lw" → ""
+                rest = request.url.path[len("/api/lw"):].lstrip("/")
+                return await lifeworld_client.proxy(request, rest)
+            return await local(request)
+
+        return handler
+
+
+router = APIRouter(prefix="/api/lw", tags=["lifeworld"], route_class=DualModeRoute)
+# The two composing routes: conductor answers, both modes, never a blind forward.
+compose_router = APIRouter(prefix="/api/lw", tags=["lifeworld"])
 
 
 # --- bodies ----------------------------------------------------------------
@@ -182,9 +232,20 @@ def _devteam_world() -> int:
         return 0
 
 
-@router.get("")
-def worlds(request: Request, include_devteam: int = 0) -> dict:
-    rows = store.listing(current_user(request)["id"])
+@compose_router.get("")
+async def worlds(request: Request, include_devteam: int = 0) -> dict:
+    """The Studio's world list, minus the crew's own world.
+
+    COMPOSED, not forwarded: which world belongs to the self-repair crew is a repair
+    fact (its kv record), and the substrate has no business knowing that one of its
+    rows is special. It hands over the owner's worlds; the filter happens where the
+    record lives.
+    """
+    u = current_user(request)
+    if lifeworld_client.enabled():
+        rows = (await lifeworld_client.studio_get(u, "")).get("worlds") or []
+    else:
+        rows = store.listing(u["id"])
     dev = _devteam_world()
     if not include_devteam and dev:
         rows = [w for w in rows if int(w.get("id")) != dev]
@@ -809,8 +870,32 @@ async def play_round(world_id: int, room_id: int, request: Request, live: int = 
     return {"room": s.view(), "world_tau": w.tau}
 
 
-@router.get("/{world_id}/human/{human_id}")
-def peek(world_id: int, human_id: int, request: Request) -> dict:
+@compose_router.get("/{world_id}/human/{human_id}")
+async def peek(world_id: int, human_id: int, request: Request) -> dict:
+    """One agent's detail panel.
+
+    COMPOSED, not forwarded: the last block is the backend's own log rows for this
+    agent, which belong to the WATCH service and are root-only (logs name file paths,
+    branch names and the shape of the operator's work). Having the lifeworld service
+    fetch them would make it a second, undeclared caller of watch with none of watch's
+    gates — so the substrate answers what it knows and the conductor adds what it
+    knows.
+    """
+    u = auth.user_for_token(request.cookies.get("devteam_session")) or {}
+    if lifeworld_client.enabled():
+        current_user(request)
+        out = await lifeworld_client.studio_get(u, f"/{int(world_id)}/human/{int(human_id)}")
+        if u.get("is_root"):
+            from . import logs
+            name = out.pop("name", "")
+            out["logs"] = logs.recent(q=name, limit=40) if name else []
+        else:
+            out.pop("name", None)
+        return out
+    return _peek_local(world_id, human_id, request, u)
+
+
+def _peek_local(world_id: int, human_id: int, request: Request, u: dict) -> dict:
     _own(request, world_id)
     w = store.load(world_id)
     h = w.get(human_id)
@@ -821,8 +906,7 @@ def peek(world_id: int, human_id: int, request: Request) -> dict:
     # The decision tree, and what this agent has learned to expect. Private decisions are
     # withheld from everyone but root: an agent's own reasoning is exactly the kind of thing
     # a scene may have made secret, and a detail panel must not be the way it leaks.
-    from . import auth, logs
-    u = auth.user_for_token(request.cookies.get("devteam_session")) or {}
+    from . import logs
     is_root = bool(u.get("is_root"))
     nodes = [n.to_dict() for n in h.decisions.nodes
              if is_root or n.scope != "private"]

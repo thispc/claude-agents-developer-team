@@ -126,14 +126,19 @@ def _knobs() -> list[tuple[str, str, str]]:
 
 def _factors() -> list[tuple[str, str, str, str]]:
     repair = _mod("app.repair")
-    drives = _mod("app.lifeworld.drives")
     out = []
     for f in repair.DEFAULT_FACTORS:
         wants = ", ".join(f.get("drives", {})) or "—"
         top = sorted(f["dials"].items(), key=lambda kv: -abs(kv[1] - 50))[:3]
         dials = ", ".join(f"{k} {v}" for k, v in top)
         out.append((f["name"], f["brief"], dials, wants))
-    assert all(k in drives.SPEC for f in repair.DEFAULT_FACTORS for k in f.get("drives", {}))
+    # The drive names are checked against the engine's own copy of the substrate's
+    # setpoints. Since P4 the substrate is another process, and a doc generator that
+    # had to reach it over HTTP to render a table would be a doc generator nobody can
+    # run offline — repair.DRIVE_SETPOINTS is that copy, and it is the same list the
+    # factors are authored against.
+    assert all(k in repair.DRIVE_SETPOINTS
+               for f in repair.DEFAULT_FACTORS for k in f.get("drives", {}))
     return out
 
 

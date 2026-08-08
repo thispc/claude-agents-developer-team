@@ -5,8 +5,8 @@
 #
 # kinds:
 #   core      — the conductor. Managed by process-compose.
-#   service   — an extracted microservice (P1+: knowledge 8881, usage 8882, ...).
-#               Managed by process-compose.
+#   service   — an extracted microservice (knowledge 8881, usage 8882, notify 8883,
+#               watch 8884, lifeworld 8885). Managed by process-compose.
 #   ephemeral — short-lived children a platform component spawns and reaps itself.
 #   external  — processes a platform component owns on a reserved port range;
 #               probed, never started, by the fleet.
@@ -18,11 +18,16 @@
 # actually serves one; ui_screen: true additionally claims a routed page.
 #
 # doors: which of the conductor's /internal/* service doors this service may use
-#   (bus → POST /internal/bus, tuning → GET /internal/tuning). The conductor
-#   identifies the caller by its own minted token and checks THIS list — being
-#   inside the fleet is not a permission.
+#   (bus → POST /internal/bus, tuning → GET /internal/tuning, model → POST
+#   /internal/complete, agents → the activity register). The conductor identifies
+#   the caller by its own minted token and checks THIS list — being inside the
+#   fleet is not a permission.
 # knobs: with doors: [tuning], the exact tuning knobs this service may read.
 #   Nothing else in the fifty-odd knobs is any of its business.
+# peers: which OTHER services this one calls directly. The generator writes that
+#   peer's token into this service's env file — an address is public inside the
+#   fleet, the credential that opens it is not — so a service→service edge is one
+#   reviewed line rather than every token in every env file.
 # env: extra environment keys copied from the generating shell into
 #   data/env/<name>.env. The escape hatch for a credential that genuinely had to
 #   move with the code (notify's GITHUB_TOKEN) — keep every list as short as it
@@ -110,6 +115,35 @@ services:
     # could reach back into the conductor is not the isolation this bought. It
     # emits no events either: the actions a notice proposes all run conductor-side.
     ui: false                   # headless — the Improve screen is its face
+
+  lifeworld:
+    kind: service
+    port: 8885
+    dir: services/lifeworld
+    db: data/lifeworld.db
+    cmd: .venv/bin/uvicorn app:app --app-dir services/lifeworld --host 127.0.0.1 --port ${PORT}
+    callers: [conductor]        # via conductor/app/lifeworld_client.py. /api/lw/* stays an
+                                # authenticated thin proxy (the dashboard hardcodes those
+                                # paths and they must not move); the crew reaches the
+                                # seating, deliberation, consult and review endpoints
+                                # through the same shim. Degraded: /api/lw/* → 503 honest,
+                                # ensure_team → None and the sprint tick sleeps with the
+                                # reason "lifeworld down", Atlas room panels "unavailable".
+    doors: [model, tuning, agents]
+    # model:  the substrate spends the OWNER's quota and holds NO credential — it
+    #         sends a prompt and a signed settings reference, and the conductor
+    #         resolves it. This is the door the whole phase is judged on.
+    # tuning: the world's own dials, read from the screen that sets them.
+    # agents: one activity register for the whole platform, so a lifeworld agent
+    #         shows up beside workers and crew instead of on a private board.
+    knobs: [scene_default_model, scene_utterance_max_tokens,
+            agent_session_cap, agent_session_window_s]
+    peers: [knowledge]          # an agent recalls what it has learned, directly —
+                                # asking the conductor to ask would be two hops for
+                                # one answer. This is the fleet's only service→service
+                                # edge, and the generator writes KNOWLEDGE_TOKEN into
+                                # data/env/lifeworld.env because of this one line.
+    ui: false                   # headless — the Studio canvas IS its face, same-origin
 
   worker-pool:
     kind: ephemeral

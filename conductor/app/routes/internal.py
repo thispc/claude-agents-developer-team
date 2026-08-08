@@ -7,19 +7,31 @@ because one leaked token must not let a caller forge outcomes for every
 reason in reverse: the bus is global, so the feed filters every event down to
 what the connected user is allowed to see.
 
-Since P2 there are two more doors, and they belong to SERVICES rather than to
+Since P2 there are more doors, and they belong to SERVICES rather than to
 workers — a different population with a different token each, so they get their
 own check rather than sharing the worker's:
 
-    POST /internal/bus      an extracted service putting an event on the bus
-    GET  /internal/tuning   an extracted service reading one of the owner's knobs
+    POST /internal/bus          an extracted service putting an event on the bus
+    GET  /internal/tuning       an extracted service reading one of the owner's knobs
+    POST /internal/complete     THE MODEL DOOR (P4)
+    POST /internal/agents/note  the platform-wide activity register, written (P4)
+    GET  /internal/agents/{key} …and read (P4)
 
-Both exist to keep something single-owner. The events table has exactly one
+Each exists to keep something single-owner. The events table has exactly one
 writer (bus.py) and must keep having one, so a service that wants to say
 something asks the conductor to say it — SERVICE_CONTRACT rule 5. The tuning
 knobs are the owner's, live-editable on the Settings screen, and a service
 running on its own private copy of them would quietly disagree with the screen
-that set them.
+that set them. The register is one kv blob whose whole value is that every
+subsystem writes to the same one.
+
+THE MODEL DOOR is the strictest of them, and the reason the lifeworld could be
+extracted at all. Model credentials never leave this process: a service sends
+{provider, model, system, prompt, max_tokens, source, settings_ref} and gets text
+back. `settings_ref` is a SIGNED reference to a principal (auth.mint_settings_ref)
+— the conductor minted it, only the conductor can resolve it, and a forged one
+resolves to nothing. Spend is metered here with the source the caller stated,
+which is the P2 rule: attribution is a string somebody wrote down, never ambient.
 
 Neither door is open to whoever holds any token. Each managed service's token
 identifies WHICH service is calling, and `services.yaml` says which doors — and,
@@ -32,9 +44,9 @@ import json
 from pathlib import Path
 
 from fastapi import Header, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from .. import auth, bus, config, db, team, tuning, usage
+from .. import agents, auth, bus, config, db, providers, team, tuning, usage
 from .base import can_see, router
 
 
@@ -163,6 +175,93 @@ def service_tuning(name: str, x_service_token: str | None = Header(None)) -> dic
         raise HTTPException(403, f"the {caller} service may not read {name!r} "
                                  f"— list it under knobs: in services.yaml")
     return {"name": name, "value": tuning.get(name)}
+
+
+class ServiceComplete(BaseModel):
+    """One completion, asked for by a service that holds no credentials."""
+    provider: str = "anthropic"
+    model: str = ""
+    system: str = ""
+    prompt: str = ""
+    max_tokens: int = 2000
+    source: str = ""            # who to bill; blank is stamped with the caller's name
+    settings_ref: str = ""      # signed; resolves to the owner's settings, here only
+
+
+class ServiceAgentNote(BaseModel):
+    key: str
+    state: str = "idle"
+    what: str = ""
+    fields: dict = Field(default_factory=dict)
+
+
+# A service asking for more than this is asking for a different product. The
+# ceiling is generous next to every prompt the substrate actually sends (the
+# largest is a host plan at ~110 tokens per agent) and small enough that a bug in
+# a loop cannot quietly spend a window.
+MAX_SERVICE_TOKENS = 4000
+
+
+@router.post("/internal/complete")
+async def service_complete(body: ServiceComplete,
+                           x_service_token: str | None = Header(None)) -> dict:
+    """THE MODEL DOOR — the one place a fleet service can reach a model.
+
+    The invariant this exists to hold: **model credentials never leave the
+    conductor.** The lifeworld service runs a whole society of agents on the
+    owner's account and has never seen a key; it sends a prompt and a SIGNED
+    reference to whose account to spend on, and the resolution happens here,
+    three lines below, in the process that already holds every other secret.
+
+    Metered with the source the caller stated. P2 made attribution explicit on
+    the wire precisely because a meter that guesses can bill the crew's own
+    footsteps to the owner and put the crew to sleep forever; a service that
+    forgets to say gets billed under its own name, which is at least true.
+    """
+    name, _ = _service_caller(x_service_token, "model")
+    settings = auth.resolve_settings_ref(body.settings_ref)
+    if not settings:
+        # Deliberately NOT "spend the operator's key instead". A reference that
+        # does not resolve means the caller could not name whose quota this is,
+        # and guessing is how one account pays for another's agents.
+        raise HTTPException(403, "the settings reference did not resolve — a service "
+                                 "may only spend on a principal the conductor named")
+    tokens = max(1, min(int(body.max_tokens or 0) or 1, MAX_SERVICE_TOKENS))
+    try:
+        text = await providers.complete(
+            body.provider or "anthropic", body.model, body.system, body.prompt,
+            settings, max_tokens=tokens, source=(body.source or name)[:24])
+    except providers.ProviderError as e:
+        # 502, not 500: the failure is upstream of this box, and every substrate
+        # caller already has a free fallback for a raising `complete`.
+        raise HTTPException(502, str(e)[:400])
+    return {"text": text}
+
+
+@router.post("/internal/agents/note")
+def service_agent_note(body: ServiceAgentNote,
+                       x_service_token: str | None = Header(None)) -> dict:
+    """A service telling the register what one of its agents is doing.
+
+    The register is a single kv blob and its entire value is that everything
+    writes to the SAME one: a lifeworld agent has to show up beside workers and
+    crew on one board, or the board answers "is this one working?" differently
+    depending on who you ask. So a service does not keep its own — it asks.
+    """
+    _service_caller(x_service_token, "agents")
+    fields = {k: v for k, v in (body.fields or {}).items()
+              if isinstance(v, (str, int, float, bool)) or v is None}
+    return agents.note(str(body.key)[:120], body.state, body.what, **fields)
+
+
+@router.get("/internal/agents/{key:path}")
+def service_agent_get(key: str, x_service_token: str | None = Header(None)) -> dict:
+    """One register row, resolved — expired claims read idle, however confidently
+    they were made. `{key:path}` because a key is colon-joined (`lw:3:14`) and a
+    plain path segment would still work, but a future kind with a slash in it
+    would 404 instead of being answered."""
+    _service_caller(x_service_token, "agents")
+    return agents.get(key)
 
 
 @router.post("/internal/events")

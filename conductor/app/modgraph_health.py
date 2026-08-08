@@ -150,8 +150,17 @@ PORTS_RULE_TTL_S = 300   # a whole-package grep; the rule changes when code land
 
 
 def _probe_lifeworld() -> bool:
-    """The Lifeworld: importable, plus its key invariant held literally — `from ..`
-    appears nowhere in the package except ports.py, the one door to the app."""
+    """The Lifeworld.
+
+    Since P4 it is a SERVICE, so the honest check is the one process-compose makes:
+    does it answer its own /health. The invariant that used to be checked here — `from
+    ..` appears nowhere in the package except ports.py — survives as the grep below
+    while the in-process package is still the P4-A fallback, and it is checked against
+    whichever copy is actually in use.
+    """
+    from . import lifeworld_client
+    if lifeworld_client.enabled():
+        return lifeworld_client.health()
     from . import lifeworld  # noqa: F401
     now = time.time()
     if now - _PORTS_RULE["ts"] > PORTS_RULE_TTL_S:
