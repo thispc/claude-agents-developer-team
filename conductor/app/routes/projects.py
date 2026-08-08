@@ -13,9 +13,9 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from .. import (ambition, artifacts, auth, bus, config, db, deploy, feedback,
-                github_client, launcher, logs, manager, planner, preview,
-                process, providers, scheduler, team)
+from .. import (ambition, artifacts, auth, bus, config, db, deliverables, deploy,
+                feedback, github_client, launcher, logs, manager, planner,
+                preview, process, providers, scheduler, team)
 from .base import (_manager_tasks, can_see, current_user, owned_project,
                    owned_table, owned_task, router)
 
@@ -128,10 +128,16 @@ async def create_project(body: NewProject, request: Request) -> dict:
         raise HTTPException(400, "Add your own Anthropic API key or Claude subscription "
                                  "token in Settings (⚙) before starting a project — "
                                  "agents run on your account, not the server's.")
-    if (not config.DEMO_MODE and not owner["is_root"]
+    # Only when they ASKED for a repo. GitHub is how you get pull requests, not
+    # how you get software: this gate used to refuse every project from a user
+    # with no GitHub token, including the ones that neither want nor need a
+    # remote, and the work of a no-repo project is preserved and downloadable
+    # without one.
+    if (body.repo.strip() and not config.DEMO_MODE and not owner["is_root"]
             and not auth.get_settings(owner).get("github_token")):
-        raise HTTPException(400, "Add your own GitHub token in Settings (⚙) — "
-                                 "your team needs a repo it can push to.")
+        raise HTTPException(400, "Add your own GitHub token in Settings (⚙) to use a "
+                                 "repo — or leave the repo blank and your team's work "
+                                 "is kept here, downloadable from Artifacts.")
     # A sandbox has no credentials by design; gating on them would make the one
     # build you most want to click through the only one you cannot use.
     if not config.AUTH_CONFIGURED and not config.DEMO_MODE:
@@ -371,38 +377,95 @@ async def project_files(project_id: int, request: Request) -> dict:
 
     The Artifacts tab listed pull requests and task rows — a record of ACTIVITY.
     The thing a person wants is the OUTPUT: the code, and the documents.
+
+    With a remote, that output is the repository. Without one it is the preserved
+    deliverable — which is a real answer, and the reason this used to reply "no
+    GitHub repo attached" to a project that had built a working application.
     """
     p = owned_project(project_id, request)
-    if not p["repo"] or not github_client.enabled(p["repo"]):
-        return {"files": [], "reason": "no GitHub repo attached to this project"}
-    try:
-        files = await github_client.list_tree(p["repo"])
-    except Exception as e:
-        return {"files": [], "reason": str(e)[:200]}
-    # Group by what it IS, because "a README" and "a source file" are different
-    # kinds of thing to a reader even though git treats them identically.
-    def kind(path: str) -> str:
-        low = path.lower()
-        if low.endswith((".md", ".txt", ".rst")):
-            return "doc"
-        if low.endswith((".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")):
-            return "image"
-        if "test" in low:
-            return "test"
-        return "code"
-    return {"repo": p["repo"],
-            "files": [{**f, "kind": kind(f["path"])} for f in files]}
+    if p["repo"] and github_client.enabled(p["repo"]):
+        try:
+            files = await github_client.list_tree(p["repo"])
+        except Exception as e:
+            return {"files": [], "reason": str(e)[:200]}
+        # Group by what it IS, because "a README" and "a source file" are
+        # different kinds of thing to a reader even though git treats them
+        # identically. Shared with the no-remote listing so the tab reads the
+        # same either way.
+        return {"repo": p["repo"], "source": "repo",
+                "files": [{**f, "kind": deliverables._kind(f["path"])} for f in files]}
+    row = deliverables.latest(project_id)
+    if not row:
+        # Two different absences, said differently. "No repo is configured" is a
+        # choice and the files arrive on delivery; "a repo is configured and we
+        # cannot reach it" is a fault the boss can fix.
+        return {"files": [], "source": "deliverable",
+                "reason": ("nothing has been delivered yet — this project has no "
+                           "remote, so its files appear here once a task delivers")
+                          if not p["repo"] else
+                          (f"{p['repo']} is configured but GitHub is not connected, "
+                           f"and nothing has been delivered here either")}
+    return {"source": "deliverable", "files": deliverables.list_files(project_id),
+            "delivered_by": {"task_id": row.get("task_id"), "seq": row.get("seq"),
+                             "title": row.get("title", ""), "role": row.get("role", ""),
+                             "taken_at": row.get("taken_at")},
+            "download_url": f"/api/projects/{project_id}/download"}
 
 
 @router.get("/api/projects/{project_id}/file")
 async def project_file(project_id: int, path: str, request: Request) -> dict:
     p = owned_project(project_id, request)
-    if not p["repo"] or ".." in path:
-        raise HTTPException(400, "no repo, or a path that tries to escape it")
+    if ".." in path:
+        raise HTTPException(400, "a path that tries to escape the project")
+    # The same order the listing uses, so a file you can SEE in the tab is a file
+    # you can open. Reading from the repo while listing from the deliverable is
+    # how a tab comes to show twelve files and open none of them.
+    if not (p["repo"] and github_client.enabled(p["repo"])):
+        try:
+            return {"path": path, "text": deliverables.read_text(project_id, path)}
+        except Exception as e:
+            raise HTTPException(400, str(e)[:200])
     try:
         return {"path": path, "text": await github_client.read_file(p["repo"], path)}
     except Exception as e:
         raise HTTPException(400, str(e)[:200])
+
+
+@router.get("/api/projects/{project_id}/download")
+def download_project(project_id: int, request: Request) -> Response:
+    """The deliverable, as a zip you can actually keep.
+
+    There was no way to get the code out of this platform at all. With a remote
+    that was survivable — clone it — but a project without one had exactly one
+    copy of its application, in a directory the pruner deletes, and nothing in
+    the product would hand it to you.
+
+    Built into a temp file rather than memory: a deliverable is a whole
+    application, and holding one in RAM per concurrent download is a way to lose
+    the conductor to something as ordinary as two people clicking at once. The
+    file is deleted after the response is sent.
+    """
+    import tempfile
+    from pathlib import Path
+    from starlette.background import BackgroundTask
+    p = owned_project(project_id, request)
+    row = deliverables.latest(project_id)
+    if not row:
+        raise HTTPException(404, "nothing has been delivered for this project yet")
+    tmp = Path(tempfile.mkdtemp(prefix=f"devteam-dl-{project_id}-")) / "deliverable.zip"
+    ok, note, _count = deliverables.write_zip(project_id, tmp)
+    if not ok:
+        import shutil as _shutil
+        _shutil.rmtree(tmp.parent, ignore_errors=True)
+        raise HTTPException(413 if "limit" in note else 404, note)
+
+    def _cleanup() -> None:
+        import shutil as _shutil
+        _shutil.rmtree(tmp.parent, ignore_errors=True)
+
+    return FileResponse(tmp, media_type="application/zip",
+                        filename=deliverables.archive_name(p, row),
+                        background=BackgroundTask(_cleanup))
 
 
 @router.get("/api/projects/{project_id}/artifacts")
@@ -421,11 +484,27 @@ async def get_artifacts(project_id: int, request: Request) -> dict:
              "agent": people.get(t.get("agent_id") or 0, ""),
              "outcome": (t["report"] or "").strip()[:1200]}
             for t in tasks]
+    # What this project delivered when there is no remote to point at. Carried in
+    # the same payload as `repo`/`prs` rather than behind another call, because
+    # the page's honest answer to "where is the code" is one or the other and the
+    # UI has to be able to tell which without asking twice.
+    delivered = deliverables.latest(project_id) if not repo else None
     out = {
         # The per-sprint index, so the tab has a history dimension rather than
         # only "now". Cheap: it reads rows we already have.
         "sprints": artifacts.timeline(project_id),
         "repo": repo, "repo_url": github_client.repo_url(repo) if repo else None,
+        # Stated rather than inferred from an empty repo string, so nothing in the
+        # UI has to guess whether a missing PR list means "none yet" or "never".
+        "has_remote": bool(repo),
+        "deliverable": ({"task_id": delivered.get("task_id"), "seq": delivered.get("seq"),
+                         "title": delivered.get("title", ""),
+                         "role": delivered.get("role", ""),
+                         "files": delivered.get("files"),
+                         "bytes": delivered.get("bytes"),
+                         "taken_at": delivered.get("taken_at")}
+                        if delivered else None),
+        "download_url": (f"/api/projects/{project_id}/download" if delivered else None),
         "project": project["name"], "brief": project["brief"],
         "status": project["status"], "conclusion": project["summary"],
         "preview_url": f"/preview/{project_id}/" if preview.preview_root(project_id) else None,

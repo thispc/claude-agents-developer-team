@@ -892,3 +892,174 @@ def test_an_ordinary_report_still_lands(root_client, fresh_db):
                                "report": "done the work", "cost_usd": 0.1})
     assert r.status_code == 200 and not r.json().get("ignored")
     assert db.get_task(t)["status"] == "pushed"
+
+
+# ---- what a dispatch actually costs, and what it is called -----------------
+#
+# Both measured on project 9. runs_used read 2 against three run rows, while the
+# manager's own prompt promises "each rival consumes an agent run" — so the cap
+# was a third more generous than anything said out loud. And contenders.branch
+# read task/20-a2-c1 beside a clone in workspaces/task-20-a1-c1, because the
+# branch was named with attempts+1 after attempts had already been incremented.
+
+class _FakeLauncher:
+    """Records launches instead of starting processes."""
+
+    def __init__(self):
+        self.launched = []
+
+    async def launch(self, task, project, contender_id=None, label=""):
+        self.launched.append({"task": task, "contender_id": contender_id, "label": label})
+
+
+def _stub_dispatch(monkeypatch):
+    fake = _FakeLauncher()
+    monkeypatch.setattr(launcher, "_launcher", fake)
+    monkeypatch.setattr(launcher, "owner_credentials",
+                        lambda project: {"ANTHROPIC_API_KEY": "sk-test-not-real"})
+    launcher.COOLDOWN.clear()
+    return fake
+
+
+@pytest.mark.asyncio
+async def test_every_rival_in_a_contest_costs_a_run(fresh_db, monkeypatch):
+    """One increment covered a whole contest, so three agents ran on one run's
+    worth of budget and the cap silently stopped meaning what it says."""
+    fake = _stub_dispatch(monkeypatch)
+    p = make_project(owner_id=1)
+    t = make_task(p)
+    db.update_task(t, compete=3)
+    await launcher.dispatch_task(t)
+    assert len(fake.launched) == 3
+    assert len(db.list_runs(p)) == 3
+    assert db.get_project(p)["runs_used"] == 3, "the cap cannot see two of the three"
+
+
+@pytest.mark.asyncio
+async def test_a_contest_narrows_to_the_room_the_cap_has_left(fresh_db, monkeypatch):
+    """Counting honestly is only half of it: a 3-way contest with 2 runs left has
+    to become a 2-way contest, not an overrun."""
+    fake = _stub_dispatch(monkeypatch)
+    p = make_project(owner_id=1)
+    db._execute("UPDATE projects SET max_runs=?, runs_used=? WHERE id=?", (10, 8, p))
+    t = make_task(p)
+    db.update_task(t, compete=3)
+    await launcher.dispatch_task(t)
+    assert len(fake.launched) == 2
+    assert db.get_project(p)["runs_used"] == 10
+
+
+@pytest.mark.asyncio
+async def test_a_rivals_branch_names_the_clone_it_was_built_in(fresh_db, monkeypatch):
+    """A branch whose name does not match its workspace makes every by-hand
+    post-mortem — 'which directory produced this branch?' — a guess."""
+    _stub_dispatch(monkeypatch)
+    p = make_project(owner_id=1)
+    t = make_task(p)
+    db.update_task(t, compete=2)
+    await launcher.dispatch_task(t)
+    task = db.get_task(t)
+    for c in db.list_contenders(t):
+        # exactly the directory LocalLauncher.launch clones into for this rival
+        workdir = f"task-{t}-a{task['attempts']}-c{c['idx']}"
+        assert c["branch"].replace("task/", "task-") == workdir, (
+            f"branch {c['branch']} was built in {workdir}")
+
+
+# ---- a worker runs as itself, not as whoever started the conductor ---------
+#
+# The live worker carried CLAUDECODE=1, the operator's CLAUDE_CODE_SESSION_ID and
+# CLAUDE_EFFORT=xhigh, inherited straight from the shell. One agent concluded it
+# was inside the operator's session and wrote all four deliverables into
+# /private/tmp/claude-501/… instead of the repo it had just cloned.
+
+def test_a_worker_does_not_inherit_the_operators_session(fresh_db, monkeypatch):
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "the-operators-session")
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+    monkeypatch.setenv("CLAUDE_EFFORT", "xhigh")
+    monkeypatch.setenv("CLAUDE_PID", "4242")
+    env = launcher.child_env({"TASK_ID": "7"}, WORKDIR="/work/task-7")
+    for leaked in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT",
+                   "CLAUDE_EFFORT", "CLAUDE_PID"):
+        assert leaked not in env, f"the worker inherited the operator's {leaked}"
+    assert env["TASK_ID"] == "7" and env["WORKDIR"] == "/work/task-7"
+    assert "PATH" in env, "the machine itself must still come through"
+
+
+def test_the_blanking_is_by_family_not_by_a_list_of_names(fresh_db, monkeypatch):
+    """This family grows with every CLI release, so a name-by-name list would be
+    out of date by the next one."""
+    monkeypatch.setenv("CLAUDE_CODE_SOME_FUTURE_FLAG", "1")
+    assert launcher.is_operator_session_var("CLAUDE_CODE_SOME_FUTURE_FLAG") is True
+    assert "CLAUDE_CODE_SOME_FUTURE_FLAG" not in launcher.child_env({})
+    # …with one deliberate exception: the OAuth token is a CREDENTIAL, resolved by
+    # owner_credentials, and dropping it would cut off a root user whose only
+    # Claude login is the operator's.
+    assert launcher.is_operator_session_var("CLAUDE_CODE_OAUTH_TOKEN") is False
+    assert launcher.is_operator_session_var("CLAUDE_CONFIG_DIR") is False
+
+
+def test_no_launch_path_builds_its_own_environment(fresh_db):
+    """Structural, because the fix only holds if every launch goes through the one
+    place that does the blanking."""
+    src = (Path(__file__).resolve().parent.parent
+           / "conductor" / "app" / "launcher.py").read_text()
+    body = src.split("class LocalLauncher")[1].split("def _terminate")[0]
+    assert "os.environ" not in body, (
+        "a launch that assembles os.environ itself skips the session blanking")
+
+
+# ---- the platform not listening is not the agent failing ------------------
+#
+# worker.post swallowed every HTTP failure, so a 401 from a WORKER_TOKEN mismatch
+# and a wrong CONDUCTOR_URL both surfaced as "the worker produced nothing". On
+# project 8 that sentence cost six attempts and about sixteen hours.
+
+def test_the_two_silences_are_told_apart(fresh_db):
+    unreachable = launcher._death_note(launcher.WORKER_EXIT_UNREACHABLE)
+    ordinary = launcher._death_note(1)
+    assert "could not reach me" in unreachable
+    assert "not a failure of the work" in unreachable.lower()
+    assert "WORKER_TOKEN" in unreachable, "it must name what to actually check"
+    assert "produced nothing" in ordinary
+    assert "could not reach me" not in ordinary
+
+
+def test_a_lost_worker_does_not_leave_its_run_running_forever(fresh_db):
+    """Only a worker's own report ever closed a run, so a death left the row
+    reading 'running' — six of them still did, two days later, quietly shrinking
+    the denominator of every average built on that table."""
+    p = make_project(owner_id=1)
+    t = make_task(p, status="running")
+    db.start_run(p, t, role="backend", model="claude-haiku-4-5")
+    assert launcher.sweep_orphans() == 1
+    row = db.list_runs(p)[0]
+    assert row["outcome"] == "abandoned"
+    assert row["ended_at"], "an unended run is still counted as in flight"
+
+
+def test_a_run_records_how_many_turns_it_took(root_client, fresh_db):
+    """runs.turns existed from the day the table did and nothing ever wrote it, so
+    every row read 0 and the table could not answer the question it was for."""
+    import os
+    p = make_project(owner_id=1)
+    t = make_task(p, status="running")
+    db.start_run(p, t, role="backend", model="claude-haiku-4-5")
+    r = root_client.post("/internal/report",
+                         headers={"X-Worker-Token": os.environ["WORKER_TOKEN"]},
+                         json={"project_id": p, "task_id": t, "status": "pushed",
+                               "report": "done", "cost_usd": 0.1, "turns": 23})
+    assert r.status_code == 200
+    assert db.list_runs(p)[0]["turns"] == 23
+
+
+def test_the_feed_says_which_silence_it_was(fresh_db):
+    """The distinction is worthless if the boss reads raw JSON for one of them.
+    An unrecognised kind falls through to JSON.stringify and loses the error
+    styling, so the new event has to be listed everywhere the old one is."""
+    js = dashboard_js()
+    assert "worker_unreachable" in js
+    assert "could not reach the platform" in js
+    assert js.count("worker_unreachable") >= 3, (
+        "it must be classed as an error and as a routing decision, not just labelled")

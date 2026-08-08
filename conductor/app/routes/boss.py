@@ -124,6 +124,15 @@ def answer(qid: int, body: Answer, request: Request) -> dict:
     if not q:
         raise HTTPException(404, "no such question")
     owned_project(q["project_id"], request)     # only the boss answers their manager
+    # An answer to a question nobody is behind any more must SAY so rather than
+    # succeed. Every surface (the ask-card, the bell) is drawn from the pending
+    # rows, so this only fires on a stale tab — but "200 OK" for an answer that
+    # will never be read is exactly the failure this whole area had: the boss
+    # typed a real answer, the platform said thank you, and it went nowhere.
+    if q["status"] != "pending":
+        raise HTTPException(409, f"that question is no longer open ({q['status']}) — "
+                                 f"nobody is waiting on it. Send it as a message "
+                                 f"instead and your manager will pick it up.")
     db.answer_question(qid, body.answer)
     bus.emit(q["project_id"], None, "boss", "answered",
              {"question": q["text"], "answer": body.answer})

@@ -19,7 +19,7 @@ import asyncio
 import json
 import time
 
-from . import bus, config, db, github_client, launcher, tuning
+from . import bus, config, db, deliverables, github_client, launcher, logs, tuning
 
 # A task 'running' longer than this with no update is treated as a dead worker
 # (k8s Job evicted, subprocess killed, SDK hang). Its Job has its own hard
@@ -226,6 +226,18 @@ def _restart_manager(project_id: int) -> None:
 async def _auto_open_pr(project: dict, task: dict) -> None:
     repo = project["repo"]
     if not github_client.enabled(repo):
+        # No remote means no branch to read this work back out of, and the only
+        # copy is a workspace the pruner will eventually delete. Preserve it
+        # BEFORE the task goes to review: from this moment the delivery is a
+        # thing the boss can open, list and download rather than a directory
+        # nobody was told about.
+        ok, note = await deliverables.preserve(project, task)
+        bus.emit(project["id"], task["id"], "scheduler",
+                 "work_preserved" if ok else "preserve_failed",
+                 {"detail": note, "task": task["seq"]})
+        if not ok:
+            logs.warn("data", "deliverable_not_preserved", note,
+                      project=project["id"], task=task["id"])
         db.update_task(task["id"], status="review")
         bus.emit(project["id"], task["id"], "scheduler", "ready_for_review", {})
         return

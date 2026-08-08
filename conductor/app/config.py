@@ -244,6 +244,11 @@ WORKSPACES_DIR = Path(_env("WORKSPACES_DIR", str(ROOT / "workspaces")))
 # entire platform because every agent needs somewhere to clone. Well under the
 # volume so the database and an in-flight clone still have room.
 WORKSPACES_BUDGET_BYTES = int(_env("WORKSPACES_BUDGET_BYTES", str(6 * 1024**3)))
+# Where a delivered task's work is kept when there is no remote to push it to.
+# Beside the workspaces — which means ON THE VOLUME in a container, and NOT under
+# workspaces/ itself, because that directory is the one the pruner empties.
+DELIVERABLES_DIR = Path(_env("DELIVERABLES_DIR",
+                             str(WORKSPACES_DIR.parent / "deliverables")))
 WORKER_SCRIPT = Path(_env("WORKER_SCRIPT", str(ROOT / "worker" / "worker.py")))
 
 

@@ -12,6 +12,9 @@ venv/
 *.sqlite3
 workspaces/
 previews/
+# what a project with no remote built, kept where the pruner cannot reach it.
+# Runtime state like the three above — the user's software, not ours.
+deliverables/
 .DS_Store
 node_modules/
 

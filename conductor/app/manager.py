@@ -144,6 +144,38 @@ def verification_brief(project: dict) -> str:
         "trust.\n")
 
 
+def delivery_brief(project: dict) -> str:
+    """How work reaches the boss on THIS project — said out loud, only when it
+    differs from the default.
+
+    A manager with no remote was told "Repository: (none configured)" and left to
+    infer the rest. It inferred wrong, every time: it wrote "Open a PR when done"
+    into task descriptions, waited for pull requests that could not exist, and
+    described merges that never happened. The team then behaved accordingly. This
+    is one paragraph of truth in exchange for a whole class of fiction.
+
+    Empty when a repo IS configured, so the with-repo prompt is unchanged.
+    """
+    if (project.get("repo") or "").strip():
+        return ""
+    return (
+        "\n## This project has NO REMOTE REPOSITORY\n\n"
+        "There is no GitHub repo, so there are no branches to push to, no pull "
+        "requests, and nothing to merge. This is a normal way to run — it is what "
+        "the boss chose — and it changes three things for you:\n"
+        "- **Delivery is the workspace.** When a worker finishes, the platform "
+        "preserves that task's working tree as this project's deliverable. The "
+        "boss can browse it, preview it and download it as a zip from the "
+        "Artifacts tab. That is what 'shipped' means here.\n"
+        "- **Close work with accept_task, never merge_pr.** Read the report and "
+        "its evidence, then accept. merge_pr has nothing to merge on this project.\n"
+        "- **Never tell a worker to open a pull request** or promise the boss a PR "
+        "link. Ask for the work itself, and for the command output that proves it "
+        "runs.\n"
+        "Everything else is the same: the same review standard, the same refusal "
+        "to accept work that failed its own checks.\n")
+
+
 def sprint_review_prompt(project_id: int, sprint_no: int) -> tuple[str, list[str]]:
     """What to ask the boss at the end of a sprint, and the answers to offer.
 
@@ -302,11 +334,25 @@ def build_team_server(project_id: int):
             assert isinstance(items, list) and items
         except Exception:
             return _text("error: tasks_json must be a non-empty JSON array")
+        # The last moment a late interview answer is still free. After this call the
+        # graph exists and workers dispatch against it, so an answer arriving then
+        # can only be honoured by discarding work — which is exactly what asking
+        # BEFORE planning was for. See interview.catch_up.
+        late = interview.catch_up(project_id)
+        if late:
+            return _text(late)
         body = await _create_batch(items, existing_dep_ids_ok=False)
+        interview.close(project_id)     # the plan exists; the question is moot now
         db.set_project_status(project_id, "running")
         scheduler.ensure(project_id)
         return _text(body + "\nScheduler started: ready tasks dispatch automatically; "
-                     "PRs auto-open when workers push. Call wait, then review.")
+                     + ("PRs auto-open when workers push."
+                        if github_client.enabled(project().get("repo", ""))
+                        # Saying "PRs auto-open" to a project that has no remote is
+                        # how a manager comes to wait for one.
+                        else "there is no remote, so each finished task's work is "
+                             "preserved as the deliverable and comes to you for review.")
+                     + " Call wait, then review.")
 
     @tool("add_tasks", "Grow the DAG at runtime — e.g. an extra tester task for a shaky "
           "area, a fix task for a bug found late, or work a team member escalated in a "
@@ -630,24 +676,35 @@ def build_team_server(project_id: int):
                               topic="interview")
         bus.emit(project_id, None, "manager", "boss_question",
                  {"question": interview.as_message(qs), "topic": "interview"})
+        # ASK EVEN WHEN THERE IS NO TIME TO WAIT — then leave the question standing.
+        #
+        # wait=0 used to mean: create the question, show it to the boss, and abandon
+        # it in the same second. On a real autonomous run the boss saw it, answered
+        # thirty seconds later, and the manager planned three minutes after that
+        # saying "the interview timed out with no response". Their answer became a
+        # directive nobody drained, because the only drain lived inside a loop that
+        # never ran.
+        #
+        # Of the two ways out, asking is the better one. Not asking would throw away
+        # the drafting call that has already been paid for, and would take the choice
+        # away from a boss who IS at the keyboard — unattended means "do not WAIT for
+        # me", not "do not ask me". So the question stays PENDING instead of being
+        # abandoned, and create_tasks takes one more look (interview.catch_up) at the
+        # last moment an answer can still be honoured for free. If none came by then
+        # the question is retired there (interview.close), so nothing that can no
+        # longer be acted on is ever left on the boss's board.
+        answer = interview.poll_answer(project_id, qid)
         deadline = time.time() + wait
-        while time.time() < deadline:
-            row = db.get_question(qid)
-            if row and row["status"] == "answered":
-                break
-            for d in db.take_directives(project_id):
-                db.answer_question(qid, d)
-                break
+        while not answer and time.time() < deadline:
             await asyncio.sleep(3)
-        row = db.get_question(qid) or {}
-        answer = row.get("answer") or ""
-        if "get on with it" in answer.lower():
+            answer = interview.poll_answer(project_id, qid)
+        if interview.declined(answer):
+            # "Just get on with it" IS an answer — the row is already marked
+            # answered, so nothing is left pending and nothing has to be retired.
             answer = ""
-        if not answer:
-            db.abandon_questions(project_id)
         bus.emit(project_id, None, "manager", "interview_done",
-                 {"answered": bool(answer)})
-        return _text(interview.record(project_id, qs, answer))
+                 {"answered": bool(answer), "still_open": not answer})
+        return _text(interview.record(project_id, qs, answer, qid=qid))
 
     @tool("plan_sprints", "Set how many delivery cycles this project needs, once you "
           "understand the brief. Do this early: the boss's number was a guess before "
@@ -924,6 +981,11 @@ def build_team_server(project_id: int):
         if not github_client.enabled(repo, gh) or not t["pr_number"]:
             db.update_task(t["id"], status="done")
             db.judge_run(t["id"], "accepted", "no PR; accepted")
+            if not repo:
+                return _text(
+                    f"this project has no remote, so there was never a PR — task "
+                    f"{t['seq']} is marked done and its work is preserved as the "
+                    f"deliverable. Use accept_task for the rest.")
             return _text("no PR to merge; task marked done.")
         ok = await github_client.merge_pr(repo, t["pr_number"], token=gh)
         if ok:
@@ -1088,6 +1150,7 @@ async def run_manager(project_id: int) -> None:
         f"{process.guidance(project)}\n"
         f"{ambition.guidance(project)}\n"
         f"{verification_brief(project)}\n"
+        f"{delivery_brief(project)}\n"
         f"Brief from the user:\n{project['brief']}\n\n"
         "Plan the work, run your team, and ship it. This may be a restarted session: "
         "call status first, and only create_tasks if none exist yet.\n"
@@ -1150,6 +1213,7 @@ async def run_manager(project_id: int) -> None:
         scheduler.ensure(project_id)
 
     last_text = ""
+    ended_cleanly = False
     try:
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, AssistantMessage):
@@ -1175,11 +1239,11 @@ async def run_manager(project_id: int) -> None:
                 cost = usage.note_result("manager", options.model or "", message)
                 db.add_project_cost(project_id, cost)
                 bus.emit(project_id, None, "manager", "result", {"cost_usd": cost})
+        ended_cleanly = True      # the session ran to the end of its own stream
     except Exception as e:
         # Surface the model/API's own words (e.g. "Credit balance is too low")
         # instead of the SDK's generic wrapper message.
         detail = last_text or str(e)
-        db.abandon_questions(project_id)   # nothing is waiting on them now
         bus.emit(project_id, None, "manager", "error", detail)
         db.set_project_status(project_id, "failed", f"manager session failed: {detail[:400]}")
         # The project is now dead and nothing else will move it. Unattended, this
@@ -1193,7 +1257,26 @@ async def run_manager(project_id: int) -> None:
             pass
         return
     finally:
-        db.abandon_questions(project_id)   # session over — clear any unanswered ask
+        # ONLY a session that actually ended clears the boss's questions.
+        #
+        # This used to run on every exit, and a manager exits far more often than it
+        # finishes: a session limit, an SDK error, a conductor restart. On project 8
+        # that wiped 15 of 16 questions within seconds of them being asked, and each
+        # new session asked the same thing again — ten-plus times, for one answer the
+        # boss eventually gave. A question outlives the session that asked it,
+        # because the next session re-reads it (interview.catch_up) and because
+        # whether the boss is willing to answer has nothing to do with which process
+        # happens to be up.
+        #
+        # Cancellation is not an ending either, and is deliberately not covered here:
+        # shutdown cancels every manager (main.py) precisely so it can resume them,
+        # and the routes that genuinely stop a project — cancel_project — already
+        # abandon its questions themselves. A crash is not covered for the same
+        # reason: crash then restart is exactly the loop above. What is left dangling
+        # by a project nobody ever restarts is swept at the next boot, by the one
+        # place that can tell a resumable project from an abandoned one (main.py).
+        if ended_cleanly:
+            db.abandon_questions(project_id)
 
     # If the manager ended without calling finish, flag for human review.
     fresh = db.get_project(project_id)

@@ -37,7 +37,7 @@ import json
 import re
 from typing import Any
 
-from . import db, github_client, providers
+from . import db, deliverables, github_client, providers
 
 # Enough of an agent's own account to recognise the work, not enough to turn a
 # release note into a transcript. The full report stays on the task.
@@ -166,12 +166,24 @@ async def capture(project_id: int, sprint: int, *, force: bool = False) -> dict[
     # happily tell you what the repo holds today and nothing about what it held
     # three sprints ago. Best-effort — a snapshot without it is still worth having,
     # and an unreachable GitHub must not cost us the task record too.
+    #
+    # Gating this on github_client.enabled() was a check about the wrong thing. It
+    # asked "can we reach GitHub" when the question is "where does this project's
+    # output live", and a project with no remote therefore froze a sprint with no
+    # record of what it had produced — the one part of the snapshot that is gone
+    # for good afterwards.
     if f["repo"] and github_client.enabled(f["repo"]):
         try:
             tree = await github_client.list_tree(f["repo"])
             f["files"] = [{"path": t["path"], "size": t.get("size", 0)} for t in tree]
+            f["files_source"] = "repo"
         except Exception as e:
             f["files_error"] = str(e)[:200]
+    else:
+        files = deliverables.list_files(project_id)
+        if files:
+            f["files"] = [{"path": t["path"], "size": t["size"]} for t in files]
+            f["files_source"] = "deliverable"
     db.save_sprint_artifact(project_id, sprint, f)
     return db.get_sprint_artifact(project_id, sprint)
 

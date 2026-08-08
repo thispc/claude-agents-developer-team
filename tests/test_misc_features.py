@@ -229,11 +229,17 @@ def test_files_endpoint_is_owner_scoped(client, make_user, fresh_db):
     assert c2.get(f"/api/projects/{p}/files").status_code == 404
 
 
-def test_files_says_why_when_there_is_no_repo(root_client, fresh_db):
+def test_files_says_why_when_nothing_has_been_delivered(root_client, fresh_db):
+    """It used to answer "no GitHub repo attached to this project", which was a
+    statement about our plumbing rather than about their work — and it was the
+    answer a project that HAD built something got too. Without a remote the files
+    come from the preserved deliverable, so the honest reason is that there isn't
+    one yet."""
     from conftest import make_project as _mp
     p = _mp(owner_id=1, repo="")
     d = root_client.get(f"/api/projects/{p}/files").json()
-    assert d["files"] == [] and "no GitHub repo" in d["reason"]
+    assert d["files"] == [] and "nothing has been delivered" in d["reason"]
+    assert d["source"] == "deliverable"
 
 
 def test_the_artifacts_page_groups_files_by_what_they_are():

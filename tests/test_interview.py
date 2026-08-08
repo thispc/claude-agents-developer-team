@@ -121,6 +121,153 @@ async def test_an_autonomous_project_does_not_wait(fresh_db, monkeypatch):
     assert "did not answer" in out
 
 
+# --- an answer nobody was still listening for -------------------------------
+#
+# Project 9, in one second: interview_started 19:56:47, boss_question 19:56:48,
+# interview_done {"answered": false} 19:56:48. The owner answered at 19:57:20 and
+# the manager planned at 19:59:58 saying "the interview timed out with no
+# response". Autonomy set wait=0, but the question was still created, still shown,
+# and then abandoned — and the only thing that ever drained an answer lived inside
+# the loop that wait=0 skipped.
+
+async def _one_question(project, settings):
+    return [{"ask": "Which platform?", "why": "it decides the whole plan",
+             "options": ["web", "mobile"]}]
+
+
+@pytest.mark.asyncio
+async def test_an_unattended_project_still_lets_the_boss_answer(fresh_db, monkeypatch):
+    """Unattended means "do not WAIT for me", not "do not ask me". The question
+    must survive the manager's decision to stop waiting, or the boss is shown
+    something they cannot affect."""
+    monkeypatch.setattr(interview, "draft", _one_question)
+    pid = make_project(name="i7", autonomy="autonomous")
+    await _tool(pid, "interview_boss")({})
+    q = db.pending_question(pid)
+    assert q is not None, "the question was abandoned in the same second it was asked"
+    assert q["topic"] == "interview"
+    assert interview.stored(pid)["qid"] == q["id"], (
+        "the row number was thrown away, so a later answer has nowhere to land")
+
+
+@pytest.mark.asyncio
+async def test_an_answer_that_beats_the_plan_is_honoured_and_the_plan_is_redone(
+        fresh_db, monkeypatch):
+    """The answer arrived 32 seconds late and the plan was made 3 minutes later.
+    Between those two moments the answer is still free — after create_tasks it
+    costs a discarded graph."""
+    monkeypatch.setattr(interview, "draft", _one_question)
+    pid = make_project(name="i8", autonomy="autonomous")
+    await _tool(pid, "interview_boss")({})
+    db.answer_question(db.pending_question(pid)["id"], "web only, and no accounts")
+
+    tasks_json = json.dumps([{"role": "backend", "title": "t1", "description": "d"}])
+    out = str(await _tool(pid, "create_tasks")({"tasks_json": tasks_json}))
+    assert "web only, and no accounts" in out, "the answer was thrown away again"
+    assert db.list_tasks(pid) == [], "the graph was built from the un-answered brief"
+
+    # …and the answer is now part of the interview, so the re-plan goes through.
+    assert "web only" in interview.stored(pid)["answer"]
+    out2 = str(await _tool(pid, "create_tasks")({"tasks_json": tasks_json}))
+    assert "created task" in out2
+    assert len(db.list_tasks(pid)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_typed_reply_counts_as_an_answer_too(fresh_db, monkeypatch):
+    """Clicking an option writes the inbox row; typing arrives as a directive.
+    Watching only one channel drops half the answers."""
+    monkeypatch.setattr(interview, "draft", _one_question)
+    pid = make_project(name="i9", autonomy="autonomous")
+    await _tool(pid, "interview_boss")({})
+    db.add_directive(pid, "mobile first")
+    out = str(await _tool(pid, "create_tasks")(
+        {"tasks_json": json.dumps([{"role": "backend", "title": "t", "description": "d"}])}))
+    assert "mobile first" in out
+
+
+@pytest.mark.asyncio
+async def test_the_question_is_retired_the_moment_the_plan_exists(fresh_db, monkeypatch):
+    """The other half of the promise: a question that can no longer change
+    anything must not sit on the board still looking answerable."""
+    monkeypatch.setattr(interview, "draft", _one_question)
+    pid = make_project(name="i10", autonomy="autonomous")
+    await _tool(pid, "interview_boss")({})
+    await _tool(pid, "create_tasks")(
+        {"tasks_json": json.dumps([{"role": "backend", "title": "t", "description": "d"}])})
+    assert db.pending_question(pid) is None
+    assert db.list_tasks(pid), "the plan is what makes the question moot"
+
+
+def test_answering_a_question_nobody_is_behind_is_refused(fresh_db, root_client):
+    """A stale tab must not get a success toast for an answer that goes nowhere —
+    that is the same failure as asking a question you then abandon."""
+    pid = make_project(owner_id=1, name="i11")
+    qid = db.ask_question(pid, "still open?", ["yes"])
+    assert root_client.post(f"/api/questions/{qid}/answer",
+                            json={"answer": "yes"}).status_code == 200
+    r = root_client.post(f"/api/questions/{qid}/answer", json={"answer": "again"})
+    assert r.status_code == 409 and "no longer open" in r.json()["detail"]
+
+
+# --- a question outlives the session that asked it --------------------------
+#
+# manager.py's `finally` abandoned every pending question on every exit, and a
+# manager exits far more often than it finishes. On project 8, 15 of 16 questions
+# were abandoned within seconds and successive sessions asked the same thing ten
+# times over; the owner answered once.
+
+def _query_that(behaviour):
+    """A stand-in for the SDK session: ends quietly, or dies mid-stream."""
+    def _query(prompt=None, options=None):
+        async def gen():
+            if behaviour == "crash":
+                raise RuntimeError("You've hit your session limit · resets 3pm")
+            return
+            yield       # pragma: no cover — makes this an async generator
+        return gen()
+    return _query
+
+
+@pytest.mark.asyncio
+async def test_a_crashed_session_leaves_the_boss_question_standing(fresh_db, monkeypatch):
+    """Session limit, SDK error, conductor restart: the manager comes back, and
+    the next session re-reads what is pending. Wiping it means asking again."""
+    monkeypatch.setattr(manager, "query", _query_that("crash"))
+    pid = make_project(name="i12")
+    qid = db.ask_question(pid, "merge this?", ["yes", "no"])
+    await manager.run_manager(pid)
+    assert db.get_question(qid)["status"] == "pending", (
+        "a restartable manager wiped the question it will be asked to re-ask")
+
+
+@pytest.mark.asyncio
+async def test_a_session_that_actually_ended_clears_its_questions(fresh_db, monkeypatch):
+    """The other side of it: a manager that ran to the end of its stream really
+    has stopped listening, so a pending ask would be a dead modal."""
+    monkeypatch.setattr(manager, "query", _query_that("quiet"))
+    pid = make_project(name="i13")
+    qid = db.ask_question(pid, "merge this?", ["yes", "no"])
+    await manager.run_manager(pid)
+    assert db.get_question(qid)["status"] == "abandoned"
+
+
+def test_boot_sweeps_only_the_projects_nobody_is_coming_back_for(fresh_db):
+    """main.py wiped every pending question on every boot, for the stated reason
+    that no manager survives a restart. This boot RESUMES mid-flight projects, so
+    for those the reason no longer holds — and a wipe destroyed the boss's chance
+    to answer before the resumed session ever read it."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "conductor" / "app" / "main.py").read_text()
+    body = src.split("async def lifespan")[1].split("\napp = ")[0]
+    assert "db.abandon_questions()" not in body, (
+        "the blanket boot-time wipe is back; it takes resumable projects with it")
+    resume = body.split("for p in db.list_projects():")[1]
+    assert "db.abandon_questions(p[\"id\"])" in resume, (
+        "nothing sweeps the projects that will NOT be resumed")
+
+
 @pytest.mark.asyncio
 async def test_a_brief_with_nothing_to_ask_records_that_and_moves_on(fresh_db, monkeypatch):
     async def nothing(project, settings):

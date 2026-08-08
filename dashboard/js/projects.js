@@ -1002,6 +1002,7 @@ function renderEvent(e) {
   // exactly when a model was upscaled, swapped, or a contest was run.
   if (["dispatched", "rate_limited", "reassigned", "contest_started", "contest_ready",
        "winner_picked", "rival_finished", "worker_stalled", "worker_died",
+       "worker_unreachable",
        "dag_blocked", "reopened", "needs_attention", "consult"].includes(e.kind))
     cls += " decision";
   // Simple mode hides mechanical chatter; these are the "noise" kinds.
@@ -1011,7 +1012,8 @@ function renderEvent(e) {
   // its own steps is the bulk of the volume and almost never what the boss needs.
   if (e.source.startsWith("worker") && ["message", "consult", "consult_reply"].includes(e.kind))
     cls += " chatter";
-  if (e.kind === "error" || e.kind === "worker_died" || e.kind === "dag_blocked") cls += " error";
+  if (["error", "worker_died", "worker_unreachable", "dag_blocked"].includes(e.kind))
+    cls += " error";
   // Outcomes, as distinct from narration. Everything in the feed used to carry
   // the same weight, so "merged PR #12" and a worker musing about a file looked
   // equally important — which means neither did.
@@ -1050,6 +1052,10 @@ function renderEvent(e) {
       else if (e.kind === "winner_picked") text = `🏆 Rival #${obj.rival} (${obj.model}) won: ${obj.reason || ""}`;
       else if (e.kind === "worker_stalled") text = `⚠️ Agent stalled after ${obj.idle_seconds}s — restarting it`;
       else if (e.kind === "worker_died") text = `⚠️ Agent exited without reporting (code ${obj.exit_code})`;
+      // Deliberately worded as OUR fault, because it is. Both silences used to read
+      // "exited without reporting", and that sentence sent six attempts at rewriting
+      // work the agent had already finished and pushed.
+      else if (e.kind === "worker_unreachable") text = `🔌 The agent could not reach the platform — its report never landed. Its work is on its branch; this is a CONDUCTOR_URL or WORKER_TOKEN problem, not a failed agent.`;
       else if (e.kind === "dag_blocked") text = `🚧 Blocked: tasks ${(obj.blocked_tasks||[]).join(", ")} waiting on failed ${(obj.failed_deps||[]).join(", ")}`;
       else if (e.kind === "reopened") text = `↩ Reopened: ${obj.reason || ""}`;
       else if (e.kind === "needs_attention") text = `❗ ${obj.reason} — ${obj.tasks || ""}`;
@@ -1880,7 +1886,9 @@ async function renderArtifacts(force) {
        <button id="buildPreviewBtn">↻ Rebuild</button>
        <span class="hint">${escapeHtml(a.preview_synced || "built earlier")}</span>`
     : `<button id="buildPreviewBtn" class="primary">▶ Build &amp; run it</button>
-       <span class="hint">clones the repo, installs it, and serves it here</span>`;
+       <span class="hint">${a.has_remote
+         ? "clones the repo, installs it, and serves it here"
+         : "builds what the team delivered and serves it here"}</span>`;
 
   // Files, loaded separately so a large repo never delays the deployable object.
   loadProjectFiles();
@@ -1890,6 +1898,29 @@ async function renderArtifacts(force) {
     `<li><a href="${p.url}" target="_blank">PR #${p.number}</a>
       <span class="pill ${p.merged ? "ok" : ""}">${p.merged ? "merged" : p.state}</span>
       ${escapeHtml(p.title)}</li>`).join("");
+
+  // Where the code IS. With a remote that is the repository and its pull
+  // requests; without one it is the preserved deliverable, which you can open in
+  // Files above and take away as a zip. Offering a PR list to a project that can
+  // never have one is how "no pull requests yet" came to mean "your work is gone".
+  const d0 = a.deliverable;
+  const source = a.has_remote
+    ? `<h3>Pull requests</h3>
+       <ul class="art-list">${prs || '<li class="dim">none yet</li>'}</ul>
+       <h3>Source</h3>
+       <p>📁 <a href="${a.repo_url}" target="_blank">${escapeHtml(a.repo || "no repo")}</a>
+          &nbsp; <span class="hint">branches: ${(a.branches || []).length}</span></p>`
+    : `<h3>Your copy</h3>
+       ${d0 ? `<p>📦 <button id="downloadBtn" class="primary">⬇ Download the code</button>
+          &nbsp; <span class="hint">${d0.files || 0} files${
+            d0.bytes ? ` · ${Math.max(1, Math.round(d0.bytes / 1024))} KB` : ""
+          } · delivered by ${escapeHtml(d0.title || `task #${d0.seq || d0.task_id}`)}</span></p>
+        <p class="hint">This project has no GitHub repo, so its work is kept here —
+           the team's finished tree, saved when the task delivered. Browse it under
+           Files, or take the zip.</p>`
+        : `<p class="dim">Nothing delivered yet. This project has no GitHub repo, so
+             its code will appear here — browsable and downloadable — as soon as a
+             task delivers.</p>`}`;
 
   const work = (a.work || []).map((w) => `
     <div class="work-item">
@@ -1924,14 +1955,17 @@ async function renderArtifacts(force) {
       ${a.conclusion ? `<h3>Conclusion</h3><div class="conclusion">${escapeHtml(a.conclusion)}</div>` : ""}
       <h3>What the team did</h3>
       <div class="work-list">${work || '<p class="dim">No work yet.</p>'}</div>
-      <h3>Pull requests</h3>
-      <ul class="art-list">${prs || '<li class="dim">none yet</li>'}</ul>
-      <h3>Source</h3>
-      <p>📁 <a href="${a.repo_url}" target="_blank">${escapeHtml(a.repo || "no repo")}</a>
-         &nbsp; <span class="hint">branches: ${(a.branches || []).length}</span></p>
+      ${source}
     </div>`;
 
   renderDeploy();
+
+  const dl = $("#downloadBtn");
+  // A plain navigation, not fetch(): the response is a file, and the session
+  // cookie rides along exactly as it does for every other same-origin request.
+  if (dl) dl.addEventListener("click", () => {
+    window.location.href = a.download_url;
+  });
 
   const bp = $("#buildPreviewBtn");
   if (bp) bp.addEventListener("click", async () => {

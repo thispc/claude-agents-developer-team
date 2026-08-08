@@ -187,9 +187,13 @@ def test_pruning_keeps_workspaces_of_running_tasks(fresh_db, tmp_path, monkeypat
 
 
 def test_pruning_deletes_finished_clones(fresh_db, tmp_path, monkeypatch):
+    # The project is FINISHED, deliberately. A delivered task on a project that is
+    # still going now keeps its latest workspace — that work may exist nowhere else
+    # (see tests/test_no_repo_delivery.py) — so the clones this test is about are
+    # the ones nobody is coming back for.
     from app import config as cfg, launcher
     monkeypatch.setattr(cfg, "WORKSPACES_DIR", tmp_path)
-    p = make_project()
+    p = make_project(status="done")
     done = make_task(p, status="done")
     for i in range(10):
         (tmp_path / f"task-{done}-a{i}").mkdir()

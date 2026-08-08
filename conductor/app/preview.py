@@ -9,6 +9,7 @@ apps can't be previewed this way (they'd need to run) — use the DOKS deploy fo
 import asyncio
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from . import config, db, github_client, shell
@@ -26,9 +27,16 @@ _STATIC_SUBDIRS = ("dist", "build", "docs", "web", "public", "")
 
 
 def synced_at(project_id: int) -> str:
-    """Human-readable freshness of the previewed build, so a stale demo is obvious."""
-    import time
-    base = PREVIEW_DIR / str(project_id) / "repo" / ".git"
+    """Human-readable freshness of the previewed build, so a stale demo is obvious.
+
+    The marker first, `.git` second: a preview built from a preserved deliverable
+    has no `.git` at all, and reading the age off one that isn't there reported
+    the build as having no age rather than as fresh.
+    """
+    root = PREVIEW_DIR / str(project_id)
+    base = root / ".synced"
+    if not base.exists():
+        base = root / "repo" / ".git"
     if not base.exists():
         return ""
     age = int(time.time() - base.stat().st_mtime)
@@ -121,15 +129,32 @@ def _relativise_assets(dest) -> None:
 
 
 async def sync(project_id: int) -> tuple[bool, str]:
-    """Clone or pull the project's default branch into its preview dir."""
+    """Put the project's current code in its preview dir and build it.
+
+    With a remote that means a clone or a pull of the default branch. Without one
+    it means the preserved deliverable — which is the same question ("what did
+    this project build?") answered from the place that actually holds it. This
+    used to refuse outright, so the one project shape that most needs a preview
+    (no repo, no clone, nowhere else to look) was the one that could not have one.
+    """
     project = db.get_project(project_id)
-    if not project or not project["repo"]:
-        return False, "no repo for this project"
+    if not project:
+        return False, "no such project"
     repo = project["repo"]
+    dest = PREVIEW_DIR / str(project_id) / "repo"
+    if not repo:
+        from . import deliverables, sandbox
+        src = deliverables.root(project_id)
+        if src is None:
+            return False, ("nothing has been delivered yet — this project has no remote, "
+                           "so there is nothing to preview until a task delivers")
+        ok, note = await asyncio.to_thread(sandbox.snapshot, src, dest)
+        if not ok:
+            return False, note
+        return await _finish(project_id, dest)
     gh = github_client.token_for(project)
     if not github_client.enabled(repo, gh):
         return False, "GitHub not configured"
-    dest = PREVIEW_DIR / str(project_id) / "repo"
     url = github_client.clone_url(repo, gh)
 
     def _do() -> tuple[bool, str]:
@@ -145,10 +170,23 @@ async def sync(project_id: int) -> tuple[bool, str]:
     ok, note = await asyncio.to_thread(_do)
     if not ok:
         return False, note
+    return await _finish(project_id, dest)
 
+
+async def _finish(project_id: int, dest) -> tuple[bool, str]:
+    """Build whatever is now in the preview dir and check it is servable.
+
+    Shared by both sources: where the code came from is not the build's business,
+    and two copies of this would be two places for the black-screen bug to come
+    back to.
+    """
     built, build_note = await asyncio.to_thread(_build_if_needed, dest)
     if not built and build_note:
         return False, build_note
+    # A freshness marker of our own. It used to be read off `.git`, which a
+    # deliverable snapshot deliberately does not carry — so a preview built from
+    # one would report no age at all.
+    (dest.parent / ".synced").write_text(str(time.time()))
     if preview_root(project_id) is None:
         return False, ("synced, but no static index.html found at repo root, /docs, or "
                        "/web — this looks like a server app, not a static site. Use the "

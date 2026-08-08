@@ -14,7 +14,9 @@ import signal
 import subprocess
 import sys
 
-from . import ambition, config, db, bus, team, tuning
+from pathlib import Path
+
+from . import ambition, config, db, bus, deliverables, logs, team, tuning
 
 
 def owner_credentials(project: dict) -> dict[str, str]:
@@ -184,6 +186,47 @@ def _worker_env(task: dict, project: dict, model: str) -> dict[str, str]:
                          if "maximum number of turns" in (task.get("report") or "").lower()
                          else config.WORKER_MAX_TURNS),
     }
+
+
+# --- what a worker must NOT inherit from whoever started the conductor --------
+#
+# A local worker's environment is {**os.environ, **env}, which is how the operator's
+# own Claude Code session reaches every agent the platform runs. That is not a
+# credential leak (owner_credentials already blanks those) — it is an IDENTITY leak,
+# and it does real damage: an agent that inherited CLAUDECODE=1 and the operator's
+# CLAUDE_CODE_SESSION_ID believed it was running inside that session and wrote all
+# four of its deliverables into the operator's scratchpad (/private/tmp/claude-501/…)
+# instead of the repository it had just cloned, then had to copy them back.
+# CLAUDE_EFFORT silently re-tiered the run on top of that.
+#
+# Blanked by PREFIX rather than by a list of names, because this family grows with
+# every CLI release and the next variable added would inherit the same bug. The one
+# exception is the OAuth token: it is a credential, resolved deliberately by
+# owner_credentials, and dropping it would cut off a root user whose only Claude
+# login is the operator's. (CLAUDE_CONFIG_DIR is untouched for the same reason —
+# owner_credentials points it somewhere safe for guests and leaves root's CLI login
+# alone.)
+_SESSION_PREFIXES = ("CLAUDE_CODE_", "CLAUDE_AGENT_")
+_SESSION_NAMES = ("CLAUDECODE", "CLAUDE_EFFORT", "CLAUDE_PID", "AI_AGENT")
+_SESSION_KEEP = ("CLAUDE_CODE_OAUTH_TOKEN",)
+
+
+def is_operator_session_var(name: str) -> bool:
+    """Is this variable the operator's session identity rather than the worker's?"""
+    if name in _SESSION_KEEP:
+        return False
+    return name.startswith(_SESSION_PREFIXES) or name in _SESSION_NAMES
+
+
+def child_env(env: dict[str, str], **extra: str) -> dict[str, str]:
+    """The environment a locally launched worker actually gets.
+
+    One place, so nothing can launch a subprocess and forget: inherit the machine
+    (PATH, HOME, the git config), drop the operator's session, then let the
+    conductor's own contract win over both.
+    """
+    base = {k: v for k, v in os.environ.items() if not is_operator_session_var(k)}
+    return {**base, **env, **extra}
 
 
 # Strong signals: their presence alone means we were throttled.
@@ -361,6 +404,50 @@ def canon_role(role: str) -> str:
 ACTIVE: dict[int, dict] = {}
 
 
+# The exit code a worker uses to say "I finished and you never heard me" —
+# worker/worker.py: EXIT_REPORT_UNDELIVERED. Keep the two in step.
+WORKER_EXIT_UNREACHABLE = 17
+
+
+def _death_note(code: int) -> str:
+    """Why the platform never heard from a worker — two very different faults.
+
+    Both used to be reported as "the worker produced nothing", and on project 8
+    that sentence sent six attempts and roughly sixteen hours at rewriting work
+    that had in fact been done, when the real fault was a CONDUCTOR_URL the worker
+    could not reach. A worker whose report POST does not land now exits with
+    WORKER_EXIT_UNREACHABLE, which is the difference between "the agent failed"
+    and "the platform failed to listen" — and only one of those is fixed by
+    briefing the agent again.
+    """
+    if code == WORKER_EXIT_UNREACHABLE:
+        return (f"the worker could not reach me. It ran, and its final report never "
+                f"landed at {config.CONDUCTOR_URL}/internal/report (exit {code}). This "
+                f"is a platform-side fault — a wrong CONDUCTOR_URL or a WORKER_TOKEN "
+                f"mismatch — NOT a failure of the work, and whatever the agent "
+                f"committed is still on its branch. Fix the connection and re-run; do "
+                f"not re-brief the agent.")
+    return (f"the worker produced nothing: its process exited (code {code}) without "
+            f"posting a report")
+
+
+def _close_dead_run(task: dict, contender_id: int | None, code: int) -> None:
+    """A dispatch whose process is gone has an ended run, so end its row.
+
+    Nothing but a worker's own report ever closed a run, so a worker that died —
+    or a conductor that restarted under one — left the row reading 'running'
+    forever: project 8 still showed six live runs two days after the machine that
+    owned them had exited. Left open they are neither success nor failure and
+    silently shrink the denominator of every average computed from them. This is
+    the cheapest honest place to close them, because it is the exact moment the
+    platform LEARNS the process is over; metrics.reconcile stays as the backstop
+    for deaths nobody was awake to witness.
+    """
+    run = db.open_run_for(task["id"], contender_id)
+    if run:
+        db.finish_run(run["id"], "failed", reason=_death_note(code)[:200])
+
+
 class LocalLauncher:
     async def launch(self, task: dict, project: dict, contender_id: int | None = None,
                      label: str = "") -> None:
@@ -368,14 +455,14 @@ class LocalLauncher:
         env = _worker_env(task, project, model)
         if contender_id:
             env["CONTENDER_ID"] = str(contender_id)
+            env["CONTENDER_LABEL"] = label      # so the feed can tell rivals apart
         suffix = f"-{label}" if label else ""
         workdir = config.WORKSPACES_DIR / f"task-{task['id']}-a{task['attempts']}{suffix}"
         workdir.mkdir(parents=True, exist_ok=True)
-        import os
         import time as _t
         proc = await asyncio.create_subprocess_exec(
             sys.executable, str(config.WORKER_SCRIPT),
-            env={**os.environ, **env, "WORKDIR": str(workdir)},
+            env=child_env(env, WORKDIR=str(workdir)),
             cwd=str(workdir),
         )
         ACTIVE[f"{task['id']}{suffix}"] = {"kind": "process", "ref": f"pid {proc.pid}",
@@ -394,8 +481,8 @@ class LocalLauncher:
         if contender_id:      # a rival that died without reporting just loses
             c = db.get_contender(contender_id)
             if c and c["status"] == "running":
-                db.update_contender(contender_id, status="failed",
-                                    report=f"attempt exited (code {code}) without reporting")
+                db.update_contender(contender_id, status="failed", report=_death_note(code))
+                _close_dead_run(task, contender_id, code)
             return
         # The worker's /internal/report is the source of truth. Grace period: the
         # report POST can land a moment after the process exits, so wait before
@@ -403,10 +490,12 @@ class LocalLauncher:
         await asyncio.sleep(3)
         fresh = db.get_task(task["id"])
         if fresh and fresh["status"] in ("queued", "running"):
-            db.update_task(task["id"], status="failed",
-                           report=f"worker process exited (code {code}) without posting a report")
-            bus.emit(task["project_id"], task["id"], "system", "worker_died",
-                     {"exit_code": code})
+            db.update_task(task["id"], status="failed", report=_death_note(code))
+            _close_dead_run(task, None, code)
+            bus.emit(task["project_id"], task["id"], "system",
+                     "worker_unreachable" if code == WORKER_EXIT_UNREACHABLE
+                     else "worker_died",
+                     {"exit_code": code, "detail": _death_note(code)})
 
 
 def _terminate(entry: dict) -> str:
@@ -499,6 +588,13 @@ def prune_workspaces(keep: int = 8, budget: int | None = None) -> int:
     was never a bound though — repo size is unbounded, so eight clones of a large
     repo fill the 10Gi volume exactly as well as eighty of a small one, and a full
     volume stops the whole platform because every agent needs somewhere to clone.
+
+    Two things it must not do, both learned from a real run. It must not delete
+    the last copy of work nobody has retrieved yet — on a project with no remote
+    the workspace IS the deliverable — so the newest workspace of every DELIVERED
+    task on a project that is still going is off limits, budget or no budget. And
+    it must not do any of this silently: this ran on every boot, deleted whole
+    applications, and the only trace was a directory that used to be there.
     """
     import re
     import shutil
@@ -518,14 +614,39 @@ def prune_workspaces(keep: int = 8, budget: int | None = None) -> int:
             live.add(t["id"])
     except Exception:
         return 0        # if we cannot tell what is live, delete nothing
+    try:
+        delivered = deliverables.protected_task_ids()
+    except Exception:
+        return 0        # same rule: cannot tell what is precious, delete nothing
 
     def task_of(d) -> int | None:
         m = re.match(r"task-(\d+)", d.name)
         return int(m.group(1)) if m else None
 
+    def attempt_of(d) -> int:
+        m = re.match(r"task-\d+-a(\d+)", d.name)
+        return int(m.group(1)) if m else 0
+
     dirs = sorted((d for d in base.iterdir() if d.is_dir()),
                   key=lambda d: d.stat().st_mtime, reverse=True)
-    finished = [d for d in dirs if (task_of(d) not in live)]
+
+    # One protected directory per delivered task: its latest attempt. Ordered by
+    # (mtime, attempt, name) rather than mtime alone because a directory tree can
+    # carry the same timestamp as its sibling, and "whichever the filesystem
+    # listed first" is not a rule anyone can rely on.
+    keepers: dict[int, Path] = {}
+    for d in dirs:
+        tid = task_of(d)
+        if tid is None or tid not in delivered:
+            continue
+        best = keepers.get(tid)
+        rank = (d.stat().st_mtime, attempt_of(d), d.name)
+        if best is None or rank > (best.stat().st_mtime, attempt_of(best), best.name):
+            keepers[tid] = d
+    protected = set(keepers.values())
+
+    finished = [d for d in dirs
+                if task_of(d) not in live and d not in protected]
     sizes = {d: _dir_bytes(d) for d in dirs}
     on_disk = sum(sizes.values())
 
@@ -535,14 +656,32 @@ def prune_workspaces(keep: int = 8, budget: int | None = None) -> int:
     # Then oldest-first through the post-mortem window until the volume fits.
     # A clone that survives the count rule still goes if the budget needs it —
     # post-mortems are a convenience and a full volume halts the platform.
+    # `finished` already excludes the protected ones, so the budget cannot reach
+    # them either: reclaiming space is worth less than the only copy of an app.
     for d in reversed(finished[:keep]):
         if on_disk - freed <= budget:
             break
         doomed.append(d)
         freed += sizes[d]
 
+    gone = [{"workspace": d.name, "task": task_of(d), "bytes": sizes[d]} for d in doomed]
     for d in doomed:
         shutil.rmtree(d, ignore_errors=True)
+
+    if doomed:
+        # Naming what went is the whole point. A pruner that reports a count tells
+        # you a number; a pruner that names the workspaces tells you which run's
+        # evidence you no longer have.
+        names = ", ".join(g["workspace"] for g in gone[:12])
+        bus.emit(0, None, "system", "workspaces_pruned",
+                 {"count": len(gone), "bytes": freed, "workspaces": gone[:40],
+                  "protected": len(protected),
+                  "detail": f"deleted {len(gone)} worker workspace(s) "
+                            f"({freed // 1048576} MB): {names}"
+                            + ("…" if len(gone) > 12 else "")})
+        logs.info("lifecycle", "workspaces_deleted",
+                  f"pruned {len(gone)} workspace(s) ({freed // 1048576} MB): {names}",
+                  n=len(gone), bytes=freed, protected=len(protected))
 
     if on_disk - freed > budget:
         # Everything prunable is gone and it still does not fit, so what remains is
@@ -588,8 +727,22 @@ def sweep_orphans() -> int:
                 db.update_task(t["id"], status="failed",
                                report="the conductor restarted while this was running, "
                                       "so the agent was lost; re-run the task to continue")
+                _close_orphan_runs(t["id"])
                 n += 1
     return n
+
+
+def _close_orphan_runs(task_id: int) -> None:
+    """End the measurement rows of a dispatch whose process died with the conductor.
+
+    The task is failed above and the run row was left open, so it read 'running'
+    forever — project 8 still showed six of them two days later, quietly shrinking
+    the denominator of every average built on that table. A boot that already knows
+    the process cannot exist is the cheapest place in the system to say so.
+    """
+    for run in db.open_runs_for_task(task_id):
+        db.finish_run(run["id"], "abandoned",
+                      reason="the conductor restarted; this agent was lost before it reported")
 
 
 class K8sLauncher:
@@ -609,6 +762,7 @@ class K8sLauncher:
         env = _worker_env(task, project, model)
         if contender_id:
             env["CONTENDER_ID"] = str(contender_id)
+            env["CONTENDER_LABEL"] = label      # so the feed can tell rivals apart
         k = self.client
         suffix = f"-{label}" if label else ""
         name = f"devteam-worker-{task['id']}-a{task['attempts']}{suffix}"
@@ -693,6 +847,7 @@ class K8sLauncher:
                 db.update_task(t["id"], status="failed",
                                report=f"the conductor restarted and {why}; "
                                       f"re-run the task to continue")
+                _close_orphan_runs(t["id"])
                 n += 1
         return n
 
@@ -784,7 +939,10 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
     if config.ANTHROPIC_API_KEY and project["cost_usd"] >= project["budget_usd"]:
         return f"error: budget exhausted (${project['cost_usd']:.2f} of ${project['budget_usd']:.2f})"
 
-    db.inc_runs(task["project_id"])
+    # NOTE: the run is counted beside the db.start_run it belongs to, further down —
+    # once for a normal dispatch, once PER RIVAL for a contest. Counting it here
+    # instead was a single increment for the whole contest, which is how a project
+    # showed runs_used=2 against three run rows.
     # Claim a named teammate before choosing a model: a teammate may carry their
     # own model, and that choice has to win over the platform's default or
     # per-role model selection is decorative.
@@ -801,7 +959,13 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
     # --- competitive mode: N rivals attack the same task at once ---------------
     n = int(task.get("compete") or 0)
     if n > 1:
-        n = min(n, 3)
+        # Each rival is its own agent run, and the manager's prompt promises exactly
+        # that ("each rival consumes an agent run"), so the cap must be able to count
+        # them. Narrowed to the room actually left rather than overrunning the cap by
+        # two; a contest with no room for a second rival is just an ordinary dispatch,
+        # which is why this is a separate `if` below.
+        n = min(n, 3, max(0, int(project["max_runs"]) - int(project["runs_used"])))
+    if n > 1:
         db.clear_contenders(task_id)
         # Deliberately vary the model across rivals when we can: two different
         # models disagree in more useful ways than two runs of the same one.
@@ -809,9 +973,13 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
         launched = []
         for i in range(1, n + 1):
             cm = models[(i - 1) % len(models)] if models else model
-            branch = f"task/{task_id}-a{task['attempts'] + 1}-c{i}"
+            # `attempts` was already incremented above, so the +1 that used to be here
+            # named a branch nobody's workspace matched: contenders.branch said
+            # task/20-a2-c1 while the clone it was built in was workspaces/task-20-a1-c1.
+            branch = f"task/{task_id}-a{task['attempts']}-c{i}"
             cid = db.create_contender(task_id, i, branch, cm)
             rival = {**task, "branch": branch, "model": cm}
+            db.inc_runs(task["project_id"])
             db.start_run(task["project_id"], task_id, role=task["role"], model=cm,
                          attempt=task["attempts"], kind="contender",
                          sprint=task.get("sprint") or 1, contender_id=cid,
@@ -824,6 +992,7 @@ async def dispatch_task(task_id: int, source: str = "scheduler") -> str:
         return (f"dispatched {n} rival attempts at task {task_id} "
                 f"({', '.join(launched)}); the manager judges them when they finish.")
 
+    db.inc_runs(task["project_id"])
     db.start_run(task["project_id"], task_id, role=task["role"], model=model,
                  attempt=task["attempts"], kind="task", sprint=task.get("sprint") or 1,
                  agent_id=task.get("agent_id"), profile=tuning.profile_of(project))

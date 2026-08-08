@@ -59,15 +59,43 @@ WORKER_TOKEN = os.environ.get("WORKER_TOKEN", "")
 WORKDIR = Path(os.environ.get("WORKDIR", "/work"))
 
 AGENTS_DIR = Path(os.environ.get("AGENTS_DIR", str(Path(__file__).resolve().parent.parent / "agents")))
+
+CONTENDER_ID = int(os.environ.get("CONTENDER_ID", "0") or 0)
+# Which rival this is, as the launcher labels it ("c1", "c2"). Read here, beside
+# the id, because SOURCE is computed once at import: it used to be built above the
+# line that read CONTENDER_ID, so three rivals racing on one task all narrated
+# themselves as "worker:backend" and the feed interleaved them into one voice
+# saying contradictory things.
+CONTENDER_LABEL = os.environ.get("CONTENDER_LABEL", "").strip()
 SOURCE = f"worker:{ROLE}"
+if CONTENDER_ID:
+    SOURCE += ":" + (CONTENDER_LABEL or f"c#{CONTENDER_ID}")
+
+# The exit code that means "the work is done and the conductor never heard about
+# it". conductor/app/launcher.py reads this exact number (WORKER_EXIT_UNREACHABLE)
+# to tell "the worker could not reach me" from "the worker produced nothing" —
+# keep the two in step.
+EXIT_REPORT_UNDELIVERED = 17
+
+
+class ReportUndelivered(Exception):
+    """The final report did not land, so nothing downstream knows this run happened."""
 
 
 def post(path: str, body: dict) -> None:
-    try:
-        httpx.post(f"{CONDUCTOR_URL}{path}", json=body,
+    """POST to the conductor, RAISING when it does not land.
+
+    This swallowed every failure into stderr, which made the one failure a worker
+    cannot survive — the conductor not hearing it — look exactly like a worker that
+    did nothing. A 401 from a WORKER_TOKEN mismatch, or a CONDUCTOR_URL pointing at
+    nothing, reported success here and "the worker produced nothing" on the
+    platform; on project 8 that misdirection burned six attempts and about sixteen
+    hours before anyone thought to check the URL. Callers that can live without the
+    call (emit) catch; report() cannot, and does not.
+    """
+    r = httpx.post(f"{CONDUCTOR_URL}{path}", json=body,
                    headers={"X-Worker-Token": WORKER_TOKEN}, timeout=15)
-    except Exception as e:
-        print(f"[worker] failed to reach conductor: {e}", file=sys.stderr)
+    r.raise_for_status()
 
 
 def fetch(path: str, params: dict) -> dict:
@@ -83,17 +111,22 @@ def fetch(path: str, params: dict) -> dict:
 
 
 def emit(kind: str, payload: str) -> None:
-    post("/internal/events", {"project_id": PROJECT_ID, "task_id": TASK_ID,
-                              "source": SOURCE, "kind": kind, "payload": payload[:4000]})
-
-
-CONTENDER_ID = int(os.environ.get("CONTENDER_ID", "0") or 0)
+    """Progress, not evidence. A lost event costs one line in the feed, so it is
+    worth attempting and not worth dying for — unlike the final report below."""
+    try:
+        post("/internal/events", {"project_id": PROJECT_ID, "task_id": TASK_ID,
+                                  "source": SOURCE, "kind": kind, "payload": payload[:4000]})
+    except Exception as e:
+        print(f"[worker] failed to reach conductor: {e}", file=sys.stderr)
 
 
 # What this session actually consumed. The conductor meters the box's whole subscription in
 # TOKENS (see conductor/app/usage.py) — a worker that reports only a dollar figure leaves the
 # self-repair crew guessing at how much of the window a human's task just used.
-SESSION_TOKENS = {"tok": 0, "cache": 0}
+# `turns` rides along because runs.turns was a column nothing ever wrote: every row
+# read 0, so "how many turns does this role really need" was unanswerable from the
+# one table built to answer it.
+SESSION_TOKENS = {"tok": 0, "cache": 0, "turns": 0}
 
 
 def note_tokens(message) -> None:
@@ -104,15 +137,40 @@ def note_tokens(message) -> None:
         SESSION_TOKENS["tok"] += int(u.get("input_tokens") or 0) + int(u.get("output_tokens") or 0)
         SESSION_TOKENS["cache"] += (int(u.get("cache_read_input_tokens") or 0)
                                     + int(u.get("cache_creation_input_tokens") or 0))
+    SESSION_TOKENS["turns"] += int(getattr(message, "num_turns", 0) or 0)
 
 
 def report(status: str, text: str, cost: float, verification: dict | None = None) -> None:
-    post("/internal/report", {"project_id": PROJECT_ID, "task_id": TASK_ID,
-                              "status": status, "report": text[:12000], "cost_usd": cost,
-                              "tokens": SESSION_TOKENS["tok"],
-                              "cache_tokens": SESSION_TOKENS["cache"],
-                              "contender_id": CONTENDER_ID,
-                              "verification": json.dumps(verification or {})})
+    """The one call this process exists to make.
+
+    Retried, then RAISED. Retried because a blip on the way home should not throw
+    away a session's work; raised because there is nothing left to try and the
+    alternative — exiting 0 with nobody told — is the invisible failure this whole
+    change is about. A 4xx is not retried: a bad token or a wrong URL is a
+    configuration fault, and asking three times does not fix configuration.
+    """
+    body = {"project_id": PROJECT_ID, "task_id": TASK_ID,
+            "status": status, "report": text[:12000], "cost_usd": cost,
+            "tokens": SESSION_TOKENS["tok"],
+            "cache_tokens": SESSION_TOKENS["cache"],
+            "turns": SESSION_TOKENS["turns"],
+            "contender_id": CONTENDER_ID,
+            "verification": json.dumps(verification or {})}
+    why = "no attempt was made"
+    for attempt in range(3):
+        try:
+            post("/internal/report", body)
+            return
+        except httpx.HTTPStatusError as e:
+            why = f"HTTP {e.response.status_code} from the conductor"
+            if e.response.status_code < 500:
+                break
+        except Exception as e:
+            why = str(e)[:200]
+        # Blocking on purpose: this process has nothing else left to do.
+        time.sleep(2 * (attempt + 1))
+    raise ReportUndelivered(
+        f"the final report never reached {CONDUCTOR_URL}/internal/report — {why}")
 
 
 VERIFY_TIMEOUT = int(os.environ.get("VERIFY_TIMEOUT", "600"))
@@ -468,6 +526,18 @@ def build_prompt() -> str:
         parts += ["", "## Where the previous attempt got to", prior]
     parts += ["", "Work inside the current directory (the repository checkout). "
               "When you are done, end with a final summary message as instructed."]
+    if not REPO:
+        # Said plainly because the alternative is an agent spending turns looking
+        # for a remote that does not exist, or running `gh pr create` against
+        # nothing. The tree it leaves behind IS the delivery: the platform copies
+        # this directory somewhere durable the moment the task is reported.
+        parts += ["", "## There is no remote for this project",
+                  "No GitHub repo is configured. Do not run `git push`, do not open a "
+                  "pull request, and do not go looking for a remote — there is none, "
+                  "and any task text that mentions one is mistaken. Your finished "
+                  "working tree in this directory is the deliverable: the platform "
+                  "commits it here and preserves a copy the boss can browse and "
+                  "download. Leave everything you produced on disk."]
     return "\n".join(parts)
 
 
@@ -528,18 +598,20 @@ async def run_agentic_session(system_prompt: str, repo_dir: Path) -> tuple[str, 
     if not key:
         return "", 0.0, (f"no {PROVIDER} credentials reached this worker — add the key "
                          f"in Settings, or move this teammate to a provider you have")
-    spend = {"usd": 0.0}
+    spend = {"usd": 0.0, "turns": 0}
     try:
         last_text, cost = await agentic.run_session(
             provider=PROVIDER, model=MODEL, key=key,
             system=system_prompt + agentic.TOOL_BRIEFING,
             prompt=build_prompt(), repo_dir=repo_dir, max_turns=MAX_TURNS,
             emit=emit, spend=spend)
+        SESSION_TOKENS["turns"] += int(spend.get("turns") or 0)
         return last_text, cost, None
     except Exception as e:
         # The turn limit and a rate limit both arrive here, and their wording is
         # load-bearing: the launcher reads the report to tell a capacity death from
         # a quality failure, and to give a turn-starved retry a bigger budget.
+        SESSION_TOKENS["turns"] += int(spend.get("turns") or 0)
         return "", spend["usd"], str(e)
 
 
@@ -606,4 +678,12 @@ async def run() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    except ReportUndelivered as e:
+        # NON-ZERO, and a code of its own. The launcher reaps this process and has to
+        # tell the boss something; without a distinct code the only sentence it could
+        # write was "the worker produced nothing", which sent six attempts at rewriting
+        # work that had in fact been done and pushed. See launcher._death_note.
+        print(f"[worker] {e}", file=sys.stderr)
+        sys.exit(EXIT_REPORT_UNDELIVERED)

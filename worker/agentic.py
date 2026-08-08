@@ -565,11 +565,15 @@ async def run_session(provider: str, model: str, key: str, system: str, prompt: 
     tools = build_tools(repo_dir)
 
     last_text, cost = "", 0.0
-    for _ in range(max_turns):
+    for turn in range(1, max_turns + 1):
         reply = await engine.turn(TOOL_SPECS)
         cost += reply.cost
         if spend is not None:
             spend["usd"] = cost
+            # Counted alongside the money for the same reason the money is counted
+            # here: the caller still needs it after an exception, and a session that
+            # died on the turn limit is precisely the one whose turn count matters.
+            spend["turns"] = turn
         if reply.text.strip():
             last_text = reply.text
             say("message", reply.text)

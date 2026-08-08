@@ -257,19 +257,26 @@ def _log(project_id: int, line: str, branch: str = "") -> None:
         f.write(f"[{time.strftime('%H:%M:%S')}] {line}\n")
 
 
-async def sync_from_workspace(project_id: int, workspace: str) -> tuple[bool, str]:
+async def sync_from_workspace(project_id: int, workspace: str,
+                              dest: Path | None = None) -> tuple[bool, str]:
     """Take the code from an agent's own checkout, uncommitted work included.
 
     Deploying only from `main` means a change cannot be tried until it has been
     committed, pushed, reviewed and merged — so the first time anyone runs it is
     after it has already shipped. A QA role needs the opposite loop: run what the
     agent has right now, find the problem, send it back within the same sprint.
+
+    `dest` exists because this copy is also the ONLY way a project with no remote
+    keeps what it built: the workspace is deleted by the pruner, and there is no
+    branch to read it back from. Preserving a deliverable is the same operation
+    into a different directory, so it is the same code — a second copier would be
+    a second set of exclusions to keep correct forever. Default unchanged.
     """
     from . import sandbox
     if "/" in workspace or ".." in workspace:
         return False, f"refusing {workspace!r} as a workspace name"
     src = config.WORKSPACES_DIR / workspace / "repo"
-    ok, note = sandbox.snapshot(src, workdir(project_id))
+    ok, note = sandbox.snapshot(src, dest or workdir(project_id))
     if not ok:
         return False, note
     dirty = sandbox._dirty(src)

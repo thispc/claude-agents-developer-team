@@ -79,6 +79,12 @@ class WorkerReport(BaseModel):
     # reports no tokens rather than failing, and its row then counts as calls only.
     tokens: int = 0
     cache_tokens: int = 0
+    # Turns the session took. Same optionality as tokens, and the same reason it is
+    # here at all: runs.turns existed as a column from the day the runs table was
+    # written and nothing ever sent a value, so every row read 0 and "how many turns
+    # does this role actually need" could not be answered from the table built to
+    # answer it.
+    turns: int = 0
     contender_id: int = 0
     verification: str = ""      # JSON, produced by the worker process not the model
 
@@ -280,7 +286,7 @@ def worker_event(body: WorkerEvent, x_worker_token: str | None = Header(None)) -
 
 
 def _close_run(task_id: int, status: str, cost_usd: float,
-               contender_id: int | None = None) -> None:
+               contender_id: int | None = None, turns: int = 0) -> None:
     """Close the measurement row for a dispatch that just reported.
 
     'delivered' rather than 'accepted': the worker finished, which is not the same
@@ -289,7 +295,7 @@ def _close_run(task_id: int, status: str, cost_usd: float,
     run = db.open_run_for(task_id, contender_id)
     if run:
         db.finish_run(run["id"], "delivered" if status == "pushed" else "failed",
-                      cost_usd=cost_usd)
+                      cost_usd=cost_usd, turns=turns)
 
 
 @router.get("/internal/teammate")
@@ -352,7 +358,8 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
     if body.contender_id:
         db.update_contender(body.contender_id, status=status, report=body.report[:12000])
         db.add_project_cost(body.project_id, body.cost_usd)
-        _close_run(body.task_id, status, body.cost_usd, contender_id=body.contender_id)
+        _close_run(body.task_id, status, body.cost_usd, contender_id=body.contender_id,
+                   turns=body.turns)
         rivals = db.list_contenders(body.task_id)
         c = db.get_contender(body.contender_id)
         bus.emit(body.project_id, body.task_id, f"rival {c['idx'] if c else '?'}",
@@ -403,7 +410,7 @@ def worker_report(body: WorkerReport, x_worker_token: str | None = Header(None))
                    verification=body.verification or "",
                    cost_usd=(task["cost_usd"] if task else 0) + body.cost_usd)
     db.add_project_cost(body.project_id, body.cost_usd)
-    _close_run(body.task_id, status, body.cost_usd)
+    _close_run(body.task_id, status, body.cost_usd, turns=body.turns)
     # Back to the pool. Not credited with the task yet — that happens when the
     # manager accepts, because finishing and being any good are different events.
     team.release(db.get_task(body.task_id) or {}, body.report)

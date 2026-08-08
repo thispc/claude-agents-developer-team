@@ -906,6 +906,18 @@ def abandon_questions(project_id: int | None = None) -> int:
     return cur.rowcount
 
 
+def abandon_question(qid: int) -> int:
+    """Retire ONE question, because it personally has gone out of date.
+
+    abandon_questions() sweeps a whole project, which is right when the project
+    stops and wrong when a single ask has merely become moot — sweeping then takes
+    unrelated pending questions with it, and those belong to a different moment.
+    """
+    cur = _execute("UPDATE inbox SET status='abandoned' WHERE id=? AND kind='question' "
+                   "AND status='pending'", (qid,))
+    return cur.rowcount
+
+
 def pending_question(project_id: int) -> dict | None:
     rows = _rows(
         "SELECT * FROM inbox WHERE project_id=? AND kind='question' AND status='pending' ORDER BY id DESC LIMIT 1",
@@ -1010,6 +1022,13 @@ def open_run_for(task_id: int, contender_id: int | None = None) -> dict | None:
         rows = _rows("SELECT * FROM runs WHERE task_id=? AND contender_id IS NULL "
                      "AND outcome='running' ORDER BY id DESC LIMIT 1", (task_id,))
     return rows[0] if rows else None
+
+
+def open_runs_for_task(task_id: int) -> list[dict]:
+    """Every still-open run of one task — its own and its rivals'. open_run_for
+    answers for ONE dispatch; a task that died mid-contest has several."""
+    return _rows("SELECT * FROM runs WHERE task_id=? AND outcome='running' ORDER BY id",
+                 (task_id,))
 
 
 def latest_run(task_id: int) -> dict | None:

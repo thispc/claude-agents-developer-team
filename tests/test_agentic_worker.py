@@ -366,3 +366,110 @@ def test_a_user_with_only_an_openai_key_can_still_have_agents_dispatched(fresh_d
     assert creds["ANTHROPIC_API_KEY"] == ""
     assert creds["CLAUDE_CODE_OAUTH_TOKEN"] == ""
     assert creds["GEMINI_API_KEY"] == ""
+
+
+# --- the report is the one call this process exists to make ------------------
+#
+# worker.post swallowed every failure into stderr. A 401 from a WORKER_TOKEN
+# mismatch, or a CONDUCTOR_URL pointing at nothing, therefore looked exactly like
+# an agent that did nothing — which is what burned six attempts and roughly
+# sixteen hours on project 8 before the URL turned out to be wrong.
+
+import httpx  # noqa: E402
+
+
+@pytest.fixture()
+def worker_mod():
+    """The worker entrypoint, reloaded after the test so an env-dependent constant
+    set by one drill cannot leak into the next."""
+    import importlib
+    import worker as w
+    yield w
+    importlib.reload(w)
+
+
+def _responder(status, seen):
+    def _post(url, **kw):
+        seen.append(url)
+        return httpx.Response(status, request=httpx.Request("POST", url), json={})
+    return _post
+
+
+def test_a_report_the_conductor_refused_is_not_a_success(worker_mod, monkeypatch):
+    seen = []
+    monkeypatch.setattr(worker_mod.httpx, "post", _responder(401, seen))
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
+    with pytest.raises(worker_mod.ReportUndelivered) as e:
+        worker_mod.report("pushed", "I did the work and pushed it", 0.0)
+    assert "401" in str(e.value)
+    assert len(seen) == 1, "a bad token is configuration; asking again cannot fix it"
+
+
+def test_a_report_is_retried_before_it_is_given_up_on(worker_mod, monkeypatch):
+    """A blip on the way home must not throw away a session's work."""
+    seen = []
+    monkeypatch.setattr(worker_mod.httpx, "post", _responder(503, seen))
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
+    with pytest.raises(worker_mod.ReportUndelivered):
+        worker_mod.report("pushed", "work", 0.0)
+    assert len(seen) == 3
+
+
+def test_a_lost_event_is_survivable_and_a_lost_report_is_not(worker_mod, monkeypatch):
+    """The asymmetry is the point: an event is a line in a feed, the report is the
+    only reason the process ran."""
+    monkeypatch.setattr(worker_mod.httpx, "post", _responder(500, []))
+    monkeypatch.setattr(worker_mod.time, "sleep", lambda s: None)
+    worker_mod.emit("message", "still alive")          # must not raise
+    with pytest.raises(worker_mod.ReportUndelivered):
+        worker_mod.report("pushed", "work", 0.0)
+
+
+def test_the_worker_and_the_launcher_agree_on_what_unreachable_means(worker_mod):
+    """Two files, one number. If they drift, _reap silently goes back to saying
+    'the worker produced nothing' for a platform-side fault."""
+    assert worker_mod.EXIT_REPORT_UNDELIVERED == launcher.WORKER_EXIT_UNREACHABLE
+
+
+def test_the_report_carries_the_turn_count(worker_mod, monkeypatch):
+    sent = {}
+
+    def _post(path, body):
+        sent.update(body)
+    monkeypatch.setattr(worker_mod, "post", _post)
+    worker_mod.SESSION_TOKENS.update(tok=10, cache=2, turns=14)
+    worker_mod.report("pushed", "work", 0.5)
+    assert sent["turns"] == 14
+
+
+# --- two rivals are two voices ----------------------------------------------
+
+def test_rivals_do_not_narrate_the_feed_under_one_name(worker_mod, monkeypatch):
+    """SOURCE was computed above the line that read CONTENDER_ID, so three rivals
+    racing on one task all reported as 'worker:backend' and the feed interleaved
+    them into one person contradicting themselves."""
+    import importlib
+    monkeypatch.setenv("ROLE", "backend")
+    monkeypatch.setenv("CONTENDER_ID", "31")
+    monkeypatch.setenv("CONTENDER_LABEL", "c2")
+    w = importlib.reload(worker_mod)
+    assert w.SOURCE == "worker:backend:c2"
+
+
+def test_a_lone_worker_is_still_just_its_role(worker_mod, monkeypatch):
+    """Every non-contest event keeps the source it has always had."""
+    import importlib
+    monkeypatch.setenv("ROLE", "backend")
+    monkeypatch.delenv("CONTENDER_ID", raising=False)
+    monkeypatch.delenv("CONTENDER_LABEL", raising=False)
+    w = importlib.reload(worker_mod)
+    assert w.SOURCE == "worker:backend"
+
+
+def test_the_launcher_tells_a_rival_which_one_it_is(fresh_db):
+    """The label the workspace is named after is the label the feed shows, so the
+    two can be lined up by eye."""
+    src = (Path(__file__).resolve().parent.parent
+           / "conductor" / "app" / "launcher.py").read_text()
+    assert src.count('env["CONTENDER_LABEL"] = label') == 2, (
+        "both launchers (local and k8s) must name the rival")

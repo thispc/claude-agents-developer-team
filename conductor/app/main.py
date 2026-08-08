@@ -49,9 +49,19 @@ async def lifespan(app: FastAPI):
     # Every never-die background loop, so shutdown can actually end them (see below).
     background: list[asyncio.Task] = []
     config.WORKSPACES_DIR.mkdir(parents=True, exist_ok=True)
-    # No manager session survives a restart, so any question still marked pending
-    # has no waiter — clear them so the dashboard doesn't re-raise dead questions.
-    db.abandon_questions()
+    # Pending questions are NOT swept wholesale here any more — see the resume loop
+    # below, which sweeps only the projects no manager is coming back for.
+    #
+    # The original reason ("no manager session survives a restart, so a pending
+    # question has no waiter") stopped being true when this same boot learned to
+    # resume mid-flight projects: those get their manager back a few lines further
+    # down, and a resumed manager re-reads what is pending — the interview it never
+    # got an answer to is folded into the plan before it creates tasks. Wiping first
+    # meant a restart silently destroyed the boss's chance to answer, and the new
+    # session asked the same question over again. The half of the reason that DOES
+    # still hold is the other half: a project that will not be resumed really has
+    # nobody behind its questions, and leaving those pending is how the dashboard
+    # ends up raising asks from a session that died last week.
     # Same reasoning for workers: a worker is a child of this process, so anything
     # still marked running belongs to a conductor that no longer exists. Left alone
     # it shows in the Agents tab forever as something you cannot kill.
@@ -63,6 +73,21 @@ async def lifespan(app: FastAPI):
     if cooled:
         logs.info("quota", "cooldowns_restored",
                   f"restored {cooled} model cooldown(s) from the last run", n=cooled)
+    # BEFORE the pruner, always. A project with no remote keeps its output in the
+    # workspace and nowhere else, and everything delivered before deliverables.py
+    # existed is still sitting there with nothing to claim it. Copy first, delete
+    # second — the other order is the bug this exists to close.
+    try:
+        from . import deliverables
+        kept = await deliverables.backfill()
+        if kept:
+            logs.info("data", "deliverables_backfilled",
+                      f"preserved {len(kept)} delivered task(s) that had no copy "
+                      f"outside their workspace: {', '.join(kept[:8])}", n=len(kept))
+    except Exception as e:
+        # A backfill failure must not stop the conductor booting — but it must not
+        # be silent either, because the next line deletes things.
+        logs.warn("data", "deliverables_backfill_failed", str(e)[:200])
     pruned = launcher.prune_workspaces()
     if pruned:
         logs.info("lifecycle", "workspaces_pruned",
@@ -81,12 +106,15 @@ async def lifespan(app: FastAPI):
         p = db.get_project(p["id"]) or p
         # is_self is excluded deliberately: the platform only works on itself when
         # someone triggers it, never because the conductor happened to restart.
-        if p["is_self"]:
+        resuming = (not p["is_self"]
+                    and p["status"] in ("planning", "running", "hold")
+                    and config.AUTH_CONFIGURED)
+        if not resuming:
+            db.abandon_questions(p["id"])   # nobody is coming back to read them
             continue
-        if p["status"] in ("planning", "running", "hold") and config.AUTH_CONFIGURED:
-            scheduler.ensure(p["id"])
-            _manager_tasks[p["id"]] = loop.create_task(manager.run_manager(p["id"]))
-            bus.emit(p["id"], None, "system", "resumed_after_restart", {})
+        scheduler.ensure(p["id"])
+        _manager_tasks[p["id"]] = loop.create_task(manager.run_manager(p["id"]))
+        bus.emit(p["id"], None, "system", "resumed_after_restart", {})
     # Notice new versions of ourselves. Without this the loop is autonomous but
     # not unattended: CI publishes an image and nothing adopts it.
     from . import cloud
