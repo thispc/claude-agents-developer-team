@@ -401,6 +401,18 @@ six-verb right-click menu (with the sub-switch added and Remove greyed with its 
 tri-state glow and the legend, both themes, keyboard navigation, the `M` map, and the
 Artifact pinned as the goal — now carrying the fleet's own line (`5/7 services up`).
 
+**And the projects?** Everything above is about the platform's own fleet, because the
+platform was the codebase we could afford to break — but "a module means a microservice"
+was always meant for the software the teams build. `docs/PROJECT_SERVICES.md` is the design
+note for that: a project's module scaffolded from `templates/service/` into its own
+repository, declared in its own `services.yaml`, run under its own process-compose instance
+on its own port block, rendered in its own graph tenant. It is **designed, not built** —
+it audits what already generalises (the scaffold, the contract, the multi-tenant modgraph
+store, the pc client, the `/svc` gateway), what is repo-rooted today and would have to move,
+what the manager would have to learn, and the four things nobody has solved: non-Python
+stacks under one venv, the model door for a project's own services, what "deployed" means
+when a project is more than one process, and the cost of N services × M projects on one box.
+
 ---
 
 ## The one-paragraph version
