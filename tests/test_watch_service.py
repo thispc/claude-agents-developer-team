@@ -17,6 +17,7 @@ here, with the service UNREACHABLE, which is when a naive client would be slowes
 import ast
 import json
 import re
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -276,6 +277,20 @@ def test_a_second_process_needs_no_shared_memory_to_dedupe(shim):
     shim.log(**row)
     rows = [r for r in shim.recent() if r["event"] == "lease_held_elsewhere"]
     assert len(rows) == 1 and rows[0]["repeats"] == 2
+
+
+def test_the_filters_travel_to_the_service_and_come_back_applied(shim):
+    """The floor, the category and the free-text search are the SERVICE's
+    arithmetic now, so the conductor-side claim is narrower and sharper: every
+    filter the caller asked for actually reached it. A client that quietly
+    dropped `level` would answer every question with "no warnings"."""
+    shim.debug("git", "a"); shim.info("git", "b")
+    shim.warn("git", "c"); shim.error("sandbox", "d", "wrote outside", sha="abc1234")
+    assert [r["event"] for r in shim.recent(level="warn")] == ["c", "d"]
+    assert [r["event"] for r in shim.recent(cat="git", event="b")] == ["b"]
+    assert [r["event"] for r in shim.recent(q="abc1234")] == ["d"]
+    assert [r["event"] for r in shim.recent(errors_only=True)] == ["d"]
+    assert [r["event"] for r in shim.recent(limit=1)] == ["d"]
 
 
 def test_stats_and_errors_come_back_through_the_door(shim):
@@ -563,7 +578,7 @@ def test_the_degraded_note_never_goes_through_the_logger_itself(dead_shim):
     """A logger reporting its own outage through itself is a recursion, and the
     one moment it would fire is the one moment you cannot afford one."""
     body = _code(REPO / "conductor" / "app" / "logs.py")
-    note = body.split("def _note(")[1].split("\n    def ")[0]
+    note = body.split("def _note(")[1].split("\ndef ")[0]
     assert "log(" not in note and "logs." not in note
     assert "sys.stderr" in note
 
@@ -606,66 +621,152 @@ def test_the_committed_spec_is_what_the_service_serves():
     assert served == json.loads((REPO / "services" / "watch" / "openapi.json").read_text())
 
 
-# --- the rollback path still exists (deleted in commit B) ------------------------
+# --- the cutover: no fallback left, and the four kv keys go ----------------------
 
-def test_the_vendored_fallback_still_runs_in_process(fresh_db):
-    """Between commit A and commit B, unsetting WATCH_URL must give back the
-    pre-P3 behaviour exactly — that IS the rollback. Exercised here rather than
-    assumed, because a rollback nobody has run is a hope."""
-    from app import _logs_legacy as legacy, _monitor_legacy as mon_legacy, db
-    legacy.ECHO = False
-    # In real fallback mode logs.py replaces ITSELF in sys.modules with the legacy
-    # module, so `from . import logs` inside _monitor_legacy yields exactly this
-    # object. Here both modules are loaded in URL mode, so the binding is made by
-    # hand — otherwise the legacy monitor would read the SERVICE's rows and the
-    # drill would prove nothing about the rollback.
-    mon_legacy.logs = legacy
-    try:
-        legacy.log("sandbox", "escape", "wrote outside", level="error", files="x.py")
-        assert [r["event"] for r in legacy.rows()] == ["escape"]
-        assert db.kv_get(legacy.RING_KEY), "the fallback still writes the old kv blob"
-        assert any(n["kind"] == "sandbox" for n in mon_legacy.scan())
-        assert mon_legacy.decisions() == {}
-        mon_legacy.decide("abc", "dismissed")
-        assert db.kv_get(mon_legacy.DECISIONS_KEY)["abc"]["state"] == "dismissed"
-    finally:
-        legacy.ECHO = True
-        from app import logs as _url_mode_logs
-        mon_legacy.logs = _url_mode_logs
+def test_nothing_imports_the_deleted_fallbacks():
+    """The files are gone; what matters is that no code still reaches for them.
+    (Both shims name them in a docstring as history — a comment cannot import.)"""
+    for legacy in ("_logs_legacy", "_monitor_legacy"):
+        assert not (REPO / "conductor" / "app" / f"{legacy}.py").exists()
+        importers = [str(f) for f in (REPO / "conductor").rglob("*.py")
+                     if re.search(rf"^\s*(from|import).*{legacy}", f.read_text(), re.M)]
+        assert importers == [], f"{legacy} still has importers: {importers}"
 
 
-def test_the_fallback_answers_the_same_route_surface(fresh_db):
-    """logs_routes.py has ONE shape and both modes have to satisfy it. When the
-    route gained `degraded`/`banner` and the one-call `compose`, the vendored
-    bodies gained honest answers for them — otherwise unsetting WATCH_URL would
-    500 the very screen the rollback exists to keep working. Drilled by name,
-    because "the rollback boots" and "the rollback serves" are different claims.
+def test_neither_shim_can_fall_back_any_more():
+    """One mode, decided nowhere: there is no branch left to take. A `sys.modules`
+    swap surviving the cutover would mean a conductor that silently kept its own
+    ring on a box where WATCH_URL happened to be unset."""
+    for name in ("logs", "monitor"):
+        code = _code(REPO / "conductor" / "app" / f"{name}.py")
+        assert "sys.modules" not in code, f"{name}.py still installs a fallback"
+        assert "_logs_legacy" not in code and "_monitor_legacy" not in code
+        # ...and a missing URL can now do exactly one thing: refuse, once, at the
+        # door. Never pick an implementation.
+        assert code.count("if not _URL") <= 1, f"{name}.py branches on the URL more than once"
+        if "if not _URL" in code:
+            after = code.split("if not _URL", 1)[1][:80]
+            assert "raise RuntimeError(_NO_URL)" in after, \
+                f"{name}.py does something other than refuse when the URL is missing"
+
+
+def test_without_the_url_init_refuses_and_says_where_to_look(fresh_db, monkeypatch):
+    """There is no in-process ring any more, so a conductor with no service
+    configured must fail at the door — loudly, naming the boot script — instead of
+    running with no record of what it does."""
+    from app import logs
+    monkeypatch.setattr(logs, "_URL", "")
+    with pytest.raises(RuntimeError) as e:
+        logs.init()
+    msg = str(e.value)
+    assert "WATCH_URL" in msg and "run-local.sh" in msg and "services.yaml" in msg
+
+
+def test_the_verbs_still_degrade_when_the_url_is_missing(fresh_db, monkeypatch):
+    """init() is the loud door; the verbs stay soft. A door that also killed every
+    later call would turn one misconfigured process into a crash loop — and would
+    do it through the module every other module logs to."""
+    from app import logs, monitor
+    monkeypatch.setattr(logs, "_URL", "")
+    monkeypatch.setattr(logs, "_client", _dead_client)
+    monkeypatch.setattr(monitor, "_client", _dead_client)
+    monkeypatch.setattr(logs, "ECHO", False)
+    logs.error("sandbox", "escape", "wrote outside")      # no raise IS the assertion
+    assert logs.recent() == [] and logs.rows() == []
+    assert logs.stats(3600)["degraded"] is True
+    assert monitor.compose()["degraded"] is True
+
+
+def test_the_conductor_boots_all_four_extracted_stores_loudly():
+    """Each init() is the door that refuses. A store whose init is never called
+    would degrade silently forever instead of failing on the first boot."""
+    main = (REPO / "conductor" / "app" / "main.py").read_text()
+    for mod in ("knowledge", "usage", "notify", "logs"):
+        assert f"{mod}.init()" in main, f"{mod}.init() is not called at boot"
+
+
+def test_init_drops_the_four_migrated_keys(fresh_db):
+    """They are a second, staler copy of state another process owns. Left behind,
+    a reader would reasonably conclude the ring still lives here."""
+    from app import db, logs
+    db.kv_set("logs:ring", [{"ts": 1.0, "cat": "git", "event": "landed"}])
+    db.kv_set("logs:errors", [{"ts": 1.0, "cat": "sandbox", "event": "escape"}])
+    db.kv_set("monitor:decisions", {"abc": {"state": "dismissed", "ts": 1.0}})
+    db.kv_set("monitor:auto", True)
+    logs.init()
+    for key in logs._MIGRATED_KEYS:
+        assert db.kv_get(key) is None, f"{key} survived the cutover"
+    logs.init()             # and a box that never had them boots fine
+
+
+def test_the_drop_waits_until_the_service_has_copied_them(fresh_db, monkeypatch):
+    """The scrutiny this key set actually needed. Nothing orders the two
+    processes — process-compose starts them together with no depends_on — so on
+    the first boot after the cutover this can run before the service has
+    attached. Deleting `monitor:decisions` then does not lose data anyone can
+    shrug at: it loses every answer the owner has ever given, and the next scan
+    asks all of them again at once. That storm is the exact failure the copy
+    exists to prevent.
     """
-    from app import _logs_legacy as legacy, _monitor_legacy as mon_legacy
-    from app import logs_routes
-    src = (REPO / "conductor" / "app" / "logs_routes.py").read_text()
-    for name in re.findall(r"\blogs\.([a-zA-Z_]+)", src):
-        assert hasattr(legacy, name), f"the fallback has no logs.{name}"
-    for name in re.findall(r"\bmonitor\.([a-zA-Z_]+)", src):
-        assert hasattr(mon_legacy, name), f"the fallback has no monitor.{name}"
-    assert legacy.degraded() is False and legacy.BANNER == "" and legacy.flush() == 0
-    got = mon_legacy.compose()
-    assert set(got) == {"notices", "summary", "degraded", "banner"}
-    assert got["degraded"] is False, "the detector IS the process asking; it cannot be down"
-    assert logs_routes.router.prefix == "/api/logs"
+    from app import db, logs
+    db.kv_set("monitor:decisions", {"abc": {"state": "dismissed", "ts": 1.0}})
+    db.kv_set("monitor:auto", True)
+
+    def _not_yet(request):
+        return httpx.Response(200, json={"ok": True, "service": "watch",
+                                         "db": "x", "checks": {}, "backfilled": False})
+    monkeypatch.setattr(logs, "_client",
+                        lambda: httpx.Client(base_url="http://watch.test",
+                                             transport=httpx.MockTransport(_not_yet)))
+    logs.init()
+    assert db.kv_get("monitor:decisions"), "the owner's answers were dropped mid-copy"
+    assert db.kv_get("monitor:auto") is True
+
+    # ...and an unreachable service is the same answer, not a crash: a conductor
+    # that refused to boot because a PEER was starting is how a fleet rings down.
+    monkeypatch.setattr(logs, "_client", _dead_client)
+    logs.init()
+    assert db.kv_get("monitor:decisions"), "an outage was treated as permission to delete"
+
+    # ...and once it says yes, they go.
+    from conftest import _svc_client, _WATCH_URL
+    monkeypatch.setattr(logs, "_client",
+                        lambda: _svc_client(watch_service, _WATCH_URL, WATCH_TEST_TOKEN))
+    logs.init()
+    assert db.kv_get("monitor:decisions") is None and db.kv_get("monitor:auto") is None
 
 
-def test_both_shims_are_dual_mode_until_the_cutover():
-    for name, legacy in (("logs", "_logs_legacy"), ("monitor", "_monitor_legacy")):
-        src = (REPO / "conductor" / "app" / f"{name}.py").read_text()
-        assert legacy in src and 'os.environ.get("WATCH_URL")' in src
-        assert (REPO / "conductor" / "app" / f"{legacy}.py").exists()
+def test_the_service_settles_its_marker_either_way(tmp_path, monkeypatch):
+    """`backfilled` has to mean "the decision has been made", not "rows were
+    copied" — otherwise a box that never had a legacy database would carry four
+    dead keys forever, waiting for a copy that is never coming."""
+    monkeypatch.setattr(watch_service, "LEGACY_DB_PATH", tmp_path / "nothing.db")
+    monkeypatch.setattr(watch_service.helpers, "DB_PATH", tmp_path / "w.db")
+    monkeypatch.setattr(watch_service.helpers, "_conn", None)
+    watch_service.init_store()
+    assert watch_service.settled() is False
+    assert watch_service.backfill_from_legacy() == 0
+    assert watch_service.settled() is True, "nothing to copy is still an answer"
+    assert watch_service.health()["backfilled"] is True
+    assert "no legacy database" in watch_service.helpers.kv_get("backfilled_from")
 
 
-def test_the_four_kv_keys_are_named_where_commit_b_will_drop_them():
-    """They still exist in devteam.db between the commits, because that is what
-    the rollback reads. Naming them here is the note to the next commit."""
-    src = (REPO / "conductor" / "app" / "logs.py").read_text() \
-        + (REPO / "conductor" / "app" / "monitor.py").read_text()
-    for key in ("logs:ring", "logs:errors", "monitor:decisions", "monitor:auto"):
-        assert key in src, f"{key} has no home and no note saying where it went"
+def test_a_transient_copy_failure_leaves_the_keys_alone(tmp_path, monkeypatch):
+    """The one case that must NOT settle: a locked file or a conductor mid-write
+    is worth retrying, and the keys have to still be there when it is."""
+    legacy = tmp_path / "devteam.db"
+    con = sqlite3.connect(legacy)
+    con.execute("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL)")
+    con.execute("INSERT INTO kv VALUES (?,?)", ("monitor:auto", "true"))
+    con.commit()
+    con.close()
+    monkeypatch.setattr(watch_service, "LEGACY_DB_PATH", legacy)
+    monkeypatch.setattr(watch_service.helpers, "DB_PATH", tmp_path / "w2.db")
+    monkeypatch.setattr(watch_service.helpers, "_conn", None)
+    watch_service.init_store()
+
+    def _boom(*a, **k):
+        raise sqlite3.OperationalError("database is locked (drill)")
+    monkeypatch.setattr(watch_service, "_legacy_value", _boom)
+    assert watch_service.backfill_from_legacy() == 0
+    assert watch_service.settled() is False, "a retryable failure must not settle"

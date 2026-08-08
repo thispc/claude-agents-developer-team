@@ -19,12 +19,16 @@ async def lifespan(app: FastAPI):
     logs.info("lifecycle", "starting", "conductor starting up")
     auth.init()       # seeds the root superuser from .env on first run
     findings.init()
-    # The three extracted stores. Each init() refuses loudly when its service is
+    # The four extracted stores. Each init() refuses loudly when its service is
     # not configured, and drops whatever the strangler left behind in the
     # conductor's database — the honest last step of each extraction.
     knowledge.init()
     usage.init()
     notify.init()
+    # logs.init() covers the monitor too: one seam, one service, one loud door.
+    # It is the only one that asks before it drops, because the keys it drops
+    # include the owner's own answers — see its docstring.
+    logs.init()
     modgraph.init()
     try:
         # The offline fallback graph for the platform itself. Guarded: a seed failure

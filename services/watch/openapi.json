@@ -8,7 +8,7 @@
     "/health": {
       "get": {
         "summary": "Health",
-        "description": "Readiness, not liveness: ok only when the service could actually answer \u2014\nits own database opens and the ring reads.",
+        "description": "Readiness, not liveness: ok only when the service could actually answer \u2014\nits own database opens and the ring reads.\n\n`backfilled` rides alongside rather than inside `checks`, because it is not a\nreadiness condition: a box with no legacy database to copy from is perfectly\nhealthy. It is the conductor's signal that its own copies of the four\nmigrated kv keys are finally safe to drop \u2014 see `settled()`.",
         "operationId": "health_health_get",
         "responses": {
           "200": {

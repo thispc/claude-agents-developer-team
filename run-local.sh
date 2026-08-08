@@ -17,18 +17,16 @@
 # P1 cutover RE-SCOPED it: it means "the conductor outside process-compose, the
 # fleet's services still required". It cannot mean "no services". Since P1 the
 # knowledge store is a service; since the P2 cutover so are the quota meter and
-# the notifier, and all three in-process fallbacks are deleted — a conductor
-# missing KNOWLEDGE_URL, USAGE_URL or NOTIFY_URL refuses to boot rather than run
-# with no memory, no meter, or no way to tell you something broke.
+# the notifier; since the P3 cutover so is the log ring and the monitor with it.
+# All four in-process fallbacks are deleted — a conductor missing KNOWLEDGE_URL,
+# USAGE_URL, NOTIFY_URL or WATCH_URL refuses to boot rather than run with no
+# memory, no meter, no way to tell you something broke, or no record of what it
+# did.
 #
 # So this path still runs tools/gen_fleet.py (pure Python — no vendored binaries,
-# which is the tooling that was misbehaving) for env and tokens, then starts the
-# three CUT-OVER services itself as children, waits for each /health, exports the
-# URLs, and execs the conductor in the foreground. `watch` (8884, P3) is not in
-# that loop yet: it is mid-strangler, so a legacy boot leaves WATCH_URL unset and
-# the conductor runs the vendored pre-P3 ring in-process — which is exactly the
-# rollback the extract commit is supposed to leave armed. The cutover commit adds
-# it here and deletes the fallback. A service already listening on its port
+# which is the tooling that was misbehaving) for env and tokens, then starts ALL
+# FOUR services itself as children, waits for each /health, exports the URLs, and
+# execs the conductor in the foreground. A service already listening on its port
 # (a half-running fleet, a second terminal) is REUSED, never duplicated.
 # The children share this terminal's process group, so Ctrl-C stops everything; a
 # plain SIGTERM to the conductor alone can leave them, which the reuse check then
@@ -58,17 +56,19 @@ if [[ "${1:-}" == "--legacy" || "${RUN_LEGACY:-}" == "1" ]]; then
   .venv/bin/python tools/gen_fleet.py >/dev/null
 
   # Each extracted service, started as a child of this shell. One loop rather than
-  # three copies: the next extraction adds a name here and nothing else, and three
+  # four copies: the next extraction adds a name here and nothing else, and four
   # drifting copies of a readiness wait is exactly how one of them quietly stops
   # waiting. Order does not matter — the conductor is the only caller, and it is
-  # started last.
+  # started last. (watch is the one the conductor would most like started first,
+  # since it holds the log ring, but it does not NEED to be: rows written before
+  # it answers sit on the shim's queue and go out on the next flush.)
   #
   # The FAILURE here is deliberately fatal. Letting the conductor start anyway
   # would hand it a RuntimeError from init() a second later, which reads as a
   # crash rather than as "this service did not come up" — and on the meter it
   # would be worse than a crash, because a conductor that cannot see the quota
   # must not be guessing about it.
-  for svc in knowledge usage notify; do
+  for svc in knowledge usage notify watch; do
     svc_port="$(.venv/bin/python -c "import json,sys; print(json.load(open('data/fleet_topology.json'))['services'][sys.argv[1]]['port'])" "${svc}")"
     svc_url="http://127.0.0.1:${svc_port}"
     if curl -fsS --max-time 2 "${svc_url}/health" >/dev/null 2>&1; then
@@ -92,7 +92,7 @@ if [[ "${1:-}" == "--legacy" || "${RUN_LEGACY:-}" == "1" ]]; then
   done
 
   echo "devteam conductor (legacy: outside process-compose) → http://127.0.0.1:${PORT}   (login: ${ROOT_USERNAME:-root} / ${ROOT_PASSWORD:-devteam})"
-  echo "data: $(pwd)/devteam.db · services: $(pwd)/data/{knowledge,usage,notify}.db · logs: in-process (no WATCH_URL) · stop with Ctrl-C"
+  echo "data: $(pwd)/devteam.db · services: $(pwd)/data/{knowledge,usage,notify,watch}.db · stop with Ctrl-C"
   exec .venv/bin/uvicorn app.main:app --app-dir conductor --host 127.0.0.1 --port "${PORT}"
 fi
 

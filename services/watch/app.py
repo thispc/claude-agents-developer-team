@@ -659,6 +659,30 @@ def _legacy_value(con: sqlite3.Connection, key: str) -> Any:
         return None
 
 
+def settled() -> bool:
+    """Has the first-boot decision been made, either way?
+
+    The CONDUCTOR asks this — over /health — before it drops the four kv keys
+    this service copies from. That is not politeness: the cutover made those keys
+    dead weight in the conductor's database, but a conductor that deletes them
+    while this service is still starting has destroyed the decisions store's
+    history and the owner's standing `auto` setting, which is precisely the notice
+    storm the copy exists to prevent. Nothing orders the two processes — the fleet
+    starts them together — so the drop is conditional instead of hopeful.
+
+    True means "this service will never look at those keys again", which includes
+    the cases where it decided there was nothing to copy.
+    """
+    return bool(helpers.kv_get("backfilled_from"))
+
+
+def _settle(reason: str, **extra) -> None:
+    helpers.kv_set("backfilled_from", json.dumps(
+        {"db": str(LEGACY_DB_PATH), "reason": reason,
+         "keys": [LEGACY_RING_KEY, LEGACY_ERR_KEY, LEGACY_DECISIONS_KEY, LEGACY_AUTO_KEY],
+         "ts": time.time(), **extra}))
+
+
 def backfill_from_legacy() -> int:
     """First boot only: carry the conductor's four kv keys across the seam, once.
 
@@ -671,15 +695,27 @@ def backfill_from_legacy() -> int:
     the notices are derived from those rows, so a breach two hours old must still
     be a notice two minutes after the move.
 
-    Any failure (the conductor mid-write, a locked file) leaves the marker unset
-    and the next boot simply tries again; the copy is idempotent because it only
-    ever runs against an empty table.
+    THE MARKER IS SET EITHER WAY, and that is a deliberate change from the P1/P2
+    services. It no longer means "rows were copied", it means "the first-boot
+    decision has been made" — because the conductor reads it (through /health) to
+    know when its own copies of those keys are safe to drop. "There was nothing
+    to copy" has to be an answer, not silence, or a box that never had a legacy
+    database would carry four dead keys forever waiting for a copy that will
+    never happen.
+
+    Only a genuine FAILURE (the conductor mid-write, a locked file) leaves it
+    unset, so the next boot tries again — and the conductor keeps its keys until
+    then. The copy is idempotent because it only ever runs against empty tables.
     """
-    if helpers.kv_get("backfilled_from"):
+    if settled():
         return 0
     if _query("SELECT COUNT(*) AS n FROM log_rows")[0]["n"]:
+        # Rows already here and no marker: a previous boot copied and died before
+        # marking. Not transient, and copying again would double the ring.
+        _settle("tables were not empty")
         return 0
     if not LEGACY_DB_PATH.exists():
+        _settle("no legacy database")
         return 0
     con = helpers.db()
     copied = 0
@@ -720,11 +756,7 @@ def backfill_from_legacy() -> int:
             # unattended approval off without anyone deciding that.
             if auto is not None:
                 helpers.kv_set("auto", "1" if auto else "0")
-            helpers.kv_set("backfilled_from", json.dumps(
-                {"db": str(LEGACY_DB_PATH),
-                 "keys": [LEGACY_RING_KEY, LEGACY_ERR_KEY, LEGACY_DECISIONS_KEY,
-                          LEGACY_AUTO_KEY],
-                 "rows": copied, "ts": time.time()}))
+            _settle("copied", rows=copied, auto=auto)
         finally:
             con.execute("DETACH DATABASE legacy")
     except Exception:
@@ -834,7 +866,13 @@ def query_guard(*allowed: str) -> Callable:
 @app.get("/health")
 def health() -> dict:
     """Readiness, not liveness: ok only when the service could actually answer —
-    its own database opens and the ring reads."""
+    its own database opens and the ring reads.
+
+    `backfilled` rides alongside rather than inside `checks`, because it is not a
+    readiness condition: a box with no legacy database to copy from is perfectly
+    healthy. It is the conductor's signal that its own copies of the four
+    migrated kv keys are finally safe to drop — see `settled()`.
+    """
     def _table_ok() -> bool:
         try:
             helpers.db().execute("SELECT COUNT(*) FROM log_rows").fetchone()
@@ -844,7 +882,7 @@ def health() -> dict:
             return False
     checks = {"db": helpers.db_ok(), "table": _table_ok()}
     return {"ok": all(checks.values()), "service": SERVICE,
-            "db": str(helpers.DB_PATH), "checks": checks}
+            "db": str(helpers.DB_PATH), "checks": checks, "backfilled": settled()}
 
 
 @app.get("/openapi.json")

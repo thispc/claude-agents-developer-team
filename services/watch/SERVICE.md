@@ -36,6 +36,14 @@ On first boot it copies the conductor's four legacy keys (`logs:ring`,
 decisions are why that is not optional: without them the extraction itself would
 be a notice storm, every already-dismissed notice looking new again.
 
+That copy **settles a marker either way** — copied, nothing to copy, or tables
+already populated — and `GET /health` reports it as `backfilled`. The conductor
+reads that flag before dropping its own copies of the four keys: nothing orders
+the two processes, and a conductor that deleted `monitor:decisions` while this
+service was still starting would have created the very storm the copy prevents.
+Only a genuinely retryable failure (a locked file, the conductor mid-write)
+leaves the marker unset, and then the keys simply wait for the next boot.
+
 ## The split: this service owns no lever
 
 Every action a notice can propose — pause the crew, abort the task in flight,
@@ -78,8 +86,11 @@ Standalone (debugging): `SERVICE_TOKEN=dev DB_PATH=/tmp/w.db python app.py`.
 
 ## The contract
 
-- `GET /health` — readiness JSON `{ok, service, db, checks}` (db opens, both the
-  ring and the decisions table read).
+- `GET /health` — readiness JSON `{ok, service, db, checks, backfilled}` (db
+  opens, both the ring and the decisions table read). `backfilled` sits beside
+  `checks` rather than inside it: a box with no legacy database to copy from is
+  perfectly healthy, so it is a signal to the conductor, not a readiness
+  condition.
 - `GET /openapi.json` — the committed contract. After changing routes:
   `python app.py --spec > openapi.json`, commit it, let oasdiff judge the diff.
 - `POST /logs` `{rows: [...]}` → `{stored, deduped}` — **a batch**, never a row.
@@ -131,6 +142,11 @@ inside exception handlers, some in a 20s tick. It never does I/O from a log call
   carries a banner so an empty log view cannot be misread as a quiet system.
 - **`logs.log()` returns in under a millisecond, always** — `LOG_CALL_BUDGET_S`,
   timed in `tests/test_watch_service.py` with the service unreachable.
+
+Both are **pure clients** since the cutover — no in-process fallback, so
+`WATCH_URL` is required and `logs.init()` refuses without it, naming
+`run-local.sh`. That one door covers both halves of the seam; `monitor.py` has no
+init of its own because it has no state of its own left.
 
 **`conductor/app/monitor.py`** — degraded, the notice list falls back to the two
 local rules and says so (`degraded: true` plus a `banner` the screen shows above

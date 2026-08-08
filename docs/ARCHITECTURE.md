@@ -147,7 +147,16 @@ flushes it. Reads flush first, so a caller always sees its own writes. `logs.log
 in under a millisecond always: `LOG_CALL_BUDGET_S`, timed with the service unreachable.
 Degraded: stdout keeps working, reads are `[]`, stats are zeros with `degraded: true`, and
 the notice list falls back to the local rules with a `banner` the screen shows — an empty
-inbox during an outage must never read as "the platform has been behaving".
+inbox during an outage must never read as "the platform has been behaving". Both shims are
+pure clients since the cutover: `WATCH_URL` is required, `logs.init()` refuses without it
+naming `run-local.sh`, and it is the one door for both halves of the seam. It then drops the
+four kv keys the strangler left behind (`logs:ring`, `logs:errors`, `monitor:decisions`,
+`monitor:auto`) — but **only after the service confirms it has copied them**, over a
+`backfilled` flag on `GET /health`. Nothing orders the two processes, and deleting
+`monitor:decisions` mid-copy would not lose data anyone can shrug at: it would lose every
+answer the owner has ever given and ask all of them again at once, which is the exact storm
+the copy exists to prevent. `monitor:auto` is the same hazard wearing a settings hat — its
+absence silently turns unattended approval off.
 
 ---
 
