@@ -24,8 +24,8 @@ The design is deliberately layered:
 Persistence is NOT here. `store.py` sits one level up, beside `app.py`, because
 it opens a database and the substrate does not: an entity serialises to one JSON
 blob and the service writes it. That is the whole of the change P4 made to this
-package — everything below `ports.py` is the code that was in
-`conductor/app/lifeworld/`, unchanged.
+package — everything below `ports.py` is the code that used to live in the
+conductor, unchanged.
 
 Everything free is free by construction; the single thing that can ever spend a token
 is one bounded Tier-2 deliberation, gated by attention. A whole Lifeworld idles at zero.

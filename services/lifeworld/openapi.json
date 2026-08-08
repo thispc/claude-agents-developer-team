@@ -8,7 +8,7 @@
     "/health": {
       "get": {
         "summary": "Health",
-        "description": "Readiness, not liveness: ok only when the service could actually answer \u2014 its own\ndatabase opens and the worlds table reads.",
+        "description": "Readiness, not liveness: ok only when the service could actually answer \u2014 its own\ndatabase opens and the worlds table reads.\n\n`backfilled` rides alongside rather than inside `checks`, because it is not a\nreadiness condition: a box with no legacy database to copy from is perfectly\nhealthy. It is the conductor's signal that its own `lw_worlds` table is finally\nsafe to drop \u2014 see store.settled(), and note that dropping it early would lose\nevery world on the box.",
         "operationId": "health_health_get",
         "responses": {
           "200": {

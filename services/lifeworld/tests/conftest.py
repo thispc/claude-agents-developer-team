@@ -91,6 +91,9 @@ try:
     sys.path.insert(0, str(SERVICE_DIR))
     svc = _load("lifeworld_service_app", SERVICE_DIR / "app.py")
     ports = svc.ports
+    # The engine package, kept in sys.modules on purpose (see the header). The moved
+    # substrate suite reaches it from there; nothing else in the repo may.
+    substrate = importlib.import_module("substrate")
 finally:
     sys.path[:] = _SAVED_PATH
     for _n in _OWNED:

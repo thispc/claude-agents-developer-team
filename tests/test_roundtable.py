@@ -74,7 +74,7 @@ async def test_round_one_is_independent(table, monkeypatch):
     production blocking and first-speaker anchoring."""
     seen = []
 
-    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         seen.append({"phase_prompt": prompt})
         return f"proposal from {model}"
 
@@ -98,7 +98,7 @@ async def test_round_one_is_independent(table, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_every_seat_speaks_once_per_round(table, monkeypatch):
-    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         if "ONLY valid JSON" in prompt:
             return json.dumps({"approach": "x", "team": [{"role": "backend", "count": 1}]})
         return "text"
@@ -120,7 +120,7 @@ async def test_every_seat_speaks_once_per_round(table, monkeypatch):
 @pytest.mark.asyncio
 async def test_a_failing_seat_does_not_kill_the_table(table, monkeypatch):
     """One provider being down should silence that seat, not the deliberation."""
-    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         if provider == "openai":
             raise providers.ProviderError("boom")
         if "ONLY valid JSON" in prompt:
@@ -209,7 +209,7 @@ async def test_diverge_mode_skips_the_debate_rounds(table, monkeypatch):
     db.update_table(table, mode="diverge")
     calls = []
 
-    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         calls.append(prompt)
         if "ONLY valid JSON" in prompt:
             return json.dumps({"approach": "x", "team": []})
@@ -232,7 +232,7 @@ async def test_debate_mode_costs_three_rounds_plus_one(table, monkeypatch):
     db.update_table(table, mode="debate")
     calls = []
 
-    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         calls.append(prompt)
         if "ONLY valid JSON" in prompt:
             return json.dumps({"approach": "x", "team": []})
@@ -299,7 +299,7 @@ async def test_a_seat_gets_a_second_chance_on_a_transient_failure(table, monkeyp
     says does not work."""
     calls = {"n": 0}
 
-    async def flaky(provider, model, system, prompt, settings, max_tokens=2000):
+    async def flaky(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         if provider == "google":
             calls["n"] += 1
             if calls["n"] == 1:
@@ -330,7 +330,7 @@ async def _instant(*_a, **_k):
 async def test_a_permanent_failure_is_not_retried_forever(table, monkeypatch):
     calls = {"n": 0}
 
-    async def gone(provider, model, system, prompt, settings, max_tokens=2000):
+    async def gone(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         if provider == "google":
             calls["n"] += 1
             raise providers.ProviderError("Gemini: not entitled to this model")

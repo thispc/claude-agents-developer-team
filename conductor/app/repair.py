@@ -309,7 +309,8 @@ def headroom(now: float | None = None, need: int = 0) -> tuple[bool, str, float]
 
 def _sleep(reason: str, until: float, kind: str = "headroom", resume: str = "idle") -> None:
     """kind: 'headroom' (wakes early the moment the window rolls enough) | 'cooldown' (a real
-    provider wake time — wait it out) | 'pause' (the deliberate breath between sprints).
+    provider wake time — wait it out) | 'pause' (the deliberate breath between sprints) |
+    'blocked' (a dependency the crew cannot work without is missing).
     `resume` is the phase to return to: sleeping mid-sprint and waking at 'idle' would start a
     NEW sprint over the top of the planned one, throwing away work already paid for.
 
@@ -884,7 +885,14 @@ async def tick() -> None:
             # Still asleep — but say WHY it is still asleep, not why it fell asleep. The
             # reason is written once and then never revisited, so the banner could read
             # "used its share of this window" beside a meter showing the window 100% idle.
-            if why and why != st.get("sleep_reason") and st.get("sleep_kind") != "pause":
+            # A 'blocked' sleep keeps its reason, like a 'pause' does. The crew can be
+            # asleep for two true reasons at once — the substrate is gone AND the window
+            # is spent — and relabelling it with the quota one buries the actionable
+            # half: "lifeworld down" names a process to start, "yielding" names nothing
+            # to do. The blocker is re-checked first on every tick anyway, so the moment
+            # it clears the phase machine reaches the headroom check and says so itself.
+            if why and why != st.get("sleep_reason") \
+                    and st.get("sleep_kind") not in ("pause", "blocked"):
                 set_state(sleep_reason=why, sleep_until=max(wake, time.time() + TICK_SECONDS))
             return
         st = set_state(phase=st.get("resume_phase") or "idle", sleep_until=0,
@@ -941,7 +949,7 @@ async def _advance(st: dict) -> None:
         logs.warn("lifecycle", "crew_paused", "the lifeworld service is not answering — "
                   "the crew stands down until it does", phase=phase)
         return _sleep(LIFEWORLD_DOWN, time.time() + LIFEWORLD_WAKE_S,
-                      kind="cooldown", resume=phase)
+                      kind="blocked", resume=phase)
     if phase == "idle":
         # a sprint that must scout+plan needs room for the whole plan, not just the scout
         ok, reason, wake = headroom(need=1 if backlog_fresh() else phase_cost("plan") + 1)

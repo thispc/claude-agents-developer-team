@@ -40,7 +40,7 @@ class Spy:
         self.calls = 0
         self.max_tokens = []
 
-    async def complete(self, provider, model, system, prompt, settings, max_tokens=2000):
+    async def complete(self, provider, model, system, prompt, settings, max_tokens=2000, source=""):
         self.calls += 1
         self.max_tokens.append(max_tokens)
         # A plausible folded-memory JSON, so consolidate() takes its success path.

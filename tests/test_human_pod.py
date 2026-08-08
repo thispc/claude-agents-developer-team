@@ -183,7 +183,7 @@ def test_a_life_of_events_costs_nothing():
 def test_the_model_appraiser_is_one_bounded_call(monkeypatch):
     calls = {"n": 0, "max_tokens": []}
 
-    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         calls["n"] += 1
         calls["max_tokens"].append(max_tokens)
         return '{"mood": {"stress": 0.3}, "memory": "a strange letter", "action": {"kind":"say","text":"…"}}'

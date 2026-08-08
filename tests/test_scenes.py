@@ -46,7 +46,7 @@ class Spy:
         self.max_tokens = []
         self.reply = reply
 
-    async def complete(self, provider, model, system, prompt, settings, max_tokens=2000):
+    async def complete(self, provider, model, system, prompt, settings, max_tokens=2000, source=""):
         self.calls += 1
         self.max_tokens.append(max_tokens)
         return self.reply

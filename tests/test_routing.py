@@ -12,120 +12,54 @@ from pathlib import Path
 
 import pytest
 
-from app.lifeworld.world import World
+# The engine's source, for the handful of claims that are ABOUT the source: where a live
+# reply comes from, and that the host is told the adjacency. Read as a file rather than
+# imported, because nothing outside services/lifeworld/ may import inside it — and a
+# claim about a file is honest to check against the file.
+SUBSTRATE = Path(__file__).resolve().parents[1] / "services" / "lifeworld" / "substrate"
 
 
-def _pair(dir="both"):
-    w = World(name="w")
-    s = w.new_room("r", "freeplay")
-    a, b = w.spawn_human("A"), w.spawn_human("B")
-    s.seat(a); s.seat(b)
-    t = s.connect(a.id, b.id, dir)
-    return w, s, a, b, t
 
-
-# ---- direction, on every channel ------------------------------------------
-
-def test_a_one_way_arrow_keeps_the_utterance_out_of_the_listeners_state(fresh_db):
-    w, s, a, b, t = _pair("a2b")
-    assert s._hears(t, a.id, b.id) is True
-    assert s._hears(t, b.id, a.id) is False
-
-
-def test_a_one_way_arrow_also_keeps_it_out_of_the_listeners_PROMPT(fresh_db):
-    """The leak that mattered: state was correctly untouched while the agent's own model call
-    was seeded with the very line it was not supposed to have heard. A prompt is where an
-    agent's next words come from, so a leak there IS the leak."""
-    w, s, a, b, t = _pair("a2b")
-    s._record("say", b.id, "B: the secret plan is to sell the company", frm=b.id)
-    seen_by_a = s._thread_transcript([a, b], thread=t, for_agent=a.id)
-    assert "secret plan" not in seen_by_a, "A must not be told what B said"
-    seen_by_b = s._thread_transcript([a, b], thread=t, for_agent=b.id)
-    assert "secret plan" in seen_by_b, "B still remembers its own line"
-
-
-def test_a_chain_does_not_leak_round_the_corner(fresh_db):
-    """A—B—C with no A–C edge: C's line must not reach A, even though both are in the ring.
-    This is the repo's own default topology, so a leak here is a leak everywhere."""
-    w = World(name="w")
-    s = w.new_room("r", "freeplay")
-    a, b, c = w.spawn_human("A"), w.spawn_human("B"), w.spawn_human("C")
-    for h in (a, b, c):
-        s.seat(h)
-    s.connect(a.id, b.id, "both")
-    t = s.connect(b.id, c.id, "both")
-    assert s._hears(t, c.id, a.id) is False
-    s._record("say", c.id, "C: something only B should hear", frm=c.id)
-    assert "only B should hear" not in s._thread_transcript([a, b, c], thread=t, for_agent=a.id)
-
-
-def test_the_manager_still_sees_everything_because_it_is_the_mediator(fresh_db):
-    """Documented, not accidental: the host reads the whole ring on purpose — it is what
-    lets one bounded call mediate a round. Without `for_agent` the transcript is ring-wide."""
-    w, s, a, b, t = _pair("a2b")
-    s._record("say", b.id, "B: a line A cannot hear", frm=b.id)
-    assert "cannot hear" in s._thread_transcript([a, b])
 
 
 def test_the_host_is_told_who_may_reference_whom(fresh_db):
     """It composes each agent's line, so without the adjacency it can write B's content into
     A's mouth and launder direction through the mediator. A prompt is not an enforcement
     boundary — enforcing it would cost one call per agent — but stating it is honest."""
-    from pathlib import Path
-    from app.lifeworld import world as wmod
-    src = Path(wmod.__file__).read_text()
+    src = (SUBSTRATE / "world.py").read_text()
     assert "HEARS (agent id ->" in src
     assert "can_hear" in src and "not an enforcement boundary" in src
 
 
-# ---- a graph is a closed room ---------------------------------------------
-
-def test_you_cannot_chat_to_an_agent_outside_the_graph(fresh_db):
-    """It used to accept any human in the world — one seated in another room, or in no graph
-    at all — and that agent would think, spend its quota, and file a beat in this scene."""
-    w, s, a, b, t = _pair()
-    outsider = w.spawn_human("Outsider")
-    s.seat(outsider)                                    # in the room, but not in the graph
-    out = asyncio.run(s.chat(t, str(outsider.id), "hello?"))
-    assert out.get("error"), "an outsider answered a graph's chat"
-    assert not outsider.spends, "and it spent quota doing so"
-
-
 def test_you_can_only_thread_agents_who_are_in_the_room(root_client, fresh_db):
     """An id from another room became a full member — speaking, hearing, spending — while
-    absent from the room's own agent list. A participant nobody could see."""
-    from app.lifeworld import store
-    w = store.create(1, "w")
-    s1 = w.new_room("here", "freeplay")
-    s2 = w.new_room("elsewhere", "freeplay")
-    a = w.spawn_human("A"); b = w.spawn_human("B"); far = w.spawn_human("Far")
-    s1.seat(a); s1.seat(b); s2.seat(far)
-    store.save(w)
-    ok = root_client.post(f"/api/lw/{w.id}/room/{s1.id}/thread/connect",
-                          json={"a": a.id, "b": b.id})
-    assert ok.status_code == 200
-    bad = root_client.post(f"/api/lw/{w.id}/room/{s1.id}/thread/connect",
-                           json={"a": a.id, "b": far.id})
+    absent from the room's own agent list. A participant nobody could see.
+
+    Built over HTTP since P4, because the world is the lifeworld service's. Which makes
+    this a better test than it was: the refusal now has to survive the proxy, the caller
+    stamp and the service's own validation, which is the whole path a browser takes.
+    """
+    wid = root_client.post("/api/lw", json={"name": "w"}).json()["world"]["id"]
+    r1 = root_client.post(f"/api/lw/{wid}/room", json={"name": "here"}).json()["room"]["id"]
+    r2 = root_client.post(f"/api/lw/{wid}/room",
+                          json={"name": "elsewhere"}).json()["room"]["id"]
+    ids = {}
+    for name in ("A", "B", "Far"):
+        ids[name] = root_client.post(f"/api/lw/{wid}/human",
+                                     json={"name": name}).json()["human"]["id"]
+    for name in ("A", "B"):
+        root_client.post(f"/api/lw/{wid}/room/{r1}/seat", params={"human_id": ids[name]})
+    root_client.post(f"/api/lw/{wid}/room/{r2}/seat", params={"human_id": ids["Far"]})
+
+    ok = root_client.post(f"/api/lw/{wid}/room/{r1}/thread/connect",
+                          json={"a": ids["A"], "b": ids["B"]})
+    assert ok.status_code == 200, ok.text
+    bad = root_client.post(f"/api/lw/{wid}/room/{r1}/thread/connect",
+                           json={"a": ids["A"], "b": ids["Far"]})
     assert bad.status_code == 400, "an agent from another room joined the graph"
-    same = root_client.post(f"/api/lw/{w.id}/room/{s1.id}/thread/connect",
-                            json={"a": a.id, "b": a.id})
+    same = root_client.post(f"/api/lw/{wid}/room/{r1}/thread/connect",
+                            json={"a": ids["A"], "b": ids["A"]})
     assert same.status_code == 400, "an agent was threaded to itself"
-
-
-# ---- the arrow you draw is the arrow you get ------------------------------
-
-def test_re_aiming_an_existing_arrow_actually_changes_it(fresh_db):
-    """`edge_eq` ignores the direction slot, so "already connected" was read as "nothing to
-    do" — and the one-way toggle silently did nothing on any arrow that already existed.
-    A large part of why direction never looked like it worked."""
-    w, s, a, b, t = _pair("both")
-    assert t["edges"] == [[a.id, b.id, "both"]]
-    s.connect(a.id, b.id, "a2b")
-    assert t["edges"] == [[a.id, b.id, "a2b"]], "the toggle did nothing"
-    s.connect(b.id, a.id, "a2b")
-    assert t["edges"] == [[b.id, a.id, "a2b"]], "flipping it did nothing"
-    assert s._hears(t, b.id, a.id) is True and s._hears(t, a.id, b.id) is False
-
 
 # ---- talking to one agent, mid-task ---------------------------------------
 
@@ -133,13 +67,11 @@ def test_a_question_gets_an_answer_not_a_stage_direction(fresh_db):
     """An appraisal returns a Packet — a state delta whose one-line action text is a beat in
     a scene, not an answer to a person. Routing a question through it is why talking to an
     agent read like stage directions. Asking is its own act and gets its own prompt."""
-    from pathlib import Path
-    from app.lifeworld import scene as smod, world as wmod
-    src = Path(smod.__file__).read_text()
+    src = (SUBSTRATE / "scene.py").read_text()
     reply = src.split("async def _agent_reply", 1)[1].split("\n    async def", 1)[0]
     assert "self.world.agent_reply(" in reply, "live replies must come from the agent's model"
     assert 'kind="ask"' in reply, "and it must still PERCEIVE the question — that moves state"
-    wsrc = Path(wmod.__file__).read_text()
+    wsrc = (SUBSTRATE / "world.py").read_text()
     fn = wsrc.split("async def agent_reply", 1)[1].split("\n    async def", 1)[0]
     assert "no stage directions" in fn
     assert "recalled" in fn, "a familiar question should be answered from experience"
@@ -216,7 +148,6 @@ def test_the_drawer_is_gone_entirely():
     # #lwDetail itself stays — artifacts still use it. Only the person branch is retired.
     assert "openAgentPage" in js, "and something has to open the agent instead"
 
-
 # ---- the agent register ---------------------------------------------------
 
 def test_the_register_answers_what_any_agent_is_doing(fresh_db):
@@ -264,16 +195,19 @@ def test_the_register_is_root_only(client, fresh_db):
     assert client.get("/api/logs/agents").status_code == 403
 
 
-def test_the_canvas_gets_activity_with_the_room(fresh_db):
-    """One kv get per repaint, so the canvas can ask without anybody thinking about cost."""
+def test_the_canvas_gets_activity_with_the_room(root_client, fresh_db):
+    """One register read per repaint, so the canvas can ask without anybody thinking about
+    cost — and, since P4, one register for the whole platform even though the agents live
+    in another process. The conductor writes the board; the substrate reads it back through
+    `GET /internal/agents/{key}` while composing the room view.
+    """
     from app import agents
-    from app.lifeworld.world import World
-    w = World(id=4, name="w")
-    s = w.new_room("r", "freeplay")
-    h = w.spawn_human("A")
-    s.seat(h)
-    agents.note(agents.key_for("lw", 4, h.id), "thinking", "weighing it up")
-    view = s.view()
+    wid = root_client.post("/api/lw", json={"name": "w"}).json()["world"]["id"]
+    rid = root_client.post(f"/api/lw/{wid}/room", json={"name": "r"}).json()["room"]["id"]
+    hid = root_client.post(f"/api/lw/{wid}/human", json={"name": "A"}).json()["human"]["id"]
+    root_client.post(f"/api/lw/{wid}/room/{rid}/seat", params={"human_id": hid})
+    agents.note(agents.key_for("lw", wid, hid), "thinking", "weighing it up")
+    view = root_client.get(f"/api/lw/{wid}/room/{rid}").json()["room"]
     assert view["agents"][0]["activity"]["busy"] is True
     assert view["agents"][0]["activity"]["what"] == "weighing it up"
 
@@ -291,14 +225,19 @@ def test_a_bubble_says_what_an_agent_is_doing_not_what_it_said():
 
 def test_the_agent_page_answers_what_it_is_doing_first(root_client, fresh_db):
     """The first question anyone opens an agent to ask, and the one with a wrong answer that
-    costs money: an agent asleep on its cap looks exactly like one idle for a good reason."""
+    costs money: an agent asleep on its cap looks exactly like one idle for a good reason.
+
+    This is now an end-to-end test of the register ACROSS TWO PROCESSES: the conductor
+    owns the board, the substrate reads it back through `GET /internal/agents/{key}` while
+    rendering the panel, and the answer comes home through the proxy. One board, whoever
+    asks — which is the whole reason the register did not move with the agents.
+    """
     from app import agents
-    from app.lifeworld import store
-    w = store.create(1, "w")
-    h = w.spawn_human("A")
-    store.save(w)
-    agents.note(agents.key_for("lw", w.id, h.id), "building", "the k8s reaper")
-    d = root_client.get(f"/api/lw/{w.id}/human/{h.id}").json()
+    wid = root_client.post("/api/lw", json={"name": "w"}).json()["world"]["id"]
+    hid = root_client.post(f"/api/lw/{wid}/human",
+                           json={"name": "A"}).json()["human"]["id"]
+    agents.note(agents.key_for("lw", wid, hid), "building", "the k8s reaper")
+    d = root_client.get(f"/api/lw/{wid}/human/{hid}").json()
     assert d["activity"]["busy"] is True and d["activity"]["what"] == "the k8s reaper"
     assert "usage" in d and "withheld" in d
 
@@ -326,7 +265,6 @@ def test_one_helper_hides_the_screens():
     js = dashboard_js()
     assert "function hideScreens" in js and '"#agentPage"' in js
 
-
 # ---- the shape of the product ---------------------------------------------
 
 def test_the_devteam_is_not_listed_among_your_teams(root_client, fresh_db):
@@ -334,13 +272,11 @@ def test_the_devteam_is_not_listed_among_your_teams(root_client, fresh_db):
     its own door. Mixing it into the same list invites someone to reorganise the crew that is
     mid-sprint."""
     from app import repair
-    from app.lifeworld import store
-    mine = store.create(1, "my team")
-    store.save(mine)
+    mine = root_client.post("/api/lw", json={"name": "my team"}).json()["world"]["id"]
     repair.ensure_team()
     dev = (repair.team() or {}).get("world_id")
     listed = [w["id"] for w in root_client.get("/api/lw").json()["worlds"]]
-    assert mine.id in listed and dev not in listed
+    assert mine in listed and dev not in listed
     assert root_client.get("/api/lw").json()["devteam_world"] == dev
     # ...but it is reachable when explicitly asked for, which is what its own door does
     both = [w["id"] for w in root_client.get("/api/lw?include_devteam=1").json()["worlds"]]
@@ -398,48 +334,6 @@ def test_the_devteam_door_opens_the_team_not_the_console():
     assert "sdDevEngine" in js, "the engine room must stay reachable from the canvas"
     assert 'id="rpOpenTeam"' in js, "the console must lead back to the team"
 
-
-# ---- the code disposes: direction enforced, not requested -------------------
-
-def test_a_line_put_in_an_agents_mouth_is_dropped(fresh_db):
-    """The manager sees the whole ring — that is what lets ONE call mediate a round — and it
-    also writes each agent's line, so content from C can be put in A's mouth and then
-    legitimately broadcast. Telling the model the adjacency helps and is not enforcement: a
-    prompt is a request. This is the check."""
-    w = World(name="w")
-    s = w.new_room("r", "freeplay")
-    a, b, c = w.spawn_human("A"), w.spawn_human("B"), w.spawn_human("C")
-    for h in (a, b, c):
-        s.seat(h)
-    s.connect(a.id, b.id, "both")
-    t = s.connect(b.id, c.id, "both")            # A—B—C: A never hears C
-    s._record("say", c.id, "C: the zephyrine protocol is the cause", frm=c.id)
-    out = s._audit_lines(t, [a, b, c], [
-        {"who": a.id, "text": "I agree the zephyrine protocol is to blame"},
-        {"who": b.id, "text": "the zephyrine protocol, yes"},
-    ])
-    assert "zephyrine" not in out[0]["text"], "A spoke a word it never heard"
-    assert "zephyrine" in out[1]["text"], "B legitimately heard C and was censored anyway"
-    # ...and it is never silent about it: a mediator quietly rewriting people is the failure
-    assert any("dropped a line put in" in r["text"] for r in s.log if r["kind"] == "manage")
-
-
-def test_the_audit_ignores_common_words_and_the_shared_rulebook(fresh_db):
-    """A subtle rule here would reject things nobody can predict, and the crew would learn to
-    write around it rather than writing honestly."""
-    w = World(name="w")
-    s = w.new_room("r", "freeplay")
-    a, b, c = w.spawn_human("A"), w.spawn_human("B"), w.spawn_human("C")
-    for h in (a, b, c):
-        s.seat(h)
-    s.connect(a.id, b.id, "both")
-    t = s.connect(b.id, c.id, "both")
-    t["rulebook"] = "decide the caching strategy"
-    s._record("say", c.id, "C: the caching strategy should be simple", frm=c.id)
-    out = s._audit_lines(t, [a, b, c], [{"who": a.id, "text": "the caching strategy matters"}])
-    assert "caching" in out[0]["text"], "a word from the shared rulebook is not a leak"
-
-
 # ---- a task that will die unfinished never gets a session -------------------
 
 def test_programme_sized_tasks_are_rejected_at_the_door(fresh_db):
@@ -460,7 +354,6 @@ def test_dropping_an_over_scoped_task_is_said_out_loud(fresh_db):
     assert "task_too_ambitious" in src
     assert "before they could burn a" in src
     assert "A silent filter would look" in src
-
 
 # ---- the store starts full, not empty --------------------------------------
 
@@ -493,10 +386,8 @@ def test_the_team_picker_reads_rooms_from_the_right_level():
 
 def test_a_world_payload_really_does_put_rooms_at_the_top(root_client, fresh_db):
     """Pinned against the server, so the client and the shape cannot drift apart again."""
-    from app.lifeworld import store
-    w = store.create(1, "w")
-    w.new_room("a team", "freeplay")
-    store.save(w)
-    body = root_client.get(f"/api/lw/{w.id}").json()
+    wid = root_client.post("/api/lw", json={"name": "w"}).json()["world"]["id"]
+    root_client.post(f"/api/lw/{wid}/room", json={"name": "a team"})
+    body = root_client.get(f"/api/lw/{wid}").json()
     assert "rooms" in body and body["rooms"], "rooms moved; fillTeamPick reads the top level"
     assert "rooms" not in (body.get("world") or {})

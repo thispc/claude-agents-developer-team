@@ -71,7 +71,7 @@ def test_root_settings_never_carry_empty_placeholders(fresh_db, monkeypatch):
 async def test_planner_uses_gemini_when_that_is_all_the_user_has(monkeypatch):
     seen = {}
 
-    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         seen.update(provider=provider, model=model)
         return '[{"role": "propulsion_engineer", "count": 1, "model": "lead"}]'
 
@@ -86,7 +86,7 @@ async def test_planner_uses_gemini_when_that_is_all_the_user_has(monkeypatch):
 async def test_planner_prefers_claude_when_several_keys_exist(monkeypatch):
     seen = {}
 
-    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         seen["provider"] = provider
         return "[]"
     monkeypatch.setattr(planner.providers, "complete", fake)

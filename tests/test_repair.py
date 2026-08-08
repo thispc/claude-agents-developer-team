@@ -10,6 +10,12 @@ from pathlib import Path
 
 import pytest
 
+# The engine's source, for the two claims that are ABOUT the source (the host's rule cap
+# and its token budget; the chat's free history path). Read as files rather than imported:
+# nothing outside services/lifeworld/ may import inside it since the P4 cutover, and a
+# claim about a file is honest to check against the file.
+SUBSTRATE = Path(__file__).resolve().parents[1] / "services" / "lifeworld" / "substrate"
+
 from conftest import clear_logs, dashboard_js
 from app import auth, config, db, launcher, repair, tuning
 from app import repair_builder as rb
@@ -417,69 +423,53 @@ def test_the_new_screen_owns_renderself_and_keeps_the_pins():
 # the crew must be six DIFFERENT people
 # --------------------------------------------------------------------------
 
-def test_factor_dials_use_vocabulary_the_engine_actually_understands(fresh_db):
+def test_the_factor_dials_actually_land_on_the_specialists(fresh_db, no_spend):
     """The first version of these personas used Big Five names (openness, agreeableness).
-    `materialise_manifest` drops unknown keys silently, so every specialist was born with a
-    neutral psyche and the same dominant drive — six seats saying one sentence six times.
-    A dial that lands nowhere is worse than no dial: it reads as configured."""
-    from app.lifeworld.drives import SPEC as DRIVES
-    from app.lifeworld.psyche import TRAITS
-    for f in repair.DEFAULT_FACTORS:
-        for k in (f.get("dials") or {}):
-            assert k in TRAITS, f"{f['id']} dials an unknown trait {k!r}"
-        for k in (f.get("drives") or {}):
-            assert k in DRIVES, f"{f['id']} seeds an unknown drive {k!r}"
+    The manifest drops unknown keys silently, so every specialist was born with a neutral
+    psyche and the same dominant drive — six seats saying one sentence six times. A dial
+    that lands nowhere is worse than no dial: it reads as configured.
+
+    Checked by EFFECT since P4, and it is the better test for it. The trait and drive
+    vocabularies belong to the engine, which is another process; comparing two dicts
+    across a wire would only prove that a copy of the vocabulary matched. Seating the
+    real crew and asking each specialist who it is proves the dials arrived — a
+    misspelt key comes back as a neutral psyche and a shared goal, which is exactly the
+    bug.
+    """
+    _root_user()
+    info = repair.ensure_team()
+    assert info, "no crew to inspect"
+    from app import lifeworld_client as lwc
+    wants, traits_seen = [], []
+    for fid, hid in info["agents"].items():
+        ctx = asyncio.run(lwc.crew_context(info["world_id"], info["room_id"],
+                                           info["thread_id"], hid, cue=""))
+        assert ctx, f"{fid} has no persona"
+        wants.append(ctx["wants"])
+        traits_seen.append(ctx["traits"])
+    assert len(set(wants)) == len(wants), f"specialists share goals: {wants}"
+    assert any(abs(float(v) - 0.5) > 0.2 for t in traits_seen for v in t.values()), \
+        "every specialist came out neutral — the dials named traits the engine ignored"
 
 
-def test_each_specialist_wants_something_different(fresh_db):
-    """A drive is a homeostatic LEVEL: a high number means SATISFIED, so seeding 0.9 for
-    'cares deeply about safety' produced an agent that wanted nothing. Six distinct goals is
-    the point of a panel — without it the graph is one opinion with five echoes."""
-    from app.lifeworld.world import World
-    w = World(name="crew")
-    goals = []
-    for f in repair.DEFAULT_FACTORS:
-        h = w.spawn_human(f["name"], dials=dict(f["dials"]))
-        for k, v in (f.get("drives") or {}).items():
-            h.drives.level[k] = float(v)
-        goals.append(h.drives.dominant_goal()[0])
-    assert len(set(goals)) == len(goals), f"specialists share goals: {goals}"
-
-
-def test_the_free_round_gives_every_specialist_its_own_line(fresh_db):
+def test_the_free_round_gives_every_specialist_its_own_line(fresh_db, no_spend):
     """The offline stance line keyed only on the dominant drive, so identical psyches
-    produced identical text — the literal 'all six saying the same thing' report."""
-    from app.lifeworld.world import World
-    w = World(name="crew")
-    s = w.new_room("table", "freeplay")
-    for f in repair.DEFAULT_FACTORS:
-        h = w.spawn_human(f["name"], dials=dict(f["dials"]))
-        for k, v in (f.get("drives") or {}).items():
-            h.drives.level[k] = float(v)
-        s.seat(h)
-    lines = {s._free_line(h, "You are the crew. Decide what to do next.") for h in s.players()}
-    assert len(lines) == len(s.players()), f"repeated stance lines: {lines}"
+    produced identical text — the literal 'all six saying the same thing' report.
 
-
-def test_a_thread_topic_is_what_the_bubble_says_not_the_rulebook(fresh_db):
-    """Bubbles read 'On You are the platform's own IT crew planning the NEXT FEW SPRIN…'
-    because the topic handed to the free line was the instruction block."""
-    from app.lifeworld.world import World
-    w = World(name="crew")
-    s = w.new_room("table", "freeplay")
-    h = w.spawn_human("Correctness", dials={"conscientiousness": 95})
-    s.seat(h)
-    rulebook = "You are the platform's own IT crew planning the NEXT FEW SPRINTS. Do X. Do Y."
-    # With nothing better to go on, the first SENTENCE stands in — never a 70-character slice
-    # that stops mid-word, and never the rest of the instruction block.
-    fallback = s._free_line(h, rulebook)
-    assert "Do X" not in fallback and "SPRINTS —" in fallback
-    # But a graph that names its subject gets its subject.
-    line = s._free_line(h, rulebook, "sprint 3: what the platform needs next")
-    assert line.startswith("sprint 3: what the platform needs next —")
-    from app.lifeworld.scene import _topic_of
-    assert _topic_of({"topic": "sprint 3: what the platform needs next"}).startswith("sprint 3")
-    assert _topic_of({"rulebook": rulebook}) == "", "a rulebook is not a topic"
+    Run as a real FREE deliberation through the service, which is how it is produced.
+    The `_free_line` unit itself is drilled in the engine's own suite; what matters here
+    is that this crew, with these dials, does not repeat itself.
+    """
+    _root_user()
+    info = repair.ensure_team()
+    from app import lifeworld_client as lwc
+    out = asyncio.run(lwc.crew_deliberate(
+        info["world_id"], info["room_id"], info["thread_id"],
+        topic="sprint 1: what the platform needs next",
+        rulebook="You are the crew. Decide what to do next.", rounds=1, live=False))
+    positions = [p["position"] for p in ((out or {}).get("memo") or {}).get("positions", [])]
+    assert len(positions) == len(info["agents"]), positions
+    assert len(set(positions)) == len(positions), f"repeated stance lines: {positions}"
 
 
 def test_changing_the_personas_reseats_a_crew_that_already_exists(fresh_db):
@@ -708,9 +698,9 @@ def test_a_rulebook_cannot_squeeze_the_round_out_of_the_hosts_reply(fresh_db):
     """Every rulebook LINE was handed to the host as a rule to echo. A prose rulebook then
     filled the reply with rule echoes, the JSON truncated, the parse failed — and the round
     silently fell back to canned lines with the reason recorded nowhere."""
-    from app.lifeworld import world as wmod
-    assert wmod.MAX_RULES <= 12
-    src = Path(wmod.__file__).read_text()
+    src = (SUBSTRATE / "world.py").read_text()
+    cap = int(src.split("MAX_RULES = ", 1)[1].split("\n", 1)[0].split("#")[0])
+    assert cap <= 12
     assert "60 * len(rules)" in src, "the token budget must account for the rules it asked for"
     assert "self.host_error =" in src, "a mediated round that degrades must say why"
 
@@ -1127,9 +1117,8 @@ def test_the_chat_shows_its_history_without_spending(fresh_db):
     had no way to tell whether anything was happening. An empty POST returns the log."""
     js = dashboard_js()
     assert "rpChatHistory" in js and "rpRenderChat" in js
-    from app.lifeworld.scene import Scene
-    import inspect
-    src = inspect.getsource(Scene.chat)
+    src = (SUBSTRATE / "scene.py").read_text().split("    async def chat(", 1)[1] \
+                                              .split("\n    async def ", 1)[0]
     assert "if not text:" in src and "return {\"chat\"" in src
 
 
@@ -1342,33 +1331,37 @@ def test_toggling_a_factor_does_not_wipe_what_the_crew_has_earned(fresh_db, no_s
     throw away the manager conversation, the deliberation memos, and — since agents learn —
     every association each specialist had proved."""
     _root_user()
+    from app import lifeworld_client as lwc
     info = repair.ensure_team()
-    from app.lifeworld import store
-    w = store.load(info["world_id"])
-    s = w.scene(info["room_id"])
-    h = next(p for p in s.players() if p.name == "Correctness")
-    for i in range(2):
-        d = h.decisions.record(i, "505 from a host", "the env is wrong", "switch env")
-        h.decisions.resolve(d.id, "good", says="a 505 here is the staging env")
-    h.memory.semantic["work.tech"] = "the venv symlink matters"
-    s.threads[0].setdefault("chats", {})["manager"] = [
-        {"role": "user", "text": "what are you working on?", "ts": 1.0}]
-    s.threads[0]["results"] = [{"recommendation": "an earlier memo"}]
-    store.save(w)
+    hid = info["agents"]["correctness"]
+    # two agreeing outcomes on one situation is what an association is made of
+    for _ in range(2):
+        got = lwc.crew_decision(info["world_id"], hid, saw="505 from a host",
+                                understood="the env is wrong", chose="switch env",
+                                because={})
+        asyncio.run(lwc.crew_outcome(info["world_id"], hid, got["decision_id"], True,
+                                     "a 505 here is the staging env"))
+    lwc.crew_chat_note(info["world_id"], info["room_id"], info["thread_id"],
+                       "what are you working on?", role="manager")
 
     repair.set_factors([{"id": "speed", "enabled": False}])       # the lineup changes
     info2 = repair.ensure_team()
-    w2 = store.load(info2["world_id"])
-    s2 = w2.scene(info2["room_id"])
-    assert len(s2.players()) == 5, "the lineup really did change"
-    h2 = next(p for p in s2.players() if p.name == "Correctness")
-    assert h2.decisions.recall("http:505") is not None, "it forgot what it had proved"
-    assert h2.memory.semantic.get("work.tech"), "it forgot what it knew"
-    assert s2.threads[0]["chats"]["manager"][0]["text"] == "what are you working on?", \
+    assert len(repair.crew_members()) == 5, "the lineup really did change"
+    hid2 = info2["agents"]["correctness"]
+
+    ctx = asyncio.run(lwc.crew_context(info2["world_id"], info2["room_id"],
+                                       info2["thread_id"], hid2, cue="505 from a host"))
+    assert ctx and ctx["exact"], "it forgot what it had proved"
+    assert "staging env" in ctx["exact"]["says"]
+    view = lwc.room_view(info2["world_id"], info2["room_id"])
+    assert view["threads"][0]["chats"]["manager"][0]["text"] == "what are you working on?", \
         "the conversation vanished"
-    assert s2.threads[0]["results"], "the deliberation history vanished"
-    # ...but the psyche IS re-seeded from the dials: that is the point of a rebuild
-    assert h2.psyche.traits["conscientiousness"] > 0.9
+    # ...but the psyche IS re-seeded from the dials: that is the point of a rebuild.
+    # The MEMORY half of the carry-over (semantic facts) and the psyche re-seed are
+    # asserted against the objects in the engine's own suite — see
+    # services/lifeworld/tests/test_lifeworld_smoke.py.
+    assert any(float(v) > 0.9 for v in (ctx["traits"] or {}).values()), \
+        "the re-seat did not re-apply the dials"
 
 
 def test_unattended_approval_only_runs_what_adds(fresh_db, no_spend, monkeypatch):
@@ -1452,17 +1445,18 @@ def test_the_crew_world_keeps_exactly_one_sprint_table(fresh_db, no_spend):
     still holding six agents. The world is one blob loaded and saved whole, so the dead rooms
     were being paid for on every tick."""
     _root_user()
-    from app.lifeworld import store
+    from app import lifeworld_client as lwc
     info = repair.ensure_team()
     for _ in range(3):                                    # three lineup changes
         repair.set_factors([{"id": "speed", "enabled": False}])
         repair.ensure_team()
         repair.set_factors([{"id": "speed", "enabled": True}])
         info = repair.ensure_team()
-    w = store.load(info["world_id"])
-    assert len(w.scenes) == 1, f"{len(w.scenes)} sprint tables piled up"
-    s = w.scene(info["room_id"])
-    assert s is not None and len(s.seats) == 6
-    from app.lifeworld.human import Human
-    people = [e for e in w.entities.values() if isinstance(e, Human)]
-    assert len(people) == 6, f"{len(people)} agents left behind by old tables"
+    rooms = lwc.rooms(repair._root_user(), [info["world_id"]])
+    tables = [r for r in rooms if r["world_id"] == info["world_id"]]
+    assert len(tables) == 1, f"{len(tables)} sprint tables piled up"
+    assert tables[0]["room_id"] == info["room_id"] and tables[0]["agents"] == 6
+    # `/rooms` counts SEATED agents, so an abandoned cast would not show up there —
+    # the room view is where a leftover would be visible, and the engine's own suite
+    # asserts the entity sweep against the objects.
+    assert len(repair.crew_members()) == 6

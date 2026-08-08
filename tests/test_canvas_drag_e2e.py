@@ -64,7 +64,15 @@ def server():
         "WORKER_TOKEN": "wt", "LAUNCHER": "local", "PYTHONPATH": str(REPO / "conductor"),
         "CANVAS_V2": "0",   # this suite tests the Konva v1 FALLBACK engine; v2 (the default) has its own suite
         "ANTHROPIC_API_KEY": "", "CLAUDE_CODE_OAUTH_TOKEN": "", "GITHUB_TOKEN": "",
+        # The Studio's substrate is a service since P4, and the canvas IS its face — so
+        # this suite starts one of its own below. Pinned explicitly rather than inherited:
+        # a developer with the fleet up would otherwise point a throwaway conductor at the
+        # REAL lifeworld on 8885 and let a browser drill edit the operator's own worlds.
+        "LIFEWORLD_URL": "",
     })
+    from conftest import spawn_lifeworld_service
+    lw_proc, lw_url = spawn_lifeworld_service(tmp, BASE)
+    env["LIFEWORLD_URL"] = lw_url
     log = open(Path(tmp) / "server.log", "w")
     proc = subprocess.Popen(
         [str(REPO / ".venv/bin/uvicorn"), "app.main:app", "--host", "0.0.0.0", "--port", str(PORT)],
@@ -78,10 +86,12 @@ def server():
         yield {"client": client}
     finally:
         proc.terminate()
-        try:
-            proc.wait(timeout=8)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        lw_proc.terminate()
+        for pr in (proc, lw_proc):
+            try:
+                pr.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                pr.kill()
         log.close()
         shutil.rmtree(tmp, ignore_errors=True)
 

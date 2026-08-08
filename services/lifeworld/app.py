@@ -1,9 +1,11 @@
 """The lifeworld service — a small society of living agents, in its own process.
 
-The P4 extraction, and the hardest one: the whole `conductor/app/lifeworld`
-package (now `substrate/`, unchanged below `ports.py`), the 35 handler bodies of
+The P4 extraction, and the hardest one: the conductor's whole lifeworld package
+(now `substrate/`, unchanged below `ports.py`), the 35 handler bodies of
 `lifeworld_routes.py`, and the `lw_worlds` blob table all moved here. One process
-behind one port, owning `data/lifeworld.db` alone.
+behind one port, owning `data/lifeworld.db` alone. Conductor-side what is left is
+a doorway (`lifeworld_routes.py` proxies `/api/lw/*`) and a client
+(`lifeworld_client.py`); the package is gone.
 
 WHAT A WORLD IS. A container of registered AGENTS and ARTIFACTS and a set of
 ROOMS; a room is a scene with a relatable type (home, office, casino, …) that
@@ -234,7 +236,14 @@ wr = APIRouter(prefix="/worlds", dependencies=AUTH, responses=COMMON)
 @app.get("/health")
 def health() -> dict:
     """Readiness, not liveness: ok only when the service could actually answer — its own
-    database opens and the worlds table reads."""
+    database opens and the worlds table reads.
+
+    `backfilled` rides alongside rather than inside `checks`, because it is not a
+    readiness condition: a box with no legacy database to copy from is perfectly
+    healthy. It is the conductor's signal that its own `lw_worlds` table is finally
+    safe to drop — see store.settled(), and note that dropping it early would lose
+    every world on the box.
+    """
     def _table_ok() -> bool:
         try:
             helpers.db().execute("SELECT COUNT(*) FROM lw_worlds").fetchone()
@@ -243,7 +252,8 @@ def health() -> dict:
             return False
     checks = {"db": helpers.db_ok(), "table": _table_ok()}
     return {"ok": all(checks.values()), "service": SERVICE,
-            "db": str(helpers.DB_PATH), "checks": checks}
+            "db": str(helpers.DB_PATH), "checks": checks,
+            "backfilled": store.settled()}
 
 
 @app.get("/openapi.json")

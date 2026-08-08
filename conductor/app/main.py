@@ -5,7 +5,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import (auth, bus, config, db, findings, home, knowledge, launcher, logs,
+from . import (auth, bus, config, db, findings, home, knowledge, launcher,
+               lifeworld_client, logs,
                manager, modgraph, notify, scheduler, upkeep, usage)
 from .routes import router, _manager_tasks
 
@@ -19,16 +20,18 @@ async def lifespan(app: FastAPI):
     logs.info("lifecycle", "starting", "conductor starting up")
     auth.init()       # seeds the root superuser from .env on first run
     findings.init()
-    # The four extracted stores. Each init() refuses loudly when its service is
+    # The five extracted stores. Each init() refuses loudly when its service is
     # not configured, and drops whatever the strangler left behind in the
     # conductor's database — the honest last step of each extraction.
     knowledge.init()
     usage.init()
     notify.init()
     # logs.init() covers the monitor too: one seam, one service, one loud door.
-    # It is the only one that asks before it drops, because the keys it drops
-    # include the owner's own answers — see its docstring.
+    # Two of them ASK before they drop, because what they drop cannot be
+    # recreated: watch holds the owner's own answers, and the lifeworld holds
+    # every world on the box. See their docstrings.
     logs.init()
+    lifeworld_client.init()
     modgraph.init()
     try:
         # The offline fallback graph for the platform itself. Guarded: a seed failure
@@ -178,11 +181,11 @@ async def _no_stale_dashboard(request, call_next):
 
 
 app.include_router(router)
-from .lifeworld_routes import router as lifeworld_router   # the Lifeworld: its own router
+from .lifeworld_routes import router as lifeworld_router   # the Lifeworld: a doorway
 from .lifeworld_routes import compose_router as lifeworld_compose_router
 # The two routes the conductor ANSWERS (the world list minus the crew's own world;
-# the agent panel plus root's log rows) go first, so they win over the dual-mode
-# routes that would otherwise forward them blind. Every other /api/lw path is a
+# the agent panel plus root's log rows) go FIRST, so they win over the catch-all
+# that would otherwise match them and forward blind. Every other /api/lw path is a
 # thin authenticated proxy onto services/lifeworld — see lifeworld_routes.py.
 app.include_router(lifeworld_compose_router)
 app.include_router(lifeworld_router)

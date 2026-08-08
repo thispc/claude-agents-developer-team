@@ -341,20 +341,14 @@ CREATE TABLE IF NOT EXISTS artifact_defs (
     updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_artifact_defs_owner ON artifact_defs(owner_id);
--- THE LIFEWORLD: a separate subsystem (conductor/app/lifeworld) — a small society of
--- living agents, tested in the Studio, deliberately decoupled from the projects engine.
--- A whole world (its humans, artifacts, scenes, the ledger chains) serialises to one JSON
--- blob, because it is read and written whole, per scan, as a playground — not queried
--- column-by-column. Owner-scoped like everything else in the Studio.
-CREATE TABLE IF NOT EXISTS lw_worlds (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    owner_id INTEGER NOT NULL,
-    name TEXT NOT NULL DEFAULT '',
-    data TEXT NOT NULL DEFAULT '{}',
-    created_at REAL NOT NULL,
-    updated_at REAL NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_lw_worlds_owner ON lw_worlds(owner_id);
+-- THE LIFEWORLD is not here. The society of agents behind the Studio canvas and the
+-- self-repair crew is a SERVICE since P4 (services/lifeworld, its own process on 8885,
+-- its own data/lifeworld.db) and it owns the `lw_worlds` blob table alone. A whole world
+-- still serialises to one JSON row — it is read and written whole, per scan, as a
+-- playground rather than queried column by column — but that row is another process's
+-- now, and the conductor reaches it over HTTP through conductor/app/lifeworld_client.py.
+-- The table this file used to declare is dropped by that client's init(), and only once
+-- the service confirms it has copied the rows out with their ids intact.
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL,
@@ -1399,37 +1393,10 @@ def clear_artifacts(scene_id: int) -> None:
     _execute("DELETE FROM artifacts WHERE scene_id=?", (scene_id,))
 
 
-# --- the Lifeworld: whole-world JSON blobs ---
-
-def create_lw_world(owner_id: int, name: str, data: str) -> int:
-    now = time.time()
-    cur = _execute(
-        "INSERT INTO lw_worlds (owner_id, name, data, created_at, updated_at) "
-        "VALUES (?,?,?,?,?)", (owner_id, name, data, now, now))
-    return int(cur.lastrowid)
-
-
-def get_lw_world(world_id: int) -> dict | None:
-    rows = _rows("SELECT * FROM lw_worlds WHERE id=?", (world_id,))
-    return rows[0] if rows else None
-
-
-def list_lw_worlds(owner_id: int) -> list[dict]:
-    return _rows("SELECT id, owner_id, name, updated_at FROM lw_worlds WHERE owner_id=? "
-                 "ORDER BY id DESC", (owner_id,))
-
-
-def update_lw_world(world_id: int, data: str, name: str | None = None) -> None:
-    if name is None:
-        _execute("UPDATE lw_worlds SET data=?, updated_at=? WHERE id=?",
-                 (data, time.time(), world_id))
-    else:
-        _execute("UPDATE lw_worlds SET data=?, name=?, updated_at=? WHERE id=?",
-                 (data, name, time.time(), world_id))
-
-
-def delete_lw_world(world_id: int) -> None:
-    _execute("DELETE FROM lw_worlds WHERE id=?", (world_id,))
+# The five lw_world row verbs left with the P4 cutover: they are
+# services/lifeworld/store.py's now, over its own data/lifeworld.db. Nothing in the
+# conductor opens that file — SERVICE_CONTRACT rule 1 — so there is nothing here to
+# keep a thin wrapper around.
 
 
 def add_scene_event(scene_id: int, kind: str, text: str = "", *, seat_id: int | None = None,

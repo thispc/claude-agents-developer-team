@@ -28,8 +28,8 @@ crew.py         the self-repair crew's verbs — whole behaviours, never accesso
 manifest.py     a team as one declarative spec, and the function that builds it
 caller.py       who is asking: the conductor's stamp, and the ownership gate
 store.py        persistence + the per-world asyncio lock
-substrate/      the engine (25 files) — unchanged from conductor/app/lifeworld
-                except ports.py, its ONE door upward, which is now a set of clients
+substrate/      the engine (25 files) — the old conductor/app/lifeworld package,
+                unchanged except ports.py, its ONE door upward, now a set of clients
 helpers.py      vendored per service: token check, WAL sqlite, tiny kv
 ```
 
@@ -70,7 +70,11 @@ an outcome) keep the key and happen conductor-side, on purpose.
 
 ## The contract
 
-- `GET /health` — readiness JSON `{ok, service, db, checks}` (db opens, table reads)
+- `GET /health` — readiness JSON `{ok, service, db, checks, backfilled}` (db opens, table
+  reads). `backfilled` is not a readiness condition — a box with nothing to copy from is
+  perfectly healthy — it is the CONDUCTOR's signal that its own `lw_worlds` table is safe
+  to drop. Nothing orders the two processes, and dropping early would lose every world on
+  the box, so the drop asks instead of hoping.
 - `GET /openapi.json` — the committed contract. After changing routes:
   `python app.py --spec > openapi.json`, commit it, let oasdiff judge the diff.
 
@@ -105,11 +109,24 @@ because that column is here.
 
 ## Tests
 
-`pytest services/lifeworld/tests` — offline: smoke (in-process TestClient) +
-Schemathesis against the committed spec over ASGI. The conductor-side drills
-(the crew loop end to end, the adoption/id-preservation heal across the process
-boundary, every degraded shape, rollback mode) live in
-`tests/test_lifeworld_service.py`.
+`pytest services/lifeworld/tests` — offline, and since the cutover it is where the
+ENGINE's own suites live too:
+
+- `test_lifeworld_smoke.py` — the contract, the caller stamp, ownership, the crew's
+  whole-behaviour endpoints, the world lock, the first-boot copy
+- `test_lifeworld_contract.py` — Schemathesis against the **committed** spec over ASGI
+- `test_substrate.py` — the engine: flags, senses, memory, skills, drives, secrets, the
+  ledger, scene rules, composites, threads, protocols, the one paid path
+- `test_decisions.py` — decision memory, its pivots and its association cache
+- `test_routing.py` — who hears whom: `_hears`, the transcript, `connect`
+
+All three of the last ones MOVED here with the P4 cutover, from the conductor's suite.
+Nothing outside this directory may import inside it, and a suite that unit-tested this
+engine from another process would be testing a copy of it. What stayed conductor-side is
+the doorway and the seam: `/api/lw/*` end to end (`tests/test_lifeworld.py`), the crew
+drills (`tests/test_crew_loop.py`, `tests/test_repair.py`) and the boundary drills
+(`tests/test_lifeworld_service.py` — every door's auth, the adoption/id-preservation heal
+across the wire, every degraded shape, and the conditional drop).
 
 ## Degraded mode (every CLIENT documents this)
 

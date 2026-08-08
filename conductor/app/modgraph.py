@@ -373,13 +373,13 @@ _SELF_MODULES: list[tuple[str, str, str, list[str], list[str]]] = [
      ["backend", "domain"],
      ["conductor/app/repair.py", "conductor/app/repair_builder.py",
       "conductor/app/repair_routes.py"]),
-    # P4 moved the substrate into services/lifeworld; conductor/app/lifeworld/ is
-    # the rollback until the cutover, and lifeworld_client.py is the door to the
-    # service. All three are this node's boundary while that is true.
+    # P4 moved the substrate into services/lifeworld. What is left conductor-side is
+    # the doorway (/api/lw/* proxy) and the client; both are this node's boundary too,
+    # because a change to either is a change to the lifeworld from where anyone stands.
     ("lifeworld", "The Lifeworld", "services/lifeworld/app.py",
      ["backend", "domain"],
-     ["services/lifeworld/", "conductor/app/lifeworld/",
-      "conductor/app/lifeworld_routes.py", "conductor/app/lifeworld_client.py"]),
+     ["services/lifeworld/", "conductor/app/lifeworld_routes.py",
+      "conductor/app/lifeworld_client.py"]),
     ("knowledge", "What agents have learned", "conductor/app/knowledge.py",
      ["backend", "domain"],
      ["conductor/app/knowledge.py"]),

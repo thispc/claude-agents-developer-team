@@ -58,7 +58,15 @@ def _task(factor="correctness", title="Fix the venv symlink in fresh worktrees",
 
 
 def _go_live(monkeypatch):
-    """Live enough for the specialist paths, with zero real spend possible."""
+    """Live enough for the specialist paths, with zero real spend possible.
+
+    Since P4 the crew's model calls go through the conductor's model door, which
+    resolves root's real settings from a signed reference — so blanking
+    `_root_settings` no longer stands between a test and a provider. What does is
+    that every test in this file monkeypatches `providers.complete` itself, which is
+    the one function the door calls. `_root_settings` still governs the knowledge
+    recalls that stay conductor-side, and blanking it keeps those free too.
+    """
     monkeypatch.setattr(config, "AUTH_CONFIGURED", True)
     monkeypatch.setattr(repair, "_root_settings", lambda: {})
 
@@ -173,7 +181,7 @@ def _room_log(info) -> list[dict]:
 def _counting_complete(replies):
     calls = []
 
-    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         calls.append({"system": system, "prompt": prompt})
         return replies[min(len(calls) - 1, len(replies) - 1)]
     return fake, calls
@@ -301,30 +309,11 @@ def test_an_unparseable_review_approves(fresh_db, tmp_repo, monkeypatch):
 # the recalled-experience fix, and the knobs
 # --------------------------------------------------------------------------
 
-def test_recalled_experience_reaches_the_tier2_prompt(fresh_db):
-    """perceive() pays for the lookup before every appraisal; until now no appraiser read
-    it — the agent remembered, then thought from nothing anyway."""
-    from app.lifeworld import appraise
-    from app.lifeworld.types import Signal
-    from app.lifeworld.world import World
-    w = World(name="w")
-    h = w.spawn_human("A")
-    sig = Signal(kind="say", from_id=None, sense="hearing", intensity=0.7, stakes=0.5,
-                 payload={"text": "another ImportError"}, domain="work.tech")
-    seen = {}
-
-    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
-        seen["prompt"] = prompt
-        return '{"understood": "ok"}'
-    ctx = {"recalled": {"says": "it is the venv symlink", "confidence": 0.8,
-                        "seen": 4, "via": "exact"}}
-    asyncio.run(appraise.model(h, sig, ctx, settings={}, complete=fake,
-                               model_name="m", max_tokens=100))
-    assert "YOU HAVE MET THIS BEFORE" in seen["prompt"]
-    assert "it is the venv symlink" in seen["prompt"] and "0.8" in seen["prompt"]
-    asyncio.run(appraise.model(h, sig, {}, settings={}, complete=fake,
-                               model_name="m", max_tokens=100))
-    assert "YOU HAVE MET THIS BEFORE" not in seen["prompt"], "no recall, no block"
+# `test_recalled_experience_reaches_the_tier2_prompt` moved to the engine's own suite
+# (services/lifeworld/tests/test_substrate.py) with the P4 cutover: it drives
+# `appraise.model` directly, which is engine code in another process now. What stayed here
+# is everything about the CREW — how a specialist is briefed, what a consult may reach, and
+# what an outcome does to the record.
 
 
 def test_the_new_knobs_carry_their_rationales(fresh_db):

@@ -40,12 +40,12 @@ def test_the_schema_initialises_and_the_table_gate_counts_it(fresh_db):
     for t in ("graph_plans", "graph_nodes", "graph_edges", "graph_node_runs",
               "graph_node_tests", "graph_assign"):
         assert t in names, f"{t} was not created"
-    # knowledge's table moved out with the P1 extraction (the knowledge service
-    # owns it now) — the conductor's declared count is 34 without it.
+    # knowledge's table moved out with the P1 extraction and lw_worlds with P4 (their
+    # services own them now) — the conductor's declared count is 33 without the two.
     from app import auth as auth_mod, findings
     declared = sum(mod.SCHEMA.count("CREATE TABLE IF NOT EXISTS")
                    for mod in (db, auth_mod, findings, modgraph))
-    assert declared == 34
+    assert declared == 33
     gate = (REPO / "tests" / "test_about_page.py").read_text()
     assert "modgraph" in gate, "the about-page table gate does not count modgraph"
 

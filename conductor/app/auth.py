@@ -249,8 +249,17 @@ def mint_settings_ref(user: dict | None) -> str:
     return f"{body}.{_ref_sig(body)}"
 
 
-def resolve_settings_ref(ref: str) -> dict:
-    """The settings a reference names — or {} for anything that does not verify.
+def resolve_settings_ref(ref: str) -> dict | None:
+    """The settings a reference names — or **None** when the reference itself does
+    not verify.
+
+    None and `{}` are different answers and the door depends on the difference.
+    None means "nobody minted this, or it names nobody": a service tried to spend
+    on a principal the conductor never named, and that is a 403. `{}` means the
+    reference is genuine and that account simply has no keys saved — which is a
+    question for `providers.complete`, not for this function. It knows about custom
+    endpoints and about the operator's own environment; pre-judging here would
+    refuse a call the provider layer could actually have made.
 
     Constant-time comparison: a plain != on the signature leaks it one character
     at a time to anyone who can measure the response, and this signature is the
@@ -258,12 +267,12 @@ def resolve_settings_ref(ref: str) -> dict:
     """
     body, _, sig = str(ref or "").rpartition(".")
     if not body or not sig or not hmac.compare_digest(sig, _ref_sig(body)):
-        return {}
+        return None
     kind, _, ident = body.partition(":")
     if kind != "user" or not ident.isdigit():
-        return {}
+        return None
     u = get_user(int(ident))
-    return get_settings(u) if u else {}
+    return get_settings(u) if u else None
 
 
 def has_own_ai_credentials(user: dict) -> bool:

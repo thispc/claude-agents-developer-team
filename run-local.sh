@@ -17,19 +17,13 @@
 # P1 cutover RE-SCOPED it: it means "the conductor outside process-compose, the
 # fleet's services still required". It cannot mean "no services". Since P1 the
 # knowledge store is a service; since the P2 cutover so are the quota meter and
-# the notifier; since the P3 cutover so is the log ring and the monitor with it.
-# All four in-process fallbacks are deleted — a conductor missing KNOWLEDGE_URL,
-# USAGE_URL, NOTIFY_URL or WATCH_URL refuses to boot rather than run with no
-# memory, no meter, no way to tell you something broke, or no record of what it
-# did.
-#
-# lifeworld (8885, P4) is the ONE that is not yet in that list. Its extraction is
-# mid-strangler: the conductor still carries the in-process package as the
-# rollback, so an unset LIFEWORLD_URL means "run the substrate in-process" rather
-# than "refuse to boot". It is started here like the rest, and its failure is
-# fatal for the same reason theirs is — a crew whose specialists are missing would
-# sprint anonymously — but it is not required, which is exactly what makes the
-# rollback one environment variable. Commit B moves it into the sentence above.
+# the notifier; since the P3 cutover so is the log ring and the monitor with it;
+# since the P4 cutover so is the whole lifeworld substrate — the Studio's canvas
+# and the self-repair crew's world. All five in-process fallbacks are deleted — a
+# conductor missing KNOWLEDGE_URL, USAGE_URL, NOTIFY_URL, WATCH_URL or
+# LIFEWORLD_URL refuses to boot rather than run with no memory, no meter, no way
+# to tell you something broke, no record of what it did, or no world behind the
+# Studio.
 #
 # So this path still runs tools/gen_fleet.py (pure Python — no vendored binaries,
 # which is the tooling that was misbehaving) for env and tokens, then starts EVERY

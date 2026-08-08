@@ -1,48 +1,29 @@
 """lifeworld_client.py — the conductor's one door to the lifeworld substrate.
 
 Since P4 the Lifeworld is a SERVICE: services/lifeworld, its own process on 8885,
-its own `data/lifeworld.db`, its own committed contract. This file is the client
-that reaches it, and — for the duration of the P4-A/P4-B strangler — the switch
-that chooses between the service and the in-process package still sitting in
-`conductor/app/lifeworld/`.
+its own `data/lifeworld.db`, its own committed contract — the whole 26-file
+package, the 35 `/api/lw/*` handler bodies and the `lw_worlds` blob. This file is
+the client that reaches it.
 
-DUAL MODE, and how it ends. `LIFEWORLD_URL` set (every supported boot path since
-tools/gen_fleet.py learned the registry entry) → every call below goes over
-httpx. Unset → the vendored package runs in-process exactly as it did before,
-which is the rollback: `unset LIFEWORLD_URL` and the conductor is the monolith
-again, world blobs and all. Commit B deletes `conductor/app/lifeworld/`, the
-`_local_*` half of every function here, and this paragraph; what is left is a
-pure client.
+The P4 cutover finished here: the in-process package (`conductor/app/lifeworld/`),
+the `_local_*` half of every function below and the dual-mode route class are gone,
+and `LIFEWORLD_URL` is now REQUIRED. It is written into data/env/conductor.env by
+tools/gen_fleet.py from services.yaml, so every supported boot path —
+`./run-local.sh` and `./run-local.sh --legacy` alike — has it. A conductor started
+by hand without it fails loudly in init() rather than serving a Studio with no
+world behind it.
 
-    Rollback between A and B = unset the URL.   After B = git revert B; the
-    service's own database survives either way, because it was copied out, never
-    moved.
+WHY init() AND NOT IMPORT. Importing this module must stay free: tools, tests and
+the module graph import it without ever reaching the substrate. Boot does call
+init(), and that is the honest place to refuse — one clear message naming
+run-local.sh, before the first canvas discovers there is nothing behind it.
 
-THE LEGACY TABLE IS NOT RENAMED, and that is a deliberate departure from P1/P2/P3.
-Those phases renamed the conductor's table aside on first boot in URL mode. Here
-the rollback is the PACKAGE, not a vendored copy, and the package reads
-`lw_worlds` — so renaming it would mean a rollback found an empty table, `db.init`
-recreated it, and the crew re-seated itself with new human ids, orphaning every
-knowledge row keyed to the old ones. That is the one failure this phase spends the
-most care avoiding. So the rows stay where they are, the service copies them out
-once (ids preserved), and a rollback reads them again — stale by whatever the
-service did since, which is the honest and much smaller cost. Commit B drops the
-table, by then genuinely unread.
-
-WHY A PACKAGE AND NOT A VENDORED FILE. P1/P2/P3 each vendored one legacy module
-(`_knowledge_legacy.py` and friends). The lifeworld is twenty-six files and
-nearly five thousand lines; a second copy inside the conductor would be a
-maintenance trap for the days between two commits, and the package is already
-sitting there untouched. So the fallback IS the package, in place, and the only
-thing that is duplicated is the ~80 lines of crew seating below — which stage B
-deletes along with it.
-
-WHAT CROSSES THE WIRE, AND WHAT NEVER DOES. Every call carries the CALLER, as
-five stamp headers the service treats as vouched-for (see services/lifeworld's
-caller.py): who the owner is, whether they are root, which principal the model
-door should bill, and whether they may spend on authoring. What never crosses is
-a credential: `settings_ref` is a signed reference (auth.mint_settings_ref) and
-only the conductor can resolve one.
+WHAT CROSSES THE WIRE, AND WHAT NEVER DOES. Every call carries the CALLER, as five
+stamp headers the service treats as vouched-for (see services/lifeworld's
+caller.py): who the owner is, whether they are root, which principal the model door
+should bill, and whether they may spend on authoring. What never crosses is a
+credential: `settings_ref` is a signed reference (auth.mint_settings_ref) and only
+the conductor can resolve one.
 
 DEGRADED MODES (service down — every shape chosen so nothing lies):
     /api/lw/*         → 503 with a readable reason. The Studio canvas says the
@@ -51,16 +32,20 @@ DEGRADED MODES (service down — every shape chosen so nothing lies):
     seat_crew         → None, so repair.ensure_team returns None and the sprint
                         tick logs + sleeps with the reason "lifeworld down".
                         PAUSING IS THE HONEST BEHAVIOUR: a crew that kept
-                        sprinting without its specialists would still be
-                        spending, just anonymously. The sleep is bounded, so it
-                        wakes on recovery without a restart.
+                        sprinting without its specialists would still be spending,
+                        just anonymously. The sleep is bounded at 60s, so it wakes
+                        on recovery without a restart and without losing a sprint.
     context/consult   → None / a declined consult, and the build carries on
     /review             anonymously and unreviewed — both already fail open.
     decision/outcome  → no-op, and the association simply is not recorded. A
                         learning system that blocks the work to learn is worse
                         than one that misses a lesson.
     room_members      → None → the Atlas room panel reads "unavailable" and the
-    /rooms/usage        assignment pool falls back to empty.
+    /rooms/usage        assignment pool says so rather than showing an empty team.
+    health            → False, which is what turns the module graph card red.
+The verbs degrade for a MISSING url too, by the same path: init() is the loud
+door, and a door that also killed every later call would turn one misconfigured
+process into a crash loop.
 
 LATENCY BUDGET: one localhost round trip per verb, ~1-3ms; timeout 5s for the
 canvas verbs and 300s for the ones with a real model call behind them. A six-agent
@@ -77,7 +62,7 @@ import httpx
 from fastapi import HTTPException, Request
 from starlette.responses import JSONResponse, Response
 
-from . import config
+from . import config, db
 
 _URL = (os.environ.get("LIFEWORLD_URL") or "").strip().rstrip("/")
 
@@ -93,12 +78,12 @@ DOWN = ("the lifeworld service is not answering — the Studio canvas and the "
         "self-repair crew both live in it. Check the fleet "
         "(data/logs/fleet.log), or start it with ./run-local.sh.")
 
-
-def enabled() -> bool:
-    """Client mode. Checked at CALL time, not at import: the P4-A rollback is
-    `unset LIFEWORLD_URL`, and a mode latched at import would need a restart to
-    honour it — which is exactly what a rollback cannot afford."""
-    return bool(_URL) or _TRANSPORT is not None
+_NO_URL = (
+    "LIFEWORLD_URL is not set — the Studio's substrate and the self-repair crew's "
+    "world are a service since P4 and the conductor has no in-process fallback any "
+    "more. Boot with ./run-local.sh (or ./run-local.sh --legacy), which generates "
+    "data/env/conductor.env from services.yaml and starts services/lifeworld on 8885."
+)
 
 
 def _token() -> str:
@@ -189,6 +174,11 @@ async def proxy(request: Request, path: str) -> Response:
     and they MUST NOT MOVE; the service's own prefix exists only so `/health` and
     `/openapi.json` have somewhere to live that a world id cannot collide with.
 
+    Streamed? No — buffered, on purpose. Every one of these bodies is a JSON world
+    view measured in kilobytes, and buffering is what lets the 503 below be a
+    readable JSON object instead of a half-written stream the canvas would have to
+    guess about.
+
     The session cookie is deliberately NOT forwarded — the service authenticates
     by token and identifies the caller by the stamp, and handing it user cookies
     would tempt exactly the coupling the contract forbids.
@@ -258,8 +248,6 @@ def health() -> bool:
     """Is the substrate actually answering? Its own /health — the same endpoint
     process-compose probes — asked through this door rather than around it, so
     the module graph's heartbeat and every verb agree on what "up" means."""
-    if not enabled():
-        return True                    # in-process: it is up iff this process is
     try:
         with _sync_client(2.0) as c:
             r = c.get("/health")
@@ -268,11 +256,55 @@ def health() -> bool:
         return False
 
 
+def init() -> None:
+    """Refuse to boot without the substrate, and finish the strangler.
+
+    The conductor declares no `lw_worlds` table any more. It is dropped here — in
+    the module that replaced the code which used to read it — but ONLY once the
+    service says it has finished with it, and that condition is the whole point of
+    this function rather than a formality.
+
+    NOTHING ORDERS THE TWO PROCESSES. process-compose starts the conductor and the
+    lifeworld service together with no `depends_on` between them, so on the first
+    boot after the cutover this can easily run before the service has attached and
+    copied. Dropping `lw_worlds` at that moment does not lose data anyone can shrug
+    at, and it is not the P3 decisions storm either — it is EVERY WORLD ON THE BOX:
+    the operator's Studio teams, and the self-repair crew's own world with every
+    association each specialist ever proved hanging off human ids that would never
+    exist again. `GET /health` answers `backfilled` for exactly this; it means "the
+    first-boot decision has been made, either way", including the boring cases
+    where there was nothing to copy. Until it is true the table stays and the next
+    boot tries again — a dead table costs a few kilobytes, and nothing in the
+    conductor reads it ever again.
+
+    P4-A ALSO DID NOT RENAME IT. The earlier phases renamed their legacy table
+    aside; here the rollback was the package itself, which read `lw_worlds` by
+    name, so renaming would have made a rollback find an empty table and re-seat
+    the crew with new ids. The rows stayed put and the service copied them out with
+    the ROWIDS PRESERVED, because every world id on the platform is a pointer at
+    one.
+    """
+    if not _URL:
+        raise RuntimeError(_NO_URL)
+    try:
+        with _sync_client(2.0) as c:
+            r = c.get("/health")
+            r.raise_for_status()
+            settled = bool(r.json().get("backfilled"))
+    except Exception as e:
+        # Deliberately not fatal. A conductor that refused to boot because a PEER
+        # was still starting is how a fleet takes itself down in a ring, and the
+        # only thing waiting on this answer is a table nobody reads.
+        _degraded("init", e)
+        return
+    if settled:
+        db._execute("DROP TABLE IF EXISTS lw_worlds")
+
+
 # --- the crew's verbs --------------------------------------------------------
 #
 # Each one is a WHOLE BEHAVIOUR, because each is a read-modify-write on a world
 # blob and `store.lock_for` can only be held on the service's side of the wire.
-# The `_local_*` twin under each is the P4-A fallback and dies with commit B.
 #
 # SYNC OR ASYNC follows the CALLER, not taste. `repair.ensure_team`,
 # `note_decision`, `team_usage` and the module graph's pool are plain functions
@@ -289,10 +321,6 @@ def seat_crew(world_id: int, factors: list[dict], *, manager: dict, protocol: di
     None when the substrate is unreachable, and that is what makes the sprint tick
     sleep with an honest reason instead of running a crew that is not there.
     """
-    if not enabled():
-        return _local_seat_crew(world_id, factors, manager=manager, protocol=protocol,
-                                scene_name=scene_name, current_room_id=current_room_id,
-                                world_name=world_name)
     try:
         with _sync_client(30.0) as c:
             r = c.post(f"/worlds/{int(world_id)}/crew-seating", json={
@@ -308,8 +336,6 @@ def seat_crew(world_id: int, factors: list[dict], *, manager: dict, protocol: di
 
 def crew_decision(world_id: int, human_id: int, saw: str, understood: str,
                   chose: str, because: dict) -> dict | None:
-    if not enabled():
-        return _local_crew_decision(world_id, human_id, saw, understood, chose, because)
     try:
         with _sync_client() as c:
             r = c.post(f"/worlds/{int(world_id)}/crew-decision",
@@ -328,8 +354,6 @@ def crew_decision_node(world_id: int, human_id: int, decision_id: int) -> dict |
     stamps, never reads — but the drills assert that an outcome really landed on the
     specialist, and a claim only checkable by opening the service's database would not
     be a claim about the boundary at all."""
-    if not enabled():
-        return _local_crew_decision_node(world_id, human_id, decision_id)
     try:
         with _sync_client() as c:
             r = c.post(f"/worlds/{int(world_id)}/crew-decision-get",
@@ -344,8 +368,6 @@ def crew_decision_node(world_id: int, human_id: int, decision_id: int) -> dict |
 
 
 def crew_usage(world_id: int, room_id: int) -> list[dict] | None:
-    if not enabled():
-        return _local_crew_usage(world_id, room_id)
     try:
         with _sync_client() as c:
             r = c.get(f"/worlds/{int(world_id)}/crew-usage",
@@ -359,8 +381,6 @@ def crew_usage(world_id: int, room_id: int) -> list[dict] | None:
 
 def crew_chat_note(world_id: int, room_id: int, thread_id: int, text: str,
                    role: str = "manager") -> bool:
-    if not enabled():
-        return _local_crew_chat_note(world_id, room_id, thread_id, text, role)
     try:
         with _sync_client() as c:
             r = c.post(f"/worlds/{int(world_id)}/crew-chat-note",
@@ -380,8 +400,6 @@ def room_alive(world_id: int, room_id: int) -> bool:
     never-persisted room then 404'd the canvas and silently un-staffed every build
     (the factor→agent ids resolve to nobody) while the check kept saying fine.
     """
-    if not enabled():
-        return _local_room_alive(world_id, room_id)
     try:
         with _sync_client() as c:
             return c.get(f"/worlds/{int(world_id)}/room/{int(room_id)}",
@@ -394,11 +412,6 @@ def room_view(world_id: int, room_id: int, user: dict | None = None) -> dict | N
     """One room exactly as the canvas sees it — cast, props, threads and the last of
     the room log. The same answer `/api/lw/{wid}/room/{rid}` proxies to a browser,
     asked from inside the conductor for the crew's own room."""
-    if not enabled():
-        from .lifeworld import store
-        w = store.load(int(world_id))
-        s = w.scene(int(room_id)) if w else None
-        return s.view() if s is not None else None
     from . import repair
     try:
         with _sync_client() as c:
@@ -415,8 +428,6 @@ def room_view(world_id: int, room_id: int, user: dict | None = None) -> dict | N
 def room_members(world_id: int, room_id: int, user: dict) -> dict | None:
     """One room as a staffing pool, or None — which the module graph reads as
     "this room is gone" and answers with an honest empty pool."""
-    if not enabled():
-        return _local_room_members(world_id, room_id)
     try:
         with _sync_client() as c:
             r = c.get(f"/worlds/{int(world_id)}/room/{int(room_id)}/members",
@@ -430,8 +441,6 @@ def room_members(world_id: int, room_id: int, user: dict) -> dict | None:
 
 
 def rooms(user: dict, extra_world_ids: list[int]) -> list[dict] | None:
-    if not enabled():
-        return _local_rooms(user, extra_world_ids)
     try:
         with _sync_client() as c:
             r = c.get("/rooms", headers=stamp(user),
@@ -447,8 +456,6 @@ async def crew_context(world_id: int, room_id: int, thread_id: int, human_id: in
                        cue: str) -> dict | None:
     """Who is building and what it has PROVEN — the lifeworld half of a specialist
     briefing. The knowledge half stays with the conductor, which holds the key."""
-    if not enabled():
-        return _local_crew_context(world_id, room_id, thread_id, human_id, cue)
     try:
         return await _post(f"/worlds/{int(world_id)}/crew-context",
                            {"room_id": int(room_id), "thread_id": int(thread_id),
@@ -461,8 +468,6 @@ async def crew_context(world_id: int, room_id: int, thread_id: int, human_id: in
 
 async def crew_outcome(world_id: int, human_id: int, decision_id: int, ok: bool,
                        says: str) -> dict | None:
-    if not enabled():
-        return _local_crew_outcome(world_id, human_id, decision_id, ok, says)
     try:
         return await _post(f"/worlds/{int(world_id)}/crew-outcome",
                            {"human_id": int(human_id), "decision_id": int(decision_id),
@@ -474,9 +479,6 @@ async def crew_outcome(world_id: int, human_id: int, decision_id: int, ok: bool,
 
 async def crew_consult(world_id: int, room_id: int, thread_id: int, human_id: int,
                        question: str, who: str = "", live: bool = True) -> dict | None:
-    if not enabled():
-        return await _local_crew_consult(world_id, room_id, thread_id, human_id,
-                                         question, who, live)
     try:
         return await _post(f"/worlds/{int(world_id)}/crew-consult",
                            {"room_id": int(room_id), "thread_id": int(thread_id),
@@ -491,9 +493,6 @@ async def crew_consult(world_id: int, room_id: int, thread_id: int, human_id: in
 
 async def crew_review(world_id: int, room_id: int, thread_id: int, human_id: int,
                       question: str, cue: str = "") -> dict | None:
-    if not enabled():
-        return await _local_crew_review(world_id, room_id, thread_id, human_id,
-                                        question, cue)
     try:
         return await _post(f"/worlds/{int(world_id)}/crew-review",
                            {"room_id": int(room_id), "thread_id": int(thread_id),
@@ -506,9 +505,6 @@ async def crew_review(world_id: int, room_id: int, thread_id: int, human_id: int
 
 async def crew_deliberate(world_id: int, room_id: int, thread_id: int, *, topic: str,
                           rulebook: str, rounds: int, live: bool) -> dict | None:
-    if not enabled():
-        return await _local_crew_deliberate(world_id, room_id, thread_id, topic=topic,
-                                            rulebook=rulebook, rounds=rounds, live=live)
     try:
         return await _post(f"/worlds/{int(world_id)}/crew-deliberate",
                            {"room_id": int(room_id), "thread_id": int(thread_id),
@@ -530,8 +526,6 @@ async def crew_chat(world_id: int, room_id: int, thread_id: int, text: str,
     This one RAISES rather than degrading: it answers a click, and a chat box that
     silently returns nothing is worse than one that says the substrate is down.
     """
-    if not enabled():
-        return await _local_crew_chat(world_id, room_id, thread_id, text, live)
     try:
         return await _post(f"/worlds/{int(world_id)}/room/{int(room_id)}"
                            f"/thread/{int(thread_id)}/chat",
@@ -546,9 +540,6 @@ async def crew_chat(world_id: int, room_id: int, thread_id: int, text: str,
 
 
 async def create_world(user: dict, name: str) -> int:
-    if not enabled():
-        from .lifeworld import store
-        return store.create(user["id"], name).id
     out = await _post("/worlds", {"name": name}, headers=stamp(user))
     return int((out.get("world") or {}).get("id") or 0)
 
@@ -556,8 +547,6 @@ async def create_world(user: dict, name: str) -> int:
 async def apply_manifest(user: dict, world_id: int, body: dict) -> dict:
     """A whole team as one spec, applied to a world. Used by the project wizard's
     "build me a team" path; the Studio's own route goes through the proxy."""
-    if not enabled():
-        return _local_apply_manifest(user, world_id, body)
     return await _post(f"/worlds/{int(world_id)}/manifest", body, headers=stamp(user),
                        timeout=_SLOW_TIMEOUT)
 
@@ -571,361 +560,3 @@ def root_stamp_free() -> dict:
         s["X-Lw-Settings"] = ""
         s["X-Lw-Author"] = "0"
     return s
-
-
-# =============================================================================
-# THE P4-A FALLBACK: the in-process package, unchanged, behind the same names.
-# Every function below is deleted by commit B along with conductor/app/lifeworld/.
-# =============================================================================
-
-def _local_settings(live: bool) -> dict | None:
-    from . import repair
-    return repair._root_settings() if live else None
-
-
-def _local_seat_crew(world_id: int, factors: list[dict], *, manager: dict,
-                     protocol: dict, scene_name: str, current_room_id: int,
-                     world_name: str) -> dict | None:
-    from . import auth
-    from .lifeworld import store
-    from .lifeworld_routes import ManifestAgent, ManifestBody, materialise_manifest
-    u = auth.get_user_by_name(auth.ROOT_USERNAME)
-    if not u or not factors:
-        return None
-    w = store.load(world_id) if world_id else None
-    if w is None:
-        w = store.create(u["id"], world_name)
-    names = [f["name"] for f in factors]
-    adopted = _local_adopt(w, factors, names)
-    if adopted:
-        return adopted
-    keep_agents, keep_thread = {}, {}
-    old = w.scene(current_room_id) if current_room_id else None
-    if old is not None:
-        for h in old.players():
-            keep_agents[h.name] = {"memory": h.memory.to_dict(),
-                                   "decisions": h.decisions.to_dict(),
-                                   "skills": h.skills.to_dict(), "tau": h.tau}
-        t0 = old.threads[0] if old.threads else None
-        if t0:
-            keep_thread = {"chats": t0.get("chats") or {}, "results": t0.get("results") or []}
-    s = materialise_manifest(w, ManifestBody(
-        name=scene_name,
-        agents=[ManifestAgent(name=f["name"], brief=f.get("brief", ""),
-                              dials=f.get("dials") or {}, drives=f.get("drives") or {})
-                for f in factors],
-        edges=[[names[i], names[(i + 1) % len(names)]] for i in range(len(names))]
-              if len(names) > 1 else [],
-        rules="", manager=manager, protocol=protocol))
-    from .lifeworld.decisions import DecisionLog
-    from .lifeworld.memory import Memory
-    from .lifeworld.skills import Skills
-    for h in s.players():
-        prior = keep_agents.get(h.name)
-        if not prior:
-            continue
-        h.memory = Memory.from_dict(prior.get("memory"))
-        h.decisions = DecisionLog.from_dict(prior.get("decisions"))
-        h.skills = Skills.from_dict(prior.get("skills"))
-        h.tau = int(prior.get("tau") or 0)
-    if keep_thread and s.threads:
-        s.threads[0]["chats"] = keep_thread.get("chats") or {}
-        s.threads[0]["results"] = keep_thread.get("results") or []
-    dropped = _local_tidy(w, s.id)
-    store.save(w)
-    return {"world_id": w.id, "room_id": s.id,
-            "thread_id": s.threads[0]["id"] if s.threads else 0,
-            "agents": {f["id"]: hid for f, hid in zip(factors, s.seats)},
-            "outcome": "rebuilt", "dropped_rooms": dropped}
-
-
-def _local_adopt(w, factors: list[dict], names: list[str]) -> dict | None:
-    want = set(names)
-    for s in w.scenes.values():
-        players = list(s.players())
-        if {h.name for h in players} != want or not s.threads:
-            continue
-        by_name = {h.name: h.id for h in players}
-        return {"world_id": w.id, "room_id": s.id,
-                "thread_id": s.threads[0]["id"] if s.threads else 0,
-                "agents": {f["id"]: by_name[f["name"]] for f in factors},
-                "outcome": "adopted", "dropped_rooms": 0}
-    return None
-
-
-def _local_tidy(w, keep_room: int) -> int:
-    from .lifeworld.human import Human
-    dropped = 0
-    for sid in [i for i in list(w.scenes) if i != keep_room]:
-        w.scenes.pop(sid, None)
-        dropped += 1
-    seated = set(w.scene(keep_room).seats) if w.scene(keep_room) else set()
-    for eid, ent in list(w.entities.items()):
-        if isinstance(ent, Human) and eid not in seated:
-            w.entities.pop(eid, None)
-    return dropped
-
-
-def _local_table(w, room_id: int, thread_id: int):
-    s = w.scene(room_id) if w else None
-    t = s.thread(thread_id) if s else None
-    return s, t
-
-
-def _local_neighbours(s, t, me) -> list:
-    from .lifeworld.threads import members_of
-    if s is None or t is None or me is None:
-        return []
-    return [o for o in (s.world.get(i) for i in members_of(t))
-            if o is not None and o.id != me.id and s._hears(t, o.id, me.id)]
-
-
-async def _local_best_informed(peers, question: str, world_id: int):
-    from . import knowledge, repair
-    best, score = None, -1.0
-    for p_ in peers:
-        try:
-            hits = await knowledge.recall(repair.reg_key_for(world_id, p_.id), question,
-                                          k=1, settings=repair._root_settings())
-            s_ = hits[0]["score"] if hits else 0.0
-        except Exception:
-            s_ = 0.0
-        if s_ > score:
-            best, score = p_, s_
-    return best
-
-
-def _local_crew_context(world_id: int, room_id: int, thread_id: int, human_id: int,
-                        cue: str) -> dict | None:
-    from .lifeworld import store
-    from .lifeworld.decisions import signature
-    from .lifeworld.human import Human
-    from .lifeworld.world import _persona
-    w = store.load(world_id)
-    s, t = _local_table(w, room_id, thread_id)
-    h = w.get(human_id) if w else None
-    if not isinstance(h, Human):
-        return None
-    p = _persona(h)
-    exact = h.decisions.recall(signature(cue, kind="task")) if cue else None
-    return {"name": h.name, "traits": p.get("traits") or {}, "wants": p.get("wants") or "",
-            "exact": ({"says": exact.says[:200], "evidence": exact.evidence,
-                       "confidence": exact.confidence} if exact is not None else None),
-            "neighbours": [o.name for o in _local_neighbours(s, t, h)]}
-
-
-def _local_crew_decision(world_id: int, human_id: int, saw: str, understood: str,
-                         chose: str, because: dict) -> dict | None:
-    from .lifeworld import store
-    from .lifeworld.decisions import signature
-    w = store.load(world_id)
-    h = w.get(human_id) if w else None
-    if h is None:
-        return None
-    d = h.decisions.record(tau=int(getattr(h, "tau", 0)), sig=signature(saw, kind="task"),
-                           saw=saw, understood=understood, chose=chose, because=because)
-    store.save(w)
-    return {"decision_id": d.id, "sig": d.sig}
-
-
-def _local_crew_outcome(world_id: int, human_id: int, decision_id: int, ok: bool,
-                        says: str) -> dict | None:
-    from .lifeworld import store
-    w = store.load(world_id)
-    h = w.get(human_id) if w else None
-    if h is None:
-        return None
-    h.decisions.resolve(int(decision_id), "good" if ok else "bad", says=says[:200])
-    store.save(w)
-    node = h.decisions.get(int(decision_id))
-    return {"ok": True, "name": h.name, "sig": node.sig if node else "",
-            "saw": node.saw if node else ""}
-
-
-def _local_crew_decision_node(world_id: int, human_id: int, decision_id: int) -> dict | None:
-    from .lifeworld import store
-    w = store.load(world_id)
-    h = w.get(human_id) if w else None
-    node = h.decisions.get(int(decision_id)) if h is not None else None
-    return node.to_dict() if node is not None else None
-
-
-async def _local_crew_consult(world_id: int, room_id: int, thread_id: int, human_id: int,
-                              question: str, who: str, live: bool) -> dict | None:
-    from .lifeworld import store
-    from .lifeworld.decisions import signature
-    from .lifeworld.threads import members_of
-    from . import knowledge, repair
-    async with store.lock_for(world_id):
-        w = store.load(world_id, live=live, settings=_local_settings(live))
-        s, t = _local_table(w, room_id, thread_id)
-        me = w.get(human_id) if w else None
-        if not (t is not None and me is not None):
-            return {"ok": False, "reason": "no_table"}
-        peers = _local_neighbours(s, t, me)
-        if not peers:
-            return {"ok": False, "reason": "no_peers"}
-        nb = next((x for x in peers if x.name.lower() == who.strip().lower()), None) if who else None
-        if who and nb is None:
-            return {"ok": False, "reason": "not_a_neighbour", "peers": [x.name for x in peers]}
-        if nb is None:
-            nb = await _local_best_informed(peers, question, world_id) or peers[0]
-        s._record("say", me.id, f"{me.name}: (consult) {question[:180]}", frm=me.id)
-        await s._hear(me, nb, f"(consult) {question[:200]}")
-        known = nb.decisions.recall(signature(question))
-        recalled = None
-        if known is not None:
-            recalled = {"says": known.says, "confidence": known.confidence,
-                        "seen": known.evidence}
-        else:
-            hits = await knowledge.recall(repair.reg_key_for(world_id, nb.id), question,
-                                          k=1, settings=repair._root_settings())
-            if hits and hits[0]["score"] >= 0.25:
-                recalled = {"says": hits[0]["says"], "confidence": hits[0]["confidence"],
-                            "seen": hits[0]["evidence"]}
-        ring = [h for h in (w.get(i) for i in members_of(t)) if h is not None]
-        answer = await w.agent_reply(
-            nb, question, transcript=s._thread_transcript(ring, thread=t, for_agent=nb.id),
-            recalled=recalled)
-        if not answer:
-            return {"ok": False, "reason": "unreachable", "who": nb.name}
-        s._record("say", nb.id, f"{nb.name}: {answer[:200]}", frm=nb.id)
-        await s._hear(nb, me, answer)
-        store.save(w)
-        return {"ok": True, "who": nb.name, "answer": answer, "model": w.model_for(nb)}
-
-
-async def _local_crew_review(world_id: int, room_id: int, thread_id: int, human_id: int,
-                             question: str, cue: str) -> dict | None:
-    from .lifeworld import store
-    async with store.lock_for(world_id):
-        w = store.load(world_id, live=True, settings=_local_settings(True))
-        s, t = _local_table(w, room_id, thread_id)
-        me = w.get(human_id) if w else None
-        if not (t is not None and me is not None):
-            return {"ok": False, "reason": "no_table"}
-        peers = _local_neighbours(s, t, me)
-        if not peers:
-            return {"ok": False, "reason": "no_peers"}
-        reviewer = await _local_best_informed(peers, cue or question, world_id) or peers[0]
-        answer = await w.agent_reply(reviewer, question)
-        store.save(w)
-        return {"ok": bool(answer), "who": reviewer.name, "answer": answer or "",
-                "reason": "" if answer else "unreachable"}
-
-
-async def _local_crew_deliberate(world_id: int, room_id: int, thread_id: int, *,
-                                 topic: str, rulebook: str, rounds: int,
-                                 live: bool) -> dict | None:
-    from .lifeworld import store
-    from .lifeworld.threads import members_of, protocol_of
-    async with store.lock_for(world_id):
-        w = store.load(world_id, live=live, settings=_local_settings(live))
-        s, t = _local_table(w, room_id, thread_id)
-        if t is None:
-            return {"ok": False, "reason": "no_table", "memo": None}
-        if topic:
-            t["topic"] = topic
-        if rulebook:
-            t["rulebook"] = rulebook[:2000]
-        memo = await s.run_deliberation(t, rounds=max(1, int(rounds)))
-        store.save(w)
-        return {"ok": True, "memo": memo,
-                "independent": protocol_of(t).get("init") == "independent",
-                "ring": len(members_of(t))}
-
-
-def _local_crew_chat_note(world_id: int, room_id: int, thread_id: int, text: str,
-                          role: str) -> bool:
-    import time
-    from .lifeworld import store
-    w = store.load(world_id)
-    _s, t = _local_table(w, room_id, thread_id)
-    if t is None:
-        return False
-    convo = t.setdefault("chats", {}).setdefault(role, [])
-    convo.append({"role": role, "text": text, "ts": time.time()})
-    t["chats"][role] = convo[-40:]
-    store.save(w)
-    return True
-
-
-async def _local_crew_chat(world_id: int, room_id: int, thread_id: int, text: str,
-                           live: bool) -> dict:
-    from .lifeworld import store
-    async with store.lock_for(world_id):
-        w = store.load(world_id, live=live, settings=_local_settings(live))
-        s = w.scene(room_id)
-        t = s.thread(thread_id) if s else None
-        if t is None:
-            raise HTTPException(409, "the crew's table is missing — toggle repair off and on")
-        res = await s.chat(t, "manager", text)
-        store.save(w)
-    return res
-
-
-def _local_crew_usage(world_id: int, room_id: int) -> list[dict] | None:
-    from .lifeworld import store
-    w = store.load(world_id)
-    if not w:
-        return None
-    s = w.scene(room_id) if room_id else None
-    people = s.players() if s is not None else w.humans()
-    return [{"agent_id": h.id, "name": h.name, "usage": h.usage()} for h in people]
-
-
-def _local_room_alive(world_id: int, room_id: int) -> bool:
-    try:
-        from .lifeworld import store
-        w = store.load(world_id)
-        return bool(w and w.scene(room_id) is not None)
-    except Exception:
-        return False
-
-
-def _local_room_members(world_id: int, room_id: int) -> dict | None:
-    from .lifeworld import store
-    try:
-        w = store.load(int(world_id))
-        s = w.scene(int(room_id)) if w else None
-    except Exception:
-        return None
-    if s is None:
-        return None
-    return {"world_id": int(world_id), "room_id": int(room_id),
-            "name": f"{w.name} · {s.name}" if s.name else w.name,
-            "members": [{"agent_id": h.id, "name": h.name} for h in s.players()]}
-
-
-def _local_rooms(user: dict, extra_world_ids: list[int]) -> list[dict]:
-    from .lifeworld import store
-    wids = [w["id"] for w in store.listing(user["id"])]
-    for i in extra_world_ids:
-        if int(i) not in wids:
-            wids.append(int(i))
-    out = []
-    for wid in wids:
-        try:
-            w = store.load(wid)
-        except Exception:
-            continue
-        if not w:
-            continue
-        for s in w.scenes.values():
-            players = s.players()
-            if not players:
-                continue
-            out.append({"world_id": w.id, "room_id": s.id,
-                        "name": f"{w.name} · {s.name}" if s.name else w.name,
-                        "agents": len(players)})
-    return out
-
-
-def _local_apply_manifest(user: dict, world_id: int, body: dict) -> dict:
-    from .lifeworld import store
-    from .lifeworld_routes import ManifestBody, materialise_manifest
-    w = store.load(world_id)
-    s = materialise_manifest(w, ManifestBody(**body))
-    store.save(w)
-    return {"room": s.view(), "agents": {(w.get(hid).name): hid for hid in s.seats},
-            "thread_ids": [t["id"] for t in s.threads], "result": None}

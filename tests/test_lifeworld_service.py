@@ -1,10 +1,9 @@
 """P4 drills — the lifeworld as a service, and everything that had to survive the cut.
 
-The rest of the suite runs the conductor in ROLLBACK mode (`LIFEWORLD_URL` unset,
-the in-process package), which is the P4-A fallback and has to stay green on its
-own. This file is the one that flips the whole app into CLIENT mode — the real
-httpx path onto the mounted service — and asserts the things a process boundary
-can quietly break:
+Since the cutover the WHOLE suite runs against the mounted service (tests/conftest.py
+sets `LIFEWORLD_URL` and points the client at it), so this file is no longer about
+turning that on. It is about the things a process boundary can quietly break, which no
+other file would notice:
 
   the doors      /internal/complete, /internal/agents/{note,get}: who may knock,
                  and that a model credential never goes out through one
@@ -15,7 +14,8 @@ can quietly break:
   the lock       a read-modify-write cannot straddle the boundary
   degraded       every documented shape, including the crew standing down with an
                  honest reason and WAKING when the service comes back
-  rollback       unset the URL and the conductor is the monolith again
+  the drop       `lw_worlds` leaves the conductor's schema, but only once the service
+                 says it has copied the rows — because nothing orders the two processes
 """
 
 import asyncio
@@ -40,19 +40,10 @@ def _svc_client(*_a, **_k):
 
 
 @pytest.fixture()
-def lw(fresh_db, monkeypatch):
-    """The conductor in CLIENT mode against the mounted service.
-
-    Patched rather than set at import on purpose: `lifeworld_client.enabled()` is
-    checked at CALL time precisely so the P4-A rollback (`unset LIFEWORLD_URL`) needs
-    no restart — which is also what lets one test file drive both modes.
-    """
-    monkeypatch.setattr(lwc, "_URL", _LIFEWORLD_URL)
-    monkeypatch.setattr(lwc, "_TOKEN", LIFEWORLD_TEST_TOKEN)
-    monkeypatch.setattr(lwc, "_TRANSPORT",
-                        httpx.ASGITransport(app=lifeworld_service.app))
-    monkeypatch.setattr(lwc, "_sync_client", _svc_client)
-    assert lwc.enabled()
+def lw(fresh_db):
+    """The conductor talking to the mounted service — which is simply how the suite runs
+    now. Kept as a named fixture so every drill below still says out loud what it needs,
+    and so `lw_down` has something to invert."""
     return lwc
 
 
@@ -291,12 +282,13 @@ def test_the_crew_is_seated_by_the_service_and_the_record_stays_here(lw, monkeyp
     assert info and info["world_id"] and info["room_id"] and info["thread_id"]
     assert set(info["agents"]) == {f["id"] for f in repair.enabled_factors()}
     assert db.kv_get("repair:world") == info, "the record is the conductor's"
-    # and the world really is in the SERVICE's database, not the conductor's
-    rows = lifeworld_service.helpers.db().execute(
-        "SELECT id FROM lw_worlds").fetchall()
+    # and the world really is in the SERVICE's database — the conductor has no such
+    # table any more, which is the cutover's last step and not merely an empty one
+    rows = lifeworld_service.helpers.db().execute("SELECT id FROM lw_worlds").fetchall()
     assert [r[0] for r in rows] == [info["world_id"]]
-    assert db._rows("SELECT COUNT(*) AS n FROM lw_worlds")[0]["n"] == 0, \
-        "the conductor's table must stay empty in client mode"
+    names = {r["name"] for r in
+             db._rows("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "lw_worlds" not in names, "the conductor still declares a worlds table"
 
 
 def test_a_second_call_is_free_and_changes_nothing(lw, monkeypatch):
@@ -535,6 +527,14 @@ def test_the_crew_stands_down_with_an_honest_reason_and_wakes_on_recovery(
         "an unbounded sleep would need a restart to clear"
     assert any(r["event"] == "crew_paused" for r in logs.rows())
 
+    # ...and the reason SURVIVES the next tick. A sleeping crew re-reads the quota
+    # meter every tick and relabels itself with whatever that says — which, live, quietly
+    # rewrote "lifeworld down" to "yielding — your own work is using the quota" the
+    # moment both were true. Both are true; only one names something to do about it.
+    asyncio.run(repair.tick())
+    assert repair.state()["sleep_reason"] == repair.LIFEWORLD_DOWN, \
+        "the actionable reason was buried by the quota one"
+
     # ...and it wakes, with no restart, the moment the service answers again.
     monkeypatch.setattr(lwc, "_TRANSPORT",
                         httpx.ASGITransport(app=lifeworld_service.app))
@@ -586,22 +586,76 @@ def test_the_module_graph_card_goes_red_when_the_service_is_down(lw_down):
 
 
 # --------------------------------------------------------------------------
-# rollback
+# the cutover itself: a loud door, and a drop that waits
 # --------------------------------------------------------------------------
+#
+# `test_unsetting_the_url_puts_the_conductor_back_in_the_monolith` lived here between
+# the two commits and is GONE, along with the package it exercised. The rollback after
+# the cutover is `git revert`, not an environment variable, and the service's own
+# database survives it either way because the rows were copied out and never moved.
 
-def test_unsetting_the_url_puts_the_conductor_back_in_the_monolith(fresh_db, monkeypatch):
-    """The P4-A rollback, drilled rather than asserted in prose: with no URL the
-    package runs in-process, the world lands in the CONDUCTOR's table, and the crew
-    seats itself exactly as it did before the extraction."""
+
+def test_the_conductor_refuses_to_boot_without_the_service(monkeypatch):
+    """One clear message naming run-local.sh, at the honest moment. IMPORTING this
+    module must stay free — tools, tests and the module graph do it without ever
+    reaching the substrate — so the refusal lives in init(), not at import."""
     monkeypatch.setattr(lwc, "_URL", "")
-    monkeypatch.setattr(lwc, "_TRANSPORT", None)
-    assert not lwc.enabled()
-    _go_live(monkeypatch)
-    info = repair.ensure_team()
-    assert info and info["room_id"]
+    with pytest.raises(RuntimeError) as e:
+        lwc.init()
+    assert "LIFEWORLD_URL" in str(e.value) and "run-local.sh" in str(e.value)
+
+
+def test_the_legacy_table_is_dropped_only_once_the_service_has_copied(fresh_db,
+                                                                     monkeypatch):
+    """NOTHING ORDERS THE TWO PROCESSES. The fleet starts the conductor and the service
+    together, so init() can easily run before the service has attached — and dropping
+    `lw_worlds` then would not lose data anyone can shrug at. It would lose EVERY WORLD
+    ON THE BOX: the operator's Studio teams and the crew's own world, with every
+    association each specialist ever proved hanging off ids that would never exist
+    again. So the drop asks first, and a service that has not settled keeps the table
+    alive for the next boot to try again.
+    """
+    db._execute("CREATE TABLE IF NOT EXISTS lw_worlds (id INTEGER PRIMARY KEY,"
+                " owner_id INTEGER NOT NULL, name TEXT, data TEXT,"
+                " created_at REAL NOT NULL, updated_at REAL NOT NULL)")
+    db._execute("INSERT INTO lw_worlds (id, owner_id, name, data, created_at, updated_at)"
+                " VALUES (7, 1, 'not yet copied', '{}', 0, 0)")
+
+    def _not_settled(*_a, **_k):
+        return _FakeHealth({"ok": True, "backfilled": False})
+    monkeypatch.setattr(lwc, "_sync_client", _not_settled)
+    lwc.init()
     assert db._rows("SELECT COUNT(*) AS n FROM lw_worlds")[0]["n"] == 1, \
-        "rollback must write the conductor's own table"
-    assert lwc.health() is True, "in-process, it is up iff this process is"
-    from app.lifeworld import store
-    w = store.load(info["world_id"])
-    assert w and w.scene(info["room_id"]) is not None
+        "the table was dropped before the service had the rows"
+
+    # ...and an unreachable service is not fatal either: a conductor that refused to
+    # boot because a PEER was still starting is how a fleet takes itself down in a ring.
+    def _dead(*_a, **_k):
+        raise httpx.ConnectError("connection refused")
+    monkeypatch.setattr(lwc, "_sync_client", _dead)
+    lwc.init()
+    assert db._rows("SELECT COUNT(*) AS n FROM lw_worlds")[0]["n"] == 1
+
+    # Once it says it is settled — which includes "there was nothing to copy" — the
+    # table goes, and nothing in the conductor reads it ever again.
+    monkeypatch.setattr(lwc, "_sync_client", _svc_client)
+    lwc.init()
+    names = {r["name"] for r in
+             db._rows("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "lw_worlds" not in names
+
+
+class _FakeHealth:
+    """The two lines of an httpx client the drop path actually uses."""
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def get(self, _path, **_kw):
+        return httpx.Response(200, json=self.payload)

@@ -206,11 +206,30 @@ conductor-side, from a machine-readable reason.
 persist. `seat_crew` returns `None`, so the sprint tick logs and **sleeps with the reason
 "lifeworld down"** on a bounded 60-second wake — pausing is the honest behaviour, since a
 crew without its specialists would still be spending, just anonymously — and it resumes
-with no restart and no lost sprint. A consult or review declines and the build carries on
-alone; a decision or outcome is simply not recorded; room members answer `None`, so the
-Atlas panel and the assignment pool read "unavailable" rather than "empty". P4-A keeps
-`conductor/app/lifeworld/` in place as the rollback (`unset LIFEWORLD_URL`), which is why
-this is the one service `--legacy` starts but does not require.
+with no restart and no lost sprint (it resumes the PHASE it was in, not a fresh sprint). A
+consult or review declines and the build carries on alone; a decision or outcome is simply
+not recorded; room members answer `None`, so the Atlas panel and the assignment pool read
+"unavailable" rather than "empty".
+
+*The cutover.* `LIFEWORLD_URL` is required, `lifeworld_client.init()` refuses without it
+naming `run-local.sh`, and `--legacy` starts all five services. The `lw_worlds` table left
+the conductor's schema — and it is dropped **conditionally**, exactly like watch's four kv
+keys in P3: nothing orders the two processes, so `init()` asks `GET /health` for
+`backfilled` first, and a service that has not settled its first-boot copy keeps the table
+alive for the next boot to try again. The stakes are why: dropping early would lose every
+world on the box, with every association each specialist ever proved hanging off human ids
+that would never exist again. P4-A also deliberately did NOT rename the table aside the way
+the earlier phases did, because the rollback then was the package itself, which read
+`lw_worlds` by name — a rename would have made a rollback find an empty table and re-seat
+the crew with new ids. The rows stayed put, the service copied them out with the ROWIDS
+PRESERVED, and the conductor dropped its copy only after being told it was safe.
+
+*The tests split where the code did.* `services/lifeworld/tests/` gained the engine's own
+suites (the substrate, decision memory, the routing rules) because nothing outside a
+service's directory may import inside it, and a conductor suite that unit-tested another
+process's objects would be testing a copy of them. The conductor kept the DOORWAY and the
+SEAM: `/api/lw/*` end to end, the crew drills, and the source-level claims that read the
+engine's files rather than importing them.
 
 ---
 

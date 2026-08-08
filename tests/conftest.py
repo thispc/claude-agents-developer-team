@@ -50,10 +50,6 @@ for _k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GEMINI_API_KEY",
            # not reach a real 8881/8882/8883/8884 (or fail because nothing is
            # listening there).
            "KNOWLEDGE_URL", "USAGE_URL", "NOTIFY_URL", "WATCH_URL",
-           # P4-A: the suite runs the conductor in ROLLBACK mode — the in-process
-           # lifeworld package — and tests/test_lifeworld_service.py is the one
-           # file that flips the whole app into client mode, per test, against
-           # the mounted service. Commit B deletes the package and this line.
            "LIFEWORLD_URL"):
     os.environ.pop(_k, None)
 
@@ -91,6 +87,7 @@ os.environ["NOTIFY_URL"] = _NOTIFY_URL
 # mode at import (URL set = client, unset = the vendored pre-P3 body), and a
 # process boots into one world and stays there.
 os.environ["WATCH_URL"] = _WATCH_URL
+os.environ["LIFEWORLD_URL"] = _LIFEWORLD_URL
 
 
 def _load_module(name: str, path: Path):
@@ -151,16 +148,17 @@ usage_service = _mount_service("usage", USAGE_TEST_TOKEN)
 notify_service = _mount_service("notify", NOTIFY_TEST_TOKEN,
                                 GITHUB_TOKEN="test-github-token-not-real")
 watch_service = _mount_service("watch", WATCH_TEST_TOKEN)
-# Mounted but NOT wired in by default. The lifeworld is the one service whose
-# conductor-side fallback is still present in P4-A (the package, in place, is the
-# rollback), so the suite runs against it and tests/test_lifeworld_service.py
-# flips the whole app into client mode for the drills that belong there. The
-# service's outward doors are wired below either way, because a service that
-# cannot reach a model or a knob is not the thing being drilled.
+# Since the P4 cutover the conductor has no substrate at all: every /api/lw path is
+# a proxy, and the self-repair crew's seating, deliberations, consults and reviews
+# are HTTP calls. So the suite mounts this one like the rest — and unlike the rest it
+# also needs its OUTWARD doors answered (a model, two knobs, the agent register, the
+# knowledge store), because a lifeworld that cannot reach a model is not the thing
+# any of these tests are about. Those are wired below.
 lifeworld_service = _mount_service("lifeworld", LIFEWORLD_TEST_TOKEN)
 
 from app import auth, db  # noqa: E402
 from app import knowledge as _knowledge  # noqa: E402
+from app import lifeworld_client as _lifeworld  # noqa: E402
 from app import logs as _logs  # noqa: E402
 from app import monitor as _monitor  # noqa: E402
 from app import notify as _notify  # noqa: E402
@@ -189,6 +187,14 @@ _usage._client = lambda: _svc_client(usage_service, _USAGE_URL, USAGE_TEST_TOKEN
 _notify._TRANSPORT = httpx.ASGITransport(app=notify_service.app)
 _notify._TOKEN = NOTIFY_TEST_TOKEN
 _notify._sync_client = lambda: _svc_client(notify_service, _NOTIFY_URL, NOTIFY_TEST_TOKEN)
+
+_lifeworld._TOKEN = LIFEWORLD_TEST_TOKEN
+_lifeworld._TRANSPORT = httpx.ASGITransport(app=lifeworld_service.app)
+# The sync half (repair.ensure_team, note_decision, team_usage, the module graph's
+# assignment pool) — a factory, not one instance, matching the shim's client-per-call
+# shape. `*a` because production passes a timeout.
+_lifeworld._sync_client = lambda *_a, **_k: _svc_client(
+    lifeworld_service, _LIFEWORLD_URL, LIFEWORLD_TEST_TOKEN)
 
 _logs._TOKEN = WATCH_TEST_TOKEN
 _logs._client = lambda: _svc_client(watch_service, _WATCH_URL, WATCH_TEST_TOKEN)
@@ -264,7 +270,7 @@ async def _lw_model_door(request: httpx.Request) -> httpx.Response:
     from app import auth, providers
     body = json.loads(request.content or b"{}")
     settings = auth.resolve_settings_ref(body.get("settings_ref", ""))
-    if not settings:
+    if settings is None:
         return httpx.Response(403, json={"detail": "the settings reference did not resolve"})
     try:
         text = await providers.complete(
@@ -316,6 +322,57 @@ def _lifeworld_doors():
     yield
 
 
+def spawn_lifeworld_service(tmp: str, conductor_url: str):
+    """Start a REAL lifeworld service as a child, for the two suites that start a real
+    conductor (the canvas end-to-end drills).
+
+    Those suites drive a browser against a `uvicorn app.main:app` subprocess, and since
+    the P4 cutover a conductor with no substrate behind it serves a Studio that 503s. The
+    other four services are allowed to be absent there — `logs`, `usage` and friends all
+    degrade to shapes a canvas test never looks at — but the canvas IS the lifeworld's
+    face, so its one required peer starts with it.
+
+    Returns (process, url). The caller must terminate it. Deliberate details:
+
+      LEGACY_DB_PATH points at a file that does not exist, so a throwaway service can
+      never copy the OPERATOR's real worlds out of devteam.db into a temp directory.
+      CONDUCTOR_URL points at the spawned conductor, so the model door, the tuning knobs
+      and the agent register resolve against the same process the browser is talking to.
+      The token is the fleet's own minted one, because that is what the conductor's client
+      will send — a service with a different one would answer 401 to every proxied call.
+    """
+    import socket
+    import subprocess
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    token = ""
+    tok = REPO / "data" / "tokens" / "lifeworld.token"
+    if tok.exists():
+        token = tok.read_text().strip()
+    env = dict(os.environ)
+    env.update({"PORT": str(port), "DB_PATH": str(Path(tmp) / "lifeworld.db"),
+                "SERVICE_TOKEN": token, "SERVICE_NAME": "lifeworld",
+                "LEGACY_DB_PATH": str(Path(tmp) / "absent-legacy.db"),
+                "CONDUCTOR_URL": conductor_url})
+    log = open(Path(tmp) / "lifeworld.log", "w")
+    proc = subprocess.Popen(
+        [str(REPO / ".venv/bin/uvicorn"), "app:app", "--app-dir",
+         str(REPO / "services" / "lifeworld"), "--host", "127.0.0.1", "--port", str(port)],
+        cwd=str(REPO), env=env, stdout=log, stderr=subprocess.STDOUT)
+    url = f"http://127.0.0.1:{port}"
+    import httpx as _httpx
+    for _ in range(120):
+        try:
+            if _httpx.get(f"{url}/health", timeout=1).status_code == 200:
+                return proc, url
+        except Exception:
+            pass
+        time.sleep(0.25)
+    proc.terminate()
+    raise AssertionError(f"the lifeworld service did not come up on {port}")
+
+
 @pytest.fixture()
 def fresh_db():
     """A clean database for one test. Recreates the schema and reseeds root."""
@@ -339,6 +396,12 @@ def fresh_db():
     knowledge.init()
     usage.init()
     notify.init()
+    # lifeworld.init() drops lw_worlds once the service says it has settled its
+    # first-boot copy. Here there is no legacy db to copy from, so the service
+    # settles immediately and the drop is a no-op — the point is that the real
+    # conditional path runs, in the order a real boot runs it.
+    from app import lifeworld_client
+    lifeworld_client.init()
     # The mounted services outlive any one test's database, so empty their stores
     # here too — a test that recalls must see only what it remembered, and a test
     # that meters must not inherit the previous test's spend.

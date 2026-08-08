@@ -197,14 +197,18 @@ def test_a_module_with_no_switch_400s_with_the_reason_and_never_fakes(root_clien
 # --------------------------------------------------------------------------
 
 def _second_room(name="night shift"):
-    from app.lifeworld import store
-    from app.lifeworld_routes import ManifestAgent, ManifestBody, materialise_manifest
-    w = store.create(1, name)
-    s = materialise_manifest(w, ManifestBody(
-        name="bench", agents=[ManifestAgent(name="Alia", brief="steady hands"),
-                              ManifestAgent(name="Bo", brief="fresh eyes")]))
-    store.save(w)
-    return w, s
+    """Another Studio room the pool can be re-pointed at, built the way anything builds
+    one since P4: two calls to the lifeworld service. `repair.py` used to import the
+    manifest out of a route module — that coupling is what the extraction deleted."""
+    import asyncio
+    from app import lifeworld_client as lwc, repair
+    root = repair._root_user()
+    wid = asyncio.run(lwc.create_world(root, name))
+    out = asyncio.run(lwc.apply_manifest(root, wid, {
+        "name": "bench",
+        "agents": [{"name": "Alia", "brief": "steady hands"},
+                   {"name": "Bo", "brief": "fresh eyes"}]}))
+    return wid, int(out["room"]["id"])
 
 
 def test_the_pool_defaults_to_the_crew_with_factors(root_client):
@@ -225,11 +229,11 @@ def test_the_pool_defaults_to_the_crew_with_factors(root_client):
 
 def test_repointing_the_pool_changes_assignment_not_the_sprint_team(root_client):
     info = repair.ensure_team()
-    w, s = _second_room()
-    r = root_client.post("/api/graph/self/team", json={"world_id": w.id, "room_id": s.id})
+    wid, rid = _second_room()
+    r = root_client.post("/api/graph/self/team", json={"world_id": wid, "room_id": rid})
     assert r.status_code == 200, r.text
     out = r.json()
-    assert db.kv_get("graph:pool:0") == {"world_id": w.id, "room_id": s.id}
+    assert db.kv_get("graph:pool:0") == {"world_id": wid, "room_id": rid}
     assert {m["name"] for m in out["members"]} == {"Alia", "Bo"}
     assert all("factor" not in m for m in out["members"]), \
         "factors are a crew concept — a Studio pool has none"
@@ -237,15 +241,15 @@ def test_repointing_the_pool_changes_assignment_not_the_sprint_team(root_client)
     assert repair.team() == info, "re-pointing the pool must not re-seat the crew"
     # and the new room is what GET now reports
     got = root_client.get("/api/graph/self/team").json()
-    assert got["current"]["world_id"] == w.id and got["current"]["room_id"] == s.id
+    assert got["current"]["world_id"] == wid and got["current"]["room_id"] == rid
     assert root_client.post("/api/graph/self/team",
                             json={"world_id": 9999, "room_id": 1}).status_code == 404
 
 
 def test_assignment_validates_pool_membership_and_refuses_groups(root_client):
     info = repair.ensure_team()
-    w, s = _second_room("bench world")
-    root_client.post("/api/graph/self/team", json={"world_id": w.id, "room_id": s.id})
+    wid, rid = _second_room("bench world")
+    root_client.post("/api/graph/self/team", json={"world_id": wid, "room_id": rid})
     members = root_client.get("/api/graph/self/team").json()["members"]
     aid = members[0]["agent_id"]
     # entity ids are world-LOCAL, so a low crew id can collide with a bench id by
@@ -370,7 +374,7 @@ def test_the_authoring_pass_keeps_the_master_over_the_managers_pick(fresh_db, mo
     })
     from app import providers
 
-    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         return reply
     monkeypatch.setattr(providers, "complete", fake)
     pid = asyncio.run(modgraph_author.author_self_plan())
@@ -452,7 +456,7 @@ def test_the_removal_note_reaches_the_managers_next_authoring_prompt(fresh_db, m
     seen = {}
     from app import providers
 
-    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         seen["prompt"] = prompt
         return "not json"                     # unusable answer: authoring changes nothing
     monkeypatch.setattr(providers, "complete", fake)

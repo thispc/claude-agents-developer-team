@@ -150,28 +150,17 @@ PORTS_RULE_TTL_S = 300   # a whole-package grep; the rule changes when code land
 
 
 def _probe_lifeworld() -> bool:
-    """The Lifeworld.
+    """The Lifeworld: does its service answer.
 
-    Since P4 it is a SERVICE, so the honest check is the one process-compose makes:
-    does it answer its own /health. The invariant that used to be checked here — `from
-    ..` appears nowhere in the package except ports.py — survives as the grep below
-    while the in-process package is still the P4-A fallback, and it is checked against
-    whichever copy is actually in use.
+    This used to import the package and grep it for the ports invariant. Since the
+    P4 cutover there is no package to import — the substrate is another process — so
+    the honest check is the one process-compose makes: `GET /health`, asked through
+    the same client every verb uses, so the card and the canvas can never disagree
+    about what "up" means. The ports invariant did not disappear; it moved with the
+    code, and services/lifeworld's own smoke test checks it literally.
     """
     from . import lifeworld_client
-    if lifeworld_client.enabled():
-        return lifeworld_client.health()
-    from . import lifeworld  # noqa: F401
-    now = time.time()
-    if now - _PORTS_RULE["ts"] > PORTS_RULE_TTL_S:
-        pkg = config.ROOT / "conductor" / "app" / "lifeworld"
-        try:
-            offenders = [f.name for f in pkg.glob("*.py")
-                         if "from .." in f.read_text() and f.name != "ports.py"]
-            _PORTS_RULE.update(ts=now, ok=not offenders)
-        except OSError:
-            _PORTS_RULE.update(ts=now, ok=False)
-    return _PORTS_RULE["ok"]
+    return lifeworld_client.health()
 
 
 def _paths_probe(paths: list[str]) -> bool:

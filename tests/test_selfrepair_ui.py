@@ -76,7 +76,7 @@ def test_opening_a_project_hides_the_self_repair_page():
 
 @pytest.mark.asyncio
 async def test_refine_expands_a_one_liner_into_a_ticket(monkeypatch):
-    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         return json.dumps({
             "title": "Blockers tab shows no background",
             "body": "## Now\nThe panel renders unstyled.\n## Expected\nStyled.",

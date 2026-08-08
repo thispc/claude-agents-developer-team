@@ -209,24 +209,61 @@ def lock_for(world_id: int) -> asyncio.Lock:
 
 # --- the one-time copy out of the conductor's monolith store -----------------
 
+def settled() -> bool:
+    """Has the first-boot decision about the conductor's `lw_worlds` been made?
+
+    The CONDUCTOR asks this — over `/health` — before it drops that table. That is
+    not politeness. Nothing orders the two processes: the fleet starts them
+    together with no `depends_on`, so on the first boot after the P4-B cutover the
+    conductor's `init()` can easily run before this service has attached. Dropping
+    `lw_worlds` then would not lose data anyone can shrug at — it would lose EVERY
+    world on the box: the operator's Studio teams and the self-repair crew's own,
+    with every association each specialist ever proved hanging off human ids that
+    would never exist again. So the drop is conditional instead of hopeful.
+
+    True means "this service will never look at that table again", which includes
+    every case where it decided there was nothing to copy.
+    """
+    return bool(helpers.kv_get("backfilled_from"))
+
+
+def _settle(reason: str, **extra) -> None:
+    helpers.kv_set("backfilled_from", json.dumps(
+        {"table": "lw_worlds", "reason": reason, "ts": time.time(), **extra}))
+
+
 def backfill_from_legacy(legacy_db_path) -> int:
     """First boot only: copy the conductor's lw_worlds into this service's store.
 
-    The strangler seam, honest about ordering: the conductor's URL-mode shim renames
-    its table lw_worlds → lw_worlds_legacy on its own first boot, and the two
-    processes start in no guaranteed order — so BOTH names are checked. Any failure
-    (the conductor mid-write, a locked file) leaves the marker unset and the next boot
-    tries again; the copy is idempotent because it only ever runs against an empty
-    table, and the ROWIDS ARE PRESERVED because every world id in the platform —
-    repair:world, graph:pool:0, a project's team pointer — is a pointer at one.
+    THE ROWIDS ARE PRESERVED, and that is the whole point. Every world id on the
+    platform is a POINTER at one — `repair:world` names the crew's world, room and
+    six specialists; `graph:pool:0` names a staffing room; every project with a
+    Studio team names both. A copy that renumbered them would silently un-staff the
+    crew and re-point every project's team at nothing, and the damage would only
+    show up the next time somebody opened a canvas.
+
+    Honest about ordering: the conductor may or may not have renamed its table
+    aside (it deliberately did NOT in P4-A — see lifeworld_client.py — but a box
+    that took a different route may have), so both names are checked. Any failure
+    (the conductor mid-write, a locked file) leaves the marker UNSET and the next
+    boot tries again; the copy is idempotent because it only ever runs against an
+    empty table.
+
+    Every outcome that means "there is nothing left to do here" SETTLES, including
+    the boring ones — a fresh box with no legacy table, or a store that already has
+    rows. Without that the conductor would wait forever for permission to drop a
+    table that was never going to be read, and a dead table in the schema is the
+    kind of thing nobody ever gets around to removing.
     """
     from pathlib import Path
     legacy = Path(legacy_db_path)
-    if helpers.kv_get("backfilled_from"):
+    if settled():
         return 0
     if _rows("SELECT COUNT(*) AS n FROM lw_worlds")[0]["n"]:
+        _settle("this store already had worlds — nothing to copy")
         return 0
     if not legacy.exists():
+        _settle("no legacy database on this box")
         return 0
     con = helpers.db()
     copied = 0
@@ -238,14 +275,15 @@ def backfill_from_legacy(legacy_db_path) -> int:
                 " AND name IN ('lw_worlds','lw_worlds_legacy')").fetchall()}
             src = "lw_worlds_legacy" if "lw_worlds_legacy" in tables else \
                   "lw_worlds" if "lw_worlds" in tables else ""
-            if src:
-                cols = "id, owner_id, name, data, created_at, updated_at"
-                con.execute(f"INSERT INTO main.lw_worlds ({cols})"
-                            f" SELECT {cols} FROM legacy.{src}")
-                copied = con.execute("SELECT changes()").fetchone()[0]
-                con.commit()
-                helpers.kv_set("backfilled_from", json.dumps(
-                    {"db": str(legacy), "table": src, "rows": copied, "ts": time.time()}))
+            if not src:
+                _settle("no legacy lw_worlds table")
+                return 0
+            cols = "id, owner_id, name, data, created_at, updated_at"
+            con.execute(f"INSERT INTO main.lw_worlds ({cols})"
+                        f" SELECT {cols} FROM legacy.{src}")
+            copied = con.execute("SELECT changes()").fetchone()[0]
+            con.commit()
+            _settle("copied", db=str(legacy), table=src, rows=copied)
         finally:
             con.execute("DETACH DATABASE legacy")
     except Exception:

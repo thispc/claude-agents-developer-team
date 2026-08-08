@@ -107,7 +107,7 @@ def _author_reply(paths_extra=None):
 def _author_fake(reply):
     calls = []
 
-    async def fake(provider, model, system, prompt, settings, max_tokens=2000):
+    async def fake(provider, model, system, prompt, settings, max_tokens=2000, source=""):
         calls.append({"system": system, "prompt": prompt})
         return reply
     return fake, calls

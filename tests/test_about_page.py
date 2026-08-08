@@ -140,25 +140,25 @@ def test_the_about_page_says_keys_never_leave_the_conductor():
 
 
 def test_the_table_count_matches_the_schema():
-    # knowledge's one table left with the P1 extraction: the knowledge SERVICE
-    # owns it now (services/knowledge, data/knowledge.db), so it is no longer
-    # part of the conductor's count — the honest accounting is 34 here plus a
-    # named pointer at the service, and the handbook says exactly that. (The
-    # legacy fallback still creates a knowledge table until commit B, but a
-    # table on the way out is not a table the platform declares.)
+    # knowledge's one table left with the P1 extraction and lw_worlds left with P4:
+    # each is a SERVICE's now (services/knowledge → data/knowledge.db,
+    # services/lifeworld → data/lifeworld.db), so neither is part of the conductor's
+    # count. The honest accounting is 33 here plus named pointers at the services,
+    # and the handbook says exactly that.
     #
-    # P2 moved two more stores and the number did NOT move, which is its own
-    # thing to be honest about: usage and notify were kv blobs, not tables. The
-    # handbook has to say where they went, or "thirty-four" quietly implies the
-    # meter is still in here.
+    # P2 and P3 moved four more stores and the number did NOT move, which is its own
+    # thing to be honest about: the meter, the notifier's memory, the log ring and the
+    # decisions store were kv blobs, not tables. The handbook has to say where they
+    # went, or a count quietly implies the meter is still in here.
     from app import db, auth, findings, modgraph
     declared = sum(mod.SCHEMA.count("CREATE TABLE IF NOT EXISTS")
                    for mod in (db, auth, findings, modgraph))
-    assert "Thirty-four tables" in _handbook() and declared == 34, \
-        f"{declared} tables are declared; the handbook says thirty-four"
+    assert "Thirty-three tables" in _handbook() and declared == 33, \
+        f"{declared} tables are declared; the handbook says thirty-three"
     assert "knowledge service" in _handbook(), \
         "the handbook no longer says where the knowledge table went"
-    for moved in ("usage_rows", "notify_seen", "data/usage.db", "data/notify.db"):
+    for moved in ("usage_rows", "notify_seen", "data/usage.db", "data/notify.db",
+                  "lw_worlds", "data/lifeworld.db"):
         assert moved in _handbook(), \
             f"the handbook no longer says where {moved} lives"
 

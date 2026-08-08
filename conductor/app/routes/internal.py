@@ -220,10 +220,13 @@ async def service_complete(body: ServiceComplete,
     """
     name, _ = _service_caller(x_service_token, "model")
     settings = auth.resolve_settings_ref(body.settings_ref)
-    if not settings:
-        # Deliberately NOT "spend the operator's key instead". A reference that
-        # does not resolve means the caller could not name whose quota this is,
-        # and guessing is how one account pays for another's agents.
+    if settings is None:
+        # Deliberately NOT "spend the operator's key instead". A reference that does
+        # not VERIFY means the caller could not name whose quota this is, and guessing
+        # is how one account pays for another's agents. An account that verifies and
+        # has no keys is a different answer and goes through: providers.complete is
+        # the authority on what counts as credentials (a custom endpoint, the
+        # operator's own environment), and its refusal names what to do about it.
         raise HTTPException(403, "the settings reference did not resolve — a service "
                                  "may only spend on a principal the conductor named")
     tokens = max(1, min(int(body.max_tokens or 0) or 1, MAX_SERVICE_TOKENS))
