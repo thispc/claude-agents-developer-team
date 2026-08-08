@@ -56,7 +56,7 @@ from pathlib import Path
 
 import httpx
 
-from . import config
+from . import config, pool
 
 MANAGED_KINDS = ("core", "service")
 
@@ -202,9 +202,26 @@ def api_token() -> str:
         return ""
 
 
-def _client(timeout: float = PC_TIMEOUT) -> httpx.Client:
-    return httpx.Client(base_url=api_base(), timeout=timeout, transport=_TRANSPORT,
-                        headers={PC_HEADER: api_token()})
+def _client() -> httpx.Client:
+    """The SHARED client for the fleet manager's REST API. The base URL and the
+    token are read every call and are part of the cached client's identity, so a
+    regenerated topology or a re-minted token rebuilds it; the suite's
+    MockTransport does the same. Per-call deadlines (start 5s, stop 10s, logs 3s)
+    ride the request now, not the constructor. Never close it."""
+    return pool.sync_client("fleet", base_url=api_base(), timeout=PC_TIMEOUT,
+                            transport=_TRANSPORT,
+                            headers={PC_HEADER: api_token()})
+
+
+def _svc_client(name: str, url: str) -> httpx.Client:
+    """The SHARED client for ONE managed service's own doors (/openapi.json,
+    /health) — the second half of what the Atlas asks, and the half it asks six
+    times over. One client per service, keyed by name so six services do not share
+    a base URL, and rebuilt when the URL, the token or the suite's transport
+    changes. Never close what this returns."""
+    return pool.sync_client(f"fleet:svc:{name}", base_url=url, timeout=PC_TIMEOUT,
+                            transport=_TRANSPORT,
+                            headers={"X-Service-Token": service_token(name)})
 
 
 def pc_states(refresh: bool = False) -> dict[str, dict] | None:
@@ -220,10 +237,10 @@ def pc_states(refresh: bool = False) -> dict[str, dict] | None:
         return _states_cache["by_name"]
     out: dict[str, dict] | None
     try:
-        with _client() as c:
-            r = c.get("/processes")
-            r.raise_for_status()
-            rows = (r.json() or {}).get("data") or []
+        c = _client()
+        r = c.get("/processes")
+        r.raise_for_status()
+        rows = (r.json() or {}).get("data") or []
         out = {}
         for row in rows:
             name = str(row.get("name") or "")
@@ -246,19 +263,19 @@ def pc_states(refresh: bool = False) -> dict[str, dict] | None:
 
 
 def pc_start(name: str) -> dict:
-    with _client(5.0) as c:
-        r = c.post(f"/process/start/{name}")
-        r.raise_for_status()
-        _states_cache["ts"] = 0.0          # the next read must see the truth
-        return r.json() if r.content else {}
+    c = _client()
+    r = c.post(f"/process/start/{name}", timeout=5.0)
+    r.raise_for_status()
+    _states_cache["ts"] = 0.0          # the next read must see the truth
+    return r.json() if r.content else {}
 
 
 def pc_stop(name: str) -> dict:
-    with _client(10.0) as c:
-        r = c.request("PATCH", f"/process/stop/{name}")
-        r.raise_for_status()
-        _states_cache["ts"] = 0.0
-        return r.json() if r.content else {}
+    c = _client()
+    r = c.request("PATCH", f"/process/stop/{name}", timeout=10.0)
+    r.raise_for_status()
+    _states_cache["ts"] = 0.0
+    return r.json() if r.content else {}
 
 
 def pc_logs(name: str, limit: int = 60) -> list[str]:
@@ -268,10 +285,10 @@ def pc_logs(name: str, limit: int = 60) -> list[str]:
     lines as `tail data/logs/fleet.log` filtered to the process). Never raises: a
     panel that cannot show logs shows none, it does not fail to open."""
     try:
-        with _client(3.0) as c:
-            r = c.get(f"/process/logs/{name}/0/{max(1, min(int(limit), 400))}")
-            r.raise_for_status()
-            return [str(x) for x in ((r.json() or {}).get("logs") or [])]
+        c = _client()
+        r = c.get(f"/process/logs/{name}/0/{max(1, min(int(limit), 400))}", timeout=3.0)
+        r.raise_for_status()
+        return [str(x) for x in ((r.json() or {}).get("logs") or [])]
     except Exception:
         return []
 
@@ -299,11 +316,9 @@ def contract(name: str) -> dict | None:
     if not url:
         return None
     try:
-        with httpx.Client(base_url=url, timeout=PC_TIMEOUT, transport=_TRANSPORT,
-                          headers={"X-Service-Token": service_token(name)}) as c:
-            r = c.get("/openapi.json")
-            r.raise_for_status()
-            spec = r.json() or {}
+        r = _svc_client(name, url).get("/openapi.json")
+        r.raise_for_status()
+        spec = r.json() or {}
     except Exception:
         return None
     endpoints = []
@@ -334,11 +349,9 @@ def service_health(name: str) -> dict | None:
     if not url:
         return None
     try:
-        with httpx.Client(base_url=url, timeout=PC_TIMEOUT, transport=_TRANSPORT,
-                          headers={"X-Service-Token": service_token(name)}) as c:
-            r = c.get(str(entry.get("health") or "/health"))
-            got = r.json() if r.status_code == 200 else {"ok": False,
-                                                         "status": r.status_code}
+        r = _svc_client(name, url).get(str(entry.get("health") or "/health"))
+        got = r.json() if r.status_code == 200 else {"ok": False,
+                                                     "status": r.status_code}
     except Exception:
         return None
     return _no_paths(got)

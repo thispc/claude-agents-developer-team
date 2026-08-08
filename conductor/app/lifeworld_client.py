@@ -62,7 +62,7 @@ import httpx
 from fastapi import HTTPException, Request
 from starlette.responses import JSONResponse, Response
 
-from . import config, db
+from . import config, db, pool
 
 _URL = (os.environ.get("LIFEWORLD_URL") or "").strip().rstrip("/")
 
@@ -99,21 +99,30 @@ def _token() -> str:
     return _TOKEN
 
 
-def _client(timeout: float = _TIMEOUT) -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=_URL or "http://lifeworld.invalid",
-                             timeout=timeout, transport=_TRANSPORT,
+def _client() -> httpx.AsyncClient:
+    """The SHARED async client, one per running event loop.
+
+    THE TIMEOUT MOVED TO THE CALL. It used to be a constructor argument, which
+    forced a client per distinct timeout (the 60s proxy, the 2s health) and
+    therefore a client per call. httpx takes `timeout=` on the request itself, so
+    one pooled client serves every deadline and the slow proxy no longer builds a
+    connection nobody reuses. Never close what this returns."""
+    return pool.async_client("lifeworld", base_url=_URL or "http://lifeworld.invalid",
+                             timeout=_TIMEOUT, transport=_TRANSPORT,
                              headers={"X-Service-Token": _token()})
 
 
-def _sync_client(timeout: float = _TIMEOUT) -> httpx.Client:
+def _sync_client() -> httpx.Client:
     """The SYNC half. `repair.ensure_team`, `note_decision`, `team_usage` and the
     module graph's assignment pool are plain functions on paths that have never
     been awaitable; making them async would ripple through twenty call sites for
     no gain a localhost round trip can measure. Tests swap this factory for a
     TestClient on the mounted service — the same seam usage.py and knowledge.py
-    use."""
-    return httpx.Client(base_url=_URL or "http://lifeworld.invalid", timeout=timeout,
-                        headers={"X-Service-Token": _token()})
+    use. Shared, and per-call deadlines ride the request (see _client)."""
+    return pool.sync_client("lifeworld:sync",
+                            base_url=_URL or "http://lifeworld.invalid",
+                            timeout=_TIMEOUT,
+                            headers={"X-Service-Token": _token()})
 
 
 def _degraded(verb: str, err: Exception) -> None:
@@ -190,9 +199,9 @@ async def proxy(request: Request, path: str) -> Response:
     headers = {"content-type": request.headers.get("content-type", "application/json")}
     headers.update(stamp(user))
     try:
-        async with _client(_SLOW_TIMEOUT) as c:
-            r = await c.request(request.method, target, params=request.query_params,
-                                content=body or None, headers=headers)
+        c = _client()
+        r = await c.request(request.method, target, params=request.query_params,
+                            content=body or None, headers=headers, timeout=_SLOW_TIMEOUT)
     except Exception as e:
         _degraded(f"proxy {request.method} {target}", e)
         return JSONResponse({"detail": DOWN, "degraded": True}, status_code=503)
@@ -205,8 +214,8 @@ async def studio_get(user: dict, path: str, params: dict | None = None) -> dict:
     detail panel, which decorates root's copy with the watch service's log rows).
     Everything else is a byte-for-byte proxy."""
     try:
-        async with _client() as c:
-            r = await c.get(f"/worlds{path}", params=params or {}, headers=stamp(user))
+        c = _client()
+        r = await c.get(f"/worlds{path}", params=params or {}, headers=stamp(user))
     except Exception as e:
         _degraded(f"GET {path}", e)
         raise HTTPException(503, DOWN)
@@ -228,20 +237,28 @@ def _passthrough(r: httpx.Response) -> Response:
 
 # --- calls the conductor makes on its own behalf ----------------------------
 
+def _deadline(timeout: float | None) -> dict:
+    """A per-request timeout, or nothing at all — the shared client already carries
+    `_TIMEOUT`, and only the SLOW verbs (the Studio proxy, the crew's seating and
+    deliberations) name their own. See modgraph._deadline for why it is **kwargs."""
+    return {} if timeout is None else {"timeout": timeout}
+
+
 async def _get(path: str, *, headers: dict, params: dict | None = None,
-               timeout: float = _TIMEOUT):
-    async with _client(timeout) as c:
-        r = await c.get(path, params=params or {}, headers=headers)
-        r.raise_for_status()
-        return r.json()
+               timeout: float | None = None):
+    c = _client()
+    r = await c.get(path, params=params or {}, headers=headers, **_deadline(timeout))
+    r.raise_for_status()
+    return r.json()
 
 
 async def _post(path: str, payload: dict, *, headers: dict,
-                params: dict | None = None, timeout: float = _TIMEOUT):
-    async with _client(timeout) as c:
-        r = await c.post(path, json=payload, params=params or {}, headers=headers)
-        r.raise_for_status()
-        return r.json()
+                params: dict | None = None, timeout: float | None = None):
+    c = _client()
+    r = await c.post(path, json=payload, params=params or {}, headers=headers,
+                     **_deadline(timeout))
+    r.raise_for_status()
+    return r.json()
 
 
 def health() -> bool:
@@ -249,9 +266,9 @@ def health() -> bool:
     process-compose probes — asked through this door rather than around it, so
     the module graph's heartbeat and every verb agree on what "up" means."""
     try:
-        with _sync_client(2.0) as c:
-            r = c.get("/health")
-            return r.status_code == 200 and bool(r.json().get("ok"))
+        c = _sync_client()
+        r = c.get("/health", timeout=2.0)
+        return r.status_code == 200 and bool(r.json().get("ok"))
     except Exception:
         return False
 
@@ -287,10 +304,10 @@ def init() -> None:
     if not _URL:
         raise RuntimeError(_NO_URL)
     try:
-        with _sync_client(2.0) as c:
-            r = c.get("/health")
-            r.raise_for_status()
-            settled = bool(r.json().get("backfilled"))
+        c = _sync_client()
+        r = c.get("/health", timeout=2.0)
+        r.raise_for_status()
+        settled = bool(r.json().get("backfilled"))
     except Exception as e:
         # Deliberately not fatal. A conductor that refused to boot because a PEER
         # was still starting is how a fleet takes itself down in a ring, and the
@@ -322,13 +339,13 @@ def seat_crew(world_id: int, factors: list[dict], *, manager: dict, protocol: di
     sleep with an honest reason instead of running a crew that is not there.
     """
     try:
-        with _sync_client(30.0) as c:
-            r = c.post(f"/worlds/{int(world_id)}/crew-seating", json={
-                "factors": factors, "manager": manager, "protocol": protocol,
-                "scene_name": scene_name, "world_name": world_name,
-                "current_room_id": int(current_room_id or 0)}, headers=root_stamp())
-            r.raise_for_status()
-            return r.json()
+        c = _sync_client()
+        r = c.post(f"/worlds/{int(world_id)}/crew-seating", json={
+            "factors": factors, "manager": manager, "protocol": protocol,
+            "scene_name": scene_name, "world_name": world_name,
+            "current_room_id": int(current_room_id or 0)}, headers=root_stamp(), timeout=30.0)
+        r.raise_for_status()
+        return r.json()
     except Exception as e:
         _degraded("seat_crew", e)
         return None
@@ -337,13 +354,13 @@ def seat_crew(world_id: int, factors: list[dict], *, manager: dict, protocol: di
 def crew_decision(world_id: int, human_id: int, saw: str, understood: str,
                   chose: str, because: dict) -> dict | None:
     try:
-        with _sync_client() as c:
-            r = c.post(f"/worlds/{int(world_id)}/crew-decision",
-                       json={"human_id": int(human_id), "saw": saw,
-                             "understood": understood, "chose": chose,
-                             "because": because}, headers=root_stamp())
-            r.raise_for_status()
-            return r.json()
+        c = _sync_client()
+        r = c.post(f"/worlds/{int(world_id)}/crew-decision",
+                   json={"human_id": int(human_id), "saw": saw,
+                         "understood": understood, "chose": chose,
+                         "because": because}, headers=root_stamp())
+        r.raise_for_status()
+        return r.json()
     except Exception as e:
         _degraded("crew_decision", e)
         return None
@@ -355,13 +372,13 @@ def crew_decision_node(world_id: int, human_id: int, decision_id: int) -> dict |
     specialist, and a claim only checkable by opening the service's database would not
     be a claim about the boundary at all."""
     try:
-        with _sync_client() as c:
-            r = c.post(f"/worlds/{int(world_id)}/crew-decision-get",
-                       json={"human_id": int(human_id), "decision_id": int(decision_id),
-                             "ok": True, "says": ""}, headers=root_stamp())
-            if r.status_code != 200:
-                return None
-            return r.json()
+        c = _sync_client()
+        r = c.post(f"/worlds/{int(world_id)}/crew-decision-get",
+                   json={"human_id": int(human_id), "decision_id": int(decision_id),
+                         "ok": True, "says": ""}, headers=root_stamp())
+        if r.status_code != 200:
+            return None
+        return r.json()
     except Exception as e:
         _degraded("crew_decision_node", e)
         return None
@@ -369,11 +386,11 @@ def crew_decision_node(world_id: int, human_id: int, decision_id: int) -> dict |
 
 def crew_usage(world_id: int, room_id: int) -> list[dict] | None:
     try:
-        with _sync_client() as c:
-            r = c.get(f"/worlds/{int(world_id)}/crew-usage",
-                      params={"room_id": int(room_id)}, headers=root_stamp())
-            r.raise_for_status()
-            return list(r.json().get("agents") or [])
+        c = _sync_client()
+        r = c.get(f"/worlds/{int(world_id)}/crew-usage",
+                  params={"room_id": int(room_id)}, headers=root_stamp())
+        r.raise_for_status()
+        return list(r.json().get("agents") or [])
     except Exception as e:
         _degraded("crew_usage", e)
         return None
@@ -382,12 +399,12 @@ def crew_usage(world_id: int, room_id: int) -> list[dict] | None:
 def crew_chat_note(world_id: int, room_id: int, thread_id: int, text: str,
                    role: str = "manager") -> bool:
     try:
-        with _sync_client() as c:
-            r = c.post(f"/worlds/{int(world_id)}/crew-chat-note",
-                       json={"room_id": int(room_id), "thread_id": int(thread_id),
-                             "role": role, "text": text}, headers=root_stamp())
-            r.raise_for_status()
-            return bool(r.json().get("ok"))
+        c = _sync_client()
+        r = c.post(f"/worlds/{int(world_id)}/crew-chat-note",
+                   json={"room_id": int(room_id), "thread_id": int(thread_id),
+                         "role": role, "text": text}, headers=root_stamp())
+        r.raise_for_status()
+        return bool(r.json().get("ok"))
     except Exception as e:
         _degraded("crew_chat_note", e)
         return False
@@ -401,9 +418,9 @@ def room_alive(world_id: int, room_id: int) -> bool:
     (the factor→agent ids resolve to nobody) while the check kept saying fine.
     """
     try:
-        with _sync_client() as c:
-            return c.get(f"/worlds/{int(world_id)}/room/{int(room_id)}",
-                         headers=root_stamp()).status_code == 200
+        c = _sync_client()
+        return c.get(f"/worlds/{int(world_id)}/room/{int(room_id)}",
+                     headers=root_stamp()).status_code == 200
     except Exception:
         return False
 
@@ -414,12 +431,12 @@ def room_view(world_id: int, room_id: int, user: dict | None = None) -> dict | N
     asked from inside the conductor for the crew's own room."""
     from . import repair
     try:
-        with _sync_client() as c:
-            r = c.get(f"/worlds/{int(world_id)}/room/{int(room_id)}",
-                      headers=stamp(user or repair._root_user() or {}))
-            if r.status_code != 200:
-                return None
-            return r.json().get("room")
+        c = _sync_client()
+        r = c.get(f"/worlds/{int(world_id)}/room/{int(room_id)}",
+                  headers=stamp(user or repair._root_user() or {}))
+        if r.status_code != 200:
+            return None
+        return r.json().get("room")
     except Exception as e:
         _degraded("room_view", e)
         return None
@@ -429,12 +446,12 @@ def room_members(world_id: int, room_id: int, user: dict) -> dict | None:
     """One room as a staffing pool, or None — which the module graph reads as
     "this room is gone" and answers with an honest empty pool."""
     try:
-        with _sync_client() as c:
-            r = c.get(f"/worlds/{int(world_id)}/room/{int(room_id)}/members",
-                      headers=stamp(user))
-            if r.status_code != 200:
-                return None
-            return r.json()
+        c = _sync_client()
+        r = c.get(f"/worlds/{int(world_id)}/room/{int(room_id)}/members",
+                  headers=stamp(user))
+        if r.status_code != 200:
+            return None
+        return r.json()
     except Exception as e:
         _degraded("room_members", e)
         return None
@@ -442,11 +459,11 @@ def room_members(world_id: int, room_id: int, user: dict) -> dict | None:
 
 def rooms(user: dict, extra_world_ids: list[int]) -> list[dict] | None:
     try:
-        with _sync_client() as c:
-            r = c.get("/rooms", headers=stamp(user),
-                      params={"extra": ",".join(str(int(i)) for i in extra_world_ids)})
-            r.raise_for_status()
-            return list(r.json().get("rooms") or [])
+        c = _sync_client()
+        r = c.get("/rooms", headers=stamp(user),
+                  params={"extra": ",".join(str(int(i)) for i in extra_world_ids)})
+        r.raise_for_status()
+        return list(r.json().get("rooms") or [])
     except Exception as e:
         _degraded("rooms", e)
         return None

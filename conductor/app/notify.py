@@ -58,7 +58,7 @@ import httpx
 # service, and the conductor's copy stays for the things that did not move (PRs,
 # merges, branch lookups). Two callers of one client was the coupling; one of
 # them now speaks HTTP instead.
-from . import bus, config, db
+from . import bus, config, db, pool
 
 _URL = (os.environ.get("NOTIFY_URL") or "").strip().rstrip("/")
 
@@ -92,14 +92,19 @@ def _token() -> str:
 
 
 def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=_URL, timeout=_TIMEOUT, transport=_TRANSPORT,
+    """The SHARED async client — one per running event loop, rebuilt when _URL,
+    _TRANSPORT or the token changes. Never closed by a caller."""
+    return pool.async_client("notify", base_url=_URL, timeout=_TIMEOUT,
+                             transport=_TRANSPORT,
                              headers={"X-Service-Token": _token()})
 
 
 def _sync_client() -> httpx.Client:
-    # status/forget keep their historical sync signatures.
-    return httpx.Client(base_url=_URL, timeout=_TIMEOUT,
-                        headers={"X-Service-Token": _token()})
+    # status/forget keep their historical sync signatures. Shared like the async
+    # half; no _TRANSPORT here because a sync client cannot drive an ASGI app —
+    # tests swap this whole factory for a TestClient.
+    return pool.sync_client("notify:sync", base_url=_URL, timeout=_TIMEOUT,
+                            headers={"X-Service-Token": _token()})
 
 
 def _degraded(verb: str, err: Exception) -> None:
@@ -135,12 +140,12 @@ async def report_error(kind: str, detail: str, context: dict | None = None) -> d
     if not detail:
         return {"sent": False, "reason": "disabled"}
     try:
-        async with _client() as c:
-            r = await c.post("/error", json={
-                "kind": str(kind or "?")[:120], "detail": str(detail)[:20000],
-                "context": context or {}, "repo": _repo()[:200]})
-            r.raise_for_status()
-            return r.json()
+        c = _client()
+        r = await c.post("/error", json={
+            "kind": str(kind or "?")[:120], "detail": str(detail)[:20000],
+            "context": context or {}, "repo": _repo()[:200]})
+        r.raise_for_status()
+        return r.json()
     except Exception as e:
         _degraded("report_error", e)
         return dict(_DOWN)
@@ -186,11 +191,11 @@ async def sprint_digest(project_id: int, sprint: int) -> dict:
         return {"sent": False, "reason": "no repo to report to"}
     title = f"Sprint {sprint} digest: {len(done)} shipped, {len(failed)} failed"
     try:
-        async with _client() as c:
-            r = await c.post("/issue", json={"repo": repo[:200], "title": title[:300],
-                                             "body": body[:20000]})
-            r.raise_for_status()
-            out = r.json()
+        c = _client()
+        r = await c.post("/issue", json={"repo": repo[:200], "title": title[:300],
+                                         "body": body[:20000]})
+        r.raise_for_status()
+        out = r.json()
     except Exception as e:
         _degraded("sprint_digest", e)
         return dict(_DOWN)
@@ -208,10 +213,10 @@ def status() -> dict[str, Any]:
     'nothing went wrong' rather than 'the notifier is broken'. The repo is added
     here because it is the conductor that knows it."""
     try:
-        with _sync_client() as c:
-            r = c.get("/status")
-            r.raise_for_status()
-            return {**r.json(), "repo": _repo()}
+        c = _sync_client()
+        r = c.get("/status")
+        r.raise_for_status()
+        return {**r.json(), "repo": _repo()}
     except Exception as e:
         _degraded("status", e)
         return {"enabled": False, "repo": _repo(), "max_per_hour": 0,
@@ -223,10 +228,10 @@ def forget(fingerprint: str | None = None) -> int:
     fresh issue. The operational use is after a fix ships: the old issue is closed
     and a recurrence should be loud again, not silently added to a stale count."""
     try:
-        with _sync_client() as c:
-            r = c.post("/forget", json={"fingerprint": fingerprint or ""})
-            r.raise_for_status()
-            return int(r.json().get("removed") or 0)
+        c = _sync_client()
+        r = c.post("/forget", json={"fingerprint": fingerprint or ""})
+        r.raise_for_status()
+        return int(r.json().get("removed") or 0)
     except Exception as e:
         _degraded("forget", e)
         return 0
@@ -236,9 +241,9 @@ def health() -> bool:
     """Is the notifier actually answering? Its own /health — the endpoint
     process-compose probes — asked through this door rather than around it."""
     try:
-        with _sync_client() as c:
-            r = c.get("/health")
-            return r.status_code == 200 and bool(r.json().get("ok"))
+        c = _sync_client()
+        r = c.get("/health")
+        return r.status_code == 200 and bool(r.json().get("ok"))
     except Exception as e:
         _degraded("health", e)
         return False

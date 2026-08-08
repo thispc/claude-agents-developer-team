@@ -195,12 +195,27 @@ import httpx  # noqa: E402
 from starlette.testclient import TestClient as _TestClient  # noqa: E402
 
 
+_SVC_CLIENTS: dict[str, object] = {}
+
+
 def _svc_client(service, base_url, token):
-    """A fresh client per call, matching each shim's own client-per-call shape —
-    one shared instance would be closed by the first `with` block."""
-    c = _TestClient(service.app, base_url=base_url)
-    c.headers["X-Service-Token"] = token
-    return c
+    """ONE TestClient per service, kept — the same shape the shims themselves now
+    have (app/pool.py).
+
+    It used to be a fresh client per call, because every call site was
+    `with _sync_client() as c:` and one shared instance would have been closed by
+    the first block. Since the pooling change nothing closes what a factory
+    returns, so a fresh client per call would only leak one TestClient (and its
+    portal) per shim call across the whole suite — and would quietly stop the
+    suite from exercising the shape production runs in. Cached here, the sync
+    seam matches production: one client, reused, for the life of the process.
+    """
+    hit = _SVC_CLIENTS.get(base_url)
+    if hit is None:
+        hit = _TestClient(service.app, base_url=base_url)
+        hit.headers["X-Service-Token"] = token
+        _SVC_CLIENTS[base_url] = hit
+    return hit
 
 
 _knowledge._TRANSPORT = httpx.ASGITransport(app=knowledge_service.app)
@@ -218,14 +233,15 @@ _notify._sync_client = lambda: _svc_client(notify_service, _NOTIFY_URL, NOTIFY_T
 _lifeworld._TOKEN = LIFEWORLD_TEST_TOKEN
 _lifeworld._TRANSPORT = httpx.ASGITransport(app=lifeworld_service.app)
 # The sync half (repair.ensure_team, note_decision, team_usage, the module graph's
-# assignment pool) — a factory, not one instance, matching the shim's client-per-call
-# shape. `*a` because production passes a timeout.
+# assignment pool). `*a` is kept deliberately: production takes no argument any more
+# (per-call deadlines ride the request since the pooling change), and a factory that
+# still tolerates one is one less thing to break if a deadline ever moves back.
 _lifeworld._sync_client = lambda *_a, **_k: _svc_client(
     lifeworld_service, _LIFEWORLD_URL, LIFEWORLD_TEST_TOKEN)
 
 _modgraph._TOKEN = MODGRAPH_TEST_TOKEN
 # The shim is sync all the way down (every caller is a plain function), so one
-# factory covers it. `*a` because production passes a timeout.
+# factory covers it. `*a` for the same reason as lifeworld's, above.
 _modgraph._client = lambda *_a, **_k: _svc_client(modgraph_service, _MODGRAPH_URL,
                                                   MODGRAPH_TEST_TOKEN)
 

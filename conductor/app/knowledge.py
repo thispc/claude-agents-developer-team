@@ -20,8 +20,12 @@ before the first sprint discovers its memory is gone.
 
 LATENCY BUDGET: one localhost HTTP round-trip per verb, ~1-3ms in practice, 5ms
 p50 budgeted; hard timeout 2s so a wedged service can never hold a sprint
-hostage. A client is built per call — at the platform's call rates the ~0.1ms
-construction cost buys freedom from event-loop lifetime bugs.
+hostage. THE CLIENT IS SHARED (app/pool.py), not built per call. The old note
+here said a client per call cost ~0.1ms and bought freedom from event-loop
+lifetime bugs; measured on the live fleet it cost 5.6ms against 0.56ms on a
+pooled connection — a 10x tax on every hop, and ~90% of the Atlas page. pool.py
+pays the lifetime hazard down explicitly instead (per-loop caching, invalidation
+on a transport or URL change) rather than by throwing the connection away.
 
 DEGRADED MODES (service down — every shape chosen so a sprint never blocks and
 never lies):
@@ -44,7 +48,7 @@ import os
 
 import httpx
 
-from . import config, db
+from . import config, db, pool
 
 _URL = (os.environ.get("KNOWLEDGE_URL") or "").strip().rstrip("/")
 
@@ -79,16 +83,23 @@ def _token() -> str:
 
 
 def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=_URL, timeout=_TIMEOUT, transport=_TRANSPORT,
+    """The SHARED async client — one per running event loop, rebuilt the moment
+    _URL, _TRANSPORT or the token differs, so the mounted-service seam and the
+    dead-transport drills still swing. Never close what it returns: the next call
+    needs the pool."""
+    return pool.async_client("knowledge", base_url=_URL, timeout=_TIMEOUT,
+                             transport=_TRANSPORT,
                              headers={"X-Service-Token": _token()})
 
 
 def _sync_client() -> httpx.Client:
     # reinforce/forget/stats/_tokens keep their historical sync signatures; a
     # blocked event loop is bounded by the 2s timeout and, in practice, by the
-    # localhost round-trip. Tests swap this factory for a TestClient.
-    return httpx.Client(base_url=_URL, timeout=_TIMEOUT,
-                        headers={"X-Service-Token": _token()})
+    # localhost round-trip. Shared like the async half. No _TRANSPORT on purpose:
+    # a sync client cannot drive an ASGI app, so tests swap this whole factory for
+    # a TestClient — the seam that has always been used here.
+    return pool.sync_client("knowledge:sync", base_url=_URL, timeout=_TIMEOUT,
+                            headers={"X-Service-Token": _token()})
 
 
 def _degraded(verb: str, err: Exception) -> None:
@@ -113,13 +124,13 @@ async def remember(owner: str, cue: str, says: str, *, kind: str = "belief",
                    sig: str = "", payload: dict | None = None, good: int = 0,
                    bad: int = 0, settings: dict | None = None) -> int:
     try:
-        async with _client() as c:
-            r = await c.post("/remember", json={
-                "owner": owner, "cue": str(cue or ""), "says": str(says or ""),
-                "kind": kind, "sig": sig, "payload": payload or {},
-                "good": int(good), "bad": int(bad), "settings": settings or {}})
-            r.raise_for_status()
-            return int(r.json().get("id") or 0)
+        c = _client()
+        r = await c.post("/remember", json={
+            "owner": owner, "cue": str(cue or ""), "says": str(says or ""),
+            "kind": kind, "sig": sig, "payload": payload or {},
+            "good": int(good), "bad": int(bad), "settings": settings or {}})
+        r.raise_for_status()
+        return int(r.json().get("id") or 0)
     except Exception as e:
         _degraded("remember", e)
         return 0
@@ -131,16 +142,16 @@ async def recall(owner: str, query: str, k: int = 5, *, kind: str = "",
     if not str(query or "").strip():
         return []                      # nothing to ask: no wire call
     try:
-        async with _client() as c:
-            r = await c.post("/recall", json={
-                "owner": owner, "query": query,
-                # the service's contract bounds k to 1..25; clamp here rather
-                # than earn a 422 that would read as an outage
-                "k": max(1, min(int(k), 25)), "kind": kind,
-                "include_global": bool(include_global),
-                "settings": settings or {}})
-            r.raise_for_status()
-            return list(r.json().get("hits") or [])
+        c = _client()
+        r = await c.post("/recall", json={
+            "owner": owner, "query": query,
+            # the service's contract bounds k to 1..25; clamp here rather
+            # than earn a 422 that would read as an outage
+            "k": max(1, min(int(k), 25)), "kind": kind,
+            "include_global": bool(include_global),
+            "settings": settings or {}})
+        r.raise_for_status()
+        return list(r.json().get("hits") or [])
     except Exception as e:
         _degraded("recall", e)
         return []
@@ -150,20 +161,20 @@ def reinforce(row_id: int, outcome: str) -> None:
     if outcome not in ("good", "bad"):
         return
     try:
-        with _sync_client() as c:
-            c.post("/reinforce",
-                   json={"id": int(row_id), "outcome": outcome}).raise_for_status()
+        c = _sync_client()
+        c.post("/reinforce",
+               json={"id": int(row_id), "outcome": outcome}).raise_for_status()
     except Exception as e:
         _degraded("reinforce", e)
 
 
 def forget(owner: str, *, row_id: int = 0, sig: str = "") -> int:
     try:
-        with _sync_client() as c:
-            r = c.post("/forget", json={"owner": owner, "row_id": int(row_id),
-                                        "sig": sig})
-            r.raise_for_status()
-            return int(r.json().get("removed") or 0)
+        c = _sync_client()
+        r = c.post("/forget", json={"owner": owner, "row_id": int(row_id),
+                                    "sig": sig})
+        r.raise_for_status()
+        return int(r.json().get("removed") or 0)
     except Exception as e:
         _degraded("forget", e)
         return 0
@@ -171,10 +182,10 @@ def forget(owner: str, *, row_id: int = 0, sig: str = "") -> int:
 
 def stats(owner: str = "") -> dict:
     try:
-        with _sync_client() as c:
-            r = c.get("/stats", params={"owner": owner})
-            r.raise_for_status()
-            return r.json()
+        c = _sync_client()
+        r = c.get("/stats", params={"owner": owner})
+        r.raise_for_status()
+        return r.json()
     except Exception as e:
         _degraded("stats", e)
         return {"total": 0, "rows": [], "backends": [], "degraded": True}
@@ -189,9 +200,9 @@ def health() -> bool:
     Unauthenticated by contract, but the token costs nothing to send.
     """
     try:
-        with _sync_client() as c:
-            r = c.get("/health")
-            return r.status_code == 200 and bool(r.json().get("ok"))
+        c = _sync_client()
+        r = c.get("/health")
+        return r.status_code == 200 and bool(r.json().get("ok"))
     except Exception as e:
         _degraded("health", e)
         return False
@@ -200,10 +211,10 @@ def health() -> bool:
 def _tokens(text: str) -> list[str]:
     # lifeworld/ports.knowledge_tokens — the old private reach-in, contract now.
     try:
-        with _sync_client() as c:
-            r = c.post("/tokens", json={"text": str(text or "")})
-            r.raise_for_status()
-            return list(r.json().get("tokens") or [])
+        c = _sync_client()
+        r = c.post("/tokens", json={"text": str(text or "")})
+        r.raise_for_status()
+        return list(r.json().get("tokens") or [])
     except Exception as e:
         _degraded("tokens", e)
         return []

@@ -64,7 +64,7 @@ from typing import Any, Callable
 
 import httpx
 
-from . import config, db, logs
+from . import config, db, logs, pool
 
 _URL = (os.environ.get("WATCH_URL") or "").strip().rstrip("/")
 
@@ -108,8 +108,14 @@ def _token() -> str:
 
 
 def _client() -> httpx.Client:
-    return httpx.Client(base_url=_URL, timeout=_TIMEOUT, transport=_TRANSPORT,
-                        headers={"X-Service-Token": _token()})
+    """The SHARED client for the watch service — the monitor's own handle on the
+    same door logs.py uses. A separate pool entry rather than a shared one because
+    the two modules keep their own _URL, _TRANSPORT and _TIMEOUT and the suite
+    rewires them independently; one entry would make either one's swap silently
+    move the other. Never close what this returns."""
+    return pool.sync_client("watch:monitor", base_url=_URL, timeout=_TIMEOUT,
+                            transport=_TRANSPORT,
+                            headers={"X-Service-Token": _token()})
 
 
 def _degraded(verb: str, err: Exception) -> None:
@@ -209,11 +215,11 @@ def _watch(window_s: int, include_decided: bool) -> dict | None:
     for that map would double the cost of a panel that polls."""
     logs.flush()        # read your own writes: the rows are queued in-process
     try:
-        with _client() as c:
-            r = c.get("/notices", params={"window_s": int(window_s),
-                                          "include_decided": bool(include_decided)})
-            r.raise_for_status()
-            return r.json()
+        c = _client()
+        r = c.get("/notices", params={"window_s": int(window_s),
+                                      "include_decided": bool(include_decided)})
+        r.raise_for_status()
+        return r.json()
     except Exception as e:
         _degraded("notices", e)
         return None
@@ -286,12 +292,12 @@ def decide(fp: str, state: str, note: str = "") -> dict:
     run here — this is the record, and it is the service's to keep."""
     rec = {"state": state, "ts": time.time(), "note": note[:300]}
     try:
-        with _client() as c:
-            r = c.post(f"/notices/{fp}/decide", json={"state": state, "note": note[:300]})
-            r.raise_for_status()
-            got = r.json()
-            return {"state": got.get("state"), "ts": got.get("ts"),
-                    "note": got.get("note", "")}
+        c = _client()
+        r = c.post(f"/notices/{fp}/decide", json={"state": state, "note": note[:300]})
+        r.raise_for_status()
+        got = r.json()
+        return {"state": got.get("state"), "ts": got.get("ts"),
+                "note": got.get("note", "")}
     except Exception as e:
         _degraded("decide", e)
         # The decision is lost, so the notice will be asked again. Honest, and
@@ -309,10 +315,10 @@ def auto_on() -> bool:
     it is its own endpoint rather than a full notice scan.
     """
     try:
-        with _client() as c:
-            r = c.get("/auto")
-            r.raise_for_status()
-            return bool(r.json().get("auto"))
+        c = _client()
+        r = c.get("/auto")
+        r.raise_for_status()
+        return bool(r.json().get("auto"))
     except Exception as e:
         _degraded("auto", e)
         return False
@@ -320,10 +326,10 @@ def auto_on() -> bool:
 
 def set_auto(on: bool) -> bool:
     try:
-        with _client() as c:
-            r = c.post("/auto", json={"on": bool(on)})
-            r.raise_for_status()
-            got = bool(r.json().get("auto"))
+        c = _client()
+        r = c.post("/auto", json={"on": bool(on)})
+        r.raise_for_status()
+        got = bool(r.json().get("auto"))
     except Exception as e:
         _degraded("set_auto", e)
         return False
@@ -442,8 +448,8 @@ def health() -> bool:
     """Is the watch service actually answering? Its own /health, asked through
     this door rather than around it."""
     try:
-        with _client() as c:
-            r = c.get("/health")
-            return r.status_code == 200 and bool(r.json().get("ok"))
+        c = _client()
+        r = c.get("/health")
+        return r.status_code == 200 and bool(r.json().get("ok"))
     except Exception:
         return False

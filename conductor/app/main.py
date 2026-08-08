@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import (auth, bus, config, db, findings, home, knowledge, launcher,
                lifeworld_client, logs,
-               manager, modgraph, notify, scheduler, upkeep, usage)
+               manager, modgraph, notify, pool, scheduler, upkeep, usage)
 from .routes import router, _manager_tasks
 
 
@@ -120,6 +120,14 @@ async def lifespan(app: FastAPI):
         t.cancel()
     if dying:
         await asyncio.wait(dying, timeout=5)
+    # ...and the shared httpx clients (app/pool.py). LAST, after the loops that use
+    # them have been cancelled and after logs' own atexit flush would still find a
+    # working client: a pooled client holds real sockets, and a process that exits
+    # without closing them leaves the fleet's services holding half-open connections
+    # until their own timeouts reap them. `aclose_all` closes this loop's async
+    # clients and every sync one; a later call rebuilds, so a shim that logs on the
+    # way out still works rather than raising into a shutdown path.
+    await pool.aclose_all()
 
 
 app = FastAPI(title="devteam conductor", lifespan=lifespan)

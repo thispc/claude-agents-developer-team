@@ -103,7 +103,7 @@ import time
 
 import httpx
 
-from . import config, db
+from . import config, db, pool
 
 _URL = (os.environ.get("WATCH_URL") or "").strip().rstrip("/")
 
@@ -229,8 +229,13 @@ def _token() -> str:
 
 
 def _client() -> httpx.Client:
-    return httpx.Client(base_url=_URL, timeout=_TIMEOUT, transport=_TRANSPORT,
-                        headers={"X-Service-Token": _token()})
+    """The SHARED client for the watch service — one, reused, including by the
+    flush daemon (httpx.Client is thread-safe to send on). Rebuilt when _URL,
+    _TRANSPORT or the token changes, which is what keeps the mounted-service and
+    dead-transport seams honest. Never close what this returns."""
+    return pool.sync_client("watch", base_url=_URL, timeout=_TIMEOUT,
+                            transport=_TRANSPORT,
+                            headers={"X-Service-Token": _token()})
 
 # --- the queue ------------------------------------------------------------
 
@@ -332,8 +337,8 @@ def flush() -> int:
             if not batch:
                 break
             try:
-                with _client() as c:
-                    c.post("/logs", json={"rows": batch}).raise_for_status()
+                c = _client()
+                c.post("/logs", json={"rows": batch}).raise_for_status()
                 sent += len(batch)
             except Exception as e:
                 _requeue(batch)
@@ -420,14 +425,14 @@ def recent(level: str = "", cat: str = "", event: str = "", q: str = "",
     global _degraded_read
     flush()
     try:
-        with _client() as c:
-            r = c.get("/logs", params={
-                "level": level, "cat": cat, "event": event, "q": q,
-                "since": float(since or 0), "limit": max(1, min(int(limit), _PAGE)),
-                "errors_only": bool(errors_only)})
-            r.raise_for_status()
-            _degraded_read = False
-            return list(r.json().get("logs") or [])
+        c = _client()
+        r = c.get("/logs", params={
+            "level": level, "cat": cat, "event": event, "q": q,
+            "since": float(since or 0), "limit": max(1, min(int(limit), _PAGE)),
+            "errors_only": bool(errors_only)})
+        r.raise_for_status()
+        _degraded_read = False
+        return list(r.json().get("logs") or [])
     except Exception as e:
         _degraded_read = True
         _note(f"cannot read the ring — the log view is empty while the watch "
@@ -452,12 +457,12 @@ def stats(window_s: int = 3600, now: float | None = None) -> dict:
     global _degraded_read
     flush()
     try:
-        with _client() as c:
-            r = c.get("/logs/stats", params={"window_s": max(0, int(window_s)),
-                                             "now": float(now or 0)})
-            r.raise_for_status()
-            _degraded_read = False
-            return r.json()
+        c = _client()
+        r = c.get("/logs/stats", params={"window_s": max(0, int(window_s)),
+                                         "now": float(now or 0)})
+        r.raise_for_status()
+        _degraded_read = False
+        return r.json()
     except Exception as e:
         _degraded_read = True
         _note(f"cannot read the ring — log stats are zeros while the watch "
@@ -483,9 +488,9 @@ def health() -> bool:
     endpoint process-compose probes — asked through this door rather than
     around it, so there is exactly one place that knows the URL."""
     try:
-        with _client() as c:
-            r = c.get("/health")
-            return r.status_code == 200 and bool(r.json().get("ok"))
+        c = _client()
+        r = c.get("/health")
+        return r.status_code == 200 and bool(r.json().get("ok"))
     except Exception:
         return False
 
@@ -537,10 +542,10 @@ def init() -> None:
     if not _URL:
         raise RuntimeError(_NO_URL)
     try:
-        with _client() as c:
-            r = c.get("/health")
-            r.raise_for_status()
-            settled = bool(r.json().get("backfilled"))
+        c = _client()
+        r = c.get("/health")
+        r.raise_for_status()
+        settled = bool(r.json().get("backfilled"))
     except Exception as e:
         # Deliberately not fatal. A conductor that refused to boot because a PEER was still
         # starting is how a fleet takes itself down in a ring, and the only thing waiting on

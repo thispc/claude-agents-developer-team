@@ -57,6 +57,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
@@ -215,10 +216,23 @@ def _default_model() -> str:
 store.init_store()
 store.backfill_from_legacy(LEGACY_DB_PATH)
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Nothing to do on the way up (the store initialises at import, above); on the
+    way down, close the shared clients the substrate's ports hold open.
+
+    Those clients are pooled now — one per peer instead of one per call — so the
+    sockets they hold are real and outlive any single request. A service that exits
+    without closing them leaves the conductor and the knowledge service holding
+    half-open connections until their own timeouts reap them."""
+    yield
+    await ports.aclose_pool()
+
+
 # openapi_url=None: FastAPI must not serve a live-generated spec at the contract's
 # address — the committed file is the contract, and drift between the two is a
 # thing the contract tests exist to catch.
-app = FastAPI(title=SERVICE, openapi_url=None)
+app = FastAPI(title=SERVICE, openapi_url=None, lifespan=_lifespan)
 
 # Missing and forbidden are the SAME answer everywhere a world id appears, so a
 # guessed id learns nothing — not even that the row exists. Declared once, on the

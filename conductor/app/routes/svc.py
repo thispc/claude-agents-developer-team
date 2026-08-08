@@ -35,12 +35,11 @@ first push-feed service (watch, P3) forces that decision; nothing needs it in P0
 
 from pathlib import Path
 
-import httpx
 from fastapi import HTTPException, Request
 from starlette.background import BackgroundTask
 from starlette.responses import Response, StreamingResponse
 
-from .. import config, fleet
+from .. import config, fleet, pool
 from ..guards import _root
 from ..preview_proxy import _HOP          # one hop-by-hop list, not two drifting copies
 from .base import current_user, router
@@ -94,7 +93,14 @@ async def svc_proxy(name: str, path: str, request: Request):
     headers = {k: v for k, v in request.headers.items()
                if k.lower() not in _HOP and k.lower() != "cookie"}
     headers["X-Service-Token"] = target["token"]
-    client = httpx.AsyncClient(timeout=30, follow_redirects=False)
+    # ONE client for the whole gateway, shared across every proxied request (see
+    # app/pool.py). It used to be built per request and closed in the background
+    # task below — 5.6ms of connection setup on every /svc hop, paid before the
+    # service had done anything. Only the RESPONSE is closed now; closing the
+    # client would tear down the pool the next request needs.
+    # (redirects stay unfollowed — httpx's default, and what the per-request
+    # client spelled out explicitly before.)
+    client = pool.async_client("svc-gateway", timeout=30.0)
     req = client.build_request(
         request.method, f"{target['url']}/{path}", params=request.query_params,
         content=request.stream(),           # streamed through, never buffered whole
@@ -102,7 +108,6 @@ async def svc_proxy(name: str, path: str, request: Request):
     try:
         upstream = await client.send(req, stream=True)
     except Exception as e:                  # down, still booting, mid-restart
-        await client.aclose()
         return Response(
             f"The {name} service did not respond ({str(e)[:120]}).\n"
             "It may be starting or stopped — check the fleet (data/logs/fleet.log).",
@@ -110,7 +115,6 @@ async def svc_proxy(name: str, path: str, request: Request):
 
     async def _close() -> None:
         await upstream.aclose()
-        await client.aclose()
 
     out_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _HOP}
     return StreamingResponse(upstream.aiter_raw(), status_code=upstream.status_code,

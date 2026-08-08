@@ -74,7 +74,7 @@ import time
 
 import httpx
 
-from . import config, db, tuning
+from . import config, db, pool, tuning
 
 _URL = (os.environ.get("USAGE_URL") or "").strip().rstrip("/")
 
@@ -155,9 +155,13 @@ def _client() -> httpx.Client:
     # repair.headroom() are plain functions on the sleep path. A blocked event
     # loop is bounded by the 2s timeout and, in practice, by the localhost
     # round-trip. Tests swap this factory for a TestClient (the mounted service),
-    # or set _TRANSPORT to one that refuses (the outage).
-    return httpx.Client(base_url=_URL, timeout=_TIMEOUT, transport=_TRANSPORT,
-                        headers={"X-Service-Token": _token()})
+    # or set _TRANSPORT to one that refuses (the outage) — and the pool rebuilds
+    # on that swap, because _TRANSPORT is part of the cached client's identity.
+    # SHARED, not per call: a fresh client per note() cost 5.6ms against 0.56ms
+    # pooled, on a meter every spender touches. Never close what this returns.
+    return pool.sync_client("usage", base_url=_URL, timeout=_TIMEOUT,
+                            transport=_TRANSPORT,
+                            headers={"X-Service-Token": _token()})
 
 
 def _degraded(verb: str, err: Exception) -> None:
@@ -187,12 +191,12 @@ def note(source: str, model: str = "", tok: int = 0, cache: int = 0,
     left to guess.
     """
     try:
-        with _client() as c:
-            c.post("/note", json={
-                "source": str(source or "?")[:24], "model": str(model or "")[:60],
-                "tok": max(0, int(tok or 0)), "cache": max(0, int(cache or 0)),
-                "usd": round(float(usd or 0), 4), "calls": max(1, int(calls or 1)),
-                "ts": float(ts or 0)}).raise_for_status()
+        c = _client()
+        c.post("/note", json={
+            "source": str(source or "?")[:24], "model": str(model or "")[:60],
+            "tok": max(0, int(tok or 0)), "cache": max(0, int(cache or 0)),
+            "usd": round(float(usd or 0), 4), "calls": max(1, int(calls or 1)),
+            "ts": float(ts or 0)}).raise_for_status()
     except Exception as e:
         _degraded("note", e)        # metering must never break the thing being metered
 
@@ -226,10 +230,10 @@ def note_result(source: str, model: str, message) -> float:
 
 def rows(since: float = 0.0) -> list[dict]:
     try:
-        with _client() as c:
-            r = c.get("/rows", params={"since": float(since or 0)})
-            r.raise_for_status()
-            return list(r.json().get("rows") or [])
+        c = _client()
+        r = c.get("/rows", params={"since": float(since or 0)})
+        r.raise_for_status()
+        return list(r.json().get("rows") or [])
     except Exception as e:
         _degraded("rows", e)
         return []
@@ -270,10 +274,10 @@ def snapshot(now: float | None = None) -> dict:
     read. Computed by the service against its table."""
     now = float(now or time.time())
     try:
-        with _client() as c:
-            r = c.get("/snapshot", params={"now": now})
-            r.raise_for_status()
-            return r.json()
+        c = _client()
+        r = c.get("/snapshot", params={"now": now})
+        r.raise_for_status()
+        return r.json()
     except Exception as e:
         _degraded("snapshot", e)
         return _zero_snapshot(now)
@@ -291,11 +295,11 @@ def verdict(now: float | None = None) -> tuple[bool, str, float]:
     """
     now = float(now or time.time())
     try:
-        with _client() as c:
-            r = c.get("/verdict", params={"now": now})
-            r.raise_for_status()
-            v = r.json()
-            return bool(v.get("ok")), str(v.get("why") or ""), float(v.get("wake") or 0)
+        c = _client()
+        r = c.get("/verdict", params={"now": now})
+        r.raise_for_status()
+        v = r.json()
+        return bool(v.get("ok")), str(v.get("why") or ""), float(v.get("wake") or 0)
     except Exception as e:
         _degraded("verdict", e)
         return False, "usage meter unreachable", now + FAILSAFE_WAKE_S
@@ -306,9 +310,9 @@ def health() -> bool:
     endpoint process-compose probes — asked through this door rather than around
     it, so there is exactly one place that knows the URL."""
     try:
-        with _client() as c:
-            r = c.get("/health")
-            return r.status_code == 200 and bool(r.json().get("ok"))
+        c = _client()
+        r = c.get("/health")
+        return r.status_code == 200 and bool(r.json().get("ok"))
     except Exception as e:
         _degraded("health", e)
         return False

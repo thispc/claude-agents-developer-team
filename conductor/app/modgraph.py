@@ -77,7 +77,7 @@ import os
 
 import httpx
 
-from . import config, db
+from . import config, db, pool
 
 _URL = (os.environ.get("MODGRAPH_URL") or "").strip().rstrip("/")
 
@@ -121,17 +121,21 @@ def _token() -> str:
     return _TOKEN
 
 
-def _client(timeout: float = _TIMEOUT) -> httpx.Client:
+def _client() -> httpx.Client:
     """SYNC, all of it. Every caller of this store — the graph payload, the
     engine's build hooks, the authoring pass's row writes — is a plain function on
     a path that has never been awaitable, and making twenty-five verbs async would
     ripple through every route and every test that drives them for no gain a
     localhost round trip can measure. A blocked event loop is bounded by the
     timeout; the same trade usage.py documents for the meter. Tests swap this
-    factory for a TestClient on the mounted service."""
-    return httpx.Client(base_url=_URL or "http://modgraph.invalid", timeout=timeout,
-                        transport=_TRANSPORT,
-                        headers={"X-Service-Token": _token()})
+    factory for a TestClient on the mounted service.
+
+    SHARED since the pooling change, and the timeout moved to the request: the
+    Atlas makes eight calls to this store alone, and eight fresh clients were
+    ~45ms of connection setup on a payload that is polled. Never close it."""
+    return pool.sync_client("modgraph", base_url=_URL or "http://modgraph.invalid",
+                            timeout=_TIMEOUT, transport=_TRANSPORT,
+                            headers={"X-Service-Token": _token()})
 
 
 def _degraded(verb: str, err: Exception) -> None:
@@ -148,23 +152,36 @@ def _degraded(verb: str, err: Exception) -> None:
         pass
 
 
-def _get(path: str, params: dict | None = None, *, timeout: float = _TIMEOUT):
-    with _client(timeout) as c:
-        r = c.get(path, params=params or {})
-        r.raise_for_status()
-        return r.json()
+def _deadline(timeout: float | None) -> dict:
+    """A per-request timeout, or nothing at all.
+
+    The shared client already carries `_TIMEOUT`, so the ordinary read says nothing
+    and inherits it; only the handful of SLOW verbs (seed, manifest, replan) name
+    their own. Passed as **kwargs rather than always, because "the default, spelled
+    out" is not the same as "no override" to every client — the suite's TestClient
+    warns on any explicit timeout — and because an override that equals the default
+    is noise in a traceback."""
+    return {} if timeout is None else {"timeout": timeout}
+
+
+def _get(path: str, params: dict | None = None, *, timeout: float | None = None):
+    c = _client()
+    r = c.get(path, params=params or {}, **_deadline(timeout))
+    r.raise_for_status()
+    return r.json()
 
 
 def _post(path: str, payload: dict | None = None, *,
-          timeout: float = _TIMEOUT, method: str = "POST"):
-    with _client(timeout) as c:
-        r = c.request(method, path, json=payload if payload is not None else {})
-        r.raise_for_status()
-        return r.json()
+          timeout: float | None = None, method: str = "POST"):
+    c = _client()
+    r = c.request(method, path, json=payload if payload is not None else {},
+                  **_deadline(timeout))
+    r.raise_for_status()
+    return r.json()
 
 
 def _read(verb: str, path: str, key: str, empty, params: dict | None = None,
-          timeout: float = _TIMEOUT):
+          timeout: float | None = None):
     """One read, its empty shape, and the honest flag. Every read verb goes through
     here so none of them can forget to say it could not see."""
     global _degraded_read
@@ -502,9 +519,9 @@ def health() -> bool:
     endpoint process-compose probes — asked through this door rather than around
     it, so every verb and any future card agree on what "up" means."""
     try:
-        with _client(2.0) as c:
-            r = c.get("/health")
-            return r.status_code == 200 and bool(r.json().get("ok"))
+        c = _client()
+        r = c.get("/health", timeout=2.0)
+        return r.status_code == 200 and bool(r.json().get("ok"))
     except Exception:
         return False
 
@@ -557,10 +574,10 @@ def init() -> None:
     if not _URL:
         raise RuntimeError(_NO_URL)
     try:
-        with _client(2.0) as c:
-            r = c.get("/health")
-            r.raise_for_status()
-            settled = bool(r.json().get("backfilled"))
+        c = _client()
+        r = c.get("/health", timeout=2.0)
+        r.raise_for_status()
+        settled = bool(r.json().get("backfilled"))
     except Exception as e:
         # Deliberately not fatal. A conductor that refused to boot because a PEER
         # was still starting is how a fleet takes itself down in a ring, and the

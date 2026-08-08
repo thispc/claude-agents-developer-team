@@ -44,8 +44,11 @@ service's own — never fight over an env var that was restored under them.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
 import time
+import weakref
 from typing import Any
 
 import httpx
@@ -80,6 +83,98 @@ def _headers() -> dict:
     return {"X-Service-Token": SERVICE_TOKEN}
 
 
+# --- the client pool ---------------------------------------------------------
+#
+# Every door above used to build a brand new httpx client per call. Measured on
+# the live fleet, a fresh client costs ~5.6ms against ~0.56ms on a pooled
+# connection — and this service is the chattiest client in the fleet: a scene asks
+# knowledge on every utterance and the register on every state change. So the
+# clients are shared, with the same two guards the conductor's app/pool.py
+# documents at length:
+#
+#   IDENTITY. The cache holds (base_url, timeout, transport, headers) beside the
+#   client and rebuilds when any of it differs. That is what keeps the test seam
+#   honest: this module's whole configuration IS module attributes that tests
+#   rewire per test (conftest.wire_lifeworld_ports), and a client cached under a
+#   bare name would keep the previous test's transport. Invalidation by identity
+#   cannot be forgotten the way an explicit reset hook can.
+#
+#   THE EVENT LOOP. An httpx.AsyncClient binds its pool to the loop that made it.
+#   The service runs one uvicorn loop, but its suite runs a loop per test, so the
+#   async cache is keyed by the RUNNING loop in a WeakKeyDictionary: a new loop
+#   gets a new client and a finished loop takes its clients with it.
+
+_SYNC_POOL: dict[str, tuple[tuple, httpx.Client]] = {}
+_ASYNC_POOL: "weakref.WeakKeyDictionary[object, dict[str, tuple[tuple, httpx.AsyncClient]]]" \
+    = weakref.WeakKeyDictionary()
+_POOL_LOCK = threading.Lock()
+
+
+def _ident(base_url, timeout, transport, headers) -> tuple:
+    return (str(base_url or ""), float(timeout or 0), transport,
+            tuple(sorted((headers or {}).items())))
+
+
+def _sync(name: str, base_url: str, timeout: float, transport, headers) -> httpx.Client:
+    ident = _ident(base_url, timeout, transport, headers)
+    with _POOL_LOCK:
+        hit = _SYNC_POOL.get(name)
+        if hit is not None and hit[0] == ident and not hit[1].is_closed:
+            return hit[1]
+        if hit is not None:
+            try:
+                hit[1].close()
+            except Exception:
+                pass
+        c = httpx.Client(base_url=base_url, timeout=timeout, transport=transport,
+                         headers=headers)
+        _SYNC_POOL[name] = (ident, c)
+        return c
+
+
+def _async(name: str, base_url: str, timeout: float, transport, headers) -> httpx.AsyncClient:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return httpx.AsyncClient(base_url=base_url, timeout=timeout,
+                                 transport=transport, headers=headers)
+    ident = _ident(base_url, timeout, transport, headers)
+    with _POOL_LOCK:
+        by_name = _ASYNC_POOL.get(loop)
+        if by_name is None:
+            by_name = {}
+            _ASYNC_POOL[loop] = by_name
+        hit = by_name.get(name)
+        if hit is not None and hit[0] == ident and not hit[1].is_closed:
+            return hit[1]
+        c = httpx.AsyncClient(base_url=base_url, timeout=timeout,
+                              transport=transport, headers=headers)
+        by_name[name] = (ident, c)
+        return c
+
+
+async def aclose_pool() -> None:
+    """Close what this loop owns, on the way down. Called from app.py's lifespan."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    with _POOL_LOCK:
+        by_name = _ASYNC_POOL.pop(loop, {}) if loop is not None else {}
+        syncs = list(_SYNC_POOL.values())
+        _SYNC_POOL.clear()
+    for _i, c in (by_name or {}).values():
+        try:
+            await c.aclose()
+        except Exception:
+            pass
+    for _i, c in syncs:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
 # --- the model door ----------------------------------------------------------
 
 class _Providers:
@@ -107,16 +202,15 @@ class _Providers:
                 "max_tokens": int(max_tokens or 0),
                 "source": source or self.source or "studio",
                 "settings_ref": settings if isinstance(settings, str) else ""}
-        async with httpx.AsyncClient(base_url=CONDUCTOR_URL, timeout=MODEL_TIMEOUT,
-                                     transport=TRANSPORT, headers=_headers()) as c:
-            r = await c.post("/internal/complete", json=body)
-            if r.status_code >= 400:
-                # The conductor answers a provider failure as 502 + {detail}. Raised,
-                # not swallowed: every caller in the substrate already has a free
-                # fallback for a raising `complete`, and a door that returned "" would
-                # look like a model with nothing to say.
-                raise RuntimeError(_detail(r))
-            return str(r.json().get("text") or "")
+        c = _async("model", CONDUCTOR_URL, MODEL_TIMEOUT, TRANSPORT, _headers())
+        r = await c.post("/internal/complete", json=body)
+        if r.status_code >= 400:
+            # The conductor answers a provider failure as 502 + {detail}. Raised,
+            # not swallowed: every caller in the substrate already has a free
+            # fallback for a raising `complete`, and a door that returned "" would
+            # look like a model with nothing to say.
+            raise RuntimeError(_detail(r))
+        return str(r.json().get("text") or "")
 
 
 def _detail(r: httpx.Response) -> str:
@@ -175,9 +269,10 @@ class _Knowledge:
 
     @staticmethod
     def _client() -> httpx.AsyncClient:
-        return httpx.AsyncClient(base_url=KNOWLEDGE_URL, timeout=TIMEOUT,
-                                 transport=KNOWLEDGE_TRANSPORT,
-                                 headers={"X-Service-Token": KNOWLEDGE_TOKEN})
+        """Shared, per running loop, rebuilt when KNOWLEDGE_URL/_TRANSPORT/_TOKEN
+        change — the seam the suites rewire. Never closed by a caller."""
+        return _async("knowledge", KNOWLEDGE_URL, TIMEOUT, KNOWLEDGE_TRANSPORT,
+                      {"X-Service-Token": KNOWLEDGE_TOKEN})
 
 
 _KNOWLEDGE = _Knowledge()
@@ -203,11 +298,10 @@ class _Tuning:
         if hit and (time.time() - hit[0]) < KNOB_TTL:
             return hit[1]
         try:
-            with httpx.Client(base_url=CONDUCTOR_URL, timeout=TIMEOUT,
-                              transport=SYNC_TRANSPORT, headers=_headers()) as c:
-                r = c.get("/internal/tuning", params={"name": name})
-                r.raise_for_status()
-                value = r.json()["value"]
+            c = _sync("conductor", CONDUCTOR_URL, TIMEOUT, SYNC_TRANSPORT, _headers())
+            r = c.get("/internal/tuning", params={"name": name})
+            r.raise_for_status()
+            value = r.json()["value"]
             _KNOBS[name] = (time.time(), value)
             return value
         except Exception:
@@ -241,11 +335,10 @@ class _Agents:
                "fields": {k: v for k, v in (fields or {}).items()
                           if isinstance(v, (str, int, float, bool)) or v is None}}
         try:
-            with httpx.Client(base_url=CONDUCTOR_URL, timeout=TIMEOUT,
-                              transport=SYNC_TRANSPORT, headers=_headers()) as c:
-                r = c.post("/internal/agents/note", json=row)
-                r.raise_for_status()
-                return r.json()
+            c = _sync("conductor", CONDUCTOR_URL, TIMEOUT, SYNC_TRANSPORT, _headers())
+            r = c.post("/internal/agents/note", json=row)
+            r.raise_for_status()
+            return r.json()
         except Exception:
             return {"state": state, "what": row["what"]}
 
@@ -256,11 +349,10 @@ class _Agents:
         idle = {"state": "idle", "busy": False, "what": "", "stale": False,
                 "for_s": 0, "means": "not doing anything"}
         try:
-            with httpx.Client(base_url=CONDUCTOR_URL, timeout=TIMEOUT,
-                              transport=SYNC_TRANSPORT, headers=_headers()) as c:
-                r = c.get(f"/internal/agents/{key}")
-                r.raise_for_status()
-                return r.json()
+            c = _sync("conductor", CONDUCTOR_URL, TIMEOUT, SYNC_TRANSPORT, _headers())
+            r = c.get(f"/internal/agents/{key}")
+            r.raise_for_status()
+            return r.json()
         except Exception:
             return idle
 
@@ -310,12 +402,12 @@ def knowledge_tokens(text: str) -> list[str]:
     leak check runs inside the host's line-by-line pass; [] on failure, which
     makes the check find no leaks rather than invent one."""
     try:
-        with httpx.Client(base_url=KNOWLEDGE_URL, timeout=TIMEOUT,
-                          transport=_sync_knowledge_transport(),
-                          headers={"X-Service-Token": KNOWLEDGE_TOKEN}) as c:
-            r = c.post("/tokens", json={"text": str(text or "")})
-            r.raise_for_status()
-            return list(r.json().get("tokens") or [])
+        c = _sync("knowledge:sync", KNOWLEDGE_URL, TIMEOUT,
+                  _sync_knowledge_transport(),
+                  {"X-Service-Token": KNOWLEDGE_TOKEN})
+        r = c.post("/tokens", json={"text": str(text or "")})
+        r.raise_for_status()
+        return list(r.json().get("tokens") or [])
     except Exception:
         return []
 
