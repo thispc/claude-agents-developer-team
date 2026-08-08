@@ -408,11 +408,52 @@
 .gr-sec { margin: 14px 0; padding-top: 10px; border-top: 1px solid var(--gr-line); }
 .gr-sec-h { font-weight: 650; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
 .gr-sec-h .gr-replace { margin-left: auto; flex: none; }
-.gr-stack { display: flex; flex-wrap: wrap; gap: 6px; }
-.gr-stack-chip {
-  font-size: 11.5px; padding: 2px 9px; border-radius: 999px;
-  background: var(--gr-accent-soft); border: 1px solid var(--gr-line); color: var(--gr-text);
+/* --- P6: a card is a service ------------------------------------------------
+   The state chip on the card, the endpoint list, the readiness checks and the log
+   tail. Everything here resolves through the same #graphScreen-scoped custom
+   properties the rest of the file does, so both themes get it for free. */
+.gr-state {
+  display: inline-block; font-size: 10.5px; letter-spacing: .04em;
+  padding: 1px 8px; border-radius: 999px; margin: 2px 0 6px;
+  border: 1px solid var(--gr-line); color: var(--gr-dim);
 }
+.gr-state-running { color: var(--gr-good); border-color: color-mix(in srgb, var(--gr-good) 45%, transparent); }
+.gr-state-stopped { color: var(--gr-bad); border-color: color-mix(in srgb, var(--gr-bad) 45%, transparent); }
+.gr-state-idle { color: var(--gr-dim); }
+.gr-state-unknown { color: var(--gr-warn); border-style: dashed; }
+.gr-svcstate { font-weight: 650; }
+.gr-svc-running { color: var(--gr-good); }
+.gr-svc-stopped { color: var(--gr-bad); }
+.gr-svc-unknown { color: var(--gr-warn); }
+.gr-nocontrol { line-height: 1.45; margin: 6px 0 0; }
+.gr-sub { margin-top: 10px; padding: 8px 10px; border-radius: 8px;
+          background: var(--gr-accent-soft); border: 1px solid var(--gr-line); }
+.gr-endpoint { display: flex; align-items: baseline; gap: 8px; margin: 3px 0;
+               flex-wrap: wrap; }
+.gr-endpoint code { font-family: var(--mono); font-size: 11.5px; }
+.gr-method {
+  font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .04em;
+  padding: 1px 6px; border-radius: 4px; flex: none; min-width: 46px; text-align: center;
+  background: var(--gr-accent-soft); border: 1px solid var(--gr-line);
+}
+.gr-m-get { color: var(--gr-good); }
+.gr-m-post, .gr-m-put { color: var(--gr-accent); }
+.gr-m-patch { color: var(--gr-warn); }
+.gr-m-delete { color: var(--gr-bad); }
+.gr-checks { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
+.gr-check { font-size: 11px; padding: 1px 8px; border-radius: 999px;
+            border: 1px solid var(--gr-line); }
+.gr-check-ok { color: var(--gr-good); }
+.gr-check-bad { color: var(--gr-bad); font-weight: 650; }
+.gr-logs {
+  max-height: 190px; overflow: auto; margin: 0; padding: 8px 10px; border-radius: 8px;
+  background: var(--gr-accent-soft); border: 1px solid var(--gr-line);
+  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word; color: var(--gr-dim);
+}
+.gr-fleetline { margin: 6px 0; }
+.gr-contractlist { max-height: 240px; overflow: auto; }
+
 .gr-mastery { margin: 6px 0 2px; }
 .gr-mastery-on { color: var(--gr-warn); font-weight: 650; }
 .gr-healthline.gr-hl-green b { color: var(--gr-good); }

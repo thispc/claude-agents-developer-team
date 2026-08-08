@@ -6,7 +6,7 @@ tables, every helper that touched them, `derive_group_edges`, `affected_tests`,
 `mastery` and the seed all moved. This file is the pure client that reaches them,
 keeping every public name the in-process module ever had — `create_plan`,
 `nodes`, `edges`, `note_run`, `close_run`, `map_test`, `set_assign`, `positions`,
-`seed_self_graph`, `self_manifest` and the rest — so `routes/graph.py`,
+`seed_fleet_graph`, `self_manifest` and the rest — so `routes/graph.py`,
 `modgraph_author.py` and the engine's build hooks changed as little as the wire
 allowed.
 
@@ -60,7 +60,7 @@ that is lost is the record of which module it happened on.
                         the authoring pass's "mastery outranks the manager's
                         reshuffle" rule must not read an outage as "nobody has
                         earned anything" and re-deal every module.
-    seed_self_graph   → 0 with a log; boot carries on. The next boot seeds.
+    seed_fleet_graph  → 0 with a log; boot carries on. The next boot seeds.
     self_manifest     → {} and `degraded()` True, which is how the authoring
                         pass refuses to spend a model call on a plan that has
                         nowhere to land.
@@ -430,8 +430,13 @@ def mastery(project_id: int = 0) -> dict | None:
 
 # --- the seed and the manifest ----------------------------------------------
 
-def seed_self_graph() -> int:
-    """Ensure project 0 has an active plan; return its id, or 0.
+def seed_fleet_graph() -> int:
+    """Ensure project 0 has an active plan of the FLEET; return its id, or 0.
+
+    Renamed in P6 with the thing it seeds. `seed_self_graph` built a graph of the
+    conductor's CODE MODULES and presenting those as modules is exactly what the
+    owner's correction deleted; the service raises on the old name rather than
+    quietly answering to it.
 
     Degraded → 0 with a log, and boot carries on: main.py already guards this call
     because a seed failure must never block startup, and the graph screen heals
@@ -439,14 +444,14 @@ def seed_self_graph() -> int:
     try:
         return int(_post("/seed", timeout=_SLOW_TIMEOUT).get("plan_id") or 0)
     except Exception as e:
-        _degraded("seed_self_graph", e)
+        _degraded("seed_fleet_graph", e)
         return 0
 
 
 def self_manifest() -> dict:
-    """The repo's real module inventory, read from the working tree by the service
-    — the ONE builder, shared by the offline seed and the manager's authoring
-    pass, so both describe the same tree.
+    """The fleet as services.yaml declares it, read by the service — the ONE
+    builder, shared by the offline seed and the manager's authoring pass, so both
+    describe the same fleet.
 
     Degraded → {}, which is exactly how `modgraph_author` learns to refuse:
     authoring an inventory nobody could read would spend a real model call to

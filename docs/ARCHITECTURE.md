@@ -7,51 +7,73 @@ disagree, the code is right and this file is a bug.
 
 ## The whole system on one diagram
 
-After the 2026-08 modularization this is the load-bearing shape; every arrow is real
-(imports for the backend, load order + calls for the frontend).
+Since P6 this is the FLEET, and every box in it is a process you can start and stop.
+The diagram is what the Atlas draws (`#/graph`), from the same three sources: the
+registry (`services.yaml`), process-compose's live state, and the conductor's own
+child registries. If this picture and `services.yaml` disagree, the registry is right
+and this file is a bug.
 
 ```mermaid
 flowchart TB
-  subgraph FE["dashboard/ — classic scripts, one global scope, order load-bearing"]
-    core["core.js<br/>shell: auth · router · api · ws"] --> lib["lib.js<br/>utilities + design system<br/>(escapeHtml · trim · toast · ui* cards · markdown · avatars)"]
-    lib --> ops["ops.js<br/>deploy screens"] --> views["projects.js (work view + HQ seam)<br/>studio-legacy · studio · canvas1 · agent · repair"] --> boot["boot.js"]
-    c2["canvas2/ (ES modules)"] -. "window.* only" .-> lib
+  subgraph BR["the browser — ONE origin, always"]
+    DASH["dashboard/ · the Atlas at #/graph"]
   end
 
-  subgraph API["api layer"]
-    R["routes/ package<br/>one module per domain, base.py shared"]
-    LR["lifeworld_routes"]
-    RR["repair_routes"]
-    GR["logs_routes"]
-    G["guards.py — current_user · owned_* · _root"]
-    R --> G
-    LR --> G
-    RR --> G
-    GR --> G
+  subgraph FLEET["process-compose — the fleet manager · REST + token on :8899"]
+    direction LR
+    C["<b>conductor</b> :8787<br/>routes · guards · scheduler · launcher<br/>manager · repair engine · bus · auth<br/>artifacts / preview / deploy<br/><i>the only holder of model credentials</i>"]
+    subgraph SVCS[" "]
+      direction TB
+      K["<b>knowledge</b> :8881<br/>what agents have learned"]
+      U["<b>usage</b> :8882<br/>the quota meter"]
+      N["<b>notify</b> :8883<br/>getting word out"]
+      W["<b>watch</b> :8884<br/>logs · errors · notices"]
+      L["<b>lifeworld</b> :8885<br/>the society of agents"]
+      M["<b>modgraph</b> :8886<br/>the graph of the fleet"]
+    end
   end
 
-  subgraph DOM["domains"]
-    P["projects<br/>manager · scheduler · launcher · team · review"]
-    REP["repair (the crew)<br/>repair · repair_builder · monitor · selfops"]
-    LW["lifeworld substrate<br/>world (facade) · scene · human · decisions"]
-    PORTS["lifeworld/ports.py<br/>the substrate's ONE door upward"]
-    LW --> PORTS
+  subgraph OWN["the conductor's OWN children — never the fleet manager's"]
+    direction LR
+    WP["worker pool<br/>launcher spawns + reaps"]
+    SB["sandbox<br/>8500-8599"]
+    AP["deployed apps<br/>8600-8799, bind-reserved"]
   end
 
-  subgraph K["kernel"]
-    KMOD["db · config · bus · auth · tuning · usage · logs · providers · shell (the ONE subprocess/git wrapper)"]
-  end
+  DB0[("devteam.db<br/>projects · tasks · agents · kv · events")]
+  DBK[("knowledge.db")]
+  DBU[("usage.db")]
+  DBN[("notify.db")]
+  DBW[("watch.db")]
+  DBL[("lifeworld.db")]
+  DBM[("modgraph.db")]
 
-  FE -->|"/api/*"| API
-  API --> DOM
-  DOM --> K
-  PORTS --> K
-  W["worker/ (separate process)"] -->|"/internal/*"| API
+  DASH -->|"/api/* · /ws"| C
+  DASH -->|"/svc/&lt;name&gt;/* — the gateway: caller authorised here,<br/>service token added here, origin never changes"| C
+
+  C -->|"X-Service-Token"| K & U & N & W & L & M
+  K -.->|"peers: the fleet's ONE service→service edge"| L
+  K & U & N & W & L & M -.->|"the four doors back: /internal/bus · /internal/tuning<br/>/internal/complete (the MODEL door) · /internal/agents<br/>— each checked against services.yaml doors:/knobs:"| C
+
+  C --> WP & SB & AP
+  FLEET -.->|"readiness probes · restarts · start/stop · unified log"| C
+
+  C --- DB0
+  K --- DBK
+  U --- DBU
+  N --- DBN
+  W --- DBW
+  L --- DBL
+  M --- DBM
 ```
 
-Three rules keep the diagram true: the substrate reaches the platform only through
-`ports.py`; every subprocess goes through `shell.py`; every router gets its guards from
-`guards.py`. The full refactor record is in `REFACTOR_PLAN.md`.
+Four rules keep the diagram true, and each has a test behind it: **one process, one
+port, one database it alone opens** (no handle, no join — isolation is structural);
+**nothing outside a service's directory imports inside it**; **traffic runs one way**,
+the conductor calling its services, with only the four narrow `/internal/*` doors back;
+and **model credentials never leave the conductor** — a service that needs a completion
+sends a prompt and a signed settings reference through the model door. The decomposition
+record is in the plan; the pre-fleet in-process shape is in `REFACTOR_PLAN.md`.
 
 **The fleet.** The process above is becoming a fleet of processes: `services.yaml` (repo
 root) is the registry, `tools/gen_fleet.py` generates the process-compose config plus
@@ -69,8 +91,8 @@ holds no credentials), and the two `/internal/agents` requests (the platform-wid
 register, which has to be ONE board). Every one checks the caller's own minted token
 against the `doors:`/`knobs:` allowlists in `services.yaml`. `peers:` is the same idea for
 the fleet's one service→service edge: it names which peer a service may call and is why
-the generator writes `KNOWLEDGE_TOKEN` into `data/env/lifeworld.env` and nowhere else. The
-diagram keeps its current shape until the Atlas's cards become those services (P6).
+the generator writes `KNOWLEDGE_TOKEN` into `data/env/lifeworld.env` and nowhere else.
+P6 finished the job on the screen side: the Atlas's cards ARE these services (below).
 
 **knowledge (8881).** What agents have learned no longer lives in the conductor's database:
 `services/knowledge` owns `data/knowledge.db` and answers `/recall`, `/remember`,
@@ -232,7 +254,7 @@ process's objects would be testing a copy of them. The conductor kept the DOORWA
 SEAM: `/api/lw/*` end to end, the crew drills, and the source-level claims that read the
 engine's files rather than importing them.
 
-**modgraph (8886, P5).** The last extraction before the Atlas is rewired. The six
+**modgraph (8886, P5).** The last extraction before the Atlas was rewired. The six
 `graph_*` tables — the immutable plan versions, their nodes and typed edges, the
 append-only TRACE, the test mapping and the per-node assignment — moved into
 `services/modgraph`, which owns `data/modgraph.db` alone, together with the layout kv and
@@ -261,8 +283,8 @@ grep test pins that nothing inside the directory imports it.
 RUNNER shells out to the repo's own pytest over real files in the checkout the conductor is
 serving from — the store says which files and records the verdict, but a store that spawned
 pytest in another process's working tree would have imported that tree's whole world. And
-`modgraph_health`'s per-module probes import the very modules they check; P6 deletes them
-outright in favour of process-compose's live state, so P5 left the health model alone
+`modgraph_health`'s per-module probes imported the very modules they checked; P6 deleted
+them outright in favour of process-compose's live state, so P5 left the health model alone
 deliberately — a phase that also rewrote it would have made "did the Atlas render
 identically" unanswerable.
 
@@ -315,6 +337,69 @@ then was the vendored body, which read them by name.
 about the working tree, the immutable-version rules, the pure derivation and mastery's
 arithmetic. The conductor kept the seam and the screen: the payload, the verify runner, the
 authoring brain entire, the Atlas pins, and the boundary drills.
+
+### P6 — the Atlas rewiring: cards ARE services
+
+The payoff phase, and the owner's original ask: *see the platform as pluggable parts,
+start and stop them, and never be shown code-modules-as-modules again.*
+
+*The seed is the registry.* `seed_self_graph` — a hand-written table of the conductor's
+code modules (`routes`, `guards`, `db`, `dash-core`, `canvas`) — is **deleted**, along
+with the two-level architecture-layer grouping it invented. `seed_fleet_graph()` builds
+the plan from `services.yaml`: one card per entry, **node key = the service name**, which
+is the identity that survives a replan, a reordered registry and a manager's retitling —
+so assignment, mastery and per-service test rows stay attached to the thing they were
+earned on. Specs are each service's own opening docstring; tags carry the registry's own
+facts (its port, the doors it declared); edges are the declared wiring (`callers`,
+`doors`, `peers`, `depends_on`) plus a frame derived from it, so adding a service
+re-frames the room by itself.
+
+*The room is flat, and honestly so.* Seven services plus a sandbox, a worker pool and an
+apps room is eleven cards, and the Atlas fits far more than that in one room. Chambers
+for "core" and "service" would have put a click between the operator and the switch he
+came to press, for a taxonomy he already knows. The **two rooms that remain are the two
+registry entries that hold a live list** — the worker pool (its children are the workers
+running right now, from `launcher.ACTIVE`) and the apps room (`deploy.RUNNING`, each on
+its real bind-reserved port). Those children are joined onto the payload at render time
+and never stored: a plan version per worker spawn would turn the trace into a log.
+
+*Health and control come from the fleet.* `conductor/app/fleet.py` is the new seam — the
+topology reader and the process-compose client (`GET /processes`, `POST
+/process/start/{name}`, `PATCH /process/stop/{name}`, `GET /process/logs/{name}/0/{n}`,
+authed with `X-Pc-Token-Key`). A card's beat is **process-compose's readiness AND the
+service's own `GET /health`**, asked through the same shim every caller uses: a process
+that is Running but not Ready is red, and so is one that is Ready but whose store will not
+open. `modgraph_health`'s `PROBES` and `SERVICES` tables are **deleted** — the first
+imported the modules it checked, which is impossible once they are processes; the second
+existed to say "almost nothing here has an off switch", which stopped being true. What
+survives is what was never about in-process code: `health_of`, `rollup`, `tests_state`,
+`mastery`.
+
+*Start and Stop are honest on every card.* Managed services go through the fleet manager;
+the sandbox through `sandbox.start/stop`; a deployed app through `deploy.stop`; the IT
+crew is a **sub-switch on the conductor's card** (its kv toggle, as always). Three cards
+refuse, each naming the real act instead: the conductor (process-compose would stop it and
+take the Atlas with it — Ctrl-C where you started it), the worker pool (a worker is
+spawned when there is work and reaped when it ends; there is no switch, only work), and
+the apps room (each app inside has its own Stop). **Remove** is refused on a service card
+for the same reason: the fleet's membership is `services.yaml`, so removing a card is a
+repository change, and the machinery survives only for an *orphan* — a plan row naming
+nothing the fleet runs.
+
+*The panel keeps the black box closed.* The owner's decree — "I don't wanna understand
+what's inside" — is the shape of the payload: the service's own committed
+`openapi.json` rendered as an endpoint list, its own readiness document, its switch, who
+works it and their earned mastery, what its **own** suite last said (counts and a
+headline), and a tail of what the process actually printed. **`paths` never reaches the
+wire at all**: the boundary manifest stays server-side, where it matches the crew's live
+work onto a card and scopes a verify, and the file paths in the readiness document are
+stripped at the one place a service's own words cross into the panel. There is a test that
+greps every graph payload for `.py` and fails.
+
+*Everything the Atlas earned survives:* rooms and doors, chambers vs capillaries, the
+six-verb right-click menu (with the sub-switch added and Remove greyed with its reason),
+tri-state glow and the legend, both themes, keyboard navigation, the `M` map, and the
+Artifact pinned as the goal — now carrying the fleet's own line (`5/7 services up`).
 
 ---
 
@@ -455,7 +540,7 @@ belongs to the project it claims.
 | `agents/manager.md` | The manager's system prompt (disposition, workflow, rules) |
 | `agents/roles.json` | Built-in roles: model, max_parallel, fan-out policy |
 | `agents/{backend,frontend,tester}.md` | Built-in role prompts. Unknown roles get a generic one |
-| `dashboard/` | Vanilla JS, no build step. the client is `js/core.js` → `js/lib.js` → `js/ops.js` → `js/projects.js` → `js/studio-legacy.js` → `js/studio.js` → `js/canvas1.js` → `js/agent.js` → `js/repair.js` → `js/boot.js` (classic scripts, one global scope, loaded in `index.html` order) plus the `canvas2/` ES module and `graph/` — **the Atlas** (`#/graph`): the module graph as rooms-and-doors navigation — one room on screen at a time (top level or inside a group), dependency-column CSS grid, door chips derived from real edges, keyboard + a full-tree map overlay; no free camera |
+| `dashboard/` | Vanilla JS, no build step. the client is `js/core.js` → `js/lib.js` → `js/ops.js` → `js/projects.js` → `js/studio-legacy.js` → `js/studio.js` → `js/canvas1.js` → `js/agent.js` → `js/repair.js` → `js/boot.js` (classic scripts, one global scope, loaded in `index.html` order) plus the `canvas2/` ES module and `graph/` — **the Atlas** (`#/graph`): the FLEET as rooms-and-doors navigation — one card per service, its live state read from process-compose, real Start/Stop on every one, a panel that shows a service's contract/health/suite/logs and never a file path; one room on screen at a time, dependency-column CSS grid, door chips derived from real edges, keyboard + a full-tree map overlay; no free camera |
 | `deploy/` | Dockerfiles, k8s manifests, the kind rehearsal cluster |
 
 ---

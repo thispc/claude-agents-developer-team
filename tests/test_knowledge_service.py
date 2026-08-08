@@ -232,30 +232,33 @@ async def test_recovery_after_the_outage_needs_no_restart(fresh_db, monkeypatch)
 
 # --- the Atlas probe: honest about the real process ---------------------------
 
-def test_the_module_probe_asks_the_real_service(fresh_db):
+def test_the_cards_beat_asks_the_real_service(fresh_db):
     """The knowledge card's heartbeat used to be "a table exists here". With the
     store extracted that claim would be a lie — the beat is the service itself
     answering /health, reached through the conductor's one knowledge door (the
     suite's mounted service), never through a private URL of the probe's own."""
-    from app import modgraph_health as mh
-    assert mh._probe_knowledge() is True
+    from app import fleet
+    node = {"key": "knowledge", "node_type": "code"}
+    assert fleet.beat_of("knowledge", node, None) == "ok"
 
 
-def test_the_probe_goes_red_the_moment_the_service_does(fresh_db, monkeypatch):
+def test_the_beat_goes_red_the_moment_the_service_does(fresh_db, monkeypatch):
     """A probe that reported green while every recall failed would be worse than
     no probe."""
-    from app import knowledge, modgraph_health as mh
+    from app import fleet, knowledge
     monkeypatch.setattr(knowledge, "_sync_client",
                         lambda: httpx.Client(base_url="http://knowledge.test",
                                              transport=_DeadTransport()))
     assert knowledge.health() is False
-    assert mh._probe_knowledge() is False, "a raising probe is a failed beat, not a crash"
+    node = {"key": "knowledge", "node_type": "code"}
+    assert fleet.beat_of("knowledge", node, None) == "fail", \
+        "a raising check is a failed beat, not a crash"
 
 
-def test_the_probe_is_red_when_the_service_answers_unhealthy(fresh_db, monkeypatch):
+def test_the_beat_is_red_when_the_service_answers_unhealthy(fresh_db, monkeypatch):
     """ok:false — its database will not open — is a running process, not a
     working store."""
-    from app import knowledge, modgraph_health as mh
+    from app import fleet, knowledge
 
     def _unhealthy(request):
         return httpx.Response(200, json={"ok": False, "checks": {"db": False}})
@@ -263,17 +266,24 @@ def test_the_probe_is_red_when_the_service_answers_unhealthy(fresh_db, monkeypat
     monkeypatch.setattr(knowledge, "_sync_client",
                         lambda: httpx.Client(base_url="http://knowledge.test",
                                              transport=httpx.MockTransport(_unhealthy)))
-    assert mh._probe_knowledge() is False
+    node = {"key": "knowledge", "node_type": "code"}
+    assert fleet.beat_of("knowledge", node, None) == "fail"
+    # ...and process-compose reporting the PROCESS healthy does not save it: both
+    # halves are required, which is the whole point of asking two questions.
+    pc = {"knowledge": {"state": "Running", "ready": "Ready", "running": True,
+                        "restarts": 0, "pid": 1, "uptime": "1m", "exit_code": 0}}
+    assert fleet.beat_of("knowledge", node, pc) == "fail"
 
 
-def test_the_probe_is_red_without_a_url(fresh_db, monkeypatch):
+def test_the_beat_is_red_without_a_url(fresh_db, monkeypatch):
     """No service configured is not "healthy by default": the conductor cannot
     recall anything in that state, and the card must say so."""
-    from app import knowledge, modgraph_health as mh
+    from app import fleet, knowledge
     monkeypatch.setattr(knowledge, "_URL", "")
     monkeypatch.setattr(knowledge, "_sync_client",
                         lambda: httpx.Client(base_url="", transport=_DeadTransport()))
-    assert mh._probe_knowledge() is False
+    assert fleet.beat_of("knowledge", {"key": "knowledge", "node_type": "code"},
+                         None) == "fail"
 
 
 # --- the wiring that makes URL mode the only mode -----------------------------

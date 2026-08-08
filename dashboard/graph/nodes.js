@@ -7,10 +7,11 @@
 //   · CHAMBER (a group) — a doorway: layered/stacked shadow implying depth,
 //     the child count, rolled-up tests, a big "Enter ▸" affordance. Click = a
 //     room transition, never a panel.
-//   · CAPILLARY (a leaf) — the fine grain where agents actually act: solid
-//     filled card with a distinct accent border, the AGENT front and center
-//     (avatar chip + name + ★ mastery), test count, an activity line that
-//     pulses while the crew touches it.
+//   · CAPILLARY (a leaf) — ONE SERVICE: solid filled card with a distinct accent
+//     border, its LIVE STATE chip (running / stopped / idle / unknown — read from
+//     process-compose, never guessed), the AGENT front and center (avatar chip +
+//     name + ★ mastery), test count, an activity line that pulses while the crew
+//     touches it.
 // Plus the frame: the AIM card (the room's subject) and the ARTIFACT card (the
 // conclusion as the always-last column of the top room).
 //
@@ -50,6 +51,12 @@ function elem(tag, cls, text) {
 function testsBrief(tests) {
   const t = tests || {};
   if (!t.total) return "no tests mapped";
+  // "0/2 passing" reads as "everything is broken" when it actually means nobody has
+  // pressed Verify yet. A suite that has never run is not a suite that failed, and the
+  // ring already says the same thing by staying grey.
+  if (!t.passing && !t.failing) {
+    return `${t.total} suite${t.total === 1 ? "" : "s"} · not run yet`;
+  }
   return `${t.passing}/${t.total} passing${t.failing ? " · " + t.failing + " failing" : ""}`;
 }
 
@@ -74,7 +81,7 @@ function agentBlock(n) {
                elem("b", "gr-cagent-name", name));
     if (n.mastery && n.mastery.master) {
       const star = elem("span", "gr-cagent-star", "★");
-      star.title = `master of this module — ${n.mastery.runs} verified runs`;
+      star.title = `master of this service — ${n.mastery.runs} verified runs`;
       row.append(star);
     }
   } else {
@@ -83,6 +90,26 @@ function agentBlock(n) {
                elem("span", "gr-cagent-name", "Unassigned"));
   }
   return row;
+}
+
+/** The live STATE chip — the whole point of P6 on one line: is this part of the
+ * platform running right now. `unknown` is its own state and says so, because the
+ * `--legacy` boot has no fleet manager to ask and pretending "stopped" there
+ * would be the card lying about a service that is perfectly up. */
+const SVC_TIP = {
+  running: "this process is up — right-click, or open the panel, to stop it",
+  stopped: "this process is not running — Start brings it back",
+  idle: "nothing is running in here right now, which is idle, not broken",
+  unknown: "the fleet manager is not answering, so its state cannot be seen",
+};
+function stateChip(n) {
+  const s = n.service || null;
+  const state = s && s.state;
+  if (!state || state === "none") return null;
+  const chip = elem("span", "gr-state gr-state-" + state,
+                    (state === "running" ? "● " : state === "unknown" ? "◌ " : "○ ") + state);
+  chip.title = SVC_TIP[state] || state;
+  return chip;
 }
 
 /** Fill (or refill) one card's content. Separate from buildCard so updateCard
@@ -97,10 +124,13 @@ function fill(el, n) {
   ring.title = testsBrief(n.tests);
   head.append(ring);
   el.append(head);
+  const chip = stateChip(n);
+  if (chip) el.append(chip);
 
   if (n.node_type === "group") {
     const kids = Number(n.children) || 0;
-    el.append(elem("div", "gr-card-sub", `${kids} module${kids === 1 ? "" : "s"} inside`));
+    el.append(elem("div", "gr-card-sub",
+                   kids ? `${kids} inside right now` : "nothing inside right now"));
     el.append(elem("div", "gr-card-sub", testsBrief(n.tests)));
     el.append(elem("div", "gr-enter", "Enter ▸"));
   } else if (n.node_type === "aim") {
@@ -152,6 +182,11 @@ export function buildArtifactCard(node, conclusion, title) {
   head.append(dot);
   el.append(head);
   el.append(elem("div", "gr-card-sub", "the GOAL everything feeds"));
+  if (c.fleet) {
+    el.append(elem("div", "gr-card-sub", c.fleet.visible
+      ? `fleet: ${c.fleet.running}/${c.fleet.declared} up`
+      : "fleet manager not answering"));
+  }
   if (c.beat != null) el.append(elem("div", "gr-card-sub", "beat: " + String(c.beat)));
   el.append(elem("div", "gr-doors"));
   return el;

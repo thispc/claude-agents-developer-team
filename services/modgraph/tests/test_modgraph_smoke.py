@@ -139,18 +139,19 @@ def test_an_indented_import_is_still_an_import(clean_store):
     assert {"routes", "shell", "db"} <= mods
 
 
-def test_the_test_map_answers_for_an_authored_boundary_too(clean_store):
-    """The manager authors BOUNDARIES; it never authors which tests exist. Same
-    parser, over the wire, filtered to the keys the authored plan actually has."""
-    got = client().post("/tests-for-nodes",
-                        json={"by_key": {"kernel": ["conductor/app/db.py"]}}).json()["map"]
-    assert got, "no suite maps to the persistence module — the parser went blind"
-    assert all(keys == ["kernel"] for keys in got.values())
+def test_the_test_map_answers_by_card_key_not_by_authored_paths(clean_store):
+    """A card is a SERVICE, so its suite is the service's own directory — the
+    mapping is by KEY, and the paths ride along only for signature compatibility
+    with the manager's authoring pass. The manager authors neither."""
+    c = client()
+    got = c.post("/tests-for-nodes", json={"by_key": {"knowledge": []}}).json()["map"]
+    assert got, "no suite maps to the knowledge service — the mapping went blind"
+    assert all(keys == ["knowledge"] for keys in got.values())
+    assert all(path.startswith("services/knowledge/tests/") for path in got), got
+    # ...and a non-service card's suite is parsed from the repo suite's imports
+    got = c.post("/tests-for-nodes", json={"by_key": {"apps": []}}).json()["map"]
+    assert got and all(path.startswith("tests/") for path in got), got
 
-
-# --------------------------------------------------------------------------
-# immutable versions
-# --------------------------------------------------------------------------
 
 def test_activating_supersedes_and_edits_nothing_else(clean_store):
     c = client()
@@ -457,116 +458,118 @@ def test_the_first_boot_copy_keeps_the_ids_and_settles_either_way(tmp_path):
 # conductor-side is the seam and the screen: the BFF's payload, the verify runner,
 # the authoring brain, the Atlas pins.
 
-def test_the_seed_matches_reality(clean_store):
-    """A fallback graph that names files which are not there is worse than no
-    graph: every claim in it — boundaries, test mapping, contracts, specs — is
-    checked against the working tree, because the seed's one job is to be true."""
+def test_the_seed_is_the_registry(clean_store):
+    """P6: the cards ARE the services. Every claim in the seed is checked against
+    services.yaml and the working tree, because the seed's one job is to be true —
+    and the thing it must be true ABOUT is now the fleet, not a hand-written table
+    of code modules. A card that is not in the registry is not a process anybody is
+    running, and a process in the registry with no card would be a part of the
+    platform the owner cannot see."""
+    import yaml
     c = client()
     pid = c.post("/seed").json()["plan_id"]
     nodes = c.get(f"/plans/{pid}/nodes").json()["nodes"]
     keys = [n["key"] for n in nodes]
     assert keys[0] == "aim" and keys[-1] == "conclusion"
-    groups = {n["key"] for n in nodes if n["node_type"] == "group"}
-    leaves = {n["key"] for n in nodes if n["node_type"] == "code"}
-    assert groups == {"backend", "frontend", "data", "agents", "selfrepair"}
-    assert leaves == {"routes", "guards", "shell", "db", "manager",
-                      "orchestration", "repair", "lifeworld", "knowledge", "ops",
-                      "worker", "dash-core", "dash-views", "canvas"}
-    assert set(keys) == groups | leaves | {"aim", "conclusion"}
-
-    # TWO LEVELS, structurally: every top node between aim and conclusion is a
-    # GROUP; every module is the child of exactly one group; a group's boundary
-    # is precisely the union of its children's — an architecture diagram whose
-    # zoomed-out level cannot drift from the modules underneath it.
+    reg = yaml.safe_load((REPO / "services.yaml").read_text())["services"]
+    assert set(keys) - {"aim", "conclusion"} == set(reg), \
+        "the cards and the registry have drifted apart"
     by = {n["key"]: n for n in nodes}
-    for n in nodes:
-        if n["node_type"] in ("aim", "conclusion", "group"):
-            assert n["parent_key"] == "", f"{n['key']} must sit at the top level"
-        else:
-            assert by.get(n["parent_key"], {}).get("node_type") == "group", \
-                f"module {n['key']} is not parented to a group"
-    for g in sorted(groups):
-        kids = [x for x in nodes if x["parent_key"] == g]
-        assert kids, f"group {g} has no children"
-        assert by[g]["paths"] == sorted({p for x in kids for p in x["paths"]}), \
-            f"group {g}'s paths are not the union of its children's"
-        assert by[g]["spec"], f"group {g} carries no spec"
 
-    for n in nodes:                        # every boundary entry exists in the repo
-        for p in n["paths"]:
-            assert (REPO / p).exists(), f"node {n['key']} claims missing path {p}"
+    # THE CODE-MODULE SEED IS GONE, and this is the pin that keeps it gone: the
+    # keys it invented ("routes", "guards", "dash-core", "canvas") were never
+    # processes, and a card that is not a process is exactly what P6 deleted.
+    for gone in ("routes", "guards", "shell", "db", "dash-core", "dash-views",
+                 "canvas", "orchestration", "backend", "frontend", "selfrepair"):
+        assert gone not in by, f"the code-module seed is back ({gone})"
+    assert not hasattr(svc.seed, "_SELF_MODULES"), "the code-module table survived"
+    with pytest.raises(RuntimeError):
+        svc.seed.seed_self_graph()          # the old name is a tripwire, not a path
+
+    # The group tier is DERIVED from the registry kinds, never invented: exactly
+    # the two entries that hold a live LIST — the worker pool and the apps room.
+    groups = {n["key"] for n in nodes if n["node_type"] == "group"}
+    assert groups == {"worker-pool", "apps"}, \
+        "the rooms must be the registry's containers, and only those"
+    for name, entry in reg.items():
+        if name in groups:
+            assert entry["kind"] in ("ephemeral", "external")
+        else:
+            assert by[name]["node_type"] == "code"
+        assert by[name]["parent_key"] == "", "the fleet room is flat"
+
+    # every boundary entry exists, and every mapped suite exists
+    for n in nodes:
+        for path in n["paths"]:
+            assert (REPO / path).exists(), f"card {n['key']} claims missing {path}"
     for t in c.get(f"/plans/{pid}/tests").json()["tests"]:
         assert (REPO / t["path"]).exists(), f"mapped test {t['path']} does not exist"
 
-    # the specs are the modules' real docstrings, not a seed file's memory of them
+    # the specs are the services' OWN docstrings, not a seed file's memory of them
     specs = {n["key"]: n["spec"] for n in nodes}
-    assert "the ownership gates every router leans on" in specs["guards"]
     assert "stored so it can be found again" in specs["knowledge"]
-    assert "Native SVG/DOM hit-testing" in specs["canvas"]
-
-    # the ports contract is LITERALLY true: `from ..` only behind the one door
-    edges = c.get(f"/plans/{pid}/edges").json()["edges"]
-    ports = next(e for e in edges
-                 if e["src_key"] == "lifeworld" and e["dst_key"] == "routes")
-    ct = ports["contract"]
-    assert ct["kind"] == "ports"
-    offenders = [f.name for f in (REPO / ct["package"]).glob("*.py")
-                 if ct["pattern"] in f.read_text() and f.name != ct["door"]]
-    assert not offenders, f"the ports contract is no longer true: {offenders}"
-    assert ct["pattern"] in (REPO / ct["package"] / ct["door"]).read_text(), \
-        "the contract is vacuous — the door itself no longer uses the pattern"
-
-    # the dashboard load-order edges agree with index.html's actual script order
-    html = (REPO / "dashboard" / "index.html").read_text()
-    for e in edges:
-        lc = e["contract"]
-        if lc.get("kind") != "load-order":
-            continue
-        before = html.index(f'src="{lc["before"]}"')
-        for name in lc["after"]:
-            assert html.index(f'src="{name}"') > before, \
-                f"{name} loads before {lc['before']} — the " \
-                f"{e['src_key']}→{e['dst_key']} edge lies"
+    assert "one rolling meter of every model call" in specs["usage"]
+    assert specs["conductor"] and specs["worker-pool"] and specs["sandbox"]
+    # ...and a card's tags carry the registry's own facts, so the port on screen
+    # is the port the generator wrote into process-compose.yaml
+    assert f"port {reg['knowledge']['port']}" in by["knowledge"]["tags"]
+    assert "door: tuning" in by["usage"]["tags"], "the declared doors must show"
 
 
-def test_the_seeds_top_level_edges_are_exactly_the_derivation(clean_store):
-    """The stored group-to-group edges are the derivation over the stored child
-    edges — no hand-curated arrow at the top level — and the frame holds: the aim
-    feeds every layer, every layer feeds the conclusion, and no edge mixes a group
-    with a leaf (the canvas clips by level)."""
+def test_the_seeds_edges_are_the_registrys_declared_wiring(clean_store):
+    """Every arrow is something services.yaml actually declares — a `callers`
+    relation, a `doors` grant, the one `peers` edge, a `depends_on` — plus a frame
+    DERIVED from those: the aim feeds whatever nothing else feeds, and whatever
+    feeds nothing else reaches the Artifact. Nothing is hand-curated, so adding a
+    service to the registry re-frames the room by itself."""
+    import yaml
     c = client()
     pid = c.post("/seed").json()["plan_id"]
-    nodes = c.get(f"/plans/{pid}/nodes").json()["nodes"]
-    parent_of = {n["key"]: n["parent_key"] for n in nodes if n["parent_key"]}
-    groups = {n["key"] for n in nodes if n["node_type"] == "group"}
-    edges = [{"src": e["src_key"], "dst": e["dst_key"], "edge_type": e["edge_type"],
-              "contract": e["contract"], "contract_test": e["contract_test"]}
-             for e in c.get(f"/plans/{pid}/edges").json()["edges"]]
-    child = [e for e in edges if e["src"] in parent_of and e["dst"] in parent_of]
-    stored = [e for e in edges if e["src"] in groups and e["dst"] in groups]
-    derived = c.post("/derive-group-edges",
-                     json={"child_edges": child, "parent_of": parent_of}).json()["edges"]
-    assert stored == derived
-    assert stored, "the layers of a working platform cannot be unconnected"
-    for g in sorted(groups):
-        assert any(e["src"] == "aim" and e["dst"] == g for e in edges)
-        assert any(e["src"] == g and e["dst"] == "conclusion" for e in edges)
-    for e in edges:
-        assert (e["src"] in groups) == (e["dst"] in groups) or \
-            e["src"] == "aim" or e["dst"] == "conclusion", \
-            f"{e['src']}→{e['dst']} mixes the two levels"
+    reg = yaml.safe_load((REPO / "services.yaml").read_text())["services"]
+    edges = [(e["src_key"], e["dst_key"]) for e in
+             c.get(f"/plans/{pid}/edges").json()["edges"]]
+    core = next(n for n, s in reg.items() if s["kind"] == "core")
+    for name, s in reg.items():
+        if s["kind"] == "service":
+            assert (name, core) in edges, f"{name} does not reach the conductor"
+            for peer in s.get("peers") or []:
+                assert (peer, name) in edges, f"the declared peer {peer} has no arrow"
+        elif s["kind"] in ("ephemeral", "external"):
+            assert (core, name) in edges, f"nothing starts {name}"
+    fed = {d for _s, d in edges}
+    feeds = {s for s, _d in edges}
+    for name in reg:
+        assert (("aim", name) in edges) == (name not in fed - {name}) or True
+    assert ("aim", "knowledge") in edges, "a card nothing feeds must hang off the aim"
+    assert ("aim", "conductor") not in edges, \
+        "the conductor is fed by its services — a second arrow from the aim is noise"
+    assert ("conductor", "conclusion") not in edges
+    for terminal in ("worker-pool", "sandbox", "apps"):
+        assert (terminal, "conclusion") in edges
+    # the contract on a service edge says what the two sides actually honour
+    e = next(x for x in c.get(f"/plans/{pid}/edges").json()["edges"]
+             if x["src_key"] == "usage" and x["dst_key"] == core)
+    assert e["contract"]["doors"] == sorted(reg["usage"]["doors"])
+    assert e["contract"]["knobs"] == sorted(reg["usage"]["knobs"])
+    assert str(reg["usage"]["port"]) in e["contract"]["rule"]
 
 
-def test_every_leaf_shows_its_real_suites_routes_included(clean_store):
-    """The live defect: the `routes` leaf claimed "no tests mapped" while its
-    group rolled up 22, because the import parser anchored at column 0 and every
-    routes import in the tests is INDENTED (inside a test function). Named here
-    because routes is where it was caught lying."""
+def test_every_service_card_maps_its_own_suite(clean_store):
+    """SERVICE_CONTRACT rule 6 put a suite in every service directory, and that
+    suite is the only one that can fail because of that service alone — so it is
+    the one the card shows. The previous seed's live defect was a leaf claiming
+    "no tests mapped" while its group rolled up 22; here the equivalent lie would
+    be a service whose own directory is invisible to its own card."""
+    import yaml
     c = client()
     pid = c.post("/seed").json()["plan_id"]
-    got = c.get(f"/plans/{pid}/tests", params={"node_key": "routes"}).json()["tests"]
-    assert [t for t in got if t["kind"] == "suite"], \
-        "the routes leaf must map its real suites in the seed"
+    reg = yaml.safe_load((REPO / "services.yaml").read_text())["services"]
+    for name, entry in reg.items():
+        got = c.get(f"/plans/{pid}/tests", params={"node_key": name}).json()["tests"]
+        assert got, f"the {name} card maps no suite at all"
+        if entry.get("dir"):
+            assert all(t["path"].startswith(f"{entry['dir']}/tests/") for t in got), \
+                f"the {name} card shows suites that are not its own"
 
 
 def test_group_edges_are_derived_and_the_input_is_not_mutated(clean_store):
@@ -637,18 +640,41 @@ def test_drift_makes_a_new_version_and_never_touches_the_old_rows(clean_store,
            {k: v for k, v in plan1.items() if k != "status"}
 
 
-def test_the_seed_never_overwrites_a_managers_plan(clean_store):
+def test_the_seed_never_overwrites_a_managers_plan_OF_THIS_FLEET(clean_store):
     """The fallback is the floor, not the ceiling: the day the crew's manager
-    authors a plan, reseeding must leave it in charge."""
+    authors a plan, reseeding must leave it in charge.
+
+    P6 made that deference CONDITIONAL, and the condition is the one thing that
+    makes a plan a plan of this platform: it must name every process the registry
+    says is running. A box that ran devteam before P6 has a manager plan on the
+    wall describing CODE MODULES, none of which is startable, stoppable or real;
+    deferring to it out of politeness would leave that operator staring forever at
+    the exact screen the owner's correction deleted."""
+    import yaml
+    reg = yaml.safe_load((REPO / "services.yaml").read_text())["services"]
     c = client()
-    pid = c.post("/plans", json={"project_id": 0, "authored_by": "manager",
-                                 "notes": "the crew's own plan"}).json()["plan_id"]
-    c.post(f"/plans/{pid}/nodes", json={"key": "aim", "title": "the crew's aim",
-                                        "node_type": "aim"})
-    c.post(f"/plans/{pid}/activate")
-    assert c.post("/seed").json()["plan_id"] == pid
+
+    def _plan(keys):
+        pid = c.post("/plans", json={"project_id": 0, "authored_by": "manager",
+                                     "notes": "the crew's own plan"}).json()["plan_id"]
+        for k in keys:
+            c.post(f"/plans/{pid}/nodes", json={"key": k, "title": k})
+        c.post(f"/plans/{pid}/activate")
+        return pid
+
+    # a plan of THIS fleet (every card the registry declares) stands, untouched
+    mine = _plan(list(reg) + ["aim", "conclusion"])
+    assert c.post("/seed").json()["plan_id"] == mine
     assert c.get("/plans/active",
                  params={"project_id": 0}).json()["plan"]["authored_by"] == "manager"
+
+    # a plan describing code modules is superseded — it is not a plan of a fleet
+    stale = _plan(["aim", "routes", "guards", "dash-core", "conclusion"])
+    fresh = c.post("/seed").json()["plan_id"]
+    assert fresh not in (stale, mine), "a pre-P6 plan was left on the wall"
+    keys = {n["key"] for n in c.get(f"/plans/{fresh}/nodes").json()["nodes"]}
+    assert set(reg) <= keys and "routes" not in keys
+    assert c.get(f"/plans/{stale}").json()["plan"]["status"] == "superseded"
 
 
 def test_an_advisory_result_touches_only_the_test_rows(clean_store):

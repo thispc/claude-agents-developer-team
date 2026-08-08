@@ -530,17 +530,18 @@ def mastery(project_id: JsonInt = Query(0)) -> dict:
 
 @r.post("/seed")
 def do_seed() -> dict:
-    """Ensure project 0 has an active plan; return its id. Idempotent — an
-    unchanged tree reseeds to zero writes, and a plan the manager authored
-    outranks the seed entirely."""
-    return {"plan_id": seed.seed_self_graph()}
+    """Ensure project 0 has an active plan of the FLEET; return its id.
+    Idempotent — an unchanged services.yaml reseeds to zero writes, and a plan
+    the manager authored outranks the seed entirely."""
+    return {"plan_id": seed.seed_fleet_graph()}
 
 
 @r.get("/manifest")
 def manifest() -> dict:
-    """The repo's real module inventory, read from the working tree. The manager's
-    authoring pass is given this as its INVENTORY, so its plan and the offline
-    seed describe the same tree."""
+    """The fleet as services.yaml declares it. The manager's authoring pass is
+    given this as its INVENTORY — the cards it may retitle, re-spec and staff,
+    and the ONLY cards it may name, because a card that is not in the registry is
+    not a process anybody is running."""
     return seed.self_manifest()
 
 

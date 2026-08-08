@@ -65,9 +65,12 @@ const DEVTEAM_GRAPH_SRC = {
   inspect: (key) => W.api(`/api/graph/self/node/${encodeURIComponent(key)}`),
   replan: () => W.api("/api/graph/self/replan", { method: "POST" }),
   // The verb tier (every caller treats a refusal as information, never a crash):
-  service: (key, action) => W.api(`/api/graph/self/node/${encodeURIComponent(key)}/service`, {
+  // Start/Stop is REAL for every card since P6: a managed service goes through
+  // process-compose, the sandbox through its own switch, a deployed app through
+  // deploy. `sub` names a switch INSIDE a card (the conductor's IT crew).
+  service: (key, action, sub) => W.api(`/api/graph/self/node/${encodeURIComponent(key)}/service`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action }) }),
+    body: JSON.stringify({ action, sub: sub || "" }) }),
   setAgent: (key, agentId) => W.api(`/api/graph/self/node/${encodeURIComponent(key)}/agent`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ agent_id: agentId }) }),
@@ -271,6 +274,20 @@ function deriveGroupHealth(data) {
 /** All travel funnels through the hash, so the address bar, the back button and
  * a pasted link all mean the same room. route() → openModuleGraph → open → navTo. */
 function drillTo(i, key) {
+  // A room with nothing in it is REFUSED before the travel, not after it. Since P6
+  // the two rooms are live — an empty worker pool is the normal state of a box with
+  // nothing building — and walking in only to be thrown straight out costs a wasted
+  // click AND a duplicated history entry: the bounce replaces the entry it just
+  // pushed, leaving two identical ones, so the next browser-back appears to do
+  // nothing. (The bounce in paint() stays as the safety net for a room that empties
+  // while you are standing in it.)
+  if (key && i.data) {
+    const n = i.byKey.get(String(key));
+    if (n && n.node_type === "group" && !roomNodes(i.data, String(key)).length) {
+      W.toast && W.toast(`nothing is running in ${n.title || key} right now`);
+      return;
+    }
+  }
   const want = key ? "#/graph/" + encodeURIComponent(key) : "#/graph";
   // Never rewrite an already-correct hash: assigning it again mints a duplicate
   // history entry, and the first browser-back then appears to do nothing.
@@ -867,10 +884,11 @@ function reselect(i) {
 // ---- the aside (this screen's own panel/action host) ----------------------------
 function asideDefault(i) {
   i.aside.innerHTML = `<div class="gr-tip">
-    <p class="dim"><b>The Atlas</b> — one room at a time, no camera to lose.
-    <b>Click</b> a capillary card (where an agent works) and everything about it
-    — its agent, spec, tests, wiring, steering — opens here. <b>Click</b> a
-    chamber card (a doorway) or press <kbd>Enter</kbd> to walk into that room;
+    <p class="dim"><b>The Atlas</b> — your platform as the parts it actually runs.
+    Every card is a SERVICE: its own process, its own port, its own contract, its
+    own Start and Stop. <b>Click</b> a capillary card and what it promises, how it
+    is doing, who works it and what it last printed opens here — never what is
+    inside it. <b>Click</b> a chamber card (a room) or press <kbd>Enter</kbd> to walk in;
     <kbd>Esc</kbd> or the breadcrumb climbs back out. Arrow keys move the
     focus. Door chips on a card ("→ Data › db") are its real cross-room
     dependencies — click one to travel there. <kbd>M</kbd> opens the full map.
@@ -893,14 +911,14 @@ function testsLine(tests) {
 function agentRow(i, n, d) {
   if (n.node_type === "group") {
     return `<div class="gr-agent-row gr-agent-grp"><span class="gr-agent-avatar">🗂</span>
-      <div class="dim">a group is staffed through its modules — agents live on the leaves inside</div></div>`;
+      <div class="dim">a room is staffed through what is inside it — agents live on the cards in there</div></div>`;
   }
   const a = d.agent;
   if (a) {
     const name = String(a.name || "").trim() || `agent #${a.agent_id ?? a.home_id}`;
     return `<div class="gr-agent-row">
       <span class="gr-agent-avatar">${esc((name.trim()[0] || "?").toUpperCase())}</span>
-      <div><b>${esc(name)}</b><div class="dim">the specialist working this module</div></div></div>`;
+      <div><b>${esc(name)}</b><div class="dim">the specialist working this service</div></div></div>`;
   }
   return `<div class="gr-agent-row gr-agent-none">
     <span class="gr-agent-avatar">?</span>
@@ -979,6 +997,10 @@ function asideConclusion(i) {
         <div class="dim">the GOAL — what all of it adds up to</div></div></div>
       <p>health: <b class="gr-health gr-health-${esc(c.health || "unknown")}">${esc(c.health || "unknown")}</b>${
         c.beat != null ? ` · beat: <b>${esc(String(c.beat))}</b>` : ""}</p>
+      ${c.fleet ? `<p class="gr-fleetline">${c.fleet.visible
+        ? `fleet: <b>${c.fleet.running}/${c.fleet.declared}</b> services up${
+            (c.fleet.down || []).length ? ` · <b class="gr-failtext">down: ${esc((c.fleet.down || []).join(", "))}</b>` : ""}`
+        : `<span class="dim">the fleet manager is not answering on ${esc(c.fleet.api || "")} — the switches are invisible, which is not the same as the services being down</span>`}</p>` : ""}
       ${c.uptime_s != null ? `<p class="dim">up ${esc(fmtUptime(c.uptime_s))}</p>` : ""}
       ${c.boot_sha ? `<p class="dim">boot <code>${esc(String(c.boot_sha).slice(0, 10))}</code></p>` : ""}
       <p class="dim">crew: ${esc(rep.phase || "idle")}${rep.sprint ? ` · sprint ${esc(rep.sprint)}` : ""}</p>
@@ -1014,37 +1036,81 @@ async function openPanel(i, key) {
 // select can never drift from what the server's validator accepts.
 const MODELS = ["claude-sonnet-5", "claude-opus-4-8", "claude-fable-5", "claude-haiku-4-5"];
 
-// ---- tech stack: derived CLIENT-SIDE from the node's paths whenever the payload
-// carries no `stack` of its own (the field is optional by contract) — file
-// extensions are the honest signal the client already holds.
-const EXT_KIND = [
-  [/\.py$/i, "Python / FastAPI"],
-  [/\.(js|mjs)$/i, "JavaScript / vanilla"],
-  [/\.sql$/i, "SQL"],
-  [/\.css$/i, "CSS"],
-  [/\.html?$/i, "HTML"],
-  [/\.(md|txt)$/i, "docs"],
-];
-function techStack(stack, paths) {
-  if (Array.isArray(stack) && stack.length)
-    return stack.map((s) => (typeof s === "string"
-      ? { kind: s, files: 0 }
-      : { kind: String(s.kind || s.name || "?"), files: Number(s.files ?? s.count ?? 0) }));
-  const counts = new Map();
-  for (const p of paths || []) {
-    const kind = (EXT_KIND.find(([re]) => re.test(String(p))) || [0, "other"])[1];
-    counts.set(kind, (counts.get(kind) || 0) + 1);
+// ---- THE CONTRACT: what a service PROMISES, which is the only thing the panel
+// is allowed to say about it.
+//
+// The owner's decree, verbatim: "I don't wanna understand what's inside — that's
+// the vibe-coding part." So the section that used to derive a "tech stack" from
+// the node's file list is gone, along with the file list itself: the payload no
+// longer carries `paths` at all. What replaces it is the service's own committed
+// openapi.json, fetched by the BFF and rendered as an endpoint list — the one
+// honest answer to "what is this thing" that is not a description of its insides.
+function contractRows(d) {
+  const c = d.contract;
+  if (!c || !(c.endpoints || []).length) {
+    return `<p class="dim">${esc(d.contract_note
+      || "this card serves no contract of its own")}</p>`;
   }
-  return [...counts].map(([kind, files]) => ({ kind, files }));
+  const rows = c.endpoints.map((e) => `<div class="gr-endpoint">
+      <span class="gr-method gr-m-${esc(String(e.method || "GET").toLowerCase())}">${esc(e.method)}</span>
+      <code>${esc(e.path)}</code>
+      ${e.summary ? `<span class="dim">${esc(e.summary)}</span>` : ""}</div>`).join("");
+  return `<p class="dim">${esc(c.title || "")}${c.version ? ` · v${esc(c.version)}` : ""}
+    · ${c.endpoints.length} endpoint${c.endpoints.length === 1 ? "" : "s"}</p>${rows}`;
 }
 
-/** A group's stack is its children's files — a group card has no paths itself. */
-function nodePaths(i, key, n) {
-  if ((n.node_type || "") !== "group") return n.paths || [];
-  const out = [];
-  for (const c of (i.data && i.data.nodes) || [])
-    if (String(c.parent_key || "") === String(key)) out.push(...(c.paths || []));
-  return out;
+/** The service's own readiness document, verbatim — `ok`, and which check failed.
+ * The BFF strips every file path out of it before it gets here. */
+function healthRows(d) {
+  const h = d.health || {};
+  const det = h.detail;
+  const checks = (det && det.checks) || null;
+  const lines = [];
+  if (det) {
+    lines.push(`<p>its own /health says <b class="${det.ok ? "" : "err"}">${
+      det.ok ? "ok" : "not ok"}</b></p>`);
+    if (checks) {
+      lines.push(`<div class="gr-checks">${Object.entries(checks).map(([k, v]) =>
+        `<span class="gr-check gr-check-${v ? "ok" : "bad"}">${esc(k)}</span>`).join("")}</div>`);
+    }
+  } else {
+    lines.push(`<p class="dim">this card serves no /health of its own</p>`);
+  }
+  return lines.join("");
+}
+
+/** Start / Stop, in the panel, for real — with the honest reason when a card has
+ * no switch, and the conductor's IT-crew sub-switch underneath when it has one. */
+function controlRows(d) {
+  const s = d.service || {};
+  const pc = s.pc;
+  const state = String(s.state || "unknown");
+  const pcLine = pc ? `<p class="dim">process-compose: ${esc(pc.state)}${
+    pc.ready ? ` · ${esc(pc.ready)}` : ""} · up ${esc(pc.uptime || "?")}${
+    pc.restarts ? ` · ${pc.restarts} restart${pc.restarts === 1 ? "" : "s"}` : ""}</p>` : "";
+  const buttons = s.control
+    ? `<div class="gr-actions">
+         <button class="primary" id="grSvcStart"${state === "running" ? " disabled" : ""}>▶ Start</button>
+         <button id="grSvcStop"${state === "running" ? "" : " disabled"}>■ Stop</button>
+         <span class="dim" id="grSvcOut"></span></div>`
+    : `<p class="dim gr-nocontrol">${esc(s.reason || "no switch here")}</p>`;
+  const sub = s.sub ? `<div class="gr-sub">
+      <b>${esc(s.sub.label || s.sub.key)}</b> — <span class="gr-svcstate gr-svc-${esc(s.sub.state)}">${esc(s.sub.state)}</span>
+      <div class="dim">${esc(s.sub.note || "")}</div>
+      <div class="gr-actions">
+        <button class="rp-mini" id="grSubStart"${s.sub.state === "running" ? " disabled" : ""}>▶ Start</button>
+        <button class="rp-mini" id="grSubStop"${s.sub.state === "running" ? "" : " disabled"}>■ Stop</button>
+        <span class="dim" id="grSubOut"></span></div></div>` : "";
+  return `<p>state: <span class="gr-svcstate gr-svc-${esc(state)}">${esc(state)}</span></p>
+    ${pcLine}${buttons}${sub}`;
+}
+
+/** The last lines the process actually printed, from the fleet's unified log. */
+function logRows(d) {
+  const lines = d.logs || [];
+  if (!lines.length)
+    return `<p class="dim">nothing in the fleet's log for this card yet</p>`;
+  return `<pre class="gr-logs">${lines.map((l) => esc(l)).join("\n")}</pre>`;
 }
 
 /** The mastery badge: EARNED, never asserted — ★ only after the backend has
@@ -1065,37 +1131,39 @@ function renderPanel(i, key, d) {
   const isGroup = n.node_type === "group";
   const act = ((live.activity || [])[0]);
   const models = ["", ...(Array.isArray(d.models) && d.models.length ? d.models : MODELS)];
-  // A group's suite rows live on its leaves; its rolled-up counts ride on the
-  // graph payload node — show those, never a lying "no tests mapped".
-  const testRows = isGroup
-    ? `<p class="gr-testline">${testsLine(live.tests)}</p>
-       <p class="dim">per-file results live on each module inside — enter the room to see them</p>`
-    : (d.tests || []).map((tt) => `
-    <div class="gr-test gr-test-${esc(tt.status)}">
-      <span class="gr-test-dot"></span><code>${esc(tt.path)}</code>
-      <span class="dim">${esc(tt.kind)} · ${esc(tt.status)}</span>
-      ${tt.last_result ? `<div class="gr-test-last dim">${esc(String(tt.last_result).slice(0, 160))}</div>` : ""}
-    </div>`).join("") || `<p class="dim">no tests mapped to this module</p>`;
+  // COUNTS AND A HEADLINE, never file names. A card is a service and its suite is
+  // the service's own; which files that suite is made of lives in the store and
+  // stops there, because a panel that names one has opened the box.
+  const t = d.tests || {};
+  const testRows = `<p class="gr-testline">${
+    t.total ? `${t.ran ? `${t.passing}/${t.ran} passing` : "never run"}
+      <span class="dim">· ${t.total} suite${t.total === 1 ? "" : "s"} in ${esc(t.suite || "its own suite")}</span>`
+      : `<span class="dim">no suite is mapped to this card</span>`}${
+    t.failing ? ` · <b class="gr-failtext">${t.failing} failing</b>` : ""}</p>${
+    t.headline ? `<div class="gr-test-last dim">${esc(String(t.headline).slice(0, 200))}</div>` : ""}${
+    isGroup ? `<p class="dim">plus whatever is running inside the room right now</p>` : ""}`;
   const edgeRows = (d.edges || []).map((e) => {
     const s = String(e.src ?? e.src_key ?? ""), dd = String(e.dst ?? e.dst_key ?? "");
-    const contract = e.contract && Object.keys(e.contract).length
-      ? `<div class="gr-contract"><code>${esc(JSON.stringify(e.contract).slice(0, 140))}</code>${
-          e.contract_test ? `<span class="dim"> · ${esc(e.contract_test)}</span>` : ""}</div>` : "";
+    // The RULE the two sides honour, in words — never the file that checks it.
+    // A contract test is a path, and a path is how the box gets opened.
+    const rule = String((e.contract || {}).rule || "");
+    const terms = Object.entries(e.contract || {})
+      .filter(([k]) => k !== "rule" && k !== "kind")
+      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v}`).join(" · ");
+    const contract = (rule || terms)
+      ? `<div class="gr-contract">${esc(rule)}${terms ? `<div class="dim">${esc(terms)}</div>` : ""}</div>`
+      : "";
     return `<div class="gr-edge"><b>${esc(s)}</b> → <b>${esc(dd)}</b>
       <span class="dim">${esc(e.edge_type || "depends")}</span>${contract}</div>`;
-  }).join("") || `<p class="dim">no edges touch this module</p>`;
+  }).join("") || `<p class="dim">no edges touch this card</p>`;
   const traceRows = (d.trace || []).slice(-8).reverse().map((r) => `
     <div class="gr-run"><span class="dim">${esc(r.kind || "run")} · ${esc(r.status || "")}</span>
       ${r.detail ? ` ${esc(String(r.detail).slice(0, 120))}` : ""}</div>`).join("")
     || `<p class="dim">nothing has happened to this module yet</p>`;
   // The optional contract fields ride the GRAPH payload node (`live`) until the
   // inspector payload learns them — read them from either, never require both.
-  const health = n.health || live.health || null;
-  const mastery = n.mastery || live.mastery || null;
-  const stackRows = techStack(n.stack || live.stack, nodePaths(i, key, { ...live, ...n }))
-    .map((s) => `<span class="gr-stack-chip">${esc(s.kind)}${
-      s.files ? ` <span class="dim">· ${s.files} file${s.files === 1 ? "" : "s"}</span>` : ""}</span>`)
-    .join("") || `<span class="dim">no files mapped — nothing to derive a stack from</span>`;
+  const health = d.health || n.health || live.health || null;
+  const mastery = d.mastery || n.mastery || live.mastery || null;
   const healthLine = health && health.status
     ? `<p class="gr-healthline gr-hl-${esc(health.status)}">health: <b>${esc(health.status)}</b>${
         health.status === "yellow" ? ` <span class="dim">— tests failing, heartbeat fine</span>` :
@@ -1104,17 +1172,19 @@ function renderPanel(i, key, d) {
     <div class="gr-inspect">
       <div class="gr-light-head">
         <span class="gr-light-glyph">${GLYPH[n.node_type] || GLYPH.code}</span>
-        <div><b>${esc(n.title || key)}</b><div class="dim">${esc(n.node_type || "")} · ${esc(key)}${
-          isGroup ? ` · ${Number(live.children) || 0} modules` : ""}</div></div>
+        <div><b>${esc(n.title || key)}</b><div class="dim">${esc(n.kind || n.node_type || "")} · ${esc(key)}${
+          isGroup ? ` · ${Number(live.children) || 0} inside` : ""}</div></div>
         <button class="rp-link gr-close" id="grInsClose">close</button>
       </div>
       ${act ? `<p class="gr-actline">● ${esc(act.task || act.what || "working")}</p>` : ""}
       ${healthLine}
       ${n.spec ? `<p class="gr-spec">${esc(n.spec)}</p>` : ""}
       ${(n.tags || []).length ? `<div class="gr-tags">${n.tags.map((g) => `<span class="gr-tag">${esc(g)}</span>`).join("")}</div>` : ""}
-      <div class="gr-sec" id="grSecStack"><div class="gr-sec-h">Tech stack
+      <div class="gr-sec" id="grSecStack"><div class="gr-sec-h">Contract
         <button class="rp-mini gr-replace" id="grRepStack">Replace</button></div>
-        <div class="gr-stack">${stackRows}</div></div>
+        <div class="gr-contractlist">${contractRows(d)}</div></div>
+      <div class="gr-sec" id="grSecHealth"><div class="gr-sec-h">Health &amp; switch</div>
+        ${healthRows(d)}${controlRows(d)}</div>
       <div class="gr-sec" id="grSecTests"><div class="gr-sec-h">Test suite
         <button class="rp-mini gr-replace" id="grRepTests">Replace</button></div>
         <p class="dim">Tests are advisory — a red ring informs, it never blocks.</p>
@@ -1125,6 +1195,7 @@ function renderPanel(i, key, d) {
         <button class="rp-mini gr-replace" id="grAgentPick">Change agent</button></div>
         ${agentRow(i, n, d)}
         ${masteryLine(mastery)}</div>
+      <div class="gr-sec" id="grSecLogs"><div class="gr-sec-h">Logs</div>${logRows(d)}</div>
       <div class="gr-sec"><div class="gr-sec-h">Edges &amp; contracts</div>${edgeRows}</div>
       <div class="gr-sec"><div class="gr-sec-h">Trace</div>${traceRows}</div>
       <div class="gr-sec"><div class="gr-sec-h">Steering</div>
@@ -1145,12 +1216,35 @@ function renderPanel(i, key, d) {
 function wirePanel(i, key, isGroup) {
   const closeBtn = i.aside.querySelector("#grInsClose");
   if (closeBtn) closeBtn.onclick = () => { i.inspectKey = null; clearSel(i); asideDefault(i); };
+  // The switch, in the panel. Both pairs go through the same verb the right-click
+  // menu uses; `sub` names the one inside the card (the conductor's IT crew).
+  const switchIt = (btn, outId, action, sub) => {
+    if (!btn) return;
+    btn.onclick = async () => {
+      const out = i.aside.querySelector(outId);
+      btn.disabled = true;
+      if (out) out.textContent = action === "start" ? "starting…" : "stopping…";
+      try { await i.src.service(key, action, sub); }
+      catch (e) {
+        if (out) out.textContent = (e && e.message) || String(e);
+        btn.disabled = false;
+        return;
+      }
+      if (inst !== i) return;
+      await refetch(i);                       // the card's glow repaints from truth
+      if (i.inspectKey === key) openPanel(i, key);
+    };
+  };
+  switchIt(i.aside.querySelector("#grSvcStart"), "#grSvcOut", "start", "");
+  switchIt(i.aside.querySelector("#grSvcStop"), "#grSvcOut", "stop", "");
+  switchIt(i.aside.querySelector("#grSubStart"), "#grSubOut", "start", "repair");
+  switchIt(i.aside.querySelector("#grSubStop"), "#grSubOut", "stop", "repair");
   const ob = i.aside.querySelector("#grGroupOpen");
   if (ob) ob.onclick = () => drillTo(i, key);
   // The three sections' Replace flows: stack/tests file a ticket; the agent
   // section's replace IS the picker (a group is staffed through its leaves).
   const repStack = i.aside.querySelector("#grRepStack");
-  if (repStack) repStack.onclick = () => replaceDialog(i, key, "stack", "Tech stack");
+  if (repStack) repStack.onclick = () => replaceDialog(i, key, "stack", "Implementation");
   const repTests = i.aside.querySelector("#grRepTests");
   if (repTests) repTests.onclick = () => replaceDialog(i, key, "tests", "Test suite");
   const pick = i.aside.querySelector("#grAgentPick");
@@ -1346,6 +1440,8 @@ function nodeMenu(i, e, key) {
   const locked = !!(svc && svc.control === false);
   const why = (svc && svc.reason) || "";
   const state = (svc && svc.state) || "";
+  const sub = (svc && svc.sub) || null;
+  const rm = (svc && svc.remove) || null;
   const items = [];
   if (state) items.push({ label: `service: ${state}`, disabled: true });
   items.push(
@@ -1353,11 +1449,26 @@ function nodeMenu(i, e, key) {
       act: () => serviceAction(i, key, "start") },
     { label: "Stop", disabled: locked || state === "stopped", title: locked ? why : "",
       act: () => serviceAction(i, key, "stop") },
+  );
+  // A switch INSIDE a card: the conductor's own process cannot honestly stop
+  // itself, but the IT crew it hosts is a kv toggle and really can.
+  if (sub && sub.control !== false) {
+    items.push(
+      { label: `Start ${sub.label || sub.key}`, disabled: sub.state === "running",
+        act: () => serviceAction(i, key, "start", sub.key) },
+      { label: `Stop ${sub.label || sub.key}`, disabled: sub.state !== "running",
+        act: () => serviceAction(i, key, "stop", sub.key) });
+  }
+  items.push(
     { sep: true },
     { label: "Peek", act: () => openPanel(i, key) },
     { label: "Test", act: () => verifyNode(i, key) },
     { sep: true },
-    { label: "Remove", act: () => removeNodeFlow(i, key) },
+    // Remove is honest about what a card IS now: deleting a service means editing
+    // services.yaml, so the verb refuses with that reason rather than dropping a
+    // row and leaving the process running behind a map that stopped describing it.
+    { label: "Remove", disabled: !!(rm && rm.allowed === false),
+      title: (rm && rm.reason) || "", act: () => removeNodeFlow(i, key) },
     { label: "Replace ▸", act: () => replaceMenu(i, e, key) },
   );
   W.studioMenu(e.clientX, e.clientY, items);
@@ -1372,11 +1483,12 @@ function levelMenu(i, e) {
   ]);
 }
 
-async function serviceAction(i, key, action) {
+async function serviceAction(i, key, action, sub) {
   try {
-    const r = await i.src.service(key, action);
-    const state = (r && ((r.service && r.service.state) || r.state)) || "done";
-    W.toast && W.toast(`${key}: ${action} → ${state}`);
+    const r = await i.src.service(key, action, sub);
+    const st = (r && r.service) || {};
+    const state = (sub && st.sub ? st.sub.state : st.state) || r.state || "done";
+    W.toast && W.toast(`${sub ? sub + " on " : ""}${key}: ${action} → ${state}`);
   } catch (er) { W.toast && W.toast((er && er.message) || String(er), true); }
   if (inst === i) scheduleRefetch(i);
 }
@@ -1405,9 +1517,9 @@ async function removeNodeFlow(i, key) {
 
 function replaceMenu(i, e, key) {
   W.studioMenu(e.clientX + 26, e.clientY + 10, [
-    { label: "Tech stack", act: () => replaceDialog(i, key, "stack", "Tech stack") },
+    { label: "Implementation", act: () => replaceDialog(i, key, "stack", "Implementation") },
     { label: "Test suite", act: () => replaceDialog(i, key, "tests", "Test suite") },
-    { label: "Module", act: () => replaceDialog(i, key, "module", "Module") },
+    { label: "Service", act: () => replaceDialog(i, key, "module", "Service") },
   ]);
 }
 

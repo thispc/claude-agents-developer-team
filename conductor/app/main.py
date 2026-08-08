@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
         # The offline fallback graph for the platform itself. Guarded: a seed failure
         # (an unreadable file, a moved module) must never block boot — the graph screen
         # can heal it later, the rest of the app does not depend on it.
-        modgraph.seed_self_graph()
+        modgraph.seed_fleet_graph()
     except Exception as e:
         logs.warn("lifecycle", "graph_seed_failed", f"module-graph seed skipped: {e}")
     loop = asyncio.get_event_loop()

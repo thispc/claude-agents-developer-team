@@ -189,13 +189,21 @@ def test_svc_is_root_only_unless_the_registry_says_otherwise(client, make_user, 
     that forwarded `/svc/watch/logs` to any account would hand over the same rows through a
     different door. The gate fails closed and a service opts out in one reviewed line.
     """
+    from app import fleet
     from app.routes import svc
     (tmp_path / "fleet_topology.json").write_text(json.dumps({"services": {
         "watch": {"kind": "service", "managed": True, "url": "http://127.0.0.1:9",
                   "public": False},
         "shop": {"kind": "service", "managed": True, "url": "http://127.0.0.1:9",
                  "public": True}}}))
+    # ONE READER since P6: the gateway, the fleet doors and the Atlas's cards all
+    # resolve through fleet.services(), so the swap happens there. `svc._DATA`
+    # still holds the token files, and both must point at the same fake fleet or
+    # the drill would be testing two different registries.
+    monkeypatch.setattr(fleet, "_DATA", tmp_path)
     monkeypatch.setattr(svc, "_DATA", tmp_path)
+    fleet._topo.update(mtime=None, doc={})
+    monkeypatch.setattr(fleet, "_topo", dict(fleet._topo))
     _uid, other = make_user("nosy")
     assert other.get("/svc/watch/logs").status_code == 403, "the log ring leaked"
     # ...an unknown name is still a 404, not a 403 that confirms it exists

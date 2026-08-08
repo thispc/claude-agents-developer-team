@@ -250,6 +250,35 @@ interaction hands over the key. A scene carries public **rules** everyone can se
 and a behaviour **equalizer** that tunes every agent placed in it — the same room,
 a different kind of person.
 
+### The Atlas — your platform as parts you can unplug
+
+The platform runs as a **fleet**: the conductor plus six services, each its own
+program on its own port with its own records and its own contract, all started and
+watched by one fleet manager. **The Atlas** (the 🗺 chip on Devteam HQ) is the map of
+it, and it is not a diagram — it is the fleet itself, live. One card per part. A card
+says whether that part is running right now, who on your team looks after it, and
+whether its own tests last passed. Right-click a card, or open it, and **Start** and
+**Stop** do exactly what they say: they start and stop that program. Stop the memory
+service and the crew keeps building — it just stops remembering; the card goes red
+while it is down and green again when you start it.
+
+Open a card and you get five things and no sixth: **what it promises** (the list of
+requests it answers), **how it is doing** (its own health check, in its own words),
+**its switch**, **who works it** and what their record on it is, and **the last lines
+it printed**. What is *inside* it — files, code, modules — is deliberately not there.
+That is the whole point of splitting the platform up this way: a part is a promise
+and a switch, and you should never have to open one to run your own platform.
+
+Two cards are ROOMS rather than parts, because what they hold changes while you
+watch: the **worker pool** (one card inside per coding agent running right now) and
+**deployed apps** (one per app your teams have shipped, each with its own Stop).
+Click a room to walk into it, Esc to walk back out, `M` for the whole map.
+
+The one thing the Atlas will not do is delete a part. Which parts exist is a single
+reviewed file in the repository, so removing one is a change to the platform's own
+code — the card says so, and points you at *Replace ▸ Service*, which files it as a
+ticket for the crew like any other piece of work.
+
 ### Where things run
 
 | Shape | Where | What is isolated |

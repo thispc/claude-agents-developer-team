@@ -159,6 +159,25 @@ def test_door_chips_are_built_from_payload_edges_not_group_adjacency():
         "a chip must carry where it travels and what to flash"
 
 
+def test_an_empty_room_is_refused_before_the_travel():
+    """P6 made the rooms LIVE — an empty worker pool is the normal state of a box
+    with nothing building. Walking in only to be bounced out costs a wasted click
+    AND a duplicated history entry (the bounce replaces the entry it just pushed,
+    leaving two identical ones, so the next browser-back appears to do nothing —
+    which the Atlas drill's back-nav hammer catches). So the refusal happens
+    before the hash is written, and paint()'s bounce stays as the safety net for a
+    room that empties while you are standing in it."""
+    mod = _read("graph/index.js")
+    dt = mod.split("function drillTo(", 1)[1].split("\nfunction ", 1)[0]
+    assert "roomNodes(i.data, String(key)).length" in dt, \
+        "drillTo must check the room is inhabited before travelling"
+    assert dt.index("roomNodes") < dt.index("location.hash"), \
+        "the check must come BEFORE the hash write, or the entry is already minted"
+    assert "W.toast" in dt, "a refused travel must say why"
+    paint = mod.split("\nfunction paint(", 1)[1].split("\nfunction ", 1)[0]
+    assert "history.replaceState" in paint, "the safety net must stay"
+
+
 def test_travel_flashes_the_target_card():
     mod = _read("graph/index.js")
     tr = mod.split("function travel(", 1)[1].split("\nfunction ", 1)[0]
@@ -354,7 +373,7 @@ def test_single_click_on_a_capillary_opens_the_one_full_panel():
 def test_the_panel_has_three_replaceable_sections():
     mod = _read("graph/index.js")
     rp = mod.split("function renderPanel(", 1)[1].split("\nfunction ", 1)[0]
-    for header in ("Tech stack", "Test suite", "Agent"):
+    for header in ("Contract", "Test suite", "Agent"):
         assert header in rp, f"the panel lost its {header} section"
     for bid in ("grSecStack", "grSecTests", "grSecAgent",
                 "grRepStack", "grRepTests", "grAgentPick"):
@@ -369,7 +388,7 @@ def test_the_panel_puts_the_agent_front_and_center():
     assert "function agentRow" in mod
     rp = mod.split("function renderPanel(", 1)[1].split("\nfunction ", 1)[0]
     assert "${agentRow(" in rp, "the panel must render the agent row"
-    assert "the specialist working this module" in mod
+    assert "the specialist working this service" in mod
     assert "the manager staffs modules when it authors the plan" in mod, \
         "the unassigned fallback must say WHO assigns and WHEN"
     assert "Have the manager plan now" in mod
@@ -386,13 +405,22 @@ def test_the_model_select_rides_the_servers_own_option_list():
     assert "valid: " in py, "the 400 detail must SAY the valid options"
 
 
-def test_tech_stack_derives_client_side_when_absent():
+def test_the_panel_shows_the_contract_not_a_derived_tech_stack():
+    """P6 replaced the "Tech stack" section outright. It derived a language mix
+    from the node's FILE LIST — which is exactly what the owner said he did not
+    want to see, and which the payload no longer carries at all. What renders in
+    its place is the service's own committed openapi.json as an endpoint list: the
+    one honest answer to "what is this thing" that is not a description of its
+    insides."""
     mod = _read("graph/index.js")
-    ts = mod.split("function techStack(", 1)[1].split("\nfunction ", 1)[0]
-    assert "Array.isArray(stack)" in ts, "a payload-sent stack must win"
-    for kind in ("Python / FastAPI", "JavaScript / vanilla", "SQL", "CSS"):
-        assert kind in mod, f"the {kind} extension mapping is gone"
-
+    for gone in ("techStack", "EXT_KIND", "nodePaths", "Python / FastAPI",
+                 "JavaScript / vanilla", "gr-stack-chip"):
+        assert gone not in mod, f"the file-derived stack section is back ({gone})"
+    cr = mod.split("function contractRows(", 1)[1].split("\nfunction ", 1)[0]
+    assert "d.contract" in cr and "endpoints" in cr
+    assert "e.method" in cr and "e.path" in cr, "the endpoint list is the contract"
+    assert "contract_note" in cr, \
+        "a card with no contract of its own must say why, not render an empty box"
 
 def test_mastery_badge_is_earned_never_asserted():
     mod = _read("graph/index.js")
@@ -434,9 +462,83 @@ def test_context_menu_lists_the_six_verbs():
         assert f"label: {verb}" in nm, f"the card menu lost its {verb} verb"
     # Start/Stop honour the service contract: disabled + the honest reason as tooltip
     assert "control === false" in nm and "svc.reason" in nm
+    # ...and the SUB-SWITCH: the conductor cannot stop itself from inside a request
+    # it is serving, but the IT crew it hosts is a real toggle and gets its own pair.
+    assert "svc.sub" in nm and "sub.key" in nm, "the card's sub-switch is gone"
+    # Remove is honest about what a card IS now — a services.yaml edit, so the verb
+    # is greyed with the reason rather than offering a click that always fails.
+    assert "rm.allowed === false" in nm and "rm.reason" in nm, \
+        "Remove must disable itself with the registry reason"
     lm = mod.split("function levelMenu(", 1)[1].split("\nfunction ", 1)[0]
     for entry in ("Open the Atlas map", "Toggle theme", "Back to overview"):
         assert entry in lm, f"the room menu lost its {entry} entry"
+
+
+# --------------------------------------------------------------------------
+# P6: the cards ARE services — the three pins the phase is judged on
+# --------------------------------------------------------------------------
+
+def test_the_atlas_renders_services_not_code_modules():
+    """The owner's correction, pinned on the screen side. A card carries a live
+    STATE read from the fleet (running / stopped / idle / unknown), and `unknown`
+    is a state of its own because the `--legacy` boot has no fleet manager to ask
+    — a card that printed "stopped" there would be lying about a service that is
+    perfectly up."""
+    nodes = _read("graph/nodes.js")
+    sc = nodes.split("function stateChip(", 1)[1].split("\nfunction ", 1)[0]
+    assert "n.service" in sc and "gr-state-" in sc
+    assert '"none"' in sc, "a card with no switch must render no chip at all"
+    for state in ("running", "stopped", "idle", "unknown"):
+        assert state in nodes, f"the {state} state has no chip text"
+    fill = nodes.split("function fill(", 1)[1].split("\nfunction ", 1)[0]
+    assert "stateChip(n)" in fill, "the chip must be on the card, not only in the panel"
+    css = _read("graph/graph.css")
+    for cls in (".gr-state-running", ".gr-state-stopped", ".gr-state-unknown"):
+        assert cls in css, f"{cls} is gone"
+
+
+def test_start_and_stop_are_real_verbs_on_every_card():
+    """The seam's `service` verb carries the sub-switch, the panel offers the pair
+    beside the health, and a card with no switch shows the honest reason instead of
+    a dead button."""
+    mod = _read("graph/index.js")
+    seam = mod.split("DEVTEAM_GRAPH_SRC = {", 1)[1].split("};", 1)[0]
+    assert "service: (key, action, sub)" in seam, "the seam lost the sub-switch"
+    assert 'JSON.stringify({ action, sub: sub || "" })' in seam
+    cr = mod.split("function controlRows(", 1)[1].split("\nfunction ", 1)[0]
+    assert "grSvcStart" in cr and "grSvcStop" in cr
+    assert "s.control" in cr and "s.reason" in cr, \
+        "a card with no switch must render the reason, never a dead button"
+    assert "grSubStart" in cr and "grSubStop" in cr, "the sub-switch pair is gone"
+    assert "process-compose:" in cr, "the card must show the fleet's own verdict"
+    wp = mod.split("function wirePanel(", 1)[1].split("\nfunction ", 1)[0]
+    assert 'switchIt(i.aside.querySelector("#grSvcStop"), "#grSvcOut", "stop", "")' in wp
+    assert '"repair"' in wp, "the crew's sub-switch is not wired"
+    assert "refetch(i)" in wp, "the card's glow must repaint from the fresh truth"
+
+
+def test_the_panel_never_renders_a_filesystem_path():
+    """THE BLACK BOX STAYS CLOSED — the owner's decree, on the screen side: "I
+    don't wanna understand what's inside — that's the vibe-coding part."
+
+    The BFF strips `paths` from every payload, so the panel could not render one
+    even if it tried; this pin is the other half, against the panel trying. The
+    test-suite section shows COUNTS and a headline (it used to print every mapped
+    file name), and nothing anywhere reads a path field off a node."""
+    mod = _read("graph/index.js")
+    rp = mod.split("function renderPanel(", 1)[1].split("\nfunction ", 1)[0]
+    for leak in ("n.paths", "live.paths", "tt.path", "e.contract_test"):
+        assert leak not in rp, f"the panel renders {leak}"
+    assert "t.suite" in rp and "t.passing" in rp, \
+        "the suite section must be counts and a headline, never file names"
+    assert "esc(tt.path)" not in mod, "the per-file test rows are back"
+    for sec in ("grSecHealth", "grSecLogs"):
+        assert sec in rp, f"the panel lost its {sec} section"
+    lr = mod.split("function logRows(", 1)[1].split("\nfunction ", 1)[0]
+    assert "d.logs" in lr and "gr-logs" in lr, "the log tail is gone"
+    hr = mod.split("function healthRows(", 1)[1].split("\nfunction ", 1)[0]
+    assert "det.ok" in hr and "checks" in hr, \
+        "the service's own readiness document must show, checks and all"
 
 
 def test_remove_confirms_and_replace_files_a_ticket():

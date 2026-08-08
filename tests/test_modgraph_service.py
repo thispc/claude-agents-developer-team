@@ -48,7 +48,7 @@ def mg(fresh_db):
     """The conductor talking to the mounted service — which is simply how the
     suite runs now. Kept as a named fixture so every drill says what it needs,
     and so `mg_down` has something to invert."""
-    modgraph.seed_self_graph()
+    modgraph.seed_fleet_graph()
     return modgraph
 
 
@@ -227,8 +227,8 @@ def test_affected_selection_crosses_and_the_runner_did_not(mg, root_client, monk
         "the suite must run in the conductor's own checkout"
     # ...and the verdict landed in the SERVICE's rows
     rows = modgraph_service.helpers.db().execute(
-        "SELECT status FROM graph_node_tests WHERE path=?",
-        ("tests/test_knowledge_service.py",)).fetchall()
+        "SELECT status FROM graph_node_tests WHERE node_key=?",
+        ("knowledge",)).fetchall()
     assert rows and all(r[0] == "passing" for r in rows)
     trace = modgraph.runs(modgraph.active_plan(0)["id"], "knowledge")
     assert trace[-1]["kind"] == "verify" and trace[-1]["status"] == "ok"
@@ -246,13 +246,20 @@ def test_a_whole_plan_crosses_in_one_call(mg, root_client, monkeypatch):
         return real(path, payload, **kw)
     monkeypatch.setattr(modgraph, "_post", counting)
 
-    r = root_client.post("/api/graph/self/node/knowledge/remove")
+    # Removed on an ORPHAN card, because since P6 that is the only removable one:
+    # a card naming a service is a services.yaml edit and the route refuses it,
+    # while a plan row naming nothing the fleet runs is exactly a stale row.
+    pid = modgraph.active_plan(0)["id"]
+    modgraph.add_node(pid, "ghost", "a card the fleet does not run")
+    posts.clear()
+    r = root_client.post("/api/graph/self/node/ghost/remove")
     assert r.status_code == 200, r.text
     assert posts.count("/import-plan") == 1
     assert not any(p.endswith("/nodes") or p.endswith("/edges") for p in posts), \
         "the rebuild went back to writing rows one at a time"
     v2 = r.json()["plan"]["id"]
-    assert "knowledge" not in {n["key"] for n in modgraph.nodes(v2)}
+    assert "ghost" not in {n["key"] for n in modgraph.nodes(v2)}
+    assert "knowledge" in {n["key"] for n in modgraph.nodes(v2)}
     assert modgraph.get_plan(v2)["status"] == "active"
 
 
@@ -281,7 +288,7 @@ def test_reads_are_empty_and_say_so(mg_down):
     assert modgraph.get_assign(1, "db") is None
     assert modgraph.affected_tests(1, "db") == []
     assert modgraph.self_manifest() == {}
-    assert modgraph.seed_self_graph() == 0
+    assert modgraph.seed_fleet_graph() == 0
     assert modgraph.health() is False
 
 

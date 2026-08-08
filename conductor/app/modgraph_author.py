@@ -63,30 +63,28 @@ EDGE_TYPES = ("depends", "interface", "data", "artifact")
 
 AUTHOR_SYSTEM = (
     "You are the hidden manager of the devteam platform's own IT crew. You are handed the "
-    "repository's REAL module inventory (every path exists; the specs are the modules' own "
-    "docstrings), the plan currently on the wall, and your team roster. Author the module "
-    "plan YOUR team will work — TWO LEVELS, like an architecture diagram you can zoom: a "
-    "handful of `group` nodes (the layers: backend, frontend, data, …) at the top, and "
-    "every real module a child of exactly one group via `parent`. You may regroup, "
-    "rename, retitle and re-annotate modules as you judge best, and you assign each LEAF "
-    "module to the specialist whose lens fits it. Return ONLY one JSON object, no prose:\n"
-    '{"modules": [{"key": <short stable slug>, "title": <short>, '
-    '"node_type": "aim"|"group"|"code"|"research"|"data"|"conclusion", '
-    '"parent": <the owning group\'s key, leaf modules only>, '
-    '"spec": <what the module IS, 1-3 sentences>, "join": "all_of"|"any_of", '
-    '"tags": [<strings>], "paths": [<repo paths; directories end in "/">]}],\n'
+    "platform's FLEET — every card is a real service with its own process, port, contract "
+    "and database, taken from the registry (services.yaml) — the plan currently on the "
+    "wall, and your team roster. Author the plan YOUR team will work.\n"
+    "THE CARDS ARE FIXED. You may NOT invent a card, drop one, or rename a key: a card "
+    "that is not in the registry is not a process anybody is running, and the registry is "
+    "changed by editing a repository file, not by you. What you DO decide is how the fleet "
+    "reads and who works it: each card's title and spec, its tags, the typed edges and the "
+    "contracts on them, and the specialist assigned to each one.\n"
+    "Return ONLY one JSON object, no prose:\n"
+    '{"modules": [{"key": <EXACTLY a key from the inventory>, "title": <short>, '
+    '"spec": <what this service IS and promises, 1-3 sentences>, '
+    '"join": "all_of"|"any_of", "tags": [<strings>]}],\n'
     ' "edges": [{"src": <key>, "dst": <key>, '
     '"type": "depends"|"interface"|"data"|"artifact", '
     '"contract": {"rule": <the rule both sides honour>}}],\n'
-    ' "assignments": {<LEAF module key>: <factor id>}}\n'
-    "Rules: exactly one aim node and one conclusion node, both with empty paths and no "
-    "parent; a group has no parent and its spec is one honest sentence about the layer — "
-    "leave a group's paths empty, they are computed server-side as the union of its "
-    "children's; a leaf's paths may name ONLY files and directories from the inventory — "
-    "never invent a path; edges may connect groups to groups and leaves to leaves (the "
-    "canvas clips by level); assignments go on LEAF modules only and every value must be "
-    "one of the roster's factor ids; keep a key stable when the module is the same thing "
-    "as in the current plan.")
+    ' "assignments": {<card key>: <factor id>}}\n'
+    "Rules: every key must appear in the inventory and every inventory key should appear "
+    "in your answer; node types, parents and boundaries are the registry's and are not "
+    "yours to set, so do not send them; an edge naming a card that does not exist is "
+    "discarded; assignments go on the SERVICE cards (never the aim, the Artifact or a "
+    "room) and every value must be one of the roster's factor ids. Describe what a service "
+    "PROMISES, never what is inside it — the operator has said he does not want to know.")
 
 
 def _sig() -> list[str]:
@@ -113,68 +111,46 @@ def _stamp(plan_id: int) -> None:
 def _validated(obj: dict, man: dict, fs: list[dict]) -> tuple[list[dict], list[dict], dict]:
     """The manager's answer, held to the ground: (nodes, edges, assignments).
 
-    Every claim that can be checked is checked — a path that is not in the tree
-    is dropped and logged, an unknown node type or edge type falls back to the
-    default, an edge naming a node that does not exist is discarded, an
-    assignment to a factor not on the roster is discarded. The manager may be
-    creative about SHAPE; it does not get to be creative about facts."""
-    dropped: list[str] = []
-    nodes: list[dict] = []
-    seen: set[str] = set()
+    SINCE P6 THE CARD SET IS NOT NEGOTIABLE. The inventory is the registry, and a
+    card that is not in it is not a process anybody is running — so a key the
+    manager invented is dropped with a log, a card it forgot is restored from the
+    manifest, and node_type, parent and boundary are taken from the manifest
+    whatever the answer said. What the manager genuinely decides survives intact:
+    the title, the spec, the tags, the edges and their contracts, and who works
+    each card. It may be creative about how the fleet READS; it does not get to
+    be creative about what the fleet IS.
+
+    Everything else that can be checked still is — an unknown edge type falls back
+    to the default, an edge naming a card that does not exist is discarded, an
+    assignment to a factor not on the roster is discarded."""
+    base = {n["key"]: n for n in man["nodes"]}
+    order = list(base)
+    invented: list[str] = []
+    authored: dict[str, dict] = {}
     for m in obj.get("modules") or []:
         if not isinstance(m, dict):
             continue
         key = re.sub(r"[^a-z0-9-]+", "-", str(m.get("key") or "").lower()).strip("-")[:40]
-        if not key or key in seen:
+        if not key or key in authored:
             continue
-        seen.add(key)
-        ntype = str(m.get("node_type") or "code")
-        ntype = ntype if ntype in NODE_TYPES else "code"
+        if key not in base:
+            invented.append(key)
+            continue
         join = str(m.get("join") or "all_of")
-        join = join if join in ("all_of", "any_of") else "all_of"
-        parent = re.sub(r"[^a-z0-9-]+", "-",
-                        str(m.get("parent") or "").lower()).strip("-")[:40]
-        paths: list[str] = []
-        if ntype != "group":                # a group's paths are computed, below
-            for p in (m.get("paths") or [])[:40]:
-                p = str(p).strip().lstrip("/")
-                if p and (config.ROOT / p).exists():
-                    paths.append(p)
-                elif p:
-                    dropped.append(f"{key}: {p}")
-        nodes.append({"key": key, "title": str(m.get("title") or key)[:140],
-                      "node_type": ntype, "spec": str(m.get("spec") or "")[:600],
-                      "join_mode": join, "parent_key": parent,
-                      "tags": [str(t)[:40] for t in (m.get("tags") or [])][:8],
-                      "paths": paths})
-    if dropped:
-        logs.warn("sprint", "graph_paths_dropped",
-                  f"the manager named {len(dropped)} path(s) that do not exist — dropped: "
-                  + "; ".join(dropped[:5]), n=len(dropped))
-    # The frame is not optional: a plan without an aim or a conclusion is not a
-    # plan, so a missing one is borrowed from the seed manifest rather than
-    # failing the whole authoring pass over the least interesting nodes.
-    if not any(n["node_type"] == "aim" for n in nodes):
-        nodes.insert(0, dict(man["nodes"][0]))
-    if not any(n["node_type"] == "conclusion" for n in nodes):
-        nodes.append(dict(man["nodes"][-1]))
-    nodes.sort(key=lambda n: {"aim": 0, "conclusion": 2}.get(n["node_type"], 1))
-
-    # Two levels, held structurally: a parent must name a GROUP in this same
-    # answer — groups, the aim and the conclusion sit at the top themselves, and
-    # a parent pointing anywhere else flattens to top level rather than minting
-    # a hierarchy the canvas has no idea how to clip. A group's boundary is then
-    # COMPUTED — the union of its children's paths — because the one fact the
-    # top level must never drift from is what the modules under it cover.
-    group_keys = {n["key"] for n in nodes if n["node_type"] == "group"}
-    for n in nodes:
-        if n["node_type"] in ("aim", "conclusion", "group") \
-                or n["parent_key"] not in group_keys:
-            n["parent_key"] = ""
-    for g in nodes:
-        if g["node_type"] == "group":
-            g["paths"] = sorted({p for n in nodes
-                                 if n["parent_key"] == g["key"] for p in n["paths"]})
+        authored[key] = {
+            "title": str(m.get("title") or base[key]["title"])[:140],
+            "spec": str(m.get("spec") or base[key]["spec"])[:600],
+            "join_mode": join if join in ("all_of", "any_of") else "all_of",
+            "tags": [str(t)[:40] for t in (m.get("tags") or [])][:8] or base[key]["tags"],
+        }
+    if invented:
+        logs.warn("sprint", "graph_cards_invented",
+                  f"the manager named {len(invented)} card(s) that are not services in "
+                  "the registry — dropped: " + "; ".join(invented[:5]), n=len(invented))
+    # The structural half comes from the manifest, ALWAYS: key, type, parent and
+    # boundary describe a process the fleet runs, and the manager describing them
+    # differently would not change the process, only the map of it.
+    nodes = [{**base[k], **authored.get(k, {})} for k in order]
 
     keyset = {n["key"] for n in nodes}
     edges: list[dict] = []
@@ -206,8 +182,9 @@ def _validated(obj: dict, man: dict, fs: list[dict]) -> tuple[list[dict], list[d
     def _fid(v: str) -> str:
         return v if v in fids else by_alias.get(v.strip().lower(), "")
 
-    # Assignments land on LEAVES only: a group is worked through its children,
-    # so a specialist pinned to a layer would be a specialist pinned to nothing.
+    # Assignments land on the SERVICE cards only: the frame is not work, and a
+    # room is worked through the things inside it, so a specialist pinned to
+    # either would be a specialist pinned to nothing.
     leaf_keys = {n["key"] for n in nodes
                  if n["node_type"] not in ("aim", "conclusion", "group")}
     assigns = {str(k): _fid(str(v)) for k, v in (obj.get("assignments") or {}).items()
@@ -217,28 +194,19 @@ def _validated(obj: dict, man: dict, fs: list[dict]) -> tuple[list[dict], list[d
 
 def _candidate_manifest(nodes: list[dict], edges: list[dict]) -> dict:
     """The would-be plan in modgraph._manifest_of's comparable shape, with the test
-    mapping derived MECHANICALLY from the authored boundaries — the same parsed-
-    imports discipline as the seed, filtered to keys this plan actually has. The
-    manager authors boundaries; it never authors which tests exist. LEAVES only:
-    a group's paths are the union of its children's, so letting it into the
-    mapping would swallow every suite its children should own — groups answer
-    through the payload's rollup instead."""
-    by_key = {n["key"]: n["paths"] for n in nodes if n["node_type"] != "group"}
+    mapping derived MECHANICALLY — a service's suite is its own directory, every
+    other card's is parsed from the repo suite's imports, and the manager authors
+    neither. The one builder, asked over the wire, so an authored plan and the
+    offline seed can never disagree about which suite belongs to which card."""
+    by_key = {n["key"]: n["paths"] for n in nodes}
     tmap = {path: keys & set(by_key)
             for path, keys in modgraph._tests_for_nodes(by_key).items()}
     tmap = {path: keys for path, keys in tmap.items() if keys}
-    edge_list = []
-    for e in edges:
-        both = sorted(p for p, keys in tmap.items()
-                      if e["src"] in keys and e["dst"] in keys)
-        edge_list.append({"src": e["src"], "dst": e["dst"], "edge_type": e["edge_type"],
-                          "contract": e["contract"],
-                          "contract_test": both[0] if both else ""})
+    edge_list = [{"src": e["src"], "dst": e["dst"], "edge_type": e["edge_type"],
+                  "contract": e["contract"], "contract_test": ""} for e in edges]
     test_list = sorted(
         [{"node": key, "kind": "suite", "path": path}
-         for path, keys in tmap.items() for key in keys] +
-        [{"node": e["dst"], "kind": "contract", "path": e["contract_test"]}
-         for e in edge_list if e["contract_test"]],
+         for path, keys in tmap.items() for key in keys],
         key=lambda t: (t["node"], t["kind"], t["path"]))
     seen, deduped = set(), []
     for t in test_list:

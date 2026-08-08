@@ -581,8 +581,9 @@ def test_the_assignment_pool_says_unavailable_rather_than_empty(lw_down, root_cl
 
 
 def test_the_module_graph_card_goes_red_when_the_service_is_down(lw_down):
-    from app import modgraph_health
-    assert modgraph_health._probe_lifeworld() is False
+    from app import fleet
+    assert fleet.beat_of("lifeworld", {"key": "lifeworld", "node_type": "code"},
+                         None) == "fail"
 
 
 # --------------------------------------------------------------------------

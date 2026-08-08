@@ -33,7 +33,6 @@ Not handled (yet): WebSocket upgrades — the same honest gap preview_proxy has.
 first push-feed service (watch, P3) forces that decision; nothing needs it in P0.
 """
 
-import json
 from pathlib import Path
 
 import httpx
@@ -41,46 +40,25 @@ from fastapi import HTTPException, Request
 from starlette.background import BackgroundTask
 from starlette.responses import Response, StreamingResponse
 
-from .. import config
+from .. import config, fleet
 from ..guards import _root
 from ..preview_proxy import _HOP          # one hop-by-hop list, not two drifting copies
 from .base import current_user, router
 
 _DATA = Path(config.ROOT) / "data"
-MANAGED_KINDS = ("core", "service")
+MANAGED_KINDS = fleet.MANAGED_KINDS
 
 
 def _services() -> dict:
     """The registry as the fleet sees it: fleet_topology.json first (what the
     generator actually wrote), services.yaml as the legacy-boot fallback.
 
-    Read by the gateway below AND by the fleet doors in routes/internal.py, which
-    need the same entries' `doors`/`knobs` allowlists — one reader, so a
-    generated topology and a hand-edited registry can never grant different
-    permissions.
+    ONE READER, and since P6 it lives in `fleet.py` — this gateway, the fleet
+    doors in routes/internal.py and the Atlas's own cards all resolve the same
+    entries, so a generated topology and a hand-edited registry can never grant
+    different permissions or draw a fleet nobody is running.
     """
-    topo = _DATA / "fleet_topology.json"
-    if topo.exists():
-        try:
-            return json.loads(topo.read_text()).get("services", {})
-        except Exception:
-            pass
-    try:
-        import yaml
-        reg = yaml.safe_load((config.ROOT / "services.yaml").read_text()) or {}
-        host = (reg.get("defaults") or {}).get("host", "127.0.0.1")
-        out = {}
-        for n, s in (reg.get("services") or {}).items():
-            managed = s.get("kind") in MANAGED_KINDS and s.get("port")
-            out[n] = {"kind": s.get("kind"), "managed": bool(managed)}
-            if managed:
-                out[n]["url"] = f"http://{host}:{s['port']}"
-                out[n]["doors"] = sorted(s.get("doors") or [])
-                out[n]["knobs"] = sorted(s.get("knobs") or [])
-                out[n]["public"] = bool(s.get("public"))
-        return out
-    except Exception:
-        return {}
+    return fleet.services()
 
 
 def resolve(name: str) -> dict | None:

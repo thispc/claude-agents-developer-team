@@ -254,6 +254,119 @@ _monitor._client = lambda: _svc_client(watch_service, _WATCH_URL, WATCH_TEST_TOK
 _logs.AUTOFLUSH = False
 
 
+# --- the FLEET, answered in-process (P6) --------------------------------------
+#
+# Since P6 the Atlas's cards are the fleet's processes, so `/api/graph/self` asks
+# process-compose what each one is doing and asks each service for its committed
+# contract and its own /health. Left alone, the suite would reach a REAL fleet
+# manager on 127.0.0.1:8899 and REAL services on 8881-8886 — which is exactly the
+# offline invariant every earlier phase paid to keep, and worse than a missing
+# fixture: on a developer box with `./run-local.sh` up, the drills would pass by
+# talking to a fleet nobody asked them to touch, and a `stop` drill would stop it.
+#
+# So `fleet._TRANSPORT` is pinned here for the whole suite. The service half is
+# answered by the MOUNTED services (their committed spec file, their real health
+# function — no socket, and no nested TestClient portal); the fleet-manager half
+# is answered by FLEET_PROCESSES below, which a drill drives directly. What the
+# Atlas asked the fleet to DO is recorded in FLEET_CALLS, because "Start routed to
+# process-compose" is a claim about the call, not about the answer.
+
+from app import fleet as _fleet  # noqa: E402
+
+FLEET_MANAGED = ("conductor", "knowledge", "usage", "notify", "watch",
+                 "lifeworld", "modgraph")
+FLEET_SERVICES = {"knowledge": knowledge_service, "usage": usage_service,
+                  "notify": notify_service, "watch": watch_service,
+                  "lifeworld": lifeworld_service, "modgraph": modgraph_service}
+
+FLEET_PROCESSES: dict[str, dict] = {}
+FLEET_CALLS: list[tuple[str, str]] = []
+# Every request that actually reached the fleet API, so "one round trip per
+# payload" can be asserted at the wire rather than hoped for.
+FLEET_HITS: list[str] = []
+FLEET_LOGS: dict[str, list[str]] = {}
+# False = the fleet manager is not answering at all: the `--legacy` boot, or a dead
+# API. Every card must then say "I cannot see the switches", never "it is down".
+FLEET_UP = True
+
+_CONDUCTOR_SPEC = {"openapi": "3.1.0",
+                   "info": {"title": "conductor", "version": "0"},
+                   "paths": {"/api/health": {"get": {"summary": "Health"}}}}
+
+
+def reset_fleet() -> None:
+    """Every managed process up and ready — the state a healthy boot produces."""
+    global FLEET_UP
+    FLEET_UP = True
+    FLEET_CALLS.clear()
+    FLEET_HITS.clear()
+    FLEET_LOGS.clear()
+    FLEET_PROCESSES.clear()
+    for name in FLEET_MANAGED:
+        FLEET_PROCESSES[name] = {
+            "name": name, "status": "Running", "is_ready": "Ready",
+            "is_running": True, "restarts": 0, "pid": 4242,
+            "system_time": "1m0s", "exit_code": 0}
+    _fleet._states_cache.update(ts=0.0, by_name=None)
+    _fleet._spec_cache.clear()
+
+
+def _fleet_port_map() -> dict[int, str]:
+    return {int(s["port"]): n for n, s in (_fleet.services() or {}).items()
+            if s.get("port")}
+
+
+def _fleet_answer(request: httpx.Request) -> httpx.Response:
+    path, port = request.url.path, request.url.port
+    if port == int((_fleet.topology().get("fleet_api") or {}).get("port", 8899)):
+        FLEET_HITS.append(path)
+        if not FLEET_UP:
+            raise httpx.ConnectError("the fleet manager is not answering")
+        if path == "/processes":
+            return httpx.Response(200, json={"data": list(FLEET_PROCESSES.values())})
+        for verb, prefix in (("start", "/process/start/"), ("stop", "/process/stop/")):
+            if path.startswith(prefix):
+                name = path[len(prefix):]
+                if name not in FLEET_PROCESSES:
+                    return httpx.Response(404, json={"error": "no such process"})
+                FLEET_CALLS.append((verb, name))
+                up = verb == "start"
+                FLEET_PROCESSES[name].update(
+                    status="Running" if up else "Completed",
+                    is_ready="Ready" if up else "", is_running=up)
+                return httpx.Response(200, json={"name": name})
+        if path.startswith("/process/logs/"):
+            name = path.split("/")[3]
+            return httpx.Response(200, json={"logs": FLEET_LOGS.get(name, [])})
+        if path.startswith("/process/"):
+            row = FLEET_PROCESSES.get(path.split("/")[2])
+            return httpx.Response(200 if row else 404, json=row or {})
+        return httpx.Response(404, json={})
+    name = _fleet_port_map().get(int(port or 0), "")
+    if path == "/openapi.json":
+        if name == "conductor":
+            return httpx.Response(200, json=_CONDUCTOR_SPEC)
+        spec = REPO / "services" / name / "openapi.json"
+        if name and spec.exists():
+            return httpx.Response(200, json=json.loads(spec.read_text()))
+        return httpx.Response(404, json={})
+    if path in ("/health", "/api/health"):
+        if name == "conductor":
+            return httpx.Response(200, json={"ok": True, "service": "conductor"})
+        svc = FLEET_SERVICES.get(name)
+        # The service's OWN health function, called in-process. Driving its
+        # TestClient from inside a handler the conductor's TestClient is already
+        # driving would be two nested portals on one call stack, and a deadlock is
+        # not a fixture.
+        return httpx.Response(200, json=svc.health()) if svc \
+            else httpx.Response(404, json={})
+    return httpx.Response(404, json={})
+
+
+_fleet._TRANSPORT = httpx.MockTransport(_fleet_answer)
+reset_fleet()
+
+
 # The usage service reads the owner's dials through the conductor's
 # GET /internal/tuning. Here that hop is answered IN-PROCESS by the conductor's
 # own tuning module: the service still runs its real client code — request,
@@ -493,6 +606,11 @@ def fresh_db():
     watch_service.helpers.db().commit()
     from app import bus
     bus._loop = None          # don't inherit a closed loop from a prior TestClient
+    # ...and the fleet: every process up and ready, no recorded start/stop calls,
+    # and both of fleet.py's caches dropped. The state sweep is cached ~3s by
+    # design, and a drill that stops a process must not be answered from the
+    # previous drill's snapshot of it running.
+    reset_fleet()
     yield db
 
 
