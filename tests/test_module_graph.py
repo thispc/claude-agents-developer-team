@@ -372,9 +372,9 @@ def test_a_failing_result_writes_only_the_test_rows(fresh_db):
     tables = [r["name"] for r in db._rows(
         "SELECT name FROM sqlite_master WHERE type='table' AND name != 'graph_node_tests'")]
     snap = {t: db._rows(f"SELECT * FROM {t}") for t in tables}
-    changed = modgraph.update_test_result(pid, "tests/test_knowledge.py", "failing", "1 failed — boom")
+    changed = modgraph.update_test_result(pid, "tests/test_knowledge_service.py", "failing", "1 failed — boom")
     assert changed >= 1
-    rows = [t for t in modgraph.tests(pid) if t["path"] == "tests/test_knowledge.py"]
+    rows = [t for t in modgraph.tests(pid) if t["path"] == "tests/test_knowledge_service.py"]
     assert rows and all(t["status"] == "failing" for t in rows)
     for t in tables:
         assert db._rows(f"SELECT * FROM {t}") == snap[t], f"advisory result wrote to {t}"
@@ -414,7 +414,7 @@ def test_verify_runs_the_affected_files_and_leaves_a_trace(root_client, monkeypa
     assert r.status_code == 200, r.text
     out = r.json()
     assert out["ok"] is True and out["node"] == "knowledge"
-    assert "tests/test_knowledge.py" in out["files"]
+    assert "tests/test_knowledge_service.py" in out["files"]
 
     # one bounded pytest run, handed exactly the affected files
     assert len(calls) == 1
@@ -441,13 +441,13 @@ def test_verify_names_the_failing_file_and_stays_advisory(root_client, monkeypat
     calls = []
     monkeypatch.setattr(shell, "sh", _fake_sh(
         calls, returncode=1,
-        stdout="FAILED tests/test_knowledge.py::test_x - boom\n1 failed, 8 passed in 0.3s\n"))
+        stdout="FAILED tests/test_knowledge_service.py::test_x - boom\n1 failed, 8 passed in 0.3s\n"))
     r = root_client.post("/api/graph/self/verify", json={"node": "knowledge"})
     assert r.status_code == 200, r.text
     out = r.json()
     assert out["ok"] is False
-    assert out["statuses"]["tests/test_knowledge.py"] == "failing"
-    others = [f for f in out["files"] if f != "tests/test_knowledge.py"]
+    assert out["statuses"]["tests/test_knowledge_service.py"] == "failing"
+    others = [f for f in out["files"] if f != "tests/test_knowledge_service.py"]
     assert others and all(out["statuses"][f] == "passing" for f in others), \
         "a named culprit must not smear the rest of the affected set"
     plan = modgraph.active_plan(0)
@@ -503,7 +503,7 @@ def test_the_payload_carries_parents_and_rolls_groups_up(root_client, monkeypatc
         "brief": "conductor/app/knowledge.py drops rows on decay",
         "factor": "correctness"}]}})
     plan = modgraph.active_plan(0)
-    modgraph.update_test_result(plan["id"], "tests/test_knowledge.py", "failing", "boom")
+    modgraph.update_test_result(plan["id"], "tests/test_knowledge_service.py", "failing", "boom")
 
     r = root_client.get("/api/graph/self")
     assert r.status_code == 200, r.text

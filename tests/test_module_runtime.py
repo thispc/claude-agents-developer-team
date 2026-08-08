@@ -103,7 +103,7 @@ def test_a_dead_beat_turns_the_node_and_its_layer_red(root_client, monkeypatch):
 
 def test_a_red_suite_on_a_live_beat_is_yellow(root_client):
     plan = modgraph.active_plan(0)
-    modgraph.update_test_result(plan["id"], "tests/test_knowledge.py", "failing", "boom")
+    modgraph.update_test_result(plan["id"], "tests/test_knowledge_service.py", "failing", "boom")
     by, _ = _nodes(root_client)
     assert by["knowledge"]["health"] == {"beat": "ok", "tests": "fail", "status": "yellow"}
     assert by["data"]["health"]["status"] == "yellow"

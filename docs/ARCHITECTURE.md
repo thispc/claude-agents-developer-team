@@ -66,11 +66,14 @@ current shape until the Atlas's cards become those services (P6).
 `services/knowledge` owns `data/knowledge.db` and answers `/recall`, `/remember`,
 `/reinforce`, `/forget`, `/stats`, `/tokens` behind `X-Service-Token`. The embedding key
 rides each request body — model credentials never leave the conductor.
-`conductor/app/knowledge.py` keeps every public name it always had and is now a client:
-`KNOWLEDGE_URL` set → HTTP (2s timeout, ~5ms p50 budget), unset → the pre-P1 in-process
-body (`_knowledge_legacy.py`, deleted at cutover). When the service is down the shim
-degrades rather than blocking: recall `[]`, writes no-op, stats `degraded: true` — a
-knowledge base that is unreachable must cost a sprint nothing but its memory.
+`conductor/app/knowledge.py` keeps every public name it always had and is now a pure
+client (2s timeout, ~5ms p50 budget); there is no in-process fallback, so `KNOWLEDGE_URL`
+is required and `init()` refuses to boot without it, naming `run-local.sh`. Both boot
+paths supply it: the fleet through `data/env/conductor.env`, `--legacy` by starting the
+service as a child itself. When the service is down the client degrades rather than
+blocking: recall `[]`, writes no-op, stats `degraded: true`, and the module graph's
+knowledge card goes red through that same door — a knowledge base that is unreachable
+must cost a sprint nothing but its memory.
 
 ---
 

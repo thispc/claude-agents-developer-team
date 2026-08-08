@@ -12,13 +12,20 @@
 # readiness probes, restarts, and its REST API token-authed on the fleet_api port
 # (8899 — see services.yaml; token in data/tokens/fleet-api.token).
 #
-# --legacy is the FALLBACK for a machine where the fleet tooling misbehaves: one
-# uvicorn, no generator, no process-compose — exactly the pre-fleet behaviour.
-# Both paths serve http://127.0.0.1:$PORT. Because it sources no data/env/*.env,
-# KNOWLEDGE_URL stays unset and the conductor uses the pre-P1 in-process knowledge
-# body (conductor/app/_knowledge_legacy.py, and devteam.db's own table) — which is
-# what makes this path work with no services running at all. That fallback body
-# disappears at the P1 cutover, and this flag is re-scoped with it.
+# --legacy is the FALLBACK for a machine where process-compose misbehaves, and the
+# P1 cutover RE-SCOPED it: it now means "the conductor outside process-compose,
+# the fleet's services still required". It cannot mean "no services", because the
+# knowledge store IS a service since P1 — the in-process fallback is deleted, and
+# a conductor without KNOWLEDGE_URL refuses to boot rather than run with no memory.
+#
+# So this path still runs tools/gen_fleet.py (pure Python — no vendored binaries,
+# which is the tooling that was misbehaving) for env and tokens, then starts the
+# knowledge service ITSELF as a child, waits for its /health, exports the URL, and
+# execs the conductor in the foreground. A knowledge service already listening on
+# the port (a half-running fleet, a second terminal) is REUSED, never duplicated.
+# The child shares this terminal's process group, so Ctrl-C stops both; a plain
+# SIGTERM to the conductor alone can leave it, which the reuse check then absorbs
+# on the next boot. Both paths serve http://127.0.0.1:$PORT.
 #
 # Data lives in ./devteam.db (the repo root) and persists across restarts.
 # Live mode (agents genuinely think) uses, in order: your Settings-page key, the
@@ -40,8 +47,30 @@ if [[ ! -x .venv/bin/uvicorn ]]; then
 fi
 
 if [[ "${1:-}" == "--legacy" || "${RUN_LEGACY:-}" == "1" ]]; then
-  echo "devteam conductor (legacy single-process) → http://127.0.0.1:${PORT}   (login: ${ROOT_USERNAME:-root} / ${ROOT_PASSWORD:-devteam})"
-  echo "data: $(pwd)/devteam.db · stop with Ctrl-C"
+  # The registry still generates env + tokens; only process-compose is skipped.
+  .venv/bin/python tools/gen_fleet.py >/dev/null
+  KNOWLEDGE_PORT="$(.venv/bin/python -c "import json; print(json.load(open('data/fleet_topology.json'))['services']['knowledge']['port'])")"
+  KURL="http://127.0.0.1:${KNOWLEDGE_PORT}"
+  if curl -fsS --max-time 2 "${KURL}/health" >/dev/null 2>&1; then
+    echo "knowledge: already up on ${KNOWLEDGE_PORT} — reusing it"
+  else
+    echo "knowledge: starting as a child on ${KNOWLEDGE_PORT} (no process-compose in legacy mode)"
+    ( set -a; . data/env/knowledge.env; set +a
+      exec .venv/bin/uvicorn app:app --app-dir services/knowledge \
+           --host 127.0.0.1 --port "${KNOWLEDGE_PORT}" ) &
+    for _ in $(seq 1 40); do
+      curl -fsS --max-time 2 "${KURL}/health" >/dev/null 2>&1 && break
+      sleep 0.25
+    done
+    if ! curl -fsS --max-time 2 "${KURL}/health" >/dev/null 2>&1; then
+      echo "knowledge did not come up on ${KNOWLEDGE_PORT} — the conductor has no store to recall from." >&2
+      echo "check services/knowledge and data/env/knowledge.env, or run the full fleet: ./run-local.sh" >&2
+      exit 1
+    fi
+  fi
+  export KNOWLEDGE_URL="${KURL}"
+  echo "devteam conductor (legacy: outside process-compose) → http://127.0.0.1:${PORT}   (login: ${ROOT_USERNAME:-root} / ${ROOT_PASSWORD:-devteam})"
+  echo "data: $(pwd)/devteam.db · knowledge: $(pwd)/data/knowledge.db · stop with Ctrl-C"
   exec .venv/bin/uvicorn app.main:app --app-dir conductor --host 127.0.0.1 --port "${PORT}"
 fi
 

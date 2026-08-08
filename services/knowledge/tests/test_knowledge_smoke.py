@@ -67,6 +67,63 @@ def test_remember_recall_roundtrip_and_every_hit_explains_itself(clean_store):
                                    "held_up", "matched"}
 
 
+# --- retrieval quality (ported from the conductor's pre-extraction suite) -----
+#
+# Retrieval is the whole product claim: an agent that gets better with experience
+# is one that can FIND its experience. These test recall QUALITY on paraphrases,
+# not just plumbing — they moved here with the body they describe.
+
+def _seed(client_):
+    for body in (
+        {"owner": "a1", "cue": "the build failed with ImportError: no module named app",
+         "says": "an ImportError here means the venv symlink, not the code",
+         "sig": "error:ImportError", "good": 2},
+        {"owner": "a1", "cue": "HTTP 505 from the billing host on staging",
+         "says": "a 505 there is the staging env, not the API", "sig": "http:505", "good": 3},
+        {"owner": "a1", "cue": "the worker timed out connecting to 127.0.0.1:8787",
+         "says": "a connection timeout locally means the server is not up yet", "good": 1},
+        {"owner": "a1", "cue": "the venv symlink was missing from the new worktree",
+         "says": "symlink .venv into every worktree or nothing imports", "good": 2},
+    ):
+        assert client_.post("/remember", json=body, headers=TOKEN).status_code == 200
+
+
+def _hits(query: str, k: int = 5) -> list:
+    return client.post("/recall", json={"owner": "a1", "query": query, "k": k},
+                       headers=TOKEN).json()["hits"]
+
+
+def test_the_cue_is_the_situation_not_the_lesson(clean_store):
+    """Embedding the lesson is the classic mistake: you then retrieve by
+    similarity to ANSWERS, and an agent that already knew the answer would not
+    be asking."""
+    _seed(client)
+    hits = _hits("venv symlink missing", k=1)
+    assert hits and "symlink .venv into every worktree" in hits[0]["says"]
+    # asking with the words of the LESSON must not be the only way to find it
+    assert _hits("fresh worktree cannot import app", k=2), \
+        "a situation described in its own words found nothing"
+
+
+def test_it_finds_a_situation_described_differently(clean_store):
+    _seed(client)
+    hits = _hits("nothing responds on localhost port 8787", k=1)
+    assert hits and "server is not up" in hits[0]["says"]
+    assert "8787" in hits[0]["why"]["matched"], "it should say which rare term earned it"
+
+
+def test_relevance_decides_and_a_good_record_only_breaks_ties(clean_store):
+    """Adding a track record and a recency bonus as TERMS let a lesson that has
+    always worked outrank one that is actually about the question — every row
+    scored the same and the ordering was noise."""
+    _seed(client)
+    hits = _hits("we got a 505 talking to billing", k=3)
+    assert hits[0]["sig"] == "http:505"
+    assert hits[0]["why"]["relevance"] > 0.2
+    # a prior can only be a multiplier near 1, so it can never carry an irrelevant row
+    assert all(h["why"]["relevance"] >= svc.FLOOR for h in hits)
+
+
 def test_recall_stays_silent_on_something_it_knows_nothing_about(clean_store):
     client.post("/remember", json={"owner": "a1", "cue": "HTTP 505 from the billing host",
                                    "says": "a 505 there is the staging env"}, headers=TOKEN)
@@ -142,8 +199,12 @@ def test_the_tokenizer_is_contract_now(clean_store):
     endpoint now, and the exact behaviours the conductor suite pinned still hold."""
     r = client.post("/tokens", json={"text": "the build is on the host"}, headers=TOKEN)
     assert r.json()["tokens"] == ["build", "host"]
+    # Single digits and two-digit numbers are the debris of tokenising an IP or a
+    # version; 127 and 8787 are as rare and as identifying as 505, so they stay.
     assert client.post("/tokens", json={"text": "127.0.0.1:8787"},
                        headers=TOKEN).json()["tokens"] == ["127", "8787"]
+    assert client.post("/tokens", json={"text": "v1.2 of the app"},
+                       headers=TOKEN).json()["tokens"] == ["v1", "app"]
 
 
 def test_a_vector_is_never_compared_across_backends():

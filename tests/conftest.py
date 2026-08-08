@@ -44,15 +44,91 @@ for _k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GEMINI_API_KEY",
            "BRANCH_PREFIX", "ALLOW_MERGE", "DEVTEAM_ENV", "SELF_REPO",
            "PROTECTED_REPOS",
            "GITHUB_REPO", "REQUIRE_STAGING", "CUSTOM_MODEL_ENDPOINTS",
-           # A shell that sourced data/env/conductor.env (a fleet operator's)
-           # would flip the knowledge shim into URL mode and make the offline
-           # suite depend on a running service. The suite's baseline is the
-           # in-process fallback; URL mode is tested explicitly in
-           # tests/test_knowledge_service.py against an in-process ASGI app.
+           # Pinned below to a MOUNTED service, never to whatever a shell that
+           # sourced data/env/conductor.env happens to point at — the suite must
+           # not reach a real 8881 (or fail because nothing is listening there).
            "KNOWLEDGE_URL"):
     os.environ.pop(_k, None)
 
+# --- the knowledge service, mounted in-process --------------------------------
+#
+# Since the P1 cutover the conductor has no in-process knowledge store: recall
+# and remember are HTTP calls to services/knowledge. So the suite MOUNTS that
+# service — the real app, its own temp database — and points the shim's httpx
+# transport at it. No sockets, no fleet, nothing to start: the offline invariant
+# holds, and every conductor test that recalls or remembers exercises the real
+# client path against the real store instead of a mock that can drift from it.
+#
+# The service is loaded under unique module names because the conductor's own
+# `app` package owns that name, and its env is saved/restored around the load so
+# neither harness inherits the other's DB_PATH.
+
+KNOWLEDGE_TEST_TOKEN = "conductor-suite-knowledge-token"
+_KNOWLEDGE_URL = "http://knowledge.test"
+os.environ["KNOWLEDGE_URL"] = _KNOWLEDGE_URL
+
+
+def _load_module(name: str, path: Path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _mount_knowledge_service():
+    service_dir = REPO / "services" / "knowledge"
+    saved = {k: os.environ.get(k)
+             for k in ("DB_PATH", "SERVICE_TOKEN", "SERVICE_NAME", "LEGACY_DB_PATH")}
+    os.environ["DB_PATH"] = str(Path(_TMP) / "knowledge-service.db")
+    os.environ["SERVICE_TOKEN"] = KNOWLEDGE_TEST_TOKEN
+    os.environ["SERVICE_NAME"] = "knowledge"
+    # no legacy db to copy from: the first-boot backfill is the service's own
+    # test's subject, not a side effect every conductor test pays for
+    os.environ["LEGACY_DB_PATH"] = str(Path(_TMP) / "absent-legacy.db")
+    prior_helpers = sys.modules.pop("helpers", None)
+    # app.py puts its own directory FIRST on sys.path so `uvicorn app:app` works
+    # from any cwd. Left there, `from app import auth` in this very file would
+    # resolve to the SERVICE's app.py instead of the conductor package — so the
+    # path is restored the moment the load is done.
+    prior_path = list(sys.path)
+    try:
+        helpers = _load_module("knowledge_svc_helpers", service_dir / "helpers.py")
+        sys.modules["helpers"] = helpers        # app.py's own `import helpers`
+        return _load_module("knowledge_svc_app", service_dir / "app.py")
+    finally:
+        sys.path[:] = prior_path
+        sys.modules.pop("helpers", None)
+        if prior_helpers is not None:
+            sys.modules["helpers"] = prior_helpers
+        for _k, _v in saved.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
+
+
+knowledge_service = _mount_knowledge_service()
+
 from app import auth, db  # noqa: E402
+from app import knowledge as _knowledge  # noqa: E402
+
+import httpx  # noqa: E402
+from starlette.testclient import TestClient as _TestClient  # noqa: E402
+
+
+def _knowledge_sync_client():
+    """A fresh client per call, matching the shim's own client-per-call shape —
+    one shared instance would be closed by the first `with` block."""
+    c = _TestClient(knowledge_service.app, base_url=_KNOWLEDGE_URL)
+    c.headers["X-Service-Token"] = KNOWLEDGE_TEST_TOKEN
+    return c
+
+
+_knowledge._TRANSPORT = httpx.ASGITransport(app=knowledge_service.app)
+_knowledge._TOKEN = KNOWLEDGE_TEST_TOKEN
+_knowledge._sync_client = _knowledge_sync_client
 
 
 @pytest.fixture()
@@ -71,7 +147,11 @@ def fresh_db():
     auth.init()
     from app import findings, knowledge
     findings.init()
-    knowledge.init()          # its own schema, like findings — the tests need it too
+    knowledge.init()          # no schema of its own any more: it drops the legacy table
+    # The mounted service outlives any one test's database, so empty its store
+    # here too — a test that recalls must see only what it remembered.
+    knowledge_service.helpers.db().execute("DELETE FROM knowledge")
+    knowledge_service.helpers.db().commit()
     from app import bus
     bus._loop = None          # don't inherit a closed loop from a prior TestClient
     yield db

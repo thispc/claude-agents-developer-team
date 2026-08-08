@@ -1,63 +1,25 @@
-"""P1 drills: the knowledge shim in URL mode, its degraded shapes, and the fallback.
+"""The knowledge client: the conductor's side of the P1 extraction.
 
-The service app is mounted IN-PROCESS (httpx.ASGITransport / starlette TestClient
-over ASGI) — no sockets, offline like everything else here. The suite's baseline
-env has KNOWLEDGE_URL unset (conftest pops it), so the fallback swap is the
-default world; URL mode is entered per-test by re-importing app.knowledge with
-the env set, and always restored.
+The store is a service now and this file tests the DOOR to it — the shim in
+conductor/app/knowledge.py. The service itself is mounted in-process by
+tests/conftest.py (real app, temp database, httpx ASGI transport), so these
+exercise the real client path against the real store: no sockets, no fleet, no
+mock that can drift from the thing it stands for.
+
+What the store DOES with what it is given lives in services/knowledge/tests.
 """
 
-import importlib
-import importlib.util
 import json
-import os
+import re
 import sys
-import tempfile
 from pathlib import Path
 
 import httpx
 import pytest
-from starlette.testclient import TestClient
+
+from conftest import KNOWLEDGE_TEST_TOKEN, knowledge_service
 
 REPO = Path(__file__).resolve().parent.parent
-SERVICE_DIR = REPO / "services" / "knowledge"
-SVC_TOKEN = "drill-service-token"
-
-# --- load the service app under drill-unique names ---------------------------
-# (services/knowledge/tests loads its own instance under other names with its
-# own temp db; two harnesses must never share a latched environment)
-
-_TMP = tempfile.mkdtemp(prefix="knowledge-drill-")
-
-
-def _load(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_ENV = {k: os.environ.get(k)
-        for k in ("DB_PATH", "SERVICE_TOKEN", "SERVICE_NAME", "LEGACY_DB_PATH")}
-os.environ["DB_PATH"] = str(Path(_TMP) / "knowledge-drill.db")
-os.environ["SERVICE_TOKEN"] = SVC_TOKEN
-os.environ["SERVICE_NAME"] = "knowledge"
-os.environ["LEGACY_DB_PATH"] = str(Path(_TMP) / "absent.db")
-_SAVED_HELPERS = sys.modules.pop("helpers", None)
-try:
-    _helpers = _load("knowledge_drill_helpers", SERVICE_DIR / "helpers.py")
-    sys.modules["helpers"] = _helpers
-    svc = _load("knowledge_drill_app", SERVICE_DIR / "app.py")
-finally:
-    sys.modules.pop("helpers", None)
-    if _SAVED_HELPERS is not None:
-        sys.modules["helpers"] = _SAVED_HELPERS
-    for _k, _v in _ENV.items():
-        if _v is None:
-            os.environ.pop(_k, None)
-        else:
-            os.environ[_k] = _v
 
 
 class _DeadTransport(httpx.BaseTransport, httpx.AsyncBaseTransport):
@@ -70,54 +32,26 @@ class _DeadTransport(httpx.BaseTransport, httpx.AsyncBaseTransport):
         raise httpx.ConnectError("connection refused (drill)")
 
 
-def _reimport_knowledge():
-    """Re-execute conductor/app/knowledge.py so it re-reads KNOWLEDGE_URL.
-    The module swaps itself for the legacy body when the URL is unset, so a
-    plain importlib.reload would reload the wrong module."""
-    sys.modules.pop("app.knowledge", None)
-    return importlib.import_module("app.knowledge")
-
-
-def _live_sync_client():
-    """A fresh TestClient per call, matching the shim's client-per-call shape —
-    a single instance would be closed by the first `with` and unusable after."""
-    t = TestClient(svc.app, base_url="http://knowledge.drill")
-    t.headers["X-Service-Token"] = SVC_TOKEN
-    return t
-
-
 @pytest.fixture()
-def shim(fresh_db, monkeypatch):
-    """The conductor shim in URL mode, wired to the in-process service app."""
-    monkeypatch.setenv("KNOWLEDGE_URL", "http://knowledge.drill")
-    mod = _reimport_knowledge()
-    assert mod.__name__ == "app.knowledge" and not hasattr(mod, "embed")
-    monkeypatch.setattr(mod, "_TRANSPORT", httpx.ASGITransport(app=svc.app))
-    monkeypatch.setattr(mod, "_TOKEN", SVC_TOKEN)
-    monkeypatch.setattr(mod, "_sync_client", _live_sync_client)
-    svc.helpers.db().execute("DELETE FROM knowledge")
-    svc.helpers.db().commit()
-    yield mod
-    monkeypatch.delenv("KNOWLEDGE_URL", raising=False)
-    restored = _reimport_knowledge()
-    assert hasattr(restored, "embed"), "the fallback swap did not come back"
+def shim(fresh_db):
+    """The conductor's knowledge door, wired by conftest to the mounted service
+    and emptied by fresh_db."""
+    from app import knowledge
+    return knowledge
 
 
 @pytest.fixture()
 def dead_shim(fresh_db, monkeypatch):
-    """URL mode with the service unreachable — the degraded world."""
-    monkeypatch.setenv("KNOWLEDGE_URL", "http://knowledge.drill")
-    mod = _reimport_knowledge()
-    monkeypatch.setattr(mod, "_TRANSPORT", _DeadTransport())
-    monkeypatch.setattr(mod, "_sync_client",
-                        lambda: httpx.Client(base_url="http://knowledge.drill",
+    """The same door with the service unreachable — the degraded world."""
+    from app import knowledge
+    monkeypatch.setattr(knowledge, "_TRANSPORT", _DeadTransport())
+    monkeypatch.setattr(knowledge, "_sync_client",
+                        lambda: httpx.Client(base_url="http://knowledge.test",
                                              transport=_DeadTransport()))
-    yield mod
-    monkeypatch.delenv("KNOWLEDGE_URL", raising=False)
-    _reimport_knowledge()
+    return knowledge
 
 
-# --- URL mode: the shim against the real service, in-process -----------------
+# --- the client against the real service -------------------------------------
 
 async def test_the_shim_round_trips_remember_and_recall(shim):
     rid = await shim.remember("a1", "the build failed with ImportError: no module named app",
@@ -143,47 +77,93 @@ async def test_the_shim_speaks_the_whole_verb_surface(shim):
     assert shim.stats("a1")["total"] == 0
 
 
-async def test_the_shim_clamps_k_like_the_legacy_body_did(shim):
+async def test_the_shim_clamps_k_like_the_in_process_body_did(shim):
+    """The service's contract bounds k to 1..25. Callers kept their old habits,
+    so the clamp lives here — an out-of-range k must not become a 422 that reads
+    like an outage and silently empties a briefing."""
     await shim.remember("a1", "one situation", "one lesson")
-    # the service contract bounds k to 1..25; the shim owes callers the old
-    # clamping semantics, not a fresh 422 → degraded-[] surprise
     assert await shim.recall("a1", "one situation", k=0) != []
     assert await shim.recall("a1", "one situation", k=999) != []
 
 
-async def test_url_mode_init_renames_the_conductor_table_aside(shim):
+async def test_an_empty_query_never_reaches_the_wire(shim, monkeypatch):
+    def _boom():
+        raise AssertionError("an empty query must not cost a round-trip")
+    monkeypatch.setattr(shim, "_client", _boom)
+    assert await shim.recall("a1", "   ") == []
+
+
+async def test_the_settings_ride_the_call_so_no_key_lives_in_the_service(shim):
+    """The embedding key is per-request data, never service env — the conductor
+    stays the only holder of model credentials."""
+    import inspect
+    src = inspect.getsource(shim.remember) + inspect.getsource(shim.recall)
+    assert '"settings": settings or {}' in src
+    svc_env = (REPO / "services" / "knowledge" / "app.py").read_text()
+    assert "OPENAI_API_KEY" not in svc_env and "ANTHROPIC_API_KEY" not in svc_env
+
+
+# --- the cutover: no fallback left, and the legacy table goes ----------------
+
+def test_without_the_url_init_refuses_and_says_where_to_look(fresh_db, monkeypatch):
+    """There is no in-process store any more, so a conductor with no service
+    configured must fail at the door — loudly, naming the boot script — instead
+    of running with a memory that silently answers nothing."""
+    from app import knowledge
+    monkeypatch.setattr(knowledge, "_URL", "")
+    with pytest.raises(RuntimeError) as e:
+        knowledge.init()
+    msg = str(e.value)
+    assert "KNOWLEDGE_URL" in msg and "run-local.sh" in msg
+    assert "services.yaml" in msg
+
+
+async def test_the_verbs_still_degrade_when_the_url_is_missing(fresh_db, monkeypatch):
+    """init() is the loud door; the verbs stay soft. A door that also killed
+    every later call would turn one misconfigured process into a crash loop."""
+    from app import knowledge
+    monkeypatch.setattr(knowledge, "_URL", "")
+    monkeypatch.setattr(knowledge, "_TRANSPORT", None)
+    monkeypatch.setattr(knowledge, "_sync_client",
+                        lambda: httpx.Client(base_url="", transport=_DeadTransport()))
+    assert await knowledge.recall("a1", "anything") == []
+    assert await knowledge.remember("a1", "cue", "says") == 0
+    assert knowledge.stats()["degraded"] is True
+
+
+def test_init_drops_the_stranglers_leftover_table(fresh_db):
+    """knowledge_legacy was commit A's holding pen: renamed aside so the service
+    could copy the rows out and so a rollback could find them. With the fallback
+    deleted it is only a staler copy of data another process owns."""
+    from app import db, knowledge
+    db._execute("CREATE TABLE IF NOT EXISTS knowledge_legacy (id INTEGER PRIMARY KEY)")
+    assert db._rows("SELECT name FROM sqlite_master WHERE name='knowledge_legacy'")
+    knowledge.init()
+    assert not db._rows("SELECT name FROM sqlite_master WHERE name='knowledge_legacy'")
+    knowledge.init()          # and a box that never had one boots fine
+
+
+def test_the_conductor_declares_no_knowledge_table_at_all(fresh_db):
+    """The honest end of the accounting: after init the conductor's database has
+    neither the old table nor the holding pen — the service owns that data."""
     from app import db
     names = {r["name"] for r in db._rows(
         "SELECT name FROM sqlite_master WHERE type='table'"
         " AND name IN ('knowledge','knowledge_legacy')")}
-    assert names == {"knowledge"}, "fresh_db pre-creates the legacy table"
-    shim.init()
-    names = {r["name"] for r in db._rows(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-        " AND name IN ('knowledge','knowledge_legacy')")}
-    assert names == {"knowledge_legacy"}, "URL-mode init must rename, not drop"
-    shim.init()                                        # idempotent on a second boot
-    assert {r["name"] for r in db._rows(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-        " AND name IN ('knowledge','knowledge_legacy')")} == {"knowledge_legacy"}
+    assert names == set()
 
 
-async def test_rolling_back_to_fallback_mode_renames_it_home(shim, monkeypatch):
-    from app import db
-    db._execute("INSERT INTO knowledge (owner, kind, sig, cue, says, backend, dim,"
-                " vec, ts) VALUES ('a1','belief','','old cue','old lesson',"
-                " 'hash-256', 256, x'00', 1.0)")
-    shim.init()                                        # → knowledge_legacy
-    monkeypatch.delenv("KNOWLEDGE_URL", raising=False)
-    legacy = _reimport_knowledge()
-    assert hasattr(legacy, "embed")
-    legacy.init()                                      # rollback: rename back + schema
-    rows = db._rows("SELECT says FROM knowledge WHERE owner='a1'")
-    assert rows and rows[0]["says"] == "old lesson", \
-        "unsetting the URL must return the old rows, not an empty store"
+def test_nothing_imports_the_deleted_fallback():
+    """The file is gone; what matters is that no code still reaches for it.
+    (The shim's docstring names it as history — a comment cannot import.)"""
+    assert not (REPO / "conductor" / "app" / "_knowledge_legacy.py").exists()
+    importers = [str(p) for p in (REPO / "conductor").rglob("*.py")
+                 if re.search(r"^\s*(from|import).*_knowledge_legacy", p.read_text(),
+                              re.M)]
+    assert importers == []
 
 
-# --- URL mode, service down: the degraded shapes -----------------------------
+# --- the service down: the degraded shapes ------------------------------------
 
 async def test_degraded_recall_is_empty_and_never_raises(dead_shim):
     assert await dead_shim.recall("a1", "anything at all") == []
@@ -196,8 +176,7 @@ async def test_degraded_writes_are_noops_that_say_zero(dead_shim):
 
 
 async def test_degraded_stats_says_so_instead_of_lying_zeros(dead_shim):
-    st = dead_shim.stats()
-    assert st == {"total": 0, "rows": [], "backends": [], "degraded": True}
+    assert dead_shim.stats() == {"total": 0, "rows": [], "backends": [], "degraded": True}
 
 
 async def test_degraded_tokens_are_empty_with_a_log_not_a_crash(dead_shim):
@@ -217,86 +196,92 @@ async def test_a_sprint_shaped_flow_survives_the_outage(dead_shim):
     """The plan's drill in miniature: the calls a sprint makes around the store —
     recall for the briefing, remember for the outcome — all land in degraded
     shapes; nothing raises, nothing blocks."""
-    briefing_hits = await dead_shim.recall("lw:1:2", "the task cue", k=3)
-    assert briefing_hits == []
+    assert await dead_shim.recall("lw:1:2", "the task cue", k=3) == []
     assert await dead_shim.remember("lw:1:2", "the task cue", "how it went",
                                     sig="task:x", good=1) == 0
     assert dead_shim.stats().get("degraded") is True
 
 
-# --- recovery: the same shim reaches a healthy service again -----------------
+async def test_the_outage_is_logged_once_per_window_not_once_per_call(dead_shim):
+    """A loop that recalls every tick would otherwise write the same warn 180
+    times an hour, and the record is unreadable exactly when someone needs it.
+    One row that counts itself up is the shape that stays readable."""
+    from app import logs
+    logs._LAST.clear()        # a process-level memo; fresh_db wiped the ring it points into
+    for _ in range(5):
+        await dead_shim.recall("a1", "the same situation as before")
+    recalls = [r for r in logs.recent(event="knowledge_degraded", limit=50)
+               if r.get("verb") == "recall"]
+    assert len(recalls) == 1, f"{len(recalls)} rows for five identical failures"
+    assert recalls[0].get("repeats") == 5, "the row must say how often it happened"
+    assert recalls[0]["level"] == "warn"
+
+
+# --- recovery -----------------------------------------------------------------
 
 async def test_recovery_after_the_outage_needs_no_restart(fresh_db, monkeypatch):
-    monkeypatch.setenv("KNOWLEDGE_URL", "http://knowledge.drill")
-    mod = _reimport_knowledge()
-    monkeypatch.setattr(mod, "_TOKEN", SVC_TOKEN)
-    monkeypatch.setattr(mod, "_TRANSPORT", _DeadTransport())
-    assert await mod.recall("a1", "anything") == []
-    # the service comes back (pc start): only the transport changes, no re-import
-    monkeypatch.setattr(mod, "_TRANSPORT", httpx.ASGITransport(app=svc.app))
-    svc.helpers.db().execute("DELETE FROM knowledge")
-    svc.helpers.db().commit()
-    assert await mod.remember("a1", "the port was taken", "pick another port") > 0
-    assert (await mod.recall("a1", "port already taken", k=1)) != []
-    monkeypatch.delenv("KNOWLEDGE_URL", raising=False)
-    _reimport_knowledge()
-
-
-# --- fallback mode: the default world stays byte-identical -------------------
-
-def test_without_the_url_the_module_is_the_legacy_body(fresh_db):
     from app import knowledge
-    assert knowledge.__name__ == "app._knowledge_legacy"
-    assert callable(knowledge.embed) and hasattr(knowledge, "SCHEMA")
-    # the introspection the old suite performs still lands on real source
-    import inspect
-    assert 'r["backend"] == backend' in inspect.getsource(knowledge.recall)
+    monkeypatch.setattr(knowledge, "_TRANSPORT", _DeadTransport())
+    assert await knowledge.recall("a1", "anything") == []
+    # the service comes back (pc start): only the transport changes, no re-import
+    monkeypatch.setattr(knowledge, "_TRANSPORT",
+                        httpx.ASGITransport(app=knowledge_service.app))
+    assert await knowledge.remember("a1", "the port was taken", "pick another port") > 0
+    assert (await knowledge.recall("a1", "port already taken", k=1)) != []
 
 
-# --- the Atlas probe: honest about which world it is in ----------------------
+# --- the Atlas probe: honest about the real process ---------------------------
 
-def test_the_module_probe_asks_the_real_service_in_url_mode(fresh_db, monkeypatch):
+def test_the_module_probe_asks_the_real_service(fresh_db):
     """The knowledge card's heartbeat used to be "a table exists here". With the
-    store extracted that claim would be a lie — in URL mode the beat is the
-    service's own /health, the same endpoint process-compose probes."""
+    store extracted that claim would be a lie — the beat is the service itself
+    answering /health, reached through the conductor's one knowledge door (the
+    suite's mounted service), never through a private URL of the probe's own."""
     from app import modgraph_health as mh
-    monkeypatch.setenv("KNOWLEDGE_URL", "http://knowledge.drill")
-
-    calls = []
-
-    def _fake_get(url, **kw):
-        calls.append(url)
-        return httpx.Response(200, json={"ok": True}, request=httpx.Request("GET", url))
-
-    monkeypatch.setattr(httpx, "get", _fake_get)
     assert mh._probe_knowledge() is True
-    assert calls == ["http://knowledge.drill/health"]
 
-    def _unhealthy(url, **kw):
-        return httpx.Response(200, json={"ok": False}, request=httpx.Request("GET", url))
 
-    monkeypatch.setattr(httpx, "get", _unhealthy)
-    assert mh._probe_knowledge() is False, "a service answering ok:false is not a beat"
-
-    def _dead(url, **kw):
-        raise httpx.ConnectError("refused")
-
-    monkeypatch.setattr(httpx, "get", _dead)
+def test_the_probe_goes_red_the_moment_the_service_does(fresh_db, monkeypatch):
+    """A probe that reported green while every recall failed would be worse than
+    no probe."""
+    from app import knowledge, modgraph_health as mh
+    monkeypatch.setattr(knowledge, "_sync_client",
+                        lambda: httpx.Client(base_url="http://knowledge.test",
+                                             transport=_DeadTransport()))
+    assert knowledge.health() is False
     assert mh._probe_knowledge() is False, "a raising probe is a failed beat, not a crash"
 
 
-def test_the_module_probe_falls_back_to_the_table_without_the_url(fresh_db):
-    """And in fallback mode it is the old claim, still true: the table is there
-    and the embedder is callable."""
-    from app import modgraph_health as mh
-    assert not os.environ.get("KNOWLEDGE_URL")
-    assert mh._probe_knowledge() is True
+def test_the_probe_is_red_when_the_service_answers_unhealthy(fresh_db, monkeypatch):
+    """ok:false — its database will not open — is a running process, not a
+    working store."""
+    from app import knowledge, modgraph_health as mh
+
+    def _unhealthy(request):
+        return httpx.Response(200, json={"ok": False, "checks": {"db": False}})
+
+    monkeypatch.setattr(knowledge, "_sync_client",
+                        lambda: httpx.Client(base_url="http://knowledge.test",
+                                             transport=httpx.MockTransport(_unhealthy)))
+    assert mh._probe_knowledge() is False
 
 
-def test_gen_fleet_wires_url_mode_and_the_gateway_by_construction(tmp_path):
-    """The wiring claim of commit A, proven against a temp root (never the real
-    data/): the conductor's env names the knowledge peer — so a fleet boot is in
-    URL mode by construction — and the topology registers knowledge for /svc."""
+def test_the_probe_is_red_without_a_url(fresh_db, monkeypatch):
+    """No service configured is not "healthy by default": the conductor cannot
+    recall anything in that state, and the card must say so."""
+    from app import knowledge, modgraph_health as mh
+    monkeypatch.setattr(knowledge, "_URL", "")
+    monkeypatch.setattr(knowledge, "_sync_client",
+                        lambda: httpx.Client(base_url="", transport=_DeadTransport()))
+    assert mh._probe_knowledge() is False
+
+
+# --- the wiring that makes URL mode the only mode -----------------------------
+
+def test_gen_fleet_wires_the_url_and_the_gateway_by_construction(tmp_path):
+    """Proven against a temp root (never the real data/): the conductor's env
+    names the knowledge peer — so every generated boot has KNOWLEDGE_URL — and
+    the topology registers knowledge for the /svc gateway."""
     import shutil
     sys.path.insert(0, str(REPO / "tools"))
     import gen_fleet
@@ -310,3 +295,23 @@ def test_gen_fleet_wires_url_mode_and_the_gateway_by_construction(tmp_path):
     topo = json.loads((tmp_path / "data/fleet_topology.json").read_text())
     k = topo["services"]["knowledge"]
     assert k["managed"] is True and k["port"] == 8881 and k["health"] == "/health"
+
+
+@pytest.mark.hostonly
+def test_both_boot_paths_export_the_url_before_starting_the_conductor():
+    """--legacy runs the conductor outside process-compose, but the store is a
+    service either way: the script must hand it the URL on BOTH paths, or the
+    legacy path boots into the RuntimeError above."""
+    script = (REPO / "run-local.sh").read_text()
+    conductor_exec = script.index("exec .venv/bin/uvicorn app.main:app")
+    export_at = script.find("export KNOWLEDGE_URL")
+    assert export_at >= 0, "run-local.sh never exports KNOWLEDGE_URL"
+    assert export_at < conductor_exec, \
+        "the legacy path execs the conductor without a knowledge URL"
+    # and it starts (or reuses) the service before claiming the URL is good
+    assert script.index("--app-dir services/knowledge") < export_at
+    assert "/health" in script[:export_at], "no readiness wait before the URL is exported"
+    # the fleet path gets the URL the other way: gen_fleet writes it into the env
+    # file process-compose sources, so the conductor process has it either way
+    assert "data/env/conductor.env" in (REPO / "tools" / "gen_fleet.py").read_text() \
+        or "data/env/" in script

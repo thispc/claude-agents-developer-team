@@ -193,7 +193,7 @@ def test_the_manager_authors_the_plan_once_and_identical_is_a_noop(fresh_db, mon
     # the test mapping is mechanical, not authored: knowledge tests land on the
     # LEAF `memory`; the group holds no rows of its own — it answers by rollup
     mapped = {t["path"] for t in modgraph.tests(pid, "memory")}
-    assert "tests/test_knowledge.py" in mapped
+    assert "tests/test_knowledge_service.py" in mapped
     assert modgraph.tests(pid, "core") == []
 
     # the reveal: one planned event per node in topo order, then the ready flare

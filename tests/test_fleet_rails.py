@@ -138,9 +138,12 @@ def test_run_local_exports_conductor_url_from_the_port_it_binds():
     r = subprocess.run(["zsh", "-c", f'PORT=8917; {lines[0]}; print -rn -- "$CONDUCTOR_URL"'],
                        capture_output=True, text=True, timeout=15)
     assert r.stdout == "http://127.0.0.1:8917", r.stdout
-    # and the export happens before EITHER exec, so both boot paths get it
+    # and the export happens before EITHER exec, so both boot paths get it.
+    # Named precisely: since P1's cutover the legacy path also execs a uvicorn for
+    # the knowledge service, and "the first uvicorn in the file" stopped meaning
+    # "the conductor".
     export_at = script.index("export CONDUCTOR_URL")
-    assert export_at < script.index("exec .venv/bin/uvicorn")
+    assert export_at < script.index("exec .venv/bin/uvicorn app.main:app")
     assert export_at < script.index("exec process-compose")
 
 

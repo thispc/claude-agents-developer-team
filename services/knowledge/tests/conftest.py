@@ -48,6 +48,10 @@ os.environ["SERVICE_TOKEN"] = TOKEN
 os.environ["SERVICE_NAME"] = "knowledge"
 os.environ["LEGACY_DB_PATH"] = str(Path(_TMP) / "absent-legacy.db")   # no first-boot copy
 _SAVED_HELPERS = sys.modules.pop("helpers", None)
+# app.py puts its own directory first on sys.path (so `uvicorn app:app` works from
+# any cwd); left there it would shadow the conductor's `app` package for whatever
+# runs next in a whole-repo pytest run.
+_SAVED_PATH = list(sys.path)
 try:
     helpers = _load("knowledge_service_helpers", SERVICE_DIR / "helpers.py")
     # app.py's own `import helpers` must find THIS configured instance, not a
@@ -55,6 +59,7 @@ try:
     sys.modules["helpers"] = helpers
     svc = _load("knowledge_service_app", SERVICE_DIR / "app.py")
 finally:
+    sys.path[:] = _SAVED_PATH
     sys.modules.pop("helpers", None)
     if _SAVED_HELPERS is not None:
         sys.modules["helpers"] = _SAVED_HELPERS

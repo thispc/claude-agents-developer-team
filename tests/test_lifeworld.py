@@ -1123,3 +1123,18 @@ def test_refine_offline_returns_the_text_unchanged(client):
     th = client.post(f"/api/lw/{wid}/room/{rid}/thread/connect", json={"a": a, "b": b}).json()["thread"]
     out = client.post(f"/api/lw/{wid}/room/{rid}/thread/{th['id']}/refine", json={"text": "let them debate"}).json()
     assert out["text"] == "let them debate"                                # no creds → no spend, unchanged
+
+
+def test_an_agent_consults_its_memory_before_thinking():
+    """The point of remembering is not having to think again — so the knowledge
+    lookup happens BEFORE the model call, not as a post-hoc annotation.
+
+    A source-level claim about ORDER inside perceive(), which is why it survived
+    the knowledge extraction intact: the store moved out to a service, but where
+    the substrate asks it is still the substrate's own business.
+    """
+    from app.lifeworld import human as hmod
+    src = Path(hmod.__file__).read_text()
+    body = src.split("async def perceive", 1)[1].split("async def _recall_similar", 1)[0]
+    assert "_recall_similar" in body and body.index("_recall_similar") < body.index("world.appraise")
+    assert '"via": "similar"' in src

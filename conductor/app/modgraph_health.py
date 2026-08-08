@@ -66,22 +66,13 @@ def _probe_db() -> bool:
 
 
 def _probe_knowledge() -> bool:
-    """The knowledge store. In URL mode (P1: KNOWLEDGE_URL set, the store is the
-    knowledge service) the honest beat is the REAL service answering its own
-    /health — the same endpoint process-compose probes. In legacy mode: the
-    in-process table exists and the embedder is callable."""
-    import os
-    url = (os.environ.get("KNOWLEDGE_URL") or "").strip().rstrip("/")
-    if url:
-        try:
-            import httpx
-            r = httpx.get(f"{url}/health", timeout=1.5)
-            return r.status_code == 200 and bool(r.json().get("ok"))
-        except Exception:
-            return False
+    """The knowledge store, which is a SERVICE since P1 — so the honest beat is
+    that service answering its own /health, the same endpoint process-compose
+    probes. Asked through the conductor's one knowledge door, never around it:
+    a probe with its own private idea of the URL is a probe that can report green
+    while every recall fails. No service = red, not "healthy by default"."""
     from . import knowledge
-    rows = db._rows("SELECT name FROM sqlite_master WHERE type='table' AND name='knowledge'")
-    return bool(rows) and callable(knowledge.embed)
+    return knowledge.health()
 
 
 def _probe_repair() -> bool:

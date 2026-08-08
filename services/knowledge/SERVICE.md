@@ -44,10 +44,13 @@ Schemathesis against the committed spec over ASGI.
 
 ## Degraded mode (every CLIENT documents this)
 
-The one caller is the conductor's shim, `conductor/app/knowledge.py`, latency
-budget and per-verb degraded shapes documented there: recall → `[]` with a
-deduped warning (a sprint never blocks), remember/reinforce/forget → no-op `0`,
-stats → `{"total": 0, "degraded": true}`, tokens → `[]` with a log line.
+The one caller is the conductor's client, `conductor/app/knowledge.py` — since the
+P1 cutover a pure client with no in-process fallback, so the conductor requires
+`KNOWLEDGE_URL` and refuses to boot without it. Latency budget and per-verb
+degraded shapes are documented there: recall → `[]` with a deduped warning (a
+sprint never blocks), remember/reinforce/forget → no-op `0`, stats →
+`{"total": 0, "degraded": true}`, tokens → `[]` with a log line, and `health()` →
+`false`, which is what turns the module graph's knowledge card red.
 
 ## UI
 
