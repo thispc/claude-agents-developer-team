@@ -91,8 +91,12 @@ def _kv_keys() -> list[tuple[str, str]]:
         "repair:backlog": "tasks banked by one scout+deliberation, drained over later sprints",
         "repair:lease": "which process drives the engine (pid + heartbeat)",
         "repair:last_error": "the last phase failure, shown on the screen",
-        "usage:ledger": "every model call on the box, tagged by source — the real meter",
-        "usage:backfilled": "one-shot guard for importing the crew's pre-meter history",
+        "usage:ledger": "the PRE-P2 meter blob. The usage SERVICE owns the meter now "
+                        "(data/usage.db, one `usage_rows` row per call); this key "
+                        "survives only as the service's first-boot copy source and as "
+                        "the rollback path, and commit B drops it",
+        "usage:backfilled": "one-shot guard for importing the crew's pre-meter history "
+                            "(repair:ledger) into the usage service",
     }
     dyn = {"repair:sprint:": "one record per sprint: scout digest, memo, tasks, retro"}
     rows = [(k, notes.get(k, "")) for k in sorted(keys) if not k.endswith("{")]
@@ -281,6 +285,11 @@ def build() -> str:
                sorted(_mod("app.logs").CATEGORIES.items())))
     add("")
     add("## State (all in kv — no new tables)")
+    add("")
+    add("The engine's own state is kv, and stays kv. The two `usage:` keys are the "
+        "exception on their way out: since P2 the shared quota meter is a separate "
+        "service with a real table (`services/usage`, `data/usage.db`), and what is "
+        "left here is the blob it copied from plus the guard on that copy.")
     add("")
     add(_table(["key", "holds"], _kv_keys()))
     add("")

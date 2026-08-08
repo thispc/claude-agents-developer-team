@@ -1,4 +1,4 @@
-"""The worker door and the live feed: /internal/* plus the websocket.
+"""The worker door, the FLEET doors, and the live feed: /internal/* plus the websocket.
 
 Workers are not users — they authenticate with a shared token, checked in
 constant time, and may only report on the task they were actually given,
@@ -6,15 +6,35 @@ because one leaked token must not let a caller forge outcomes for every
 (project, task) pair in the system. The websocket lives here for the same
 reason in reverse: the bus is global, so the feed filters every event down to
 what the connected user is allowed to see.
+
+Since P2 there are two more doors, and they belong to SERVICES rather than to
+workers — a different population with a different token each, so they get their
+own check rather than sharing the worker's:
+
+    POST /internal/bus      an extracted service putting an event on the bus
+    GET  /internal/tuning   an extracted service reading one of the owner's knobs
+
+Both exist to keep something single-owner. The events table has exactly one
+writer (bus.py) and must keep having one, so a service that wants to say
+something asks the conductor to say it — SERVICE_CONTRACT rule 5. The tuning
+knobs are the owner's, live-editable on the Settings screen, and a service
+running on its own private copy of them would quietly disagree with the screen
+that set them.
+
+Neither door is open to whoever holds any token. Each managed service's token
+identifies WHICH service is calling, and `services.yaml` says which doors — and,
+for tuning, which knobs — that service is allowed. A notifier has no business
+reading the crew's budget, and the meter has no business emitting events.
 """
 
 import hmac
 import json
+from pathlib import Path
 
 from fastapi import Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from .. import auth, bus, config, db, team, usage
+from .. import auth, bus, config, db, team, tuning, usage
 from .base import can_see, router
 
 
@@ -24,6 +44,17 @@ class WorkerEvent(BaseModel):
     source: str
     kind: str
     payload: str
+
+
+class ServiceEvent(BaseModel):
+    """What a service may put on the bus. `source` is advisory — the door
+    overrides it with the calling service's own name when it is blank, because an
+    event whose origin is whatever the caller typed is not evidence of anything."""
+    project_id: int = 0
+    task_id: int | None = None
+    source: str = ""
+    kind: str
+    payload: dict | str | None = None
 
 
 class WorkerReport(BaseModel):
@@ -56,6 +87,82 @@ def _owns_task(project_id: int, task_id: int) -> None:
     t = db.get_task(task_id)
     if not t or t["project_id"] != project_id:
         raise HTTPException(400, "task does not belong to that project")
+
+
+# --- the fleet doors: which service is calling, and may it use this one? ------
+
+def _service_caller(token: str | None, door: str) -> tuple[str, dict]:
+    """Identify the calling service by its own token, and check the allowlist.
+
+    Two separate questions, deliberately. WHO is answered by the token — each
+    managed service has its own, minted once into `data/tokens/<name>.token` by
+    `tools/gen_fleet.py`, so a token is an identity and not merely a password.
+    WHAT IT MAY DO is answered by `services.yaml`'s `doors:` list, carried into
+    `data/fleet_topology.json` by the generator. One shared "internal token"
+    would have collapsed both questions into "is the caller inside the fleet",
+    and inside the fleet is not a permission.
+
+    Compared with `hmac.compare_digest` against every candidate: a plain `!=`
+    leaks a token one character at a time to anyone who can measure the response.
+    The conductor's own token is skipped — it is this process; a door to yourself
+    is a loop wearing a trenchcoat.
+    """
+    if not token:
+        raise HTTPException(401, "missing service token")
+    from . import svc                    # lazy: keeps this package's import order
+    for name, entry in (svc._services() or {}).items():
+        if not entry.get("managed") or entry.get("kind") == "core":
+            continue
+        f = Path(svc._DATA) / "tokens" / f"{name}.token"
+        try:
+            expected = f.read_text().strip()
+        except OSError:
+            continue
+        if expected and hmac.compare_digest(token, expected):
+            if door not in (entry.get("doors") or []):
+                raise HTTPException(
+                    403, f"the {name} service is not allowed the {door} door "
+                         f"— add it to services.yaml and re-run tools/gen_fleet.py")
+            return name, entry
+    raise HTTPException(401, "bad service token")
+
+
+@router.post("/internal/bus")
+def service_event(body: ServiceEvent,
+                  x_service_token: str | None = Header(None)) -> dict:
+    """A fleet service putting an event on the platform bus.
+
+    The events table has exactly ONE writer (bus.py) and this is how it keeps
+    having one: an extracted service does not open the conductor's database, it
+    asks. Everything downstream — the durable log, the dashboard websocket and
+    its per-user visibility filter — is unchanged, which is the point: an event
+    from the notify service looks like every other event on the feed.
+
+    Project 0 is the platform itself, and that is the default: a service's events
+    are about the box, not about anyone's project.
+    """
+    name, _ = _service_caller(x_service_token, "bus")
+    ev = bus.emit(int(body.project_id or 0), body.task_id,
+                  (body.source or name)[:60], body.kind[:60],
+                  body.payload if body.payload is not None else {})
+    return {"ok": True, "id": ev.get("id")}
+
+
+@router.get("/internal/tuning")
+def service_tuning(name: str, x_service_token: str | None = Header(None)) -> dict:
+    """One tuning knob, for a service that runs on the owner's dials.
+
+    Per-service knob allowlist, not just per-service door: the usage meter needs
+    the window, the budget and the crew's idle share, and nothing else in the
+    fifty-odd knobs is any of its business. The list lives in `services.yaml`
+    beside the service it belongs to, so adding a knob to a service is a registry
+    edit somebody reviews rather than a line of code nobody notices.
+    """
+    caller, entry = _service_caller(x_service_token, "tuning")
+    if name not in (entry.get("knobs") or []):
+        raise HTTPException(403, f"the {caller} service may not read {name!r} "
+                                 f"— list it under knobs: in services.yaml")
+    return {"name": name, "value": tuning.get(name)}
 
 
 @router.post("/internal/events")

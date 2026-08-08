@@ -220,26 +220,52 @@ def test_root_can_release_a_locked_out_account(fresh_db):
     assert auth.locked_out("root") == 0
 
 
-def test_a_fault_stays_deduplicated_across_a_restart(fresh_db):
+async def test_a_fault_stays_deduplicated_across_a_conductor_restart(fresh_db, monkeypatch):
     """The fault most worth deduplicating is the one that kills the process. A
-    crash loop restarts often enough that 'once per restart' is not once at all."""
-    notify.forget()
-    fp = notify._fingerprint("crash", "Traceback: boom")
-    notify._remember(fp, {"count": 3, "first": time.time(), "last": time.time(),
-                          "issue": 12})
+    crash loop restarts often enough that 'once per restart' is not once at all.
 
-    db._conn.close()
+    Since P2 the memory lives in the notify SERVICE's own database, which makes
+    the guarantee stronger than it was: the conductor can die and come back
+    without the notifier losing count. (That the service's own store survives ITS
+    restart is proved where the store lives —
+    services/notify/tests/test_notify_smoke.py.)
+    """
+    from conftest import notify_service
+    filed = []
+
+    async def fake_issue(repo, title, body):
+        filed.append(title)
+        return 12
+    monkeypatch.setattr(notify_service, "create_issue", fake_issue)
+    monkeypatch.setattr(notify, "_repo", lambda: "o/r")
+
+    notify.forget()
+    assert (await notify.report_error("crash", "Traceback: boom"))["sent"] is True
+
+    db._conn.close()          # the conductor restarts; the notifier does not
     db._conn = None
     db.init()
 
-    assert notify._seen(fp)["count"] == 3
-    assert notify._seen(fp)["issue"] == 12
+    again = await notify.report_error("crash", "Traceback: boom")
+    assert again["sent"] is False and again["count"] == 2 and again["issue"] == 12
+    assert len(filed) == 1, "the restart filed the same fault a second time"
 
 
-def test_forgetting_a_fault_makes_a_recurrence_loud_again(fresh_db):
+async def test_forgetting_a_fault_makes_a_recurrence_loud_again(fresh_db, monkeypatch):
+    """The operational use is after a fix ships: the old issue is closed, and a
+    recurrence should be loud again rather than silently added to a stale count."""
+    from conftest import notify_service
+    filed = []
+
+    async def fake_issue(repo, title, body):
+        filed.append(title)
+        return len(filed)
+    monkeypatch.setattr(notify_service, "create_issue", fake_issue)
+    monkeypatch.setattr(notify, "_repo", lambda: "o/r")
+
     notify.forget()
-    fp = notify._fingerprint("crash", "boom")
-    notify._remember(fp, {"count": 1, "first": 0, "last": 0, "issue": 7})
-    assert notify._seen(fp) is not None
-    notify.forget(fp)
-    assert notify._seen(fp) is None
+    await notify.report_error("crash", "boom")
+    assert (await notify.report_error("crash", "boom"))["sent"] is False
+    assert notify.forget() >= 1
+    assert (await notify.report_error("crash", "boom"))["sent"] is True
+    assert len(filed) == 2

@@ -117,6 +117,8 @@ A log row is `{ts, level, cat, event, msg, …fields}`. `event` is a stable slug
 
 ## State (all in kv — no new tables)
 
+The engine's own state is kv, and stays kv. The two `usage:` keys are the exception on their way out: since P2 the shared quota meter is a separate service with a real table (`services/usage`, `data/usage.db`), and what is left here is the blob it copied from plus the guard on that copy.
+
 | key | holds |
 |---|---|
 | repair:backlog | tasks banked by one scout+deliberation, drained over later sprints |
@@ -130,8 +132,8 @@ A log row is `{ts, level, cat, event, msg, …fields}`. `event` is a stable slug
 | repair:seq | last sprint number |
 | repair:state | phase, sprint number, task index, sleep reason/until — persisted before each transition so a restart resumes mid-sprint |
 | repair:world | the crew's Studio world/room/thread ids and its persona stamp |
-| usage:backfilled | one-shot guard for importing the crew's pre-meter history |
-| usage:ledger | every model call on the box, tagged by source — the real meter |
+| usage:backfilled | one-shot guard for importing the crew's pre-meter history (repair:ledger) into the usage service |
+| usage:ledger | the PRE-P2 meter blob. The usage SERVICE owns the meter now (data/usage.db, one `usage_rows` row per call); this key survives only as the service's first-boot copy source and as the rollback path, and commit B drops it |
 | repair:sprint:{n} | one record per sprint: scout digest, memo, tasks, retro |
 
 ## HTTP

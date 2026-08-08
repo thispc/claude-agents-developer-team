@@ -57,10 +57,15 @@ Three rules keep the diagram true: the substrate reaches the platform only throu
 root) is the registry, `tools/gen_fleet.py` generates the process-compose config plus
 per-service env/tokens/topology from it, and `./run-local.sh` boots everything under
 **process-compose** (readiness probes, restarts, a token-authed REST API on 8899).
-The conductor and — since P1 — **knowledge** are managed; the rest (usage, notify, watch,
-lifeworld, modgraph) join the registry phase by phase, each meeting `SERVICE_CONTRACT.md`
-and reached same-origin via the conductor's `/svc/<name>/…` gateway. The diagram keeps its
-current shape until the Atlas's cards become those services (P6).
+Managed today: the conductor, **knowledge** (8881, P1), **usage** (8882, P2) and
+**notify** (8883, P2); the rest (watch, lifeworld, modgraph) join the registry phase by
+phase, each meeting `SERVICE_CONTRACT.md` and reached same-origin via the conductor's
+`/svc/<name>/…` gateway. Traffic runs one way — the conductor calls its services — with
+two narrow doors back: `POST /internal/bus` (a service putting an event on the platform
+bus; the events table keeps its single writer) and `GET /internal/tuning` (one of the
+owner's knobs). Both check the caller's own minted token against the `doors:`/`knobs:`
+allowlists in `services.yaml`. The diagram keeps its current shape until the Atlas's
+cards become those services (P6).
 
 **knowledge (8881).** What agents have learned no longer lives in the conductor's database:
 `services/knowledge` owns `data/knowledge.db` and answers `/recall`, `/remember`,
@@ -74,6 +79,36 @@ service as a child itself. When the service is down the client degrades rather t
 blocking: recall `[]`, writes no-op, stats `degraded: true`, and the module graph's
 knowledge card goes red through that same door — a knowledge base that is unreachable
 must cost a sprint nothing but its memory.
+
+**usage (8882).** The shared quota meter: every model call on the box, tagged by source,
+so the self-repair crew can tell "the owner is working right now" from "the window is
+free". It was one kv blob rewritten whole on every note — a lost update on the exact
+number that authorises spending someone else's subscription — and it is now a real
+`usage_rows` table in `data/usage.db`, one INSERT per call. `/note`, `/snapshot`,
+`/verdict`, `/rows`. Attribution is **explicit on the wire**: `providers.complete` gained
+a `source` argument resolved at its top, so the conductor's `usage.attributed` contextvar
+is read at the call site and never crosses the boundary. The service reads the four dials
+it runs on (window, budget, idle share, quiet period) through `GET /internal/tuning`,
+cached ~30s, keeping the last value it actually saw rather than falling back to a default
+that could re-widen an allowance the owner narrowed. Degraded: `note` is dropped (metering
+must never break the thing being metered), `snapshot` is zeros with `degraded: true`, and
+`verdict` **fails safe** — `(False, "usage meter unreachable", now + 300)`. That one verb
+refuses rather than shrugs, because "I cannot see the quota" and "the quota is free" are
+opposite answers; the five-minute bound is what makes it a pause rather than a shutdown,
+and the crew resumes on `pc start usage` with no restart.
+
+**notify (8883).** Getting word out when nobody is watching the dashboard: one GitHub
+issue per distinct fault, a ceiling per hour, and the call itself. Both rules are state,
+and that state was two more kv blobs — so `data/notify.db` holds `notify_seen` (one row
+per fingerprint, counted in SQL) and `notify_sent` (one row per issue filed).
+`/error`, `/issue` (generic), `/status`, `/forget`. It is the **first service beyond the
+conductor to hold a credential**: `GITHUB_TOKEN` follows the call it belongs to, declared
+in `services.yaml`'s `env:` list and named as the contract's one exception. The target
+repo is derived from the git remote, so it rides each request instead; `sprint_digest`
+stays conductor-side because it is a JOIN over projects and tasks, and posts its finished
+text through `/issue`. A filed issue is announced back through `POST /internal/bus`.
+Degraded: every verb answers `{"sent": false, "reason": "notify service down"}` — silence
+is this module's designed failure mode, and the daily self-check completes without it.
 
 ---
 

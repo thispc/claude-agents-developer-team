@@ -16,6 +16,17 @@
 # ui: whether the service ships its own panel at /ui/* (proxied same-origin at
 # /svc/<name>/ui/ — see SERVICE_CONTRACT.md). false everywhere until a service
 # actually serves one; ui_screen: true additionally claims a routed page.
+#
+# doors: which of the conductor's /internal/* service doors this service may use
+#   (bus → POST /internal/bus, tuning → GET /internal/tuning). The conductor
+#   identifies the caller by its own minted token and checks THIS list — being
+#   inside the fleet is not a permission.
+# knobs: with doors: [tuning], the exact tuning knobs this service may read.
+#   Nothing else in the fifty-odd knobs is any of its business.
+# env: extra environment keys copied from the generating shell into
+#   data/env/<name>.env. The escape hatch for a credential that genuinely had to
+#   move with the code (notify's GITHUB_TOKEN) — keep every list as short as it
+#   can be, and never put a model credential in one.
 
 defaults:
   host: 127.0.0.1
@@ -44,6 +55,35 @@ services:
     callers: [conductor]        # via its shim conductor/app/knowledge.py, which documents
                                 # the degraded modes (recall→[], writes→no-op, stats→degraded)
     ui: false                   # headless — an API-only store, honestly
+
+  usage:
+    kind: service
+    port: 8882
+    dir: services/usage
+    db: data/usage.db
+    cmd: .venv/bin/uvicorn app:app --app-dir services/usage --host 127.0.0.1 --port ${PORT}
+    callers: [conductor]        # via its shim conductor/app/usage.py: note→dropped,
+                                # snapshot→zeros+degraded, verdict→FAIL-SAFE with a
+                                # bounded 5-minute wake (never spend blind)
+    doors: [tuning]             # the meter runs on the owner's dials, not a private copy
+    knobs: [usage_window_h, usage_budget_tokens, repair_idle_share, repair_yield_quiet_s]
+    ui: false                   # headless — an API-only meter, honestly
+
+  notify:
+    kind: service
+    port: 8883
+    dir: services/notify
+    db: data/notify.db
+    cmd: .venv/bin/uvicorn app:app --app-dir services/notify --host 127.0.0.1 --port ${PORT}
+    callers: [conductor]        # via its shim conductor/app/notify.py: every verb
+                                # degrades to {"sent": false, "reason": "notify service down"}
+    doors: [bus]                # announces a filed issue through the conductor's bus door
+    # The FIRST credential beyond the conductor: the GitHub call moved with the
+    # dedup and the ceiling, so the token had to move with it. GIT_API/GIT_PROVIDER
+    # are addresses, and the two NOTIFY_* keys are the kill switch and the hourly
+    # ceiling. Nothing else — and no model credential ever.
+    env: [GITHUB_TOKEN, GIT_API, GIT_PROVIDER, NOTIFY_GITHUB, NOTIFY_MAX_PER_HOUR]
+    ui: false                   # headless — it speaks in GitHub issues
 
   worker-pool:
     kind: ephemeral

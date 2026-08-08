@@ -7,14 +7,20 @@ Reads the repo's services.yaml and writes four things:
                             depends_on process_healthy, restart on_failure with
                             backoff, and one unified log at data/logs/fleet.log
   data/env/<name>.env       each managed service's environment: PORT, DB_PATH,
-                            SERVICE_TOKEN, a <PEER>_URL per managed peer, and
-                            CONDUCTOR_URL derived from the conductor's port
+                            SERVICE_TOKEN, a <PEER>_URL per managed peer,
+                            CONDUCTOR_URL derived from the conductor's port, and
+                            any key the service's `env:` list declares, copied
+                            from the generating shell (the escape hatch that lets
+                            notify's GITHUB_TOKEN follow the GitHub call — see
+                            SERVICE_CONTRACT rule 4)
   data/tokens/<name>.token  minted ONCE (secrets.token_hex) and then stable —
                             re-running the generator never rotates a token.
                             Also mints fleet-api.token for process-compose's REST API.
   data/fleet_topology.json  every service (managed or not) with kind/port/health/
-                            depends_on/ui — what the /svc gateway resolves against
-                            and what the Atlas will render (P6).
+                            depends_on/ui, plus the doors/knobs allowlists the
+                            conductor's /internal/bus and /internal/tuning check
+                            — what the /svc gateway resolves against and what the
+                            Atlas will render (P6).
 
 Deterministic: same services.yaml + same environment → byte-identical outputs, so
 re-runs never churn diffs. The one environment input is PORT, which overrides the
@@ -38,6 +44,11 @@ REPO = Path(__file__).resolve().parent.parent
 
 MANAGED_KINDS = ("core", "service")
 
+# The conductor's service doors (routes/internal.py). Validated here rather than
+# discovered at runtime: a typo in `doors:` would otherwise grant nothing at all
+# and show up as a 403 at 3am instead of as a broken registry at generation time.
+KNOWN_DOORS = ("bus", "tuning")
+
 
 def load_registry(path: Path) -> dict:
     """Parse and sanity-check services.yaml. Raises ValueError on a broken schema."""
@@ -57,6 +68,14 @@ def load_registry(path: Path) -> dict:
                 raise ValueError(f"managed service {name!r} has no port")
             if "cmd" not in svc:
                 raise ValueError(f"managed service {name!r} has no cmd")
+        for door in svc.get("doors") or []:
+            if door not in KNOWN_DOORS:
+                raise ValueError(f"service {name!r} asks for door {door!r}; "
+                                 f"the conductor has {list(KNOWN_DOORS)}")
+        if svc.get("knobs") and "tuning" not in (svc.get("doors") or []):
+            raise ValueError(f"service {name!r} lists knobs but not the tuning door")
+        if not all(isinstance(k, str) for k in svc.get("env") or []):
+            raise ValueError(f"service {name!r} has a non-string env key")
         svc.setdefault("ui", False)
     return reg
 
@@ -142,6 +161,12 @@ def _env_file(name: str, svc: dict, reg: dict, root: Path, env: dict) -> str:
             continue
         key = peer.upper().replace("-", "_") + "_URL"
         lines.append(f"{key}=http://{host}:{_port_of(peer, psvc, env)}")
+    # Declared passthrough, and ONLY declared: a service's env is a list somebody
+    # reviewed in services.yaml, never "whatever the operator happened to export".
+    # An unset key is written empty rather than skipped, so the file's shape does
+    # not depend on the shell and re-runs stay byte-identical.
+    for key in sorted(svc.get("env") or []):
+        lines.append(f"{key}={env.get(key, '')}")
     return "\n".join(lines) + "\n"
 
 
@@ -159,6 +184,10 @@ def _topology(reg: dict, root: Path, env: dict) -> str:
             entry["url"] = f"http://{host}:{port}"
             entry["health"] = svc.get("health_path", reg["defaults"]["health_path"])
             entry["depends_on"] = sorted(svc.get("depends_on") or [])
+            # The conductor's fleet doors read these: which /internal/* doors this
+            # service may use, and which tuning knobs it may read through one.
+            entry["doors"] = sorted(svc.get("doors") or [])
+            entry["knobs"] = sorted(svc.get("knobs") or [])
         else:
             entry["managed_by"] = svc.get("managed_by", "")
             if "port_range" in svc:

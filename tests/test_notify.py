@@ -3,114 +3,116 @@
 Every fault used to land in the events table, visible only to someone already
 watching the feed. Walk away for a night and the first sign of trouble was that
 nothing got done.
-"""
 
-import time
+Since P2 the dedup, the hourly ceiling and the GitHub call are a SERVICE
+(services/notify), mounted in-process by tests/conftest.py. These tests drive the
+conductor's door — `app.notify` — over the real client path against the real
+service, so what they prove is what the platform actually does. Two things moved
+with the code and are tested where they now live:
+
+  * the fingerprint's coarseness, the per-fault dedup and the hourly ceiling as
+    STORE behaviour → services/notify/tests/test_notify_smoke.py
+  * every degraded shape, and the /internal/bus door the service announces
+    through → tests/test_notify_service.py
+
+What stays here is what stayed in the conductor: the sprint digest (it formats
+projects and tasks), the client-error route, and the dashboard's own reporting.
+"""
 
 import pytest
 
-from conftest import make_project, make_task
-from app import config, db, notify
-
+from app import db, notify
+from conftest import notify_service
 from conftest import dashboard_js  # the split dashboard JS, concatenated in load order
+
+
+def _wipe_notify_store():
+    con = notify_service.helpers.db()
+    con.execute("DELETE FROM notify_seen")
+    con.execute("DELETE FROM notify_sent")
+    con.commit()
 
 
 @pytest.fixture(autouse=True)
 def _clean():
-    notify.forget()
-    db.kv_delete(notify._SENT_KEY)
+    """The dedup memory and the hourly counter live in the service's database
+    now, so that is what gets emptied — `notify.forget()` alone would leave the
+    ceiling counting yesterday's issues."""
+    _wipe_notify_store()
     yield
-    notify.forget()
-    db.kv_delete(notify._SENT_KEY)
+    _wipe_notify_store()
+
+
+@pytest.fixture()
+def files(monkeypatch):
+    """The GitHub call, captured. Patched on the SERVICE, which is the side that
+    holds the token and makes the request."""
+    filed = []
+
+    async def fake_issue(repo, title, body):
+        filed.append({"repo": repo, "title": title, "body": body})
+        return 100 + len(filed)
+
+    monkeypatch.setattr(notify_service, "create_issue", fake_issue)
+    monkeypatch.setattr(notify, "_repo", lambda: "o/r")
+    return filed
 
 
 # ---- one issue per fault, not one per occurrence -------------------------
 
-@pytest.mark.asyncio
-async def test_the_same_fault_is_filed_once(monkeypatch):
+async def test_the_same_fault_is_filed_once(files):
     """A crash loop produces the same fault a thousand times. Filing a thousand
     issues is a denial of service against your own inbox."""
-    filed = []
-
-    async def fake_issue(repo, title, body):
-        filed.append(title)
-        return 100 + len(filed)
-    monkeypatch.setattr(notify.github_client, "create_issue", fake_issue)
-    monkeypatch.setattr(notify.github_client, "enabled", lambda r: True)
-    monkeypatch.setattr(notify, "_repo", lambda: "o/r")
-
     for _ in range(25):
         await notify.report_error("manager crashed", "RuntimeError: boom\nline 2")
-    assert len(filed) == 1
+    assert len(files) == 1
 
 
-@pytest.mark.asyncio
-async def test_repeats_are_counted(monkeypatch):
-    monkeypatch.setattr(notify.github_client, "create_issue",
-                        _async_ret(101))
-    monkeypatch.setattr(notify.github_client, "comment_issue", _async_ret(None))
-    monkeypatch.setattr(notify.github_client, "enabled", lambda r: True)
-    monkeypatch.setattr(notify, "_repo", lambda: "o/r")
+async def test_repeats_are_counted(files, monkeypatch):
+    async def _noop_comment(repo, number, body):
+        return None
+    monkeypatch.setattr(notify_service, "comment_issue", _noop_comment)
     for _ in range(5):
         r = await notify.report_error("k", "same thing")
     assert r["count"] == 5 and r["issue"] == 101
 
 
-@pytest.mark.asyncio
-async def test_different_faults_are_different_issues(monkeypatch):
-    filed = []
-
-    async def fake_issue(repo, title, body):
-        filed.append(title)
-        return len(filed)
-    monkeypatch.setattr(notify.github_client, "create_issue", fake_issue)
-    monkeypatch.setattr(notify.github_client, "enabled", lambda r: True)
-    monkeypatch.setattr(notify, "_repo", lambda: "o/r")
+async def test_different_faults_are_different_issues(files):
     await notify.report_error("a", "first problem")
     await notify.report_error("b", "second problem")
-    assert len(filed) == 2
+    assert len(files) == 2
 
 
-def test_the_fingerprint_ignores_line_noise():
-    """Stack traces differ by line numbers between otherwise identical crashes; a
-    finer fingerprint would file a fresh issue for every one."""
-    a = notify._fingerprint("k", "RuntimeError: boom\n  at line 41\n  at 0x7f")
-    b = notify._fingerprint("k", "RuntimeError: boom\n  at line 88\n  at 0x9c")
-    assert a == b
+async def test_the_repo_rides_the_call_because_the_conductor_is_what_knows_it(files):
+    """Which repository this platform's own faults belong to is derived from the
+    git remote — conductor knowledge. Duplicating it into the service's env would
+    be a second place to get it wrong."""
+    await notify.report_error("k", "a problem")
+    assert files[0]["repo"] == "o/r"
+    import inspect
+    assert '"repo": _repo()' in inspect.getsource(notify.report_error)
 
 
 # ---- it must not be able to flood ---------------------------------------
 
-@pytest.mark.asyncio
-async def test_there_is_a_ceiling_per_hour(monkeypatch):
+async def test_there_is_a_ceiling_per_hour(files, monkeypatch):
     """If something breaks in a way we did not anticipate, the failure mode must
     be silence, not an unbounded write loop against a token that can push code."""
-    filed = []
-
-    async def fake_issue(repo, title, body):
-        filed.append(title)
-        return len(filed)
-    monkeypatch.setattr(notify.github_client, "create_issue", fake_issue)
-    monkeypatch.setattr(notify.github_client, "enabled", lambda r: True)
-    monkeypatch.setattr(notify, "_repo", lambda: "o/r")
-    monkeypatch.setattr(notify, "MAX_PER_HOUR", 3)
+    monkeypatch.setattr(notify_service, "MAX_PER_HOUR", 3)
     for i in range(10):
         await notify.report_error(f"kind{i}", f"distinct problem {i}")
-    assert len(filed) == 3
+    assert len(files) == 3
 
 
-@pytest.mark.asyncio
 async def test_a_broken_notifier_never_breaks_the_caller(monkeypatch):
     async def boom(*a, **k):
         raise RuntimeError("github is down")
-    monkeypatch.setattr(notify.github_client, "create_issue", boom)
-    monkeypatch.setattr(notify.github_client, "enabled", lambda r: True)
+    monkeypatch.setattr(notify_service, "create_issue", boom)
     monkeypatch.setattr(notify, "_repo", lambda: "o/r")
     r = await notify.report_error("k", "something")
     assert r["sent"] is False and "could not file" in r["reason"]
 
 
-@pytest.mark.asyncio
 async def test_no_repo_means_no_crash(monkeypatch):
     monkeypatch.setattr(notify, "_repo", lambda: "")
     r = await notify.report_error("k", "x")
@@ -118,8 +120,12 @@ async def test_no_repo_means_no_crash(monkeypatch):
 
 
 # ---- the sprint digest ---------------------------------------------------
+#
+# It did NOT move: every line of it is a JOIN over projects and tasks, and
+# handing a service a reader on those would undo the isolation the extraction
+# bought. It composes the text here and posts the finished issue through the
+# service's generic door.
 
-@pytest.mark.asyncio
 async def test_a_sprint_digest_says_what_shipped(fresh_db, monkeypatch):
     """"Six sprints ran overnight, here is what came out" is the entire reason
     for asking for six sprints."""
@@ -128,8 +134,7 @@ async def test_a_sprint_digest_says_what_shipped(fresh_db, monkeypatch):
     async def fake_issue(repo, title, b):
         body["title"], body["text"] = title, b
         return 7
-    monkeypatch.setattr(notify.github_client, "create_issue", fake_issue)
-    monkeypatch.setattr(notify.github_client, "enabled", lambda r: True)
+    monkeypatch.setattr(notify_service, "create_issue", fake_issue)
 
     p = db.create_project("shop", "b", "o/r", 5.0, 3, owner_id=1, sprints=3)
     db.set_project_status(p, "running")
@@ -143,7 +148,6 @@ async def test_a_sprint_digest_says_what_shipped(fresh_db, monkeypatch):
     assert "checkout endpoint" in body["text"] and "e2e pass" in body["text"]
 
 
-@pytest.mark.asyncio
 async def test_the_digest_flags_unverified_work(fresh_db, monkeypatch):
     """A project with no test command produces work nothing checked. That is the
     single most important caveat on any 'shipped' claim."""
@@ -152,8 +156,7 @@ async def test_the_digest_flags_unverified_work(fresh_db, monkeypatch):
     async def fake_issue(repo, title, b):
         body["text"] = b
         return 7
-    monkeypatch.setattr(notify.github_client, "create_issue", fake_issue)
-    monkeypatch.setattr(notify.github_client, "enabled", lambda r: True)
+    monkeypatch.setattr(notify_service, "create_issue", fake_issue)
     p = db.create_project("x", "b", "o/r", 5.0, 3, owner_id=1, sprints=2)
     t = db.create_task(p, "backend", "a thing", "d")
     db.update_task(t, status="done")          # no verification at all
@@ -161,10 +164,25 @@ async def test_the_digest_flags_unverified_work(fresh_db, monkeypatch):
     assert "unverified" in body["text"]
 
 
+async def test_the_digest_is_not_deduplicated_into_silence(fresh_db, monkeypatch):
+    """It goes through the generic /issue door precisely because it must not be
+    fingerprinted: two sprints with the same headline are two sprints, and the
+    second one still happened."""
+    filed = []
+
+    async def fake_issue(repo, title, b):
+        filed.append(title)
+        return len(filed)
+    monkeypatch.setattr(notify_service, "create_issue", fake_issue)
+    p = db.create_project("x", "b", "o/r", 5.0, 3, owner_id=1, sprints=2)
+    await notify.sprint_digest(p, 1)
+    await notify.sprint_digest(p, 1)
+    assert len(filed) == 2
+
+
 # ---- the browser --------------------------------------------------------
 
 def test_the_dashboard_reports_its_own_errors():
-    from pathlib import Path
     js = dashboard_js()
     assert "/api/client-error" in js
     assert "unhandledrejection" in js, "a rejected promise is the commonest silent failure"
@@ -177,12 +195,6 @@ def test_client_error_route_exists(root_client, fresh_db, monkeypatch):
     monkeypatch.setattr("app.routes.notify.report_error", fake)
     r = root_client.post("/api/client-error", json={"message": "x is not a function"})
     assert r.status_code == 200
-
-
-def _async_ret(v):
-    async def _f(*a, **k):
-        return v
-    return _f
 
 
 # ---- credentials must actually rotate -----------------------------------

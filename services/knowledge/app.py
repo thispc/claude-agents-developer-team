@@ -235,8 +235,7 @@ def _rows(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
 
 def init_store() -> None:
     """Own schema, own file — WAL via helpers.db(), one owner per file."""
-    con = helpers.db()
-    con.row_factory = sqlite3.Row       # the verbs read columns by name
+    con = helpers.db()          # helpers.db() already sets row_factory
     con.executescript(K_SCHEMA)
     con.commit()
 

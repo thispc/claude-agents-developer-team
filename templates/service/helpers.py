@@ -38,11 +38,18 @@ _conn: sqlite3.Connection | None = None
 
 
 def db() -> sqlite3.Connection:
-    """This service's OWN database — WAL so a reader never blocks the writer."""
+    """This service's OWN database — WAL so a reader never blocks the writer.
+
+    row_factory is set HERE and not in the caller's init: a service that reopens
+    its connection (a restart, a test that closes it) would otherwise come back
+    with tuples where the code expects columns by name, and fail three frames
+    away from the reconnect that caused it.
+    """
     global _conn
     if _conn is None:
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         _conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        _conn.row_factory = sqlite3.Row
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         _conn.commit()

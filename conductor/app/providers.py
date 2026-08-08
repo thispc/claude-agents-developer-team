@@ -263,13 +263,24 @@ def _retry_after(resp: httpx.Response) -> float:
 
 
 async def complete(provider: str, model: str, system: str, prompt: str,
-                   settings: dict, max_tokens: int = 2000) -> str:
+                   settings: dict, max_tokens: int = 2000, source: str = "") -> str:
     """One completion from any provider. Raises ProviderError with a readable cause.
 
     Retries throttles and capacity blips. Without this a single 503 — which Gemini
     hands out freely on the free tier — permanently silenced a round-table seat, or
     dropped recruiting to the keyword heuristic, for a fault that clears in seconds.
+
+    `source` is who to bill on the shared quota meter. It is resolved HERE, at the
+    top, and then travels as an ordinary argument — because the meter is a
+    separate process since P2 and ambient state does not cross a wire. The
+    contextvar (`usage.attributed("repair")`) survives as a conductor-side
+    convenience for callers that cannot know their own source, and this is the one
+    place it is read: after this line the attribution is a string somebody wrote
+    down, which is the only kind of attribution a meter can be held to.
     """
+    if not source:
+        from . import usage
+        source = usage.current_source("studio")
     ep = endpoint(provider, settings)
     if not ep and provider not in PROVIDERS:
         # Says "no longer configured" rather than "unknown", because for a custom
@@ -287,7 +298,7 @@ async def complete(provider: str, model: str, system: str, prompt: str,
                     ep["base_url"], ep["api_key"], ep["key_header"], model,
                     system, prompt, max_tokens, label)
             if provider == "anthropic":
-                return await _anthropic(model, system, prompt, settings, max_tokens)
+                return await _anthropic(model, system, prompt, settings, max_tokens, source)
             if provider == "openai":
                 return await _openai(model, system, prompt, settings, max_tokens)
             return await _google(model, system, prompt, settings, max_tokens)
@@ -316,7 +327,7 @@ async def complete(provider: str, model: str, system: str, prompt: str,
 
 
 async def _anthropic(model: str, system: str, prompt: str, settings: dict,
-                     max_tokens: int) -> str:
+                     max_tokens: int, source: str = "studio") -> str:
     """Via the Agent SDK so a subscription OAuth token works, not just an API key."""
     from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ResultMessage,
                                   TextBlock, query)
@@ -350,8 +361,10 @@ async def _anthropic(model: str, system: str, prompt: str, settings: dict,
         elif isinstance(msg, ResultMessage):
             # Studio seats spend the same subscription quota as everything else on the
             # box; the self-repair crew's idleness check is only honest if it sees them.
+            # `source` was resolved by complete() before this call — the meter is a
+            # separate process now, and it is only ever told, never left to guess.
             from . import usage
-            usage.note_result(usage.current_source("studio"), model, msg)
+            usage.note_result(source, model, msg)
     if not text.strip():
         raise ProviderError("Claude returned an empty response")
     return text.strip()

@@ -175,7 +175,7 @@ is not.
 
 ### The API, in families
 
-An *API* is the list of requests a program will answer. There are 151; the
+An *API* is the list of requests a program will answer. There are 153; the
 dashboard uses them for you.
 
 | Family | Example | For |
@@ -197,7 +197,7 @@ dashboard uses them for you.
 | Door | Who gets in | Why separate |
 |---|---|---|
 | `/api/…` | You, signed in | Normal use. Limited login attempts, surviving restarts |
-| `/internal/…` | Teammates and the staging check, each with its own token | Four requests: report work, post activity, look up a colleague, and run this instance's own test suite. None of them is a user |
+| `/internal/…` | Teammates, the staging check, and the fleet's own services — each with its own token | Six requests. Four for a teammate or the staging check: report work, post activity, look up a colleague, run this instance's own test suite. Two for a service the platform has been split into: put an event on the shared feed, read one of your dials. None of them is a user, and a token only opens the doors its own service declared |
 | `/api/health` | Anyone | A monitor that had to sign in could not report that signing in was broken |
 
 ### The live feed
@@ -208,7 +208,7 @@ so nothing depends on you having been watching.
 
 ### What the database holds
 
-Thirty-four tables. Most live in one file; the **module graph** keeps its six in `modgraph.py` because immutable plan versions want their own schema, not entries in the migration list. The **knowledge** table is not among them any more: what agents have learned lives with the knowledge service (`services/knowledge`, its own process, its own `data/knowledge.db`) — it carries embedding vectors, is the one store queried by similarity rather than by key, and the conductor reaches it over HTTP through a shim that degrades to empty answers rather than ever blocking a sprint. The ones worth knowing: **projects** and **tasks**
+Thirty-four tables. Most live in one file; the **module graph** keeps its six in `modgraph.py` because immutable plan versions want their own schema, not entries in the migration list. The **knowledge** table is not among them any more: what agents have learned lives with the knowledge service (`services/knowledge`, its own process, its own `data/knowledge.db`) — it carries embedding vectors, is the one store queried by similarity rather than by key, and the conductor reaches it over HTTP through a shim that degrades to empty answers rather than ever blocking a sprint. Two more stores left in P2 and the count did not move, because neither had ever been a table: the **quota meter** and the **notifier's memory** were kv blobs, each rewritten whole on every write — a lost update waiting for a second process — and they are now proper tables owned by their own services (`services/usage`'s `usage_rows` in `data/usage.db`; `services/notify`'s `notify_seen` and `notify_sent` in `data/notify.db`). The ones worth knowing: **projects** and **tasks**
 (the work), **agents** (teammates and their memory), **runs** (one row per AI
 task — the source of all measurement), **events** (the permanent activity
 record), **findings** (what the platform believes is wrong with itself),

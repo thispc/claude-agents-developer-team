@@ -38,8 +38,14 @@ MANAGED_KINDS = ("core", "service")
 
 
 def _services() -> dict:
-    """The registry as the gateway sees it: fleet_topology.json first (what the
-    generator actually wrote), services.yaml as the legacy-boot fallback."""
+    """The registry as the fleet sees it: fleet_topology.json first (what the
+    generator actually wrote), services.yaml as the legacy-boot fallback.
+
+    Read by the gateway below AND by the fleet doors in routes/internal.py, which
+    need the same entries' `doors`/`knobs` allowlists — one reader, so a
+    generated topology and a hand-edited registry can never grant different
+    permissions.
+    """
     topo = _DATA / "fleet_topology.json"
     if topo.exists():
         try:
@@ -56,6 +62,8 @@ def _services() -> dict:
             out[n] = {"kind": s.get("kind"), "managed": bool(managed)}
             if managed:
                 out[n]["url"] = f"http://{host}:{s['port']}"
+                out[n]["doors"] = sorted(s.get("doors") or [])
+                out[n]["knobs"] = sorted(s.get("knobs") or [])
         return out
     except Exception:
         return {}

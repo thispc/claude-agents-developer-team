@@ -44,28 +44,39 @@ for _k in ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "GEMINI_API_KEY",
            "BRANCH_PREFIX", "ALLOW_MERGE", "DEVTEAM_ENV", "SELF_REPO",
            "PROTECTED_REPOS",
            "GITHUB_REPO", "REQUIRE_STAGING", "CUSTOM_MODEL_ENDPOINTS",
-           # Pinned below to a MOUNTED service, never to whatever a shell that
+           # Pinned below to MOUNTED services, never to whatever a shell that
            # sourced data/env/conductor.env happens to point at — the suite must
-           # not reach a real 8881 (or fail because nothing is listening there).
-           "KNOWLEDGE_URL"):
+           # not reach a real 8881/8882/8883 (or fail because nothing is
+           # listening there).
+           "KNOWLEDGE_URL", "USAGE_URL", "NOTIFY_URL"):
     os.environ.pop(_k, None)
 
-# --- the knowledge service, mounted in-process --------------------------------
+# --- the fleet services, mounted in-process -----------------------------------
 #
-# Since the P1 cutover the conductor has no in-process knowledge store: recall
-# and remember are HTTP calls to services/knowledge. So the suite MOUNTS that
-# service — the real app, its own temp database — and points the shim's httpx
-# transport at it. No sockets, no fleet, nothing to start: the offline invariant
-# holds, and every conductor test that recalls or remembers exercises the real
-# client path against the real store instead of a mock that can drift from it.
+# Since P1 (knowledge) and P2 (usage, notify) the conductor has no in-process
+# store, meter or notifier: recall, note and report_error are HTTP calls. So the
+# suite MOUNTS each service — the real app, its own temp database — and points
+# the shim's httpx client at it. No sockets, no fleet, nothing to start: the
+# offline invariant holds, and every conductor test that recalls, meters or
+# reports exercises the real client path against the real service instead of a
+# mock that can drift from it.
 #
-# The service is loaded under unique module names because the conductor's own
-# `app` package owns that name, and its env is saved/restored around the load so
-# neither harness inherits the other's DB_PATH.
+# Mounting matters more than it sounds. Leaving a *_URL set with nothing
+# listening would not fail the suite — every verb would degrade, silently, and
+# the tests would pass against a platform that had lost its memory and its meter.
+# The services are loaded under unique module names because the conductor's own
+# `app` package owns that name, and their env is saved/restored around each load
+# so no harness inherits another's DB_PATH.
 
 KNOWLEDGE_TEST_TOKEN = "conductor-suite-knowledge-token"
+USAGE_TEST_TOKEN = "conductor-suite-usage-token"
+NOTIFY_TEST_TOKEN = "conductor-suite-notify-token"
 _KNOWLEDGE_URL = "http://knowledge.test"
+_USAGE_URL = "http://usage.test"
+_NOTIFY_URL = "http://notify.test"
 os.environ["KNOWLEDGE_URL"] = _KNOWLEDGE_URL
+os.environ["USAGE_URL"] = _USAGE_URL
+os.environ["NOTIFY_URL"] = _NOTIFY_URL
 
 
 def _load_module(name: str, path: Path):
@@ -77,16 +88,25 @@ def _load_module(name: str, path: Path):
     return mod
 
 
-def _mount_knowledge_service():
-    service_dir = REPO / "services" / "knowledge"
-    saved = {k: os.environ.get(k)
-             for k in ("DB_PATH", "SERVICE_TOKEN", "SERVICE_NAME", "LEGACY_DB_PATH")}
-    os.environ["DB_PATH"] = str(Path(_TMP) / "knowledge-service.db")
-    os.environ["SERVICE_TOKEN"] = KNOWLEDGE_TEST_TOKEN
-    os.environ["SERVICE_NAME"] = "knowledge"
-    # no legacy db to copy from: the first-boot backfill is the service's own
+def _mount_service(name: str, token: str, **extra_env):
+    """Load one service's app with a temp store and a known token.
+
+    Every env var touched is saved and restored: helpers.py and app.py read the
+    environment at import, and leaking DB_PATH out of here is how one harness
+    deletes another harness's database.
+    """
+    service_dir = REPO / "services" / name
+    keys = ("DB_PATH", "SERVICE_TOKEN", "SERVICE_NAME", "LEGACY_DB_PATH",
+            "CONDUCTOR_URL", "GITHUB_TOKEN", "NOTIFY_GITHUB", "NOTIFY_MAX_PER_HOUR")
+    saved = {k: os.environ.get(k) for k in keys}
+    os.environ["DB_PATH"] = str(Path(_TMP) / f"{name}-service.db")
+    os.environ["SERVICE_TOKEN"] = token
+    os.environ["SERVICE_NAME"] = name
+    # no legacy db to copy from: each first-boot backfill is that service's own
     # test's subject, not a side effect every conductor test pays for
     os.environ["LEGACY_DB_PATH"] = str(Path(_TMP) / "absent-legacy.db")
+    for k, v in extra_env.items():
+        os.environ[k] = v
     prior_helpers = sys.modules.pop("helpers", None)
     # app.py puts its own directory FIRST on sys.path so `uvicorn app:app` works
     # from any cwd. Left there, `from app import auth` in this very file would
@@ -94,9 +114,9 @@ def _mount_knowledge_service():
     # path is restored the moment the load is done.
     prior_path = list(sys.path)
     try:
-        helpers = _load_module("knowledge_svc_helpers", service_dir / "helpers.py")
+        helpers = _load_module(f"{name}_svc_helpers", service_dir / "helpers.py")
         sys.modules["helpers"] = helpers        # app.py's own `import helpers`
-        return _load_module("knowledge_svc_app", service_dir / "app.py")
+        return _load_module(f"{name}_svc_app", service_dir / "app.py")
     finally:
         sys.path[:] = prior_path
         sys.modules.pop("helpers", None)
@@ -109,26 +129,63 @@ def _mount_knowledge_service():
                 os.environ[_k] = _v
 
 
-knowledge_service = _mount_knowledge_service()
+knowledge_service = _mount_service("knowledge", KNOWLEDGE_TEST_TOKEN)
+usage_service = _mount_service("usage", USAGE_TEST_TOKEN)
+# A token that makes gh_enabled() true, so the drills reach the (monkeypatched)
+# GitHub call instead of stopping at "no repo configured" — the real credential
+# is blanked above with every other one.
+notify_service = _mount_service("notify", NOTIFY_TEST_TOKEN,
+                                GITHUB_TOKEN="test-github-token-not-real")
 
 from app import auth, db  # noqa: E402
 from app import knowledge as _knowledge  # noqa: E402
+from app import notify as _notify  # noqa: E402
+from app import usage as _usage  # noqa: E402
 
 import httpx  # noqa: E402
 from starlette.testclient import TestClient as _TestClient  # noqa: E402
 
 
-def _knowledge_sync_client():
-    """A fresh client per call, matching the shim's own client-per-call shape —
+def _svc_client(service, base_url, token):
+    """A fresh client per call, matching each shim's own client-per-call shape —
     one shared instance would be closed by the first `with` block."""
-    c = _TestClient(knowledge_service.app, base_url=_KNOWLEDGE_URL)
-    c.headers["X-Service-Token"] = KNOWLEDGE_TEST_TOKEN
+    c = _TestClient(service.app, base_url=base_url)
+    c.headers["X-Service-Token"] = token
     return c
 
 
 _knowledge._TRANSPORT = httpx.ASGITransport(app=knowledge_service.app)
 _knowledge._TOKEN = KNOWLEDGE_TEST_TOKEN
-_knowledge._sync_client = _knowledge_sync_client
+_knowledge._sync_client = lambda: _svc_client(knowledge_service, _KNOWLEDGE_URL,
+                                              KNOWLEDGE_TEST_TOKEN)
+
+_usage._TOKEN = USAGE_TEST_TOKEN
+_usage._client = lambda: _svc_client(usage_service, _USAGE_URL, USAGE_TEST_TOKEN)
+
+_notify._TRANSPORT = httpx.ASGITransport(app=notify_service.app)
+_notify._TOKEN = NOTIFY_TEST_TOKEN
+_notify._sync_client = lambda: _svc_client(notify_service, _NOTIFY_URL, NOTIFY_TEST_TOKEN)
+
+
+# The usage service reads the owner's dials through the conductor's
+# GET /internal/tuning. Here that hop is answered IN-PROCESS by the conductor's
+# own tuning module: the service still runs its real client code — request,
+# JSON, cache, stale-value fallback — only the socket is replaced. Driving the
+# conductor's ASGI app from inside a service handler that is itself being driven
+# by the conductor's TestClient would mean two nested portals on one call stack,
+# and a deadlock is not a fixture. The REAL door (auth, the door allowlist, the
+# knob allowlist) is drilled against the running conductor app in
+# tests/test_usage_service.py, which is where it belongs.
+def _tuning_answer(request: httpx.Request) -> httpx.Response:
+    from app import tuning
+    name = request.url.params.get("name", "")
+    return httpx.Response(200, json={"name": name, "value": tuning.get(name)})
+
+
+usage_service.TUNING_TRANSPORT = httpx.MockTransport(_tuning_answer)
+# 0: a test that sets a knob and immediately asks for a snapshot must see it. The
+# service's real 30s cache is exercised in services/usage/tests.
+usage_service.KNOB_TTL = 0.0
 
 
 @pytest.fixture()
@@ -148,10 +205,15 @@ def fresh_db():
     from app import findings, knowledge
     findings.init()
     knowledge.init()          # no schema of its own any more: it drops the legacy table
-    # The mounted service outlives any one test's database, so empty its store
-    # here too — a test that recalls must see only what it remembered.
-    knowledge_service.helpers.db().execute("DELETE FROM knowledge")
-    knowledge_service.helpers.db().commit()
+    # The mounted services outlive any one test's database, so empty their stores
+    # here too — a test that recalls must see only what it remembered, and a test
+    # that meters must not inherit the previous test's spend.
+    for svc, tables in ((knowledge_service, ("knowledge",)),
+                        (usage_service, ("usage_rows",)),
+                        (notify_service, ("notify_seen", "notify_sent"))):
+        for table in tables:
+            svc.helpers.db().execute(f"DELETE FROM {table}")
+        svc.helpers.db().commit()
     from app import bus
     bus._loop = None          # don't inherit a closed loop from a prior TestClient
     yield db

@@ -846,16 +846,24 @@ def test_the_screen_shows_no_dollar_figures():
     assert "rpTok(" in panel and "tokens" in panel
 
 
-def test_rows_from_before_the_work_cache_split_count_as_zero_tokens(fresh_db):
-    """Their `tokens` field summed every kind, so one build's 3M cache reads inside it pinned
-    the meter at 100% and put the crew to sleep on a fiction."""
+def test_a_token_less_row_still_counts_as_a_call(fresh_db):
+    """A session that reported a cost but no tokens — the shape every pre-split
+    row has, and every SDK that does not report usage still produces — must count
+    as a CALL and as zero tokens. Otherwise the meter either reads 100% on a
+    fiction or hides the session from the count-based backstop entirely.
+
+    The pre-split rows THEMSELVES (a `tokens` field summing all four kinds, one
+    build's 3M cache reads inside it) arrive through the usage service's
+    first-boot expansion of the old kv blob, and that is where they are drilled:
+    services/usage/tests/test_usage_smoke.py.
+    """
     from app import usage
     now = time.time()
-    db.kv_set(usage.LEDGER_KEY, [{"ts": now - 60, "source": "repair", "model": "m",
-                                  "usd": 1.7, "tokens": 3_018_222, "calls": 1}])
+    usage.note("repair", "m", usd=1.7, calls=1, ts=now - 60)
     u = usage.snapshot(now)
     assert u["used_tok"] == 0 and u["frac"] == 0
     assert u["calls"] == 1, "still visible as a call — that is what the backstop counts"
+    assert u["usd"] == 1.7
 
 
 def test_the_self_repair_doc_is_generated_from_the_code_and_current():

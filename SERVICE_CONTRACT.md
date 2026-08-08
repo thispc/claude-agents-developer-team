@@ -35,10 +35,32 @@ process-compose on first boot. These nine rules are the whole deal — the
    directory. Model credentials **never** appear here — inference goes through the
    conductor's model door.
 
+   A service may declare extra keys with `env: [...]` in its `services.yaml`
+   block, and the generator copies exactly those from the shell it runs in. There
+   is **one** such credential in the fleet: `notify` holds `GITHUB_TOKEN`, because
+   the GitHub call itself moved into it (P2) and a notifier that has to ask
+   another process to speak for it is the old coupling with extra latency. That
+   is the exception, and it is deliberately narrow — a token that can file issues
+   and push code, in a service that does nothing else. Anything a caller knows
+   better should **ride the request** instead: knowledge's embedding key and
+   notify's target repo both do.
+
 5. **Events go through the conductor's door.**
-   A service that wants something on the platform bus POSTs it to the conductor
-   (`/internal/bus`, service-token authed, lands in P2) — it never writes the
-   events table itself. The bus stays single-writer.
+   A service that wants something on the platform bus POSTs it to the conductor —
+   `POST /internal/bus` with `{project_id, task_id, source, kind, payload}` — and
+   never writes the events table itself. The bus stays single-writer (`bus.py`),
+   so a service's event is an ordinary event: durable, and on the dashboard's
+   websocket with the same per-user visibility filter as every other one. A blank
+   `source` is stamped with the calling service's name.
+
+   **Two doors, one allowlist.** `POST /internal/bus` and `GET /internal/tuning`
+   (one of the owner's knobs, for a service that runs on the owner's dials) both
+   identify the caller by its own minted token and then check `services.yaml`:
+   `doors: [bus, tuning]` says which doors, and `knobs: [...]` says which knobs.
+   Being inside the fleet is **not** a permission — the notifier has no business
+   reading the crew's budget, and the meter has no business emitting events.
+   Ask for a door you did not declare and you get a 403 naming the file to edit;
+   ask with a token that is not a service's and you get a 401.
 
 6. **Tests run offline.**
    `tests/` beside the code: a smoke test (in-process ASGI, no sockets) and a
@@ -82,8 +104,8 @@ conductor-side and the service token added server-side. Conventions:
   shell.
 - All fetches in `ui/` are **relative** (`../health`, not `/health`), so the same
   files work served directly and through `/svc/<name>/`.
-- Headless services (knowledge, usage) simply delete `ui/` and stay API-only —
-  honestly, with `ui: false`.
+- Headless services (knowledge, usage, notify) simply delete `ui/` and stay
+  API-only — honestly, with `ui: false`.
 
 Net effect: dropping a service directory plus one `services.yaml` entry makes both
 its API and its UI appear. Modules are pluggable vertical slices.

@@ -23,6 +23,14 @@
 # knowledge service ITSELF as a child, waits for its /health, exports the URL, and
 # execs the conductor in the foreground. A knowledge service already listening on
 # the port (a half-running fleet, a second terminal) is REUSED, never duplicated.
+#
+# P2 (usage 8882, notify 8883) is mid-strangler: their shims are DUAL-MODE, so a
+# conductor started without USAGE_URL/NOTIFY_URL runs the vendored in-process
+# bodies instead — which is exactly the between-commits rollback. This path
+# therefore leaves them unset on purpose and stays a working boot; the fleet path
+# below gets both URLs from data/env/conductor.env and is the real mode. When the
+# P2 cutover lands (commit B) this path starts all three services as children,
+# for the same reason it already starts knowledge: there will be no fallback left.
 # The child shares this terminal's process group, so Ctrl-C stops both; a plain
 # SIGTERM to the conductor alone can leave it, which the reuse check then absorbs
 # on the next boot. Both paths serve http://127.0.0.1:$PORT.

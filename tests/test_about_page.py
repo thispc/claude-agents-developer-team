@@ -111,15 +111,22 @@ def test_the_endpoint_count_is_the_real_one():
         f"the handbook does not say {actual} endpoints"
 
 
-def test_the_internal_door_really_has_three_requests_behind_it():
-    """The page tells a reader that a teammate can do exactly three things. If a
-    fourth is added, that sentence becomes a false security claim."""
+def test_the_internal_door_really_has_six_requests_behind_it():
+    """The page tells a reader exactly what is reachable with a non-user token. If
+    a seventh is added, that sentence becomes a false security claim.
+
+    Six since P2: four for a teammate or the staging check, and two for an
+    extracted service (POST /internal/bus, GET /internal/tuning) — each gated on
+    the service's own token AND the doors it declared in services.yaml.
+    """
     pkg = Path(__file__).resolve().parent.parent / "conductor" / "app" / "routes"
     routes = "\n".join(f.read_text() for f in sorted(pkg.glob("*.py")))
     internal = routes.count('@router.get("/internal/') + routes.count('@router.post("/internal/')
-    assert internal == 4, (
+    assert internal == 6, (
         f"{internal} internal endpoints exist; the About page and handbook both say "
-        "four, and both need updating")
+        "six, and both need updating")
+    assert "Six requests" in _handbook()
+    assert "Six requests, and no more" in HTML
 
 
 def test_the_table_count_matches_the_schema():
@@ -129,6 +136,11 @@ def test_the_table_count_matches_the_schema():
     # named pointer at the service, and the handbook says exactly that. (The
     # legacy fallback still creates a knowledge table until commit B, but a
     # table on the way out is not a table the platform declares.)
+    #
+    # P2 moved two more stores and the number did NOT move, which is its own
+    # thing to be honest about: usage and notify were kv blobs, not tables. The
+    # handbook has to say where they went, or "thirty-four" quietly implies the
+    # meter is still in here.
     from app import db, auth, findings, modgraph
     declared = sum(mod.SCHEMA.count("CREATE TABLE IF NOT EXISTS")
                    for mod in (db, auth, findings, modgraph))
@@ -136,6 +148,20 @@ def test_the_table_count_matches_the_schema():
         f"{declared} tables are declared; the handbook says thirty-four"
     assert "knowledge service" in _handbook(), \
         "the handbook no longer says where the knowledge table went"
+    for moved in ("usage_rows", "notify_seen", "data/usage.db", "data/notify.db"):
+        assert moved in _handbook(), \
+            f"the handbook no longer says where {moved} lives"
+
+
+def test_the_kv_inventory_admits_the_meter_left():
+    """docs/SELF_REPAIR.md is generated from the code, and its kv table is the
+    one place a reader looks for "where is the spend recorded". Saying
+    `usage:ledger` holds "every model call on the box" stopped being true the
+    moment the meter became a service."""
+    doc = (Path(__file__).resolve().parent.parent / "docs" / "SELF_REPAIR.md").read_text()
+    row = [l for l in doc.splitlines() if l.startswith("| usage:ledger")]
+    assert row and "PRE-P2" in row[0], "the kv inventory still calls the blob the meter"
+    assert "services/usage" in doc and "usage_rows" in doc
 
 
 def test_the_round_table_range_matches_the_limits():
