@@ -1,0 +1,18 @@
+[module]
+name = "layout-graph"
+
+[contract]
+interface   = ["interface.json"]
+conformance = ["conformance.json"]
+
+[prose]
+files = ["behavior.md"]
+
+[impl]
+files     = ["impl/**"]
+toolchain = "impl/toolchain.json"
+
+[limits]
+max_loc     = 300
+mitosis_loc = 220
+mitosis_ops = 4

@@ -1,0 +1,365 @@
+{
+  "timeoutMs": 10000,
+  "cases": [
+    {
+      "name": "a chain lays out left to right, one layer per hop",
+      "op": "layout",
+      "in": {
+        "nodes": [
+          {
+            "id": "a"
+          },
+          {
+            "id": "b"
+          },
+          {
+            "id": "c"
+          }
+        ],
+        "edges": [
+          {
+            "from": "a",
+            "to": "b"
+          },
+          {
+            "from": "b",
+            "to": "c"
+          }
+        ]
+      },
+      "expect": {
+        "layers": 3,
+        "nodes": [
+          {
+            "id": "a",
+            "layer": 0
+          },
+          {
+            "id": "b",
+            "layer": 1
+          },
+          {
+            "id": "c",
+            "layer": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "a node sits one layer right of the FURTHEST thing feeding it, not the nearest",
+      "op": "layout",
+      "in": {
+        "nodes": [
+          {
+            "id": "a"
+          },
+          {
+            "id": "b"
+          },
+          {
+            "id": "z"
+          }
+        ],
+        "edges": [
+          {
+            "from": "a",
+            "to": "z"
+          },
+          {
+            "from": "a",
+            "to": "b"
+          },
+          {
+            "from": "b",
+            "to": "z"
+          }
+        ]
+      },
+      "expect": {
+        "layers": 3,
+        "nodes": [
+          {
+            "id": "a",
+            "layer": 0
+          },
+          {
+            "id": "b",
+            "layer": 1
+          },
+          {
+            "id": "z",
+            "layer": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "unconnected nodes all sit in the first layer",
+      "op": "layout",
+      "in": {
+        "nodes": [
+          {
+            "id": "a"
+          },
+          {
+            "id": "b"
+          }
+        ],
+        "edges": []
+      },
+      "expect": {
+        "layers": 1,
+        "nodes": [
+          {
+            "id": "a",
+            "layer": 0
+          },
+          {
+            "id": "b",
+            "layer": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "a cycle does not hang, and the closing edge is marked so it can be drawn as one",
+      "op": "layout",
+      "in": {
+        "nodes": [
+          {
+            "id": "a"
+          },
+          {
+            "id": "b"
+          }
+        ],
+        "edges": [
+          {
+            "from": "a",
+            "to": "b"
+          },
+          {
+            "from": "b",
+            "to": "a"
+          }
+        ]
+      },
+      "expect": {
+        "edges": [
+          {
+            "from": "a",
+            "to": "b",
+            "back": false
+          },
+          {
+            "from": "b",
+            "to": "a",
+            "back": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "order within a layer is INPUT order \u2014 stable, explainable, and the author's to choose",
+      "op": "layout",
+      "in": {
+        "nodes": [
+          {
+            "id": "zebra"
+          },
+          {
+            "id": "aardvark"
+          }
+        ],
+        "edges": []
+      },
+      "expect": {
+        "nodes": [
+          {
+            "id": "zebra",
+            "layer": 0,
+            "y": 24
+          },
+          {
+            "id": "aardvark",
+            "layer": 0,
+            "y": 148
+          }
+        ]
+      }
+    },
+    {
+      "name": "columns are centred against each other, so a lone node sits beside the middle of a tall column",
+      "op": "layout",
+      "in": {
+        "nodes": [
+          {
+            "id": "a"
+          },
+          {
+            "id": "b"
+          },
+          {
+            "id": "c"
+          },
+          {
+            "id": "sink"
+          }
+        ],
+        "edges": [
+          {
+            "from": "a",
+            "to": "sink"
+          },
+          {
+            "from": "b",
+            "to": "sink"
+          },
+          {
+            "from": "c",
+            "to": "sink"
+          }
+        ]
+      },
+      "expect": {
+        "layers": 2,
+        "height": 392,
+        "nodes": [
+          {
+            "id": "a",
+            "y": 24
+          },
+          {
+            "id": "b",
+            "y": 148
+          },
+          {
+            "id": "c",
+            "y": 272
+          },
+          {
+            "id": "sink",
+            "y": 148
+          }
+        ]
+      }
+    },
+    {
+      "name": "the module emits the SVG path itself, so nothing downstream needs geometry",
+      "op": "layout",
+      "in": {
+        "nodes": [
+          {
+            "id": "a"
+          },
+          {
+            "id": "b"
+          }
+        ],
+        "edges": [
+          {
+            "from": "a",
+            "to": "b"
+          }
+        ]
+      },
+      "expect": {
+        "edges": [
+          {
+            "from": "a",
+            "to": "b",
+            "back": false,
+            "path": "M 224 72 C 272 72 272 72 320 72"
+          }
+        ]
+      }
+    },
+    {
+      "name": "the box size can be overridden, and everything moves with it",
+      "op": "layout",
+      "in": {
+        "nodes": [
+          {
+            "id": "a"
+          }
+        ],
+        "edges": [],
+        "box": {
+          "w": 100,
+          "h": 50,
+          "gapX": 10,
+          "gapY": 10
+        }
+      },
+      "expect": {
+        "width": 148,
+        "height": 98,
+        "nodes": [
+          {
+            "id": "a",
+            "w": 100,
+            "h": 50
+          }
+        ]
+      }
+    },
+    {
+      "name": "an empty graph is a valid picture, not an error",
+      "op": "layout",
+      "in": {
+        "nodes": [],
+        "edges": []
+      },
+      "expect": {
+        "layers": 0,
+        "nodes": [],
+        "edges": []
+      }
+    },
+    {
+      "name": "an edge to a node that is not here is refused",
+      "op": "layout",
+      "in": {
+        "nodes": [
+          {
+            "id": "a"
+          }
+        ],
+        "edges": [
+          {
+            "from": "a",
+            "to": "ghost"
+          }
+        ]
+      },
+      "expectError": "EBADGRAPH"
+    },
+    {
+      "name": "two nodes with the same id are refused",
+      "op": "layout",
+      "in": {
+        "nodes": [
+          {
+            "id": "a"
+          },
+          {
+            "id": "a"
+          }
+        ],
+        "edges": []
+      },
+      "expectError": "EBADGRAPH"
+    },
+    {
+      "name": "a node with no id is refused",
+      "op": "layout",
+      "in": {
+        "nodes": [
+          {}
+        ],
+        "edges": []
+      },
+      "expectError": "EBADGRAPH"
+    }
+  ]
+}

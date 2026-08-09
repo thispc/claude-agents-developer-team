@@ -156,3 +156,21 @@ test("nothing wired at all renders an empty graph rather than throwing", () => {
   assert.deepEqual(g.edges, []);
   assert.match(g.summary, /0 node/);
 });
+
+test("an edge that names operations is still matched to its line", () => {
+  // Typed edges write `from = "a.op"`; the graph carries bare node names. Keying
+  // on the raw text dropped every typed edge for want of evidence — correct
+  // behaviour against a wrong key, and invisible unless you look at dropped[].
+  const text = [
+    `[[node]]`, `name = "alpha"`, `module = "m/a"`, ``,
+    `[[node]]`, `name = "beta"`, `module = "m/b"`, ``,
+    `[[edge]]`, `from = "alpha.produce"`, `to = "beta.consume"`, `into = "thing"`,
+  ].join("\n");
+  const g = render({
+    wiringPath: "w.toml", wiringText: text,
+    nodes: [{ name: "alpha", module: "m/a" }, { name: "beta", module: "m/b" }],
+    edges: [{ from: "alpha", to: "beta" }],
+  });
+  assert.equal(g.edges.length, 1, `the typed edge should be drawn: ${JSON.stringify(g.dropped)}`);
+  assert.equal(g.edges[0]?.evidence[0]?.line, 9);
+});

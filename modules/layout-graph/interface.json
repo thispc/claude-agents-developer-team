@@ -1,0 +1,52 @@
+{
+  "name": "layout-graph",
+  "version": 1,
+  "summary": "Place nodes and route edges. A pure function of the graph, so the same system always draws the same picture.",
+  "operations": {
+    "layout": {
+      "in": {
+        "type": "object",
+        "required": ["nodes", "edges"],
+        "additionalProperties": true,
+        "properties": {
+          "nodes": { "type": "array", "items": { "type": "object", "additionalProperties": true, "required": ["id"], "properties": { "id": { "type": "string" } } } },
+          "edges": { "type": "array", "items": { "type": "object", "additionalProperties": true, "required": ["from", "to"], "properties": { "from": { "type": "string" }, "to": { "type": "string" } } } },
+          "box": { "type": "object", "additionalProperties": false, "properties": { "w": { "type": "integer" }, "h": { "type": "integer" }, "gapX": { "type": "integer" }, "gapY": { "type": "integer" } } }
+        }
+      },
+      "out": {
+        "type": "object",
+        "required": ["width", "height", "nodes", "edges", "layers"],
+        "additionalProperties": false,
+        "properties": {
+          "width": { "type": "integer" },
+          "height": { "type": "integer" },
+          "layers": { "type": "integer" },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "x", "y", "w", "h", "layer"],
+              "additionalProperties": false,
+              "properties": { "id": { "type": "string" }, "x": { "type": "integer" }, "y": { "type": "integer" }, "w": { "type": "integer" }, "h": { "type": "integer" }, "layer": { "type": "integer" } }
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["from", "to", "path", "back"],
+              "additionalProperties": false,
+              "properties": {
+                "from": { "type": "string" }, "to": { "type": "string" },
+                "path": { "type": "string", "description": "an SVG path — the module draws the line, so nothing downstream has to know geometry" },
+                "back": { "type": "boolean", "description": "true when the edge points against the flow, which is how a cycle is drawn rather than hidden" }
+              }
+            }
+          }
+        }
+      },
+      "errors": ["EBADGRAPH"]
+    }
+  }
+}

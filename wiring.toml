@@ -38,8 +38,23 @@ name = "summarise-diff"
 module = "modules/summarise-diff"
 
 [[node]]
+name = "layout-graph"
+module = "modules/layout-graph"
+
+[[node]]
 name = "inspect-ui"
 module = "modules/inspect-ui"
+
+[[edge]]
+from = "render-graph.render"
+to = "layout-graph.layout"
+why = "the picture is laid out from the same nodes and edges the Atlas derived, never from a second source"
+
+[[edge]]
+from = "layout-graph.layout"
+to = "inspect-ui.page"
+into = "layout"
+why = "the page draws the positions it was given; it computes none of its own"
 
 [[edge]]
 from = "render-graph.render"

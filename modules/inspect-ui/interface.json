@@ -6,40 +6,87 @@
     "page": {
       "in": {
         "type": "object",
-        "required": ["nodes"],
+        "required": [
+          "nodes"
+        ],
         "additionalProperties": false,
         "properties": {
-          "title": { "type": "string" },
+          "title": {
+            "type": "string"
+          },
           "nodes": {
             "type": "array",
             "items": {
               "type": "object",
               "additionalProperties": true,
-              "required": ["id", "status"],
+              "required": [
+                "id",
+                "status"
+              ],
               "properties": {
-                "id": { "type": "string" },
-                "label": { "type": "string" },
-                "module": { "type": "string" },
-                "status": { "type": "string", "enum": ["live", "refused", "unbuilt"] },
-                "contract": { "type": "string" },
-                "artifact": { "type": "string" },
-                "language": { "type": "string" },
-                "portable": { "type": "boolean" },
-                "loc": { "type": "integer" },
-                "surface": { "type": "integer" },
-                "proved": { "type": "array", "items": { "type": "string" } },
-                "note": { "type": "string" },
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "module": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "live",
+                    "refused",
+                    "unbuilt"
+                  ]
+                },
+                "contract": {
+                  "type": "string"
+                },
+                "artifact": {
+                  "type": "string"
+                },
+                "language": {
+                  "type": "string"
+                },
+                "portable": {
+                  "type": "boolean"
+                },
+                "loc": {
+                  "type": "integer"
+                },
+                "surface": {
+                  "type": "integer"
+                },
+                "proved": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "note": {
+                  "type": "string"
+                },
                 "alternatives": {
                   "type": "array",
-                  "description": "other artifacts admitted for the same contract — the relation, made visible",
+                  "description": "other artifacts admitted for the same contract \u2014 the relation, made visible",
                   "items": {
                     "type": "object",
                     "additionalProperties": true,
                     "properties": {
-                      "artifact": { "type": "string" },
-                      "language": { "type": "string" },
-                      "loc": { "type": "integer" },
-                      "live": { "type": "boolean" }
+                      "artifact": {
+                        "type": "string"
+                      },
+                      "language": {
+                        "type": "string"
+                      },
+                      "loc": {
+                        "type": "integer"
+                      },
+                      "live": {
+                        "type": "boolean"
+                      }
                     }
                   }
                 },
@@ -48,8 +95,18 @@
                   "items": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["file", "line"],
-                    "properties": { "file": { "type": "string" }, "line": { "type": "integer" } }
+                    "required": [
+                      "file",
+                      "line"
+                    ],
+                    "properties": {
+                      "file": {
+                        "type": "string"
+                      },
+                      "line": {
+                        "type": "integer"
+                      }
+                    }
                   }
                 }
               }
@@ -60,11 +117,20 @@
             "items": {
               "type": "object",
               "additionalProperties": true,
-              "required": ["from", "to"],
+              "required": [
+                "from",
+                "to"
+              ],
               "properties": {
-                "from": { "type": "string" },
-                "to": { "type": "string" },
-                "why": { "type": "string" }
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "why": {
+                  "type": "string"
+                }
               }
             }
           },
@@ -73,8 +139,18 @@
             "items": {
               "type": "object",
               "additionalProperties": true,
-              "required": ["what", "why"],
-              "properties": { "what": { "type": "string" }, "why": { "type": "string" } }
+              "required": [
+                "what",
+                "why"
+              ],
+              "properties": {
+                "what": {
+                  "type": "string"
+                },
+                "why": {
+                  "type": "string"
+                }
+              }
             }
           },
           "verdicts": {
@@ -83,20 +159,59 @@
             "items": {
               "type": "object",
               "additionalProperties": true,
-              "required": ["module", "status"],
+              "required": [
+                "module",
+                "status"
+              ],
               "properties": {
-                "module": { "type": "string" },
-                "status": { "type": "string" },
-                "summary": { "type": "string" },
+                "module": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                },
                 "gates": {
                   "type": "array",
                   "items": {
                     "type": "object",
                     "additionalProperties": true,
-                    "required": ["name", "ok"],
-                    "properties": { "name": { "type": "string" }, "ok": { "type": "boolean" }, "detail": { "type": "string" } }
+                    "required": [
+                      "name",
+                      "ok"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "ok": {
+                        "type": "boolean"
+                      },
+                      "detail": {
+                        "type": "string"
+                      }
+                    }
                   }
                 }
+              }
+            }
+          },
+          "layout": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "positions and cable paths from layout-graph. Absent means the graph is not drawn \u2014 placement is a pure function of the graph and belongs in a module that can be checked, not inside a renderer."
+          },
+          "fit": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "ok": {
+                "type": "boolean"
+              },
+              "summary": {
+                "type": "string"
               }
             }
           }
@@ -104,26 +219,53 @@
       },
       "out": {
         "type": "object",
-        "required": ["html", "stats"],
+        "required": [
+          "html",
+          "stats"
+        ],
         "additionalProperties": false,
         "properties": {
-          "html": { "type": "string", "description": "a complete self-contained document — no external stylesheet, script or font" },
+          "html": {
+            "type": "string",
+            "description": "a complete self-contained document \u2014 no external stylesheet, script or font"
+          },
           "stats": {
             "type": "object",
-            "required": ["nodes", "live", "refused", "unbuilt", "edges", "dropped"],
+            "required": [
+              "nodes",
+              "live",
+              "refused",
+              "unbuilt",
+              "edges",
+              "dropped"
+            ],
             "additionalProperties": false,
             "properties": {
-              "nodes": { "type": "integer" },
-              "live": { "type": "integer" },
-              "refused": { "type": "integer" },
-              "unbuilt": { "type": "integer" },
-              "edges": { "type": "integer" },
-              "dropped": { "type": "integer" }
+              "nodes": {
+                "type": "integer"
+              },
+              "live": {
+                "type": "integer"
+              },
+              "refused": {
+                "type": "integer"
+              },
+              "unbuilt": {
+                "type": "integer"
+              },
+              "edges": {
+                "type": "integer"
+              },
+              "dropped": {
+                "type": "integer"
+              }
             }
           }
         }
       },
-      "errors": ["EBADINPUT"]
+      "errors": [
+        "EBADINPUT"
+      ]
     }
   }
 }

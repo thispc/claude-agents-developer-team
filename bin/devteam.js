@@ -175,17 +175,32 @@ async function gatherState() {
   for (const node of graph.nodes) {
     const f = facts[node.id];
     if (!f) continue;
-    node.language = f.language;
     node.portable = f.portable;
+
     const seen = new Map();
     for (const r of ledger.admitted(f.contract)) seen.set(r.artifact, r);
+
+    // Language and size come from the artifact that is LIVE, not from the
+    // working copy. Reading them off disk is the same mistake the composer made:
+    // pin an older artifact and the card describes a file nobody is running.
+    const liveRecord = seen.get(node.artifact);
+    node.language = liveRecord?.language ?? f.language;
+    node.loc = liveRecord?.loc ?? f.loc;
+
     if (seen.size > 1) {
       node.alternatives = [...seen.values()].map((r) => ({
         artifact: r.artifact, language: r.language, loc: r.loc, live: r.artifact === node.artifact,
       }));
     }
   }
-  return { store, ledger, graph };
+  // Placement is a pure function of the graph, so it is a module like anything
+  // else — the picture cannot drift from the system it claims to draw.
+  const layoutGraph = await liveModule("layout-graph", store, ledger);
+  const layout = await layoutGraph.call("layout", { nodes: graph.nodes, edges: graph.edges });
+  layoutGraph.close();
+
+  const fit = checkFit({ wiring, root: ROOT, vaultFor });
+  return { store, ledger, graph, layout, fit };
 }
 
 async function cmdAtlas() {
@@ -372,12 +387,20 @@ async function cmdUi() {
         lastRun = await runAll();
         return send(200, "application/json", JSON.stringify(lastRun));
       }
-      const { store, ledger, graph } = await gatherState();
-      if (req.url === "/api/state") return send(200, "application/json", JSON.stringify({ ...graph, verdicts: lastRun }));
+      if (req.method === "POST" && req.url === "/api/pin") {
+        const form = new URLSearchParams(await body(req));
+        pinArtifact(form.get("contract") ?? "", form.get("artifact") ?? "");
+        // See-other back to the page: a refresh must not re-submit the switch.
+        res.writeHead(303, { location: "/" });
+        return res.end();
+      }
+
+      const { store, ledger, graph, layout, fit } = await gatherState();
+      if (req.url === "/api/state") return send(200, "application/json", JSON.stringify({ ...graph, layout, fit, verdicts: lastRun }));
       if (req.url !== "/") return send(404, "text/plain; charset=utf-8", "not found");
 
       const ui = await liveModule("inspect-ui", store, ledger);
-      const { html } = await ui.call("page", { title: relative(REPO, ROOT) || "devteam", ...graph, verdicts: lastRun });
+      const { html } = await ui.call("page", { title: relative(REPO, ROOT) || "devteam", ...graph, layout, fit, verdicts: lastRun });
       ui.close();
       return send(200, "text/html; charset=utf-8", html);
     })().catch((err) => {
@@ -424,6 +447,40 @@ async function cmdUi() {
       }
     });
   }
+}
+
+/** @param {import("node:http").IncomingMessage} req @returns {Promise<string>} */
+function body(req) {
+  return new Promise((resolve, reject) => {
+    let out = "";
+    // Bounded: a form with two hidden fields is a few hundred bytes, and an
+    // unbounded read on a public-ish socket is a way to be knocked over.
+    req.on("data", (c) => { if (out.length < 8192) out += c; });
+    req.on("end", () => resolve(out));
+    req.on("error", reject);
+  });
+}
+
+/**
+ * Switch which admitted artifact is live. Shared by the CLI and the page, so
+ * both obey the same rule: this is a choice between artifacts that ALREADY
+ * PASSED, never a way to put something live that did not.
+ * @param {string} contractPrefix @param {string} artifactPrefix
+ */
+function pinArtifact(contractPrefix, artifactPrefix) {
+  const ledger = new Ledger(join(STORE, "ledger.jsonl"));
+  const contracts = ledger.contracts().filter((c) => c.startsWith(contractPrefix));
+  if (contracts.length !== 1) throw new Error(`"${contractPrefix}" matches ${contracts.length} contracts`);
+  const contract = /** @type {string} */ (contracts[0]);
+  const matches = distinct(ledger.admitted(contract)).filter((r) => r.artifact.startsWith(artifactPrefix));
+  if (matches.length !== 1) throw new Error(`"${artifactPrefix}" matches ${matches.length} admitted artifacts for that contract`);
+  const chosen = matches[0];
+  ledger.append({
+    t: "pin", contract, artifact: chosen.artifact, module: chosen.module,
+    at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), by: "owner",
+    ...(chosen.language ? { why: `chose the ${chosen.language} implementation` } : {}),
+  });
+  return chosen;
 }
 
 /** Run every wired module through the real gates. @returns {Promise<any[]>} */
@@ -476,20 +533,7 @@ function cmdPin() {
     return;
   }
 
-  const matches = admitted.filter((r) => r.artifact.startsWith(artifactPrefix));
-  if (matches.length === 0) throw new Error(`no admitted artifact for this contract starts with ${artifactPrefix}.\n  Pinning is only ever a choice between things that already passed — it is not a way to put something live that did not.`);
-  if (matches.length > 1) throw new Error(`${artifactPrefix} matches ${matches.length} artifacts — be more specific`);
-  const chosen = /** @type {import("../kernel/index.js").Ledger extends never ? never : any} */ (matches[0]);
-
-  ledger.append({
-    t: "pin",
-    contract,
-    artifact: chosen.artifact,
-    module: chosen.module,
-    at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
-    by: "owner",
-    ...(chosen.language ? { why: `chose the ${chosen.language} implementation` } : {}),
-  });
+  const chosen = pinArtifact(contract, artifactPrefix);
   console.log(`\n  pinned ${chosen.module} → ${shortDigest(chosen.artifact)}${chosen.language ? ` (${chosen.language})` : ""}`);
   console.log(`  Auto-admit cannot move this. Nothing was deleted; switching back is another pin.\n`);
 }
