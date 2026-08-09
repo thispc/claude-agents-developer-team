@@ -7,7 +7,7 @@ import { existsSync, readdirSync, statSync, readFileSync, mkdirSync, writeFileSy
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  contractId, artifactDigest, loadManifest, resolveLive, Store, Ledger, Names, buildModule, loadWiring, shortDigest,
+  contractId, artifactDigest, loadManifest, resolveLive, checkFit, Store, Ledger, Names, buildModule, loadWiring, shortDigest,
 } from "../kernel/index.js";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -56,6 +56,7 @@ async function main() {
     case "lookup": return cmdLookup();
     case "graph": return cmdGraph();
     case "atlas": return await cmdAtlas();
+    case "fit": return cmdFit();
     case "pin": return cmdPin();
     case "ui": return await cmdUi();
     default: return usage();
@@ -72,6 +73,7 @@ function usage() {
     devteam ledger [contract]  what has satisfied which contract
     devteam pin <contract> [artifact]   choose which artifact is live — e.g. which language
     devteam lookup <prefix>    what a digest refers to, in words
+    devteam fit                do the modules actually fit together? (the composition gate)
     devteam graph              the wiring, as the kernel reads it
     devteam atlas              the system describing itself, via its own render-graph module
     devteam ui                 the same, in a browser, with a button that runs the real gates
@@ -261,6 +263,19 @@ async function cmdBuild(isGate) {
       names.set(r.artifact, r.module, `admitted for contract ${shortDigest(r.contract)}`, new Date().toISOString());
     }
     if (r.status === "refused") refused++;
+  }
+
+  if (isGate) {
+    const fit = checkFit({ wiring: loadWiring(WIRING, ROOT), root: ROOT, vaultFor });
+    console.log(`  ${fit.ok ? "·" : "✗"} composition: ${fit.summary}`);
+    for (const e of fit.edges.filter((x) => x.status === "broken")) {
+      console.log(`      FAIL ${e.edge}`);
+      for (const line of e.says) console.log(`           ${line}`);
+    }
+    if (!fit.ok) {
+      console.log(`\n  The modules each pass and do not fit together. Nothing was admitted for the composition.\n`);
+      process.exit(1);
+    }
   }
 
   if (refused > 0 && isGate) {
@@ -474,6 +489,30 @@ function cmdLookup() {
   if (!hit) return console.log(`\n  nothing in the store starts with ${prefix}\n`);
   if ("ambiguous" in hit) return console.log(`\n  ${prefix} matches ${hit.ambiguous.length} artifacts:\n${hit.ambiguous.map((h) => "    " + h).join("\n")}\n`);
   console.log(`\n  ${hit.digest}\n    module ${hit.entry.module}\n    ${hit.entry.at}\n    ${hit.entry.note}\n`);
+}
+
+/**
+ * The composition gate. Runs on schemas, before anything is started — no
+ * containers, milliseconds — because the cheapest check should catch the most,
+ * and a shape mismatch is both the commonest way a composition breaks and the
+ * one that needs no execution to prove.
+ */
+function cmdFit() {
+  const wiring = loadWiring(WIRING, ROOT);
+  const fit = checkFit({ wiring, root: ROOT, vaultFor });
+
+  console.log(`\n  ${fit.summary}\n  ${fit.id}\n`);
+  for (const e of fit.edges) {
+    const mark = e.status === "fits" ? "ok  " : e.status === "broken" ? "FAIL" : "  ? ";
+    console.log(`  ${mark} ${e.edge}`);
+    for (const line of e.says) console.log(`         ${line}`);
+  }
+  if (fit.unchecked > 0) {
+    console.log(`\n  ${fit.unchecked} edge(s) name no operations, so nothing about them was checked.`);
+    console.log(`  An unchecked edge is drawn exactly like a checked one, which is why the count is printed.`);
+  }
+  console.log("");
+  if (!fit.ok) process.exit(1);
 }
 
 function cmdGraph() {

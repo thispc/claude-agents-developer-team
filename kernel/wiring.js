@@ -46,7 +46,11 @@ import { parseToml } from "./toml.js";
  * @typedef {object} WiringEdge
  * @property {string} from
  * @property {string} to
- * @property {string} [why]   why this cable exists, in the author's words
+ * @property {string} [produces]  the producer's operation, when the edge names one
+ * @property {string} [consumes]  the consumer's operation
+ * @property {string} [take]      which part of the producer's output travels, if not all of it
+ * @property {string} [into]      which input field of that operation receives it
+ * @property {string} [why]       why this cable exists, in the author's words
  */
 
 /**
@@ -91,11 +95,45 @@ export function loadWiring(file, repoRoot) {
     if (typeof e["from"] !== "string" || typeof e["to"] !== "string") {
       throw new Error(`${file}: every [[edge]] needs "from" and "to"`);
     }
-    if (!seen.has(e["from"])) throw new Error(`${file}: edge from "${e["from"]}", which is not a declared node`);
-    if (!seen.has(e["to"])) throw new Error(`${file}: edge to "${e["to"]}", which is not a declared node`);
-    if (e["from"] === e["to"]) throw new Error(`${file}: "${e["from"]}" cannot be wired to itself`);
-    edges.push({ from: e["from"], to: e["to"], ...(typeof e["why"] === "string" ? { why: e["why"] } : {}) });
+    // An edge may name an operation — `normalise-forecast.normalise` — and when
+    // it does, the kernel can check the shapes actually fit before anything runs.
+    // A bare node name still works and is still drawn; it is simply unchecked,
+    // and the gate says how many of those there are rather than letting an
+    // unchecked edge look the same as a checked one.
+    const from = split(e["from"], "from", file, seen);
+    const to = split(e["to"], "to", file, seen);
+    if (from.node === to.node) throw new Error(`${file}: "${from.node}" cannot be wired to itself`);
+    for (const key of ["take", "into"]) {
+      if (e[key] !== undefined && typeof e[key] !== "string") {
+        throw new Error(`${file}: edge ${from.node} → ${to.node}: "${key}" must be a field name, e.g. ${key} = "forecast"`);
+      }
+    }
+    edges.push({
+      from: from.node, to: to.node,
+      ...(from.op ? { produces: from.op } : {}),
+      ...(to.op ? { consumes: to.op } : {}),
+      ...(typeof e["take"] === "string" ? { take: e["take"] } : {}),
+      ...(typeof e["into"] === "string" ? { into: e["into"] } : {}),
+      ...(typeof e["why"] === "string" ? { why: e["why"] } : {}),
+    });
   }
 
   return { nodes, edges, path: file };
+}
+
+/**
+ * `node` or `node.operation`.
+ * @param {string} raw @param {string} which @param {string} file @param {Set<string>} known
+ * @returns {{node: string, op?: string}}
+ */
+function split(raw, which, file, known) {
+  // Node names may contain hyphens but not dots, so the FIRST dot is the split.
+  const at = raw.indexOf(".");
+  const node = at === -1 ? raw : raw.slice(0, at);
+  const op = at === -1 ? undefined : raw.slice(at + 1);
+  if (!known.has(node)) {
+    throw new Error(`${file}: edge ${which} "${node}", which is not a declared node`);
+  }
+  if (op !== undefined && op === "") throw new Error(`${file}: edge ${which} "${raw}" has a trailing dot but names no operation`);
+  return op === undefined ? { node } : { node, op };
 }

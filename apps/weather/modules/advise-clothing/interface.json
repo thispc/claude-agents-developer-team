@@ -6,31 +6,81 @@
     "advise": {
       "in": {
         "type": "object",
-        "required": ["forecast"],
+        "required": [
+          "forecast"
+        ],
         "additionalProperties": false,
         "properties": {
           "forecast": {
             "type": "object",
-            "required": ["days"],
+            "required": [
+              "days"
+            ],
             "additionalProperties": true,
-            "properties": { "days": { "type": "array", "items": { "type": "object", "additionalProperties": true } } }
+            "properties": {
+              "days": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "highC",
+                    "lowC",
+                    "precipMm"
+                  ],
+                  "additionalProperties": true,
+                  "properties": {
+                    "highC": {
+                      "type": "number"
+                    },
+                    "lowC": {
+                      "type": "number"
+                    },
+                    "precipMm": {
+                      "type": "number"
+                    },
+                    "sky": {
+                      "type": "string",
+                      "enum": [
+                        "clear",
+                        "cloud",
+                        "fog",
+                        "rain",
+                        "snow",
+                        "storm",
+                        "unknown"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       },
       "out": {
         "type": "object",
-        "required": ["items", "summary"],
+        "required": [
+          "items",
+          "summary"
+        ],
         "additionalProperties": false,
         "properties": {
           "items": {
             "type": "array",
-            "items": { "type": "string" },
+            "items": {
+              "type": "string"
+            },
             "description": "sorted by codepoint, so two implementations cannot disagree about order. NOT locale-sorted: collation depends on LANG, which would make this module read its surroundings."
           },
-          "summary": { "type": "string" }
+          "summary": {
+            "type": "string"
+          }
         }
       },
-      "errors": ["EBADINPUT"]
+      "errors": [
+        "EBADINPUT"
+      ]
     }
-  }
+  },
+  "_why_the_input_is_described_in_detail": "So the composition gate has something to check. An input declared as 'an array of objects' passes every compatibility check and proves nothing \u2014 the gate is exactly as strong as the schemas either side of the edge, and a loose schema is a quiet way of opting out of it."
 }

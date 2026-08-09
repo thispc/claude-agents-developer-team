@@ -6,23 +6,90 @@
     "page": {
       "in": {
         "type": "object",
-        "required": ["forecast"],
+        "required": [
+          "forecast"
+        ],
         "additionalProperties": false,
         "properties": {
-          "forecast": { "type": "object", "additionalProperties": true },
-          "advice": { "type": "object", "additionalProperties": true }
+          "forecast": {
+            "type": "object",
+            "required": [
+              "days"
+            ],
+            "additionalProperties": true,
+            "properties": {
+              "place": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              },
+              "days": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "properties": {
+                    "date": {
+                      "type": "string"
+                    },
+                    "highC": {
+                      "type": "number"
+                    },
+                    "lowC": {
+                      "type": "number"
+                    },
+                    "precipMm": {
+                      "type": "number"
+                    },
+                    "sky": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "advice": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "summary": {
+                "type": "string"
+              }
+            }
+          }
         }
       },
       "out": {
         "type": "object",
-        "required": ["html", "days"],
+        "required": [
+          "html",
+          "days"
+        ],
         "additionalProperties": false,
         "properties": {
-          "html": { "type": "string", "description": "a complete self-contained document — no external stylesheet, script or font" },
-          "days": { "type": "integer" }
+          "html": {
+            "type": "string",
+            "description": "a complete self-contained document \u2014 no external stylesheet, script or font"
+          },
+          "days": {
+            "type": "integer"
+          }
         }
       },
-      "errors": ["EBADINPUT"]
+      "errors": [
+        "EBADINPUT"
+      ]
     }
   }
 }

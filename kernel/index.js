@@ -22,4 +22,6 @@ export { resolveLive, materialiseRunnable } from "./compose.js";
 export { openModule } from "./client.js";
 export { parseToml, TomlError } from "./toml.js";
 export { loadWiring } from "./wiring.js";
+export { checkFit } from "./fit.js";
+export { compatible } from "./compat.js";
 export { Names } from "./names.js";

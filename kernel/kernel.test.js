@@ -18,6 +18,7 @@ import { Store } from "./store.js";
 import { sizeGate, parsimony } from "./sizegate.js";
 import { loadWiring } from "./wiring.js";
 import { resolveLive } from "./compose.js";
+import { compatible } from "./compat.js";
 
 /** A minimal well-formed module on disk. @param {Partial<Record<string,string>>} [over] */
 function fixture(over = {}) {
@@ -416,3 +417,62 @@ test("walk is deterministic and skips editor litter", () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+
+// ── the composition gate ─────────────────────────────────────────────────────
+//
+// The check that nothing did until now: does what one module emits fit what the
+// next one accepts? It runs on schemas, so it costs milliseconds — and it only
+// ever fails when a mismatch can be PROVEN, because a gate that cries wolf on
+// under-specified interfaces teaches people to widen their schemas until it goes
+// quiet, which is the opposite of the point.
+
+/** @param {any} p @param {any} c */
+const errs = (p, c) => compatible(p, c).filter((f) => f.level === "error");
+
+test("a required field the producer never emits is refused", () => {
+  const produces = { type: "object", required: ["a"], properties: { a: { type: "number" } } };
+  const accepts = { type: "object", required: ["a", "b"], properties: { a: { type: "number" }, b: { type: "number" } } };
+  const [first] = errs(produces, accepts);
+  assert.ok(first);
+  assert.match(first.says, /required here, and the producer never emits it/);
+});
+
+test("a field the producer emits only SOMETIMES cannot satisfy a requirement", () => {
+  const produces = { type: "object", required: [], properties: { a: { type: "number" } } };
+  const accepts = { type: "object", required: ["a"], properties: { a: { type: "number" } } };
+  const [first] = errs(produces, accepts);
+  assert.ok(first);
+  assert.match(first.says, /only emits it sometimes/);
+});
+
+test("disjoint types are refused", () => {
+  assert.equal(errs({ type: "string" }, { type: "number" }).length, 1);
+  assert.equal(errs({ type: "integer" }, { type: "number" }).length, 0, "an integer is a number");
+});
+
+test("an enum value the consumer does not accept is refused — this is the rain/rainy case", () => {
+  const produces = { type: "string", enum: ["clear", "rainy"] };
+  const accepts = { type: "string", enum: ["clear", "rain"] };
+  const [first] = errs(produces, accepts);
+  assert.ok(first);
+  assert.match(first.says, /"rainy"/);
+});
+
+test("extra fields the consumer does not want are fine — JSON ignores them", () => {
+  const produces = { type: "object", required: ["a", "extra"], properties: { a: { type: "number" }, extra: { type: "string" } } };
+  const accepts = { type: "object", required: ["a"], properties: { a: { type: "number" } } };
+  assert.deepEqual(errs(produces, accepts), []);
+});
+
+test("the check reaches inside arrays, which is where the weather app's break was", () => {
+  const produces = { type: "object", required: ["days"], properties: { days: { type: "array", items: { type: "object", required: ["maxC"], properties: { maxC: { type: "number" } } } } } };
+  const accepts = { type: "object", required: ["days"], properties: { days: { type: "array", items: { type: "object", required: ["highC"], properties: { highC: { type: "number" } } } } } };
+  const [first] = errs(produces, accepts);
+  assert.ok(first);
+  assert.match(first.at, /days\[\]\.highC/, "the message has to point at the field, not at the top of the value");
+});
+
+test("a schema that says nothing is reported as UNCHECKED, never as broken", () => {
+  const found = compatible({ type: "object" }, { type: "object", properties: { a: { enum: [1, 2] } } });
+  assert.equal(found.filter((f) => f.level === "error").length, 0, "nothing here can be proven wrong");
+});

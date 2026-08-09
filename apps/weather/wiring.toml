@@ -45,21 +45,26 @@ name = "render-forecast"
 module = "modules/render-forecast"
 
 [[edge]]
-from = "parse-place"
-to = "match-place"
+from = "parse-place.parse"
+take = "region"
+to = "match-place.match"
+into = "region"
 why = "the region a person typed decides which of the provider's candidates they meant"
 
 [[edge]]
-from = "normalise-forecast"
-to = "advise-clothing"
+from = "normalise-forecast.normalise"
+to = "advise-clothing.advise"
+into = "forecast"
 why = "advice is drawn from the canonical forecast, never from the provider's own shape"
 
 [[edge]]
-from = "normalise-forecast"
-to = "render-forecast"
+from = "normalise-forecast.normalise"
+to = "render-forecast.page"
+into = "forecast"
 why = "the page renders the canonical forecast"
 
 [[edge]]
-from = "advise-clothing"
-to = "render-forecast"
+from = "advise-clothing.advise"
+to = "render-forecast.page"
+into = "advice"
 why = "the page shows the advice alongside the days"
