@@ -111,7 +111,7 @@ export async function verify({ moduleDir, runsRoot, heldoutDir, requireHermetic 
   // mounted read-only, so naturalness costs nothing in safety.
   const runId = `${manifest.name}-${a.digest.slice(2, 12)}-${process.pid}`;
   const work = join(runsRoot, runId, "work");
-  const toolchain = readToolchain(moduleDir, manifest);
+  const toolchain = readToolchain(moduleDir, manifest, { requireDigest: true });
   let hermetic = true;
   /** @type {"docker"|"host"} */
   let runner = "host";

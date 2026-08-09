@@ -11,7 +11,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, appendFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { contractId, artifactDigest, canonicalise, globToRegExp, walk } from "./contract.js";
+import { contractId, artifactDigest, loadManifest, readToolchain, canonicalise, globToRegExp, walk } from "./contract.js";
 import { parseToml, TomlError } from "./toml.js";
 import { Ledger, now } from "./ledger.js";
 import { Store } from "./store.js";
@@ -482,7 +482,7 @@ test("a schema that says nothing is reported as UNCHECKED, never as broken", () 
   assert.equal(found.filter((f) => f.level === "error").length, 0, "nothing here can be proven wrong");
 });
 
-test("an image pinned by tag is refused — a tag is a moving target", () => {
+test("an image pinned by tag is refused AT ADMISSION, but an already-admitted one still runs", () => {
   // This sat unnoticed while the design claimed the opposite. toolchain.json is
   // hashed into the ARTIFACT, so a tag lets two genuinely different runtimes
   // share one artifact digest, and the ledger would then serve — unverified —
@@ -490,7 +490,9 @@ test("an image pinned by tag is refused — a tag is a moving target", () => {
   // defect that disqualified Extism from this design.
   const dir = fixture();
   writeFileSync(join(dir, "toolchain.json"), JSON.stringify({ image: "node:20-alpine", language: "js", entry: "run.js", test: ["node", "--test", "tests/"] }));
-  assert.throws(() => artifactDigest(dir), /pinned by tag, which moves/);
+  // artifactDigest does not enforce it — only admission does.
+  assert.equal(artifactDigest(dir).image, "node:20-alpine");
+  assert.throws(() => readToolchain(dir, loadManifest(dir), { requireDigest: true }), /pinned by tag, which moves/);
 
   writeFileSync(join(dir, "toolchain.json"), JSON.stringify({
     image: "node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293",

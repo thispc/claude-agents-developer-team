@@ -229,9 +229,10 @@ export function artifactDigest(moduleDir) {
  * The artifact's runtime declaration.
  * @param {string} moduleDir
  * @param {Manifest} m
+ * @param {{requireDigest?: boolean}} [opts] enforced at ADMISSION, not at composition — see below
  * @returns {{image: string, language: string, entry: string, test?: string[], timeout_sec?: number, memory?: string, pids?: number}}
  */
-export function readToolchain(moduleDir, m) {
+export function readToolchain(moduleDir, m, opts = {}) {
   const path = join(moduleDir, m.toolchain);
   let t;
   try {
@@ -259,7 +260,16 @@ export function readToolchain(moduleDir, m) {
   // passed under a runtime nobody can reproduce. It is the same defect that
   // disqualified Extism from this design, and it sat here unnoticed while the
   // design claimed otherwise.
-  if (!/@sha256:[0-9a-f]{64}$/.test(t.image)) {
+  // ENFORCED AT ADMISSION ONLY, and the distinction matters more than it looks.
+  //
+  // Refusing to ADMIT an artifact whose runtime cannot be reproduced is right.
+  // Refusing to RUN one that was already admitted is not: the store is
+  // append-only precisely so that yesterday's artifact stays usable, and a rule
+  // tightened today would otherwise reach backwards and strand everything
+  // admitted before it — including whatever a human had pinned. The ledger
+  // records the image each artifact was judged under, so a weak old claim stays
+  // visible instead of being erased by making it unrunnable.
+  if (opts.requireDigest && !/@sha256:[0-9a-f]{64}$/.test(t.image)) {
     throw new Error(
       `${path}: image "${t.image}" is pinned by tag, which moves.\n` +
       `  Pin it by digest so "it passed" is a claim about a runtime that can be produced again:\n` +
