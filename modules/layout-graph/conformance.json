@@ -360,6 +360,100 @@
         "edges": []
       },
       "expectError": "EBADGRAPH"
+    },
+    {
+      "name": "an edge spanning TWO layers bends by half the configured gap, not half the distance",
+      "op": "layout",
+      "in": {
+        "nodes": [
+          {
+            "id": "a"
+          },
+          {
+            "id": "b"
+          },
+          {
+            "id": "z"
+          }
+        ],
+        "edges": [
+          {
+            "from": "a",
+            "to": "b"
+          },
+          {
+            "from": "b",
+            "to": "z"
+          },
+          {
+            "from": "a",
+            "to": "z"
+          }
+        ]
+      },
+      "expect": {
+        "edges": [
+          {
+            "from": "a",
+            "to": "b",
+            "back": false,
+            "path": "M 224 72 C 272 72 272 72 320 72"
+          },
+          {
+            "from": "b",
+            "to": "z",
+            "back": false,
+            "path": "M 520 72 C 568 72 568 72 616 72"
+          },
+          {
+            "from": "a",
+            "to": "z",
+            "back": false,
+            "path": "M 224 72 C 272 72 568 72 616 72"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a backward edge leaves and re-enters on the same side, so a cycle reads as one",
+      "op": "layout",
+      "in": {
+        "nodes": [
+          {
+            "id": "a"
+          },
+          {
+            "id": "b"
+          }
+        ],
+        "edges": [
+          {
+            "from": "a",
+            "to": "b"
+          },
+          {
+            "from": "b",
+            "to": "a"
+          }
+        ]
+      },
+      "expect": {
+        "edges": [
+          {
+            "from": "a",
+            "to": "b",
+            "back": false,
+            "path": "M 224 72 C 272 72 272 72 320 72"
+          },
+          {
+            "from": "b",
+            "to": "a",
+            "back": true,
+            "path": "M 320 72 C 272 24 272 24 224 72"
+          }
+        ]
+      }
     }
-  ]
+  ],
+  "_curve_note": "The two curve cases below exist because a differential run found them missing. Two implementations that passed every other case disagreed on the path for a multi-layer edge and for a backward edge, because the contract pinned exactly one path and a dozen rules produce it. The decision made here is a FIXED offset of half the configured gap, which is what layered graph drawers do: an edge spanning three layers should not bow three times as hard."
 }

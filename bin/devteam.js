@@ -615,14 +615,16 @@ async function cmdDiffer() {
     const r = await differ({ moduleDir: dir, store, ledger, runsRoot: RUNS, ...(vault ? { heldoutDir: vault } : {}), cases });
     const mark = r.implementations < 2 ? "  · " : r.holes.length ? "  ✗ " : "  ok ";
     console.log(`${mark}${r.module}: ${r.summary}`);
-    for (const h of r.holes.slice(0, 6)) {
-      console.log(`        ${h.operation}(${trim(JSON.stringify(h.input))})`);
-      console.log(`          ${h.says}`);
-      for (const [who, a] of Object.entries(h.answers)) {
-        console.log(`            ${who.padEnd(14)} ${a.error ? `refused ${a.error}` : trim(JSON.stringify(a.out))}`);
-      }
+    // Deduplicated by WHAT the disagreement is, not by which input triggered it.
+    // Twenty inputs usually mean two or three holes, and listing twenty makes a
+    // small finding look like a large one.
+    const distinct = new Map();
+    for (const h of r.holes) if (!distinct.has(h.says)) distinct.set(h.says, h);
+    for (const h of [...distinct.values()].slice(0, 8)) {
+      console.log(`        ${h.says}`);
+      console.log(`          seen with ${trim(JSON.stringify(h.input))}`);
     }
-    if (r.holes.length > 6) console.log(`        … and ${r.holes.length - 6} more`);
+    if (distinct.size > 8) console.log(`        … and ${distinct.size - 8} more kinds`);
     holes += r.holes.length;
   }
   console.log(holes === 0 ? "\n  No disagreements. That is evidence the contract is decided, not proof.\n" : "");

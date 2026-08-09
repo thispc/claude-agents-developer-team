@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { contractId, loadManifest } from "./contract.js";
 import { materialiseRunnable } from "./compose.js";
 import { openModule } from "./client.js";
-import { inputsFor } from "./generate.js";
+import { corpusFor } from "./generate.js";
 
 /**
  * @typedef {object} Disagreement
@@ -40,6 +40,7 @@ import { inputsFor } from "./generate.js";
  * @property {string} contract
  * @property {number} implementations
  * @property {number} cases
+ * @property {number} accepted  how many inputs actually reached the implementation
  * @property {Disagreement[]} holes
  * @property {string} summary
  */
@@ -59,6 +60,19 @@ export async function differ({ moduleDir, store, ledger, runsRoot, heldoutDir, c
   const manifest = loadManifest(moduleDir);
   const c = contractId(moduleDir, heldoutDir);
   const iface = JSON.parse(readFileSync(join(moduleDir, manifest.interface[0] ?? "interface.json"), "utf8"));
+
+  // The conformance cases are the seed corpus. They are the only inputs known to
+  // be structurally valid, and a schema alone cannot build one for any contract
+  // whose parts refer to each other.
+  /** @type {Record<string, any[]>} */
+  const seeds = {};
+  for (const rel of manifest.conformance) {
+    try {
+      for (const cs of JSON.parse(readFileSync(join(moduleDir, rel), "utf8")).cases ?? []) {
+        if (cs.expectError === undefined && cs.op) (seeds[cs.op] ??= []).push(cs.in);
+      }
+    } catch { /* a module with no conformance file falls back to schema sampling */ }
+  }
 
   // Every artifact admitted for this contract, deduplicated BY ITS CODE.
   //
@@ -85,7 +99,7 @@ export async function differ({ moduleDir, store, ledger, runsRoot, heldoutDir, c
 
   if (records.length < 2) {
     return {
-      module: manifest.name, contract: c.id, implementations: records.length, cases: 0, holes: [],
+      module: manifest.name, contract: c.id, implementations: records.length, cases: 0, accepted: 0, holes: [],
       summary: records.length === 0
         ? "nothing admitted"
         : `only ONE distinct implementation — nothing to compare. A contract is tested by a second implementation written FROM it, not from the first one's code, and re-admitting the same code under a new toolchain does not count.`,
@@ -102,10 +116,11 @@ export async function differ({ moduleDir, store, ledger, runsRoot, heldoutDir, c
   /** @type {Disagreement[]} */
   const holes = [];
   let fired = 0;
+  let accepted = 0;
 
   try {
     for (const [op, operation] of Object.entries(iface.operations ?? {})) {
-      for (const input of inputsFor(operation, cases, seed)) {
+      for (const input of corpusFor(seeds[op] ?? [], operation, cases, seed)) {
         fired++;
         /** @type {Record<string, any>} */
         const answers = {};
@@ -117,6 +132,7 @@ export async function differ({ moduleDir, store, ledger, runsRoot, heldoutDir, c
           }
         }
 
+        if (!Object.values(answers).every((a) => a.error)) accepted++;
         const shapes = new Set(Object.values(answers).map((a) => JSON.stringify(a)));
         if (shapes.size > 1) {
           holes.push({ operation: op, input, answers, says: explain(answers) });
@@ -131,12 +147,17 @@ export async function differ({ moduleDir, store, ledger, runsRoot, heldoutDir, c
     for (const { handle } of handles) handle.close();
   }
 
+  // How many inputs actually REACHED the implementation. Without this the tool
+  // can report perfect agreement about inputs that were all rejected at the front
+  // door, which is what it did on its first honest run.
   return {
     module: manifest.name, contract: c.id,
-    implementations: records.length, cases: fired, holes,
+    implementations: records.length, cases: fired, accepted, holes,
     summary: holes.length === 0
-      ? `${records.length} implementations agreed on all ${fired} generated inputs`
-      : `${holes.length} hole(s) in the contract — ${records.length} implementations that all passed its suite disagree on ${holes.length} of ${fired} generated inputs`,
+      ? accepted === 0
+        ? `${records.length} implementations agreed, but NOTHING reached them — all ${fired} inputs were refused at the front door, so this says nothing about the contract`
+        : `${records.length} implementations agreed on all ${fired} inputs (${accepted} of which they actually accepted)`
+      : `${holes.length} hole(s) in the contract — ${records.length} implementations that all passed its suite disagree on ${holes.length} of ${fired} inputs (${accepted} accepted)`,
   };
 }
 
@@ -150,5 +171,38 @@ function explain(answers) {
   if (errs.length === entries.length) {
     return `all refused it, with different codes: ${entries.map(([l, a]) => `${l}=${a.error}`).join(", ")}. The contract does not say which error this is.`;
   }
-  return `all answered, differently. The contract permits more than one answer here.`;
+  // WHERE they differ, not merely THAT they do. A truncated dump of two large
+  // objects is unusable; the field is the whole finding, because that field is
+  // the sentence the contract failed to write.
+  const [[aName, a], [bName, b]] = /** @type {[[string, any], [string, any]]} */ (entries);
+  const at = firstDifference(a.out, b.out, "");
+  return at
+    ? `${at.path} — ${aName} says ${JSON.stringify(at.a)}, ${bName} says ${JSON.stringify(at.b)}. The contract never said which.`
+    : "all answered, differently. The contract permits more than one answer here.";
+}
+
+/**
+ * The first place two answers diverge, as a path.
+ * @param {any} a @param {any} b @param {string} at
+ * @returns {{path: string, a: any, b: any} | null}
+ */
+function firstDifference(a, b, at) {
+  if (JSON.stringify(a) === JSON.stringify(b)) return null;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") {
+    return { path: at || "the answer", a, b };
+  }
+  if (Array.isArray(a) !== Array.isArray(b)) return { path: at || "the answer", a, b };
+  if (Array.isArray(a)) {
+    if (a.length !== b.length) return { path: `${at}.length`, a: a.length, b: b.length };
+    for (let i = 0; i < a.length; i++) {
+      const d = firstDifference(a[i], b[i], `${at}[${i}]`);
+      if (d) return d;
+    }
+    return null;
+  }
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+    const d = firstDifference(a[k], b[k], at ? `${at}.${k}` : k);
+    if (d) return d;
+  }
+  return null;
 }

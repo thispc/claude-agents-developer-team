@@ -1,7 +1,7 @@
 {
-  "image": "node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293",
-  "language": "js",
-  "entry": "impl/run.js",
+  "image": "python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df",
+  "language": "py",
+  "entry": "impl/run.py",
   "timeout_sec": 60,
   "memory": "256m",
   "pids": 128,
