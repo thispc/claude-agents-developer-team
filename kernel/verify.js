@@ -129,7 +129,7 @@ export async function verify({ moduleDir, runsRoot, heldoutDir, requireHermetic 
     // the same input, which is exactly what "as long as tests pass I don't care
     // if it is written in Mandarin" asks for.
     if (c.files.conformance.length > 0) {
-      const conf = await runDriver({ work, toolchain, manifest, requireHermetic });
+      const conf = await runDriver({ work, toolchain, manifest, requireHermetic, ambient: "baseline" });
       runner = conf.runner;
       hermetic = hermetic && conf.hermetic;
       gates.push({
@@ -140,6 +140,40 @@ export async function verify({ moduleDir, runsRoot, heldoutDir, requireHermetic 
           : `${firstUsefulLine(conf.output)}`,
       });
       if (!conf.ok) return done({ ok: false, gates, runner, hermetic, proposeSplit: size.proposeSplit });
+
+      // ── gate 2b: DETERMINISM. The same suite again, in a deliberately hostile
+      // world, requiring byte-identical answers.
+      //
+      // The suite on its own proves a module produced the right output ONCE. It
+      // says nothing about whether it would do so again — a module can read a
+      // clock, iterate a string set, or consult a locale and pass every case by
+      // luck. That is the difference between "these tests passed" and "this
+      // module is a function of its input", and only the second is worth
+      // caching a verdict about, because a ledger hit is never re-verified.
+      //
+      // Its blind spot is stated honestly: perturbing the environment catches
+      // nondeterminism probabilistically, and a module leaking one bit of
+      // randomness escapes about half the time. That hole is closed elsewhere —
+      // the serve shims freeze the clock and seed the generator before a line of
+      // module code loads — so the two mechanisms are complementary rather than
+      // redundant. This one catches what interposition cannot: hash ordering,
+      // collation, timezone arithmetic, and anything read out of the environment.
+      const impure = Array.isArray(/** @type {any} */ (iface).impure) ? /** @type {any} */ (iface).impure : [];
+      const again = await runDriver({ work, toolchain, manifest, requireHermetic, ambient: "hostile" });
+      const before = transcriptOf(conf.output);
+      const after = transcriptOf(again.output);
+      const stable = before !== null && before === after;
+
+      gates.push({
+        name: "determinism",
+        ok: stable,
+        detail: stable
+          ? `identical answers under a different hash seed, locale, timezone, hostname, umask and clock${impure.length ? ` (declared impure: ${impure.join(", ")})` : ""}`
+          : before === null || after === null
+            ? `could not compare runs — the driver did not report a transcript. ${firstUsefulLine(again.output)}`
+            : `the same inputs gave DIFFERENT answers on a second run (${String(before).slice(0, 12)} vs ${String(after).slice(0, 12)}). Something in this module depends on its surroundings: a string set's iteration order, a locale-sensitive comparison, a timezone, or something read from the environment. If it genuinely needs the clock or randomness, declare "impure" in interface.json — where it is hashed, and therefore visible.`,
+      });
+      if (!stable) return done({ ok: false, gates, runner, hermetic, proposeSplit: size.proposeSplit });
     }
 
     // ── gate 3: the language-specific suite, if the module has one. Its presence
@@ -241,10 +275,11 @@ export async function verify({ moduleDir, runsRoot, heldoutDir, requireHermetic 
  * `hermetic`, and a run that fell back says so in the ledger for good — nobody
  * should be able to mistake one for the other later.
  *
- * @param {{work: string, toolchain: Toolchain, cmd: string[], requireHermetic: boolean}} args
+ * @param {{work: string, toolchain: Toolchain, cmd: string[], requireHermetic: boolean, ambient?: string}} args
  */
-async function runSuite({ work, toolchain, cmd: command, requireHermetic }) {
+async function runSuite({ work, toolchain, cmd: command, requireHermetic, ambient }) {
   const timeoutMs = (toolchain.timeout_sec ?? 120) * 1000;
+  const world = ambient ? AMBIENT[ambient] : undefined;
   if (await dockerAvailable()) {
     const args = [
       "run", "--rm",
@@ -257,8 +292,14 @@ async function runSuite({ work, toolchain, cmd: command, requireHermetic }) {
       "--tmpfs", "/tmp:rw,size=64m",
       "-w", "/work",
       "-e", "HOME=/tmp",
+      ...(world?.hostname ? ["--hostname", world.hostname] : []),
+      ...(world?.cpuset ? ["--cpuset-cpus", world.cpuset] : []),
+      ...Object.entries(world?.env ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]),
       toolchain.image,
-      ...command,
+      // umask and the delay have to happen inside the container, so the command
+      // is wrapped rather than run directly. `exec` keeps the process tree flat,
+      // so the timeout still kills what it means to kill.
+      ...(world ? ["sh", "-c", `umask ${world.umask}; ${world.delayS ? `sleep ${world.delayS}; ` : ""}exec "$@"`, "--", ...command] : command),
     ];
     const r = await run("docker", args, { timeoutMs, cwd: work, env: minimalEnv() });
     return { ...r, ok: r.code === 0, runner: /** @type {"docker"} */ ("docker"), hermetic: true };
@@ -274,7 +315,7 @@ async function runSuite({ work, toolchain, cmd: command, requireHermetic }) {
 
   const [cmd, ...rest] = command;
   if (!cmd) return { ok: false, code: -1, timedOut: false, ms: 0, output: "no command to run", runner: /** @type {"host"} */ ("host"), hermetic: false };
-  const r = await run(cmd, rest, { timeoutMs, cwd: work, env: minimalEnv() });
+  const r = await run(cmd, rest, { timeoutMs, cwd: work, env: { ...minimalEnv(), ...(world?.env ?? {}) } });
   return { ...r, ok: r.code === 0, runner: /** @type {"host"} */ ("host"), hermetic: false };
 }
 
@@ -402,6 +443,82 @@ function installShims(work) {
   if (!existsSync(marker)) writeFileSync(marker, JSON.stringify({ type: "module" }) + "\n");
 }
 
+/**
+ * The two worlds a module must answer identically in.
+ *
+ * The gate runs the conformance suite twice and requires byte-identical
+ * responses. Everything varied below was chosen for catch-rate per millisecond,
+ * and three of the choices are less obvious than they look:
+ *
+ *   PYTHONHASHSEED — Python `dict` iteration is NOT affected by it; dicts have
+ *     been insertion-ordered since 3.7 and iterate a dense array. `set` and
+ *     `frozenset` OF STRINGS are affected, and that is the single highest-yield
+ *     catch available for Python.
+ *
+ *   sv_SE, not fr_FR — French collates "ä" like "a" and never fires. Swedish
+ *     sorts it after "z". The equivalent JavaScript risk is `Intl` /
+ *     `localeCompare`, which reads LANG at runtime; both node:20-alpine and
+ *     node:20-slim ship full ICU, so it is live.
+ *
+ *   Asia/Kolkata — a HALF-hour offset. Whole-hour offsets miss a class of
+ *     date-arithmetic bugs that a :30 zone catches.
+ *
+ * `--cpuset-cpus` rather than `--cpus`: the latter is a CFS quota and leaves the
+ * visible CPU count untouched, so it varies nothing a module can observe.
+ *
+ * Two runs of the SAME image are enough. Python hash randomisation is per
+ * process, so two identical `docker run` invocations already diverge; a second
+ * image would only add interpreter-version drift, which pinned digests control.
+ *
+ * WHAT IS DELIBERATELY NOT VARIED, and why, because a blind spot named is worth
+ * more than a blind spot that looks like coverage:
+ *
+ *   the build path — Debian dropped this variation, and it was their HIGHEST
+ *     yield one by a factor of five. The criterion they used was fidelity to the
+ *     real environment rather than catch rate: their builders normalise the path,
+ *     so varying it tested a difference that could no longer happen. Same here.
+ *     Modules always run at /work, in production and under test alike.
+ *
+ *   directory ordering — the second-largest cause family in Debian, and
+ *     unreachable from here: `disorderfs` is FUSE, so varying it needs
+ *     `--device /dev/fuse --cap-add SYS_ADMIN`, which gives back most of what the
+ *     sandbox exists to take away. Largely moot in this design anyway — a module
+ *     is a pure function over stdin and reads no directory.
+ *
+ *   `setarch` / ASLR — blocked by Docker's default seccomp profile, which
+ *     refuses `personality(ADDR_NO_RANDOMIZE)` precisely so that nothing in a
+ *     container can switch ASLR off. Disabling seccomp to test determinism would
+ *     be a poor trade.
+ *
+ *   faketime — the reproducible-builds tooling's own notes call it their biggest
+ *     source of flaky failures: infinite builds, autotools producing different
+ *     results with and without it, certificate expiry errors. A 1.1-second sleep
+ *     catches the same clock reads with none of that.
+ *
+ * @type {Record<string, {hostname: string, umask: string, delayS: number, cpuset?: string, env: Record<string,string>}>}
+ */
+const AMBIENT = {
+  baseline: {
+    hostname: "aaaaaaaaaaaa",
+    umask: "022",
+    delayS: 0,
+    env: { PYTHONHASHSEED: "0", TZ: "UTC", LANG: "C", LC_ALL: "C", SOURCE_DATE_EPOCH: "1000000000" },
+  },
+  hostile: {
+    hostname: "zzzzzzzzzzzz",
+    umask: "077",
+    delayS: 1.1,
+    cpuset: "0",
+    env: { PYTHONHASHSEED: "4294967295", TZ: "Asia/Kolkata", LANG: "sv_SE.UTF-8", LC_ALL: "sv_SE.UTF-8", SOURCE_DATE_EPOCH: "1600000000" },
+  },
+};
+
+/** The transcript digest a driver prints, or null if it did not get that far. @param {string} output */
+function transcriptOf(output) {
+  const m = /^#\s*transcript\s+([0-9a-f]{64})\s*$/m.exec(output);
+  return m ? m[1] : null;
+}
+
 /** How each language starts a module and drives the suite. @type {Record<string, {serve: string[], drive: string[]}>} */
 const SHIMS = {
   js: { serve: ["node", ".kernel/serve.mjs"], drive: ["node", ".kernel/drive.mjs"] },
@@ -412,9 +529,9 @@ const SHIMS = {
  * Run the language-neutral conformance suite by spawning the module and talking
  * to it over a pipe.
  *
- * @param {{work: string, toolchain: Toolchain, manifest: import("./contract.js").Manifest, requireHermetic: boolean, conformancePath?: string}} args
+ * @param {{work: string, toolchain: Toolchain, manifest: import("./contract.js").Manifest, requireHermetic: boolean, conformancePath?: string, ambient?: string}} args
  */
-async function runDriver({ work, toolchain, manifest, requireHermetic, conformancePath }) {
+async function runDriver({ work, toolchain, manifest, requireHermetic, conformancePath, ambient }) {
   const shim = SHIMS[toolchain.language];
   if (!shim) throw new Error(`no kernel shim for language ${JSON.stringify(toolchain.language)}`);
   const conf = conformancePath ?? manifest.conformance[0] ?? "conformance.json";
@@ -424,7 +541,7 @@ async function runDriver({ work, toolchain, manifest, requireHermetic, conforman
     "--",
     ...shim.serve, toolchain.entry, manifest.name,
   ];
-  return runSuite({ work, toolchain, cmd, requireHermetic });
+  return runSuite({ work, toolchain, cmd, requireHermetic, ...(ambient ? { ambient } : {}) });
 }
 
 /** How many cases the suite declares, for a verdict that says something. */

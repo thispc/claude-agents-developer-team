@@ -11,6 +11,7 @@
 #
 # Trusted kernel code. Never delegated.
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -113,6 +114,10 @@ def main():
 
     junk = []
     pending = []
+    # Every response line, exactly as received. Hashed at the end so two runs
+    # under different ambient conditions can be compared byte for byte. Must
+    # match drive.mjs.
+    transcript = hashlib.sha256()
     lock = threading.Condition()
 
     def reader():
@@ -130,6 +135,7 @@ def main():
                     junk.append(text)
                 continue
             with lock:
+                transcript.update((text + "\n").encode("utf-8"))
                 pending.append(msg)
                 lock.notify_all()
 
@@ -215,6 +221,7 @@ def main():
     for f in failures:
         print(f"not ok - {f}")
     print(f"# {passed} passed, {len(failures)} failed")
+    print(f"# transcript {transcript.hexdigest()}")
     sys.exit(0 if not failures else 1)
 
 

@@ -18,6 +18,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { createHash } from "node:crypto";
 
 const [conformancePath, interfacePath, moduleName, ...rest] = process.argv.slice(2);
 const dashdash = rest.indexOf("--");
@@ -40,6 +41,12 @@ const lines = createInterface({ input: /** @type {any} */ (child.stdout), crlfDe
 const waiting = [];
 /** @type {string[]} */
 const junk = [];
+// Every response line, exactly as received. Hashed at the end so two runs of
+// the same module under different ambient conditions can be compared byte for
+// byte. Raw bytes rather than a canonical re-encoding: the comparison is a
+// module against ITSELF, so there is nothing to normalise, and normalising
+// would only create somewhere for a difference to hide.
+const transcript = createHash("sha256");
 
 lines.on("line", (line) => {
   const text = line.trim();
@@ -54,6 +61,7 @@ lines.on("line", (line) => {
     junk.push(text);
     return;
   }
+  transcript.update(text + "\n");
   const next = waiting.shift();
   if (next) next(msg);
 });
@@ -116,6 +124,7 @@ child.kill("SIGKILL");
 
 for (const f of failures) console.log(`not ok - ${f}`);
 console.log(`# ${passed} passed, ${failures.length} failed`);
+console.log(`# transcript ${transcript.digest("hex")}`);
 process.exit(failures.length === 0 ? 0 : 1);
 
 /** @param {unknown} req @returns {Promise<any>} */

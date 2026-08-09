@@ -30,9 +30,75 @@ def _write(obj):
     sys.stdout.flush()
 
 
+def _read_impure():
+    try:
+        with open("interface.json", encoding="utf-8") as fh:
+            return set(json.load(fh).get("impure") or [])
+    except Exception:                              # noqa: BLE001 — a bare probe has no interface
+        return set()
+
+
+def _freeze_clock():
+    """Time becomes an input, not something read out of the air.
+
+    Frozen rather than forbidden: raising would break anything that merely
+    timestamps a log line, and would make verification behave differently from
+    composition. A constant keeps both honest. Mirrors freezeClock() in
+    serve.mjs — the two shims must agree, or one language is judged by different
+    rules than the other.
+    """
+    import datetime
+    import time as _time
+
+    FROZEN = 1000000000.0
+    _time.time = lambda: FROZEN
+    _time.time_ns = lambda: int(FROZEN * 1_000_000_000)
+    _time.monotonic = lambda: 0.0
+    _time.perf_counter = lambda: 0.0
+
+    real_datetime = datetime.datetime
+
+    class _FrozenDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime.fromtimestamp(FROZEN, tz)
+
+        @classmethod
+        def utcnow(cls):
+            return real_datetime.utcfromtimestamp(FROZEN)
+
+    datetime.datetime = _FrozenDatetime
+
+
+def _seed_random():
+    import random as _random
+
+    _random.seed(0x9E3779B9)
+    # uuid4 reads os.urandom directly, so seeding `random` alone would leave it
+    # live — and a UUID in the output is the loudest possible nondeterminism.
+    import os as _os
+    _counter = {"n": 0}
+
+    def _fake_urandom(n):
+        out = bytearray()
+        while len(out) < n:
+            _counter["n"] += 1
+            out.extend(_counter["n"].to_bytes(8, "little"))
+        return bytes(out[:n])
+
+    _os.urandom = _fake_urandom
+
+
 def main():
     entry = sys.argv[1] if len(sys.argv) > 1 else "run.py"
     name = sys.argv[2] if len(sys.argv) > 2 else "module"
+
+    # Before the module is loaded, so it cannot capture a live reference first.
+    impure = _read_impure()
+    if "clock" not in impure:
+        _freeze_clock()
+    if "random" not in impure:
+        _seed_random()
 
     try:
         impl = _load(entry)
