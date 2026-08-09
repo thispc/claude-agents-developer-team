@@ -23,7 +23,7 @@
 
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import { contractId, artifactDigest } from "./contract.js";
+import { contractId, artifactDigest, loadManifest } from "./contract.js";
 import { verify } from "./verify.js";
 import { now } from "./ledger.js";
 
@@ -50,7 +50,15 @@ import { now } from "./ledger.js";
  * @returns {Promise<BuildResult>}
  */
 export async function buildModule({ moduleDir, store, ledger, runsRoot, heldoutRoot, requireHermetic = false, force = false }) {
-  const c = contractId(moduleDir);
+  const manifestName = loadManifest(moduleDir).name;
+  const vault = heldoutRoot ? join(heldoutRoot, manifestName) : undefined;
+  const hasVault = Boolean(vault && existsSync(vault));
+
+  // The vault is part of the contract, so it is hashed here too. Adding a
+  // held-out test has to be a cache MISS — otherwise every artifact already
+  // admitted stays admitted having never faced it, and a ledger hit is never
+  // re-verified.
+  const c = contractId(moduleDir, hasVault ? vault : undefined);
   const a = artifactDigest(moduleDir);
 
   // THE CACHE QUESTION. Note what it is keyed on: the contract and the artifact,
@@ -69,11 +77,10 @@ export async function buildModule({ moduleDir, store, ledger, runsRoot, heldoutR
     };
   }
 
-  const heldoutDir = heldoutRoot ? join(heldoutRoot, c.name) : undefined;
   const verdict = await verify({
     moduleDir,
     runsRoot,
-    ...(heldoutDir && existsSync(heldoutDir) ? { heldoutDir } : {}),
+    ...(hasVault ? { heldoutDir: /** @type {string} */ (vault) } : {}),
     requireHermetic,
   });
 

@@ -101,6 +101,29 @@ test("a test cannot be quietly dropped from the contract", () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("adding a held-out test moves the contract id, even though the agent never sees it", () => {
+  // The hole this closes: the vault is part of what an artifact must prove, but
+  // it lives outside the module directory. Leave it out of the hash and adding a
+  // held-out test is a cache HIT — so every artifact already admitted stays
+  // admitted having never faced the new test, and a hit is never re-verified.
+  // Hashing it costs the secret nothing: a digest reveals no test.
+  const dir = fixture();
+  const vault = mkdtempSync(join(tmpdir(), "vault-"));
+
+  const withoutVault = contractId(dir).id;
+  const withEmptyVault = contractId(dir, vault).id;
+  assert.equal(withEmptyVault, withoutVault, "an empty vault is the same as no vault");
+
+  writeFileSync(join(vault, "adversarial.test.js"), "// something the implementer never sees\n");
+  const withVault = contractId(dir, vault).id;
+  assert.notEqual(withVault, withoutVault, "adding the first held-out test must be a cache miss");
+
+  writeFileSync(join(vault, "adversarial.test.js"), "// a different check entirely\n");
+  assert.notEqual(contractId(dir, vault).id, withVault, "changing a held-out test must be a cache miss too");
+
+  for (const d of [dir, vault]) rmSync(d, { recursive: true, force: true });
+});
+
 test("the implementation is hashed separately from the contract it satisfies", () => {
   const dir = fixture();
   const c = contractId(dir).id;

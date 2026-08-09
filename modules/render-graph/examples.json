@@ -1,0 +1,18 @@
+{
+  "_note": "Golden pairs. Hashed, because an example that changes is a behaviour that changes.",
+  "examples": [
+    {
+      "name": "a node with no declaration is dropped rather than drawn",
+      "in": {
+        "wiringPath": "wiring.toml",
+        "wiringText": "[[node]]\nname = \"real\"\nmodule = \"modules/real\"\n",
+        "nodes": [{ "name": "real", "module": "modules/real" }, { "name": "invented", "module": "modules/invented" }],
+        "edges": []
+      },
+      "out": {
+        "nodeIds": ["real"],
+        "dropped": ["node invented"]
+      }
+    }
+  ]
+}

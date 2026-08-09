@@ -1,0 +1,18 @@
+[module]
+name = "render-graph"
+
+[contract]
+interface = ["interface.json", "package.json"]
+tests     = ["tests/**/*.js", "examples.json"]
+toolchain = ["toolchain.json"]
+
+[prose]
+files = ["behavior.md"]
+
+[impl]
+files = ["run.js"]
+
+[limits]
+max_loc     = 2000
+mitosis_loc = 1500
+mitosis_ops = 7

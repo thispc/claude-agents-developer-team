@@ -23,7 +23,7 @@
 // assertion in a test and exactly one module does.
 
 import { createHash } from "node:crypto";
-import { readFileSync, statSync, readdirSync } from "node:fs";
+import { readFileSync, statSync, readdirSync, existsSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { parseToml } from "./toml.js";
 
@@ -97,10 +97,19 @@ export function loadManifest(moduleDir) {
 /**
  * The contract id, plus everything that went into it. The parts are returned so
  * a cache miss can be explained in one line instead of guessed at.
+ *
+ * `heldoutDir` is hashed in even though the implementing agent never sees its
+ * contents, and leaving it out was a real hole: the vault is part of what an
+ * artifact has to prove, so adding a held-out test without moving the contract
+ * id means every already-admitted artifact stays admitted having never faced it.
+ * A ledger hit is not re-verified, so nothing downstream would ever notice.
+ * Hashing the vault costs the secret nothing — a digest reveals no test.
+ *
  * @param {string} moduleDir
- * @returns {{id: string, name: string, files: {interface: FileEntry[], tests: FileEntry[], toolchain: FileEntry[]}, canonical: string}}
+ * @param {string} [heldoutDir]
+ * @returns {{id: string, name: string, files: {interface: FileEntry[], tests: FileEntry[], toolchain: FileEntry[], heldout: FileEntry[]}, canonical: string}}
  */
-export function contractId(moduleDir) {
+export function contractId(moduleDir, heldoutDir) {
   const m = loadManifest(moduleDir);
   const present = walk(moduleDir);
   const claimed = new Set();
@@ -134,17 +143,26 @@ export function contractId(moduleDir) {
   }
   void proseSet; void implSet;
 
+  // The vault. Hashed by path and content, never read into anything an agent
+  // can see. The key is always present — including when the vault is empty — so
+  // that adding the first held-out test is a visible change to the contract
+  // rather than the appearance of a field.
+  const heldout = heldoutDir && existsSync(heldoutDir)
+    ? walk(heldoutDir).map((p) => ({ path: p, sha256: sha256(readFileSync(join(heldoutDir, p))), exec: false }))
+    : [];
+
   const canonical = canonicalise({
     v: 1,
     name: m.name,
     interface: iface.map(tuple),
     tests: tests.map(tuple),
     toolchain: toolchain.map(tuple),
+    heldout: heldout.map(tuple),
   });
   return {
     id: "c-" + sha256(Buffer.from(canonical, "utf8")),
     name: m.name,
-    files: { interface: iface, tests, toolchain },
+    files: { interface: iface, tests, toolchain, heldout },
     canonical,
   };
 }

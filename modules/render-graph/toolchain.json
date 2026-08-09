@@ -1,0 +1,7 @@
+{
+  "image": "node:20-alpine",
+  "test": ["node", "--test", "tests/"],
+  "timeout_sec": 60,
+  "memory": "512m",
+  "pids": 256
+}

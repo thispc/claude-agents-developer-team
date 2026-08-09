@@ -1,0 +1,129 @@
+{
+  "name": "render-graph",
+  "version": 1,
+  "summary": "Turn the wiring and the ledger into the Atlas payload. A node or edge with no {file,line} evidence is dropped rather than drawn.",
+  "operations": {
+    "render": {
+      "in": {
+        "type": "object",
+        "required": ["wiringPath", "wiringText", "nodes", "edges"],
+        "additionalProperties": false,
+        "properties": {
+          "wiringPath": { "type": "string", "description": "shown in evidence, so it must be the path a person can actually open" },
+          "wiringText": { "type": "string", "description": "the raw file, because evidence means a real line in a real file" },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "module"],
+              "additionalProperties": false,
+              "properties": { "name": { "type": "string" }, "module": { "type": "string" } }
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["from", "to"],
+              "additionalProperties": false,
+              "properties": { "from": { "type": "string" }, "to": { "type": "string" }, "why": { "type": "string" } }
+            }
+          },
+          "ledger": {
+            "type": "array",
+            "description": "ledger records, oldest first",
+            "items": { "type": "object" }
+          },
+          "modules": {
+            "type": "object",
+            "description": "per-module facts, keyed by node name",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "contract": { "type": "string" },
+                "artifact": { "type": "string" },
+                "loc": { "type": "integer" },
+                "operations": { "type": "integer" },
+                "surface": { "type": "integer" }
+              }
+            }
+          }
+        }
+      },
+      "out": {
+        "type": "object",
+        "required": ["nodes", "edges", "dropped", "summary"],
+        "additionalProperties": false,
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "label", "module", "status", "evidence"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string" },
+                "label": { "type": "string" },
+                "module": { "type": "string" },
+                "status": { "type": "string", "enum": ["live", "refused", "unbuilt"] },
+                "contract": { "type": "string" },
+                "artifact": { "type": "string" },
+                "loc": { "type": "integer" },
+                "surface": { "type": "integer" },
+                "proved": { "type": "array", "items": { "type": "string" } },
+                "note": { "type": "string" },
+                "evidence": {
+                  "type": "array",
+                  "minItems": 1,
+                  "description": "minItems 1 is the whole point. A node that cannot name a real line in a real file is not drawn.",
+                  "items": {
+                    "type": "object",
+                    "required": ["file", "line"],
+                    "additionalProperties": false,
+                    "properties": { "file": { "type": "string" }, "line": { "type": "integer", "minimum": 1 } }
+                  }
+                }
+              }
+            }
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["from", "to", "evidence"],
+              "additionalProperties": false,
+              "properties": {
+                "from": { "type": "string" },
+                "to": { "type": "string" },
+                "why": { "type": "string" },
+                "evidence": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["file", "line"],
+                    "additionalProperties": false,
+                    "properties": { "file": { "type": "string" }, "line": { "type": "integer", "minimum": 1 } }
+                  }
+                }
+              }
+            }
+          },
+          "dropped": {
+            "type": "array",
+            "description": "what was refused, and why. Silence here would be the failure this module exists to prevent.",
+            "items": {
+              "type": "object",
+              "required": ["what", "why"],
+              "additionalProperties": false,
+              "properties": { "what": { "type": "string" }, "why": { "type": "string" } }
+            }
+          },
+          "summary": { "type": "string" }
+        }
+      },
+      "errors": ["EWIRING"]
+    }
+  }
+}

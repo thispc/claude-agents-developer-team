@@ -76,7 +76,7 @@ import { sizeGate } from "./sizegate.js";
  */
 export async function verify({ moduleDir, runsRoot, heldoutDir, requireHermetic = false }) {
   const started = Date.now();
-  const c = contractId(moduleDir);
+  const c = contractId(moduleDir, heldoutDir);
   const a = artifactDigest(moduleDir);
   const manifest = loadManifest(moduleDir);
   /** @type {Gate[]} */

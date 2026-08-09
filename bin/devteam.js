@@ -7,7 +7,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  contractId, artifactDigest, Store, Ledger, Names, buildModule, loadWiring, shortDigest,
+  contractId, artifactDigest, loadManifest, Store, Ledger, Names, buildModule, loadWiring, shortDigest,
 } from "../kernel/index.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -69,18 +69,31 @@ function targets() {
 
 function cmdId() {
   for (const dir of targets()) {
-    const c = contractId(dir);
+    const vault = vaultFor(dir);
+    const c = contractId(dir, vault);
     const a = artifactDigest(dir);
     console.log(`\n  ${c.name}`);
     console.log(`    contract  ${c.id}`);
     console.log(`    artifact  ${a.digest}   (${a.loc} lines)`);
     console.log(`    hashed:`);
     for (const [label, files] of Object.entries(c.files)) {
+      // The vault is hashed but not listed. Its filenames are a weak hint about
+      // what it checks, and this command is the sort of thing an agent gets to
+      // run; the count is what a person actually needs.
+      if (label === "heldout") continue;
       for (const f of files) console.log(`      ${label.padEnd(9)} ${f.path}  ${shortDigest(f.sha256)}`);
     }
+    console.log(`      heldout   ${c.files.heldout.length} file(s), hashed but not named here`);
     console.log(`    not hashed: the prose. Reword it freely — the contract id does not move.`);
   }
   console.log("");
+}
+
+/** The vault for a module, if it has one. @param {string} moduleDir */
+function vaultFor(moduleDir) {
+  const name = loadManifest(moduleDir).name;
+  const dir = join(HELDOUT, name);
+  return existsSync(dir) ? dir : undefined;
 }
 
 /** @param {boolean} isGate */

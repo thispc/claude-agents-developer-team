@@ -21,3 +21,12 @@
 [[node]]
 name = "run-tests"
 module = "modules/run-tests"
+
+[[node]]
+name = "render-graph"
+module = "modules/render-graph"
+
+[[edge]]
+from = "run-tests"
+to = "render-graph"
+why = "the Atlas shows which suites are green, so it draws what run-tests reported"

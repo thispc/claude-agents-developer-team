@@ -1,0 +1,11 @@
+{
+  "name": "@devteam/render-graph",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The wiring and the ledger, as the Atlas payload. No evidence, no node.",
+  "exports": {
+    ".": "./run.js"
+  },
+  "dependencies": {}
+}
