@@ -5,9 +5,9 @@
 
 import { existsSync, readdirSync, statSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import {
-  contractId, artifactDigest, loadManifest, resolveLive, checkFit, Store, Ledger, Names, buildModule, loadWiring, shortDigest,
+  contractId, artifactDigest, loadManifest, materialiseRunnable, openModule, checkFit, runScenarios, Store, Ledger, Names, buildModule, loadWiring, shortDigest,
 } from "../kernel/index.js";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -56,7 +56,7 @@ async function main() {
     case "lookup": return cmdLookup();
     case "graph": return cmdGraph();
     case "atlas": return await cmdAtlas();
-    case "fit": return cmdFit();
+    case "fit": return await cmdFit();
     case "pin": return cmdPin();
     case "ui": return await cmdUi();
     default: return usage();
@@ -155,8 +155,12 @@ async function gatherState() {
     facts[n.name] = { contract: c.id, loc: a.loc, surface: ops.length + errs.size, language: a.language, portable: c.portable };
   }
 
-  const { render } = await liveModule("render-graph", store, ledger);
-  const graph = render({
+  // SPAWNED, not imported. Until now this loaded agent-written code into the
+  // same process that holds the ledger — an append-only file it could have
+  // rewritten — with the operator's full environment. The weather app already
+  // composed this way; the platform had not caught up with its own rule.
+  const renderGraph = await liveModule("render-graph", store, ledger);
+  const graph = await renderGraph.call("render", {
     wiringPath: relative(ROOT, WIRING),
     wiringText: readFileSync(WIRING, "utf8"),
     nodes: wiring.nodes,
@@ -164,6 +168,7 @@ async function gatherState() {
     ledger: ledger.all(),
     modules: facts,
   });
+  renderGraph.close();
 
   // The relation, per node: every artifact admitted for that contract, so the
   // page can show that a slot has been filled more than once and in what.
@@ -221,8 +226,9 @@ async function cmdAtlas() {
 async function liveModule(name, store, ledger) {
   const moduleDir = join(REPO, "modules", name);
   const vault = join(REPO, "heldout", name);
-  const live = resolveLive({ moduleDir, store, ledger, runsRoot: RUNS, ...(existsSync(vault) ? { heldoutDir: vault } : {}) });
-  return import(pathToFileURL(live.path).href);
+  return openModule({
+    runnable: materialiseRunnable({ moduleDir, store, ledger, runsRoot: RUNS, ...(existsSync(vault) ? { heldoutDir: vault } : {}) }),
+  });
 }
 
 /** The vault for a module, if it has one. @param {string} moduleDir */
@@ -272,7 +278,13 @@ async function cmdBuild(isGate) {
       console.log(`      FAIL ${e.edge}`);
       for (const line of e.says) console.log(`           ${line}`);
     }
-    if (!fit.ok) {
+    const runs = await scenarios(loadWiring(WIRING, ROOT));
+    if (runs.length > 0) console.log(`  ${runs.every((r) => r.ok) ? "·" : "✗"} scenarios: ${runs.filter((r) => r.ok).length}/${runs.length} ran the real chain end to end`);
+    for (const r of runs.filter((x) => !x.ok)) {
+      console.log(`      FAIL ${r.name}`);
+      for (const line of r.says) console.log(`           ${line}`);
+    }
+    if (!fit.ok || runs.some((r) => !r.ok)) {
       console.log(`\n  The modules each pass and do not fit together. Nothing was admitted for the composition.\n`);
       process.exit(1);
     }
@@ -364,8 +376,9 @@ async function cmdUi() {
       if (req.url === "/api/state") return send(200, "application/json", JSON.stringify({ ...graph, verdicts: lastRun }));
       if (req.url !== "/") return send(404, "text/plain; charset=utf-8", "not found");
 
-      const { page } = await liveModule("inspect-ui", store, ledger);
-      const { html } = page({ title: relative(REPO, ROOT) || "devteam", ...graph, verdicts: lastRun });
+      const ui = await liveModule("inspect-ui", store, ledger);
+      const { html } = await ui.call("page", { title: relative(REPO, ROOT) || "devteam", ...graph, verdicts: lastRun });
+      ui.close();
       return send(200, "text/html; charset=utf-8", html);
     })().catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -497,7 +510,7 @@ function cmdLookup() {
  * and a shape mismatch is both the commonest way a composition breaks and the
  * one that needs no execution to prove.
  */
-function cmdFit() {
+async function cmdFit() {
   const wiring = loadWiring(WIRING, ROOT);
   const fit = checkFit({ wiring, root: ROOT, vaultFor });
 
@@ -511,8 +524,28 @@ function cmdFit() {
     console.log(`\n  ${fit.unchecked} edge(s) name no operations, so nothing about them was checked.`);
     console.log(`  An unchecked edge is drawn exactly like a checked one, which is why the count is printed.`);
   }
+  const runs = await scenarios(wiring);
+  if (runs.length > 0) {
+    console.log(`\n  ${runs.filter((r) => r.ok).length}/${runs.length} scenario(s) ran the real chain end to end`);
+    for (const r of runs) {
+      console.log(`  ${r.ok ? "ok  " : "FAIL"} ${r.name}  (${r.ms}ms)`);
+      for (const line of r.says) console.log(`         ${line}`);
+    }
+  } else {
+    console.log(`\n  No scenarios. The edge check compares shapes; only a scenario can catch a value`);
+    console.log(`  that is the right shape and the wrong content. Add ${relative(REPO, join(ROOT, "scenarios.json"))}.`);
+  }
   console.log("");
-  if (!fit.ok) process.exit(1);
+  if (!fit.ok || runs.some((r) => !r.ok)) process.exit(1);
+}
+
+/** @param {ReturnType<typeof loadWiring>} wiring */
+function scenarios(wiring) {
+  return runScenarios({
+    root: ROOT, file: join(ROOT, "scenarios.json"), wiring,
+    store: new Store(STORE), ledger: new Ledger(join(STORE, "ledger.jsonl")),
+    runsRoot: RUNS, vaultFor,
+  });
 }
 
 function cmdGraph() {

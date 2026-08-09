@@ -26,10 +26,12 @@ module = "modules/run-tests"
 name = "render-graph"
 module = "modules/render-graph"
 
-[[edge]]
-from = "run-tests"
-to = "render-graph"
-why = "the Atlas shows which suites are green, so it draws what run-tests reported"
+# There is no edge from run-tests to render-graph, and there used to be one
+# written here. The composition gate refused it: render-graph.render takes the
+# wiring and the ledger, and has never seen run-tests' output. The edge was
+# describing an intention rather than a dataflow — v1's "graph that can assert
+# an arrow the code does not have", caught this time by a machine rather than by
+# a person noticing months later.
 
 [[node]]
 name = "summarise-diff"
@@ -40,6 +42,6 @@ name = "inspect-ui"
 module = "modules/inspect-ui"
 
 [[edge]]
-from = "render-graph"
-to = "inspect-ui"
+from = "render-graph.render"
+to = "inspect-ui.page"
 why = "the inspector draws exactly the payload render-graph produced, evidence and all"

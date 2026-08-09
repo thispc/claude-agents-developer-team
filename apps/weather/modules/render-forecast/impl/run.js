@@ -9,6 +9,8 @@ export function page(input) {
   if (!days) throw bad("forecast.days must be an array");
   const place = forecast.place ?? {};
   const advice = input.advice ?? null;
+  const query = typeof input.query === "string" ? input.query : "";
+  const error = typeof input.error === "string" ? input.error : "";
 
   const html = [
     "<!doctype html>",
@@ -16,14 +18,25 @@ export function page(input) {
     '<meta name="viewport" content="width=device-width,initial-scale=1">',
     `<title>${esc(place.name ?? "Weather")}</title>`,
     `<style>${CSS}</style></head><body>`,
+    searchBox(query),
+    error ? `<p class="err">${esc(error)}</p>` : "",
     `<h1>${esc(place.name ?? "Weather")}</h1>`,
     place.lat !== undefined ? `<p class="at">${esc(fmt(place.lat))}, ${esc(fmt(place.lon))}</p>` : "",
     advice ? adviceBlock(advice) : "",
-    days.length ? `<ul class="days">${days.map(dayCard).join("")}</ul>` : `<p class="empty">No days in this forecast.</p>`,
+    days.length ? `<ul class="days">${days.map(dayCard).join("")}</ul>` : (error ? "" : `<p class="empty">No days in this forecast.</p>`),
     "</body></html>",
   ].join("");
 
   return { html, days: days.length };
+}
+
+/** A GET form: no JavaScript, so the page works with scripting off and the URL
+ * is shareable. @param {string} query */
+function searchBox(query) {
+  return `<form class="search" method="get" action="/">
+    <input name="q" value="${esc(query)}" placeholder="London, UK" aria-label="Place" autofocus>
+    <button type="submit">Look up</button>
+  </form>`;
 }
 
 /** @param {any} a */
@@ -87,5 +100,10 @@ h1{font-size:1.9rem;margin:0;letter-spacing:-.02em}
 .rain{color:var(--dim);font-size:.86rem}
 .sky{color:var(--dim);font-size:.78rem;text-transform:uppercase;letter-spacing:.06em}
 .empty{color:var(--dim)}
+.search{display:flex;gap:.5rem;margin:0 0 1.6rem}
+.search input{flex:1;font:inherit;padding:.55rem .8rem;border:1px solid var(--line);border-radius:3px;background:var(--card);color:var(--fg);min-width:0}
+.search button{font:inherit;padding:.55rem 1.1rem;border:1.5px solid var(--accent);background:transparent;color:var(--accent);border-radius:3px;cursor:pointer}
+.search button:hover{background:var(--accent);color:var(--bg)}
+.err{color:#a63a1d;background:var(--card);border-left:3px solid #a63a1d;padding:.7rem 1rem;border-radius:3px;margin:0 0 1.4rem}
 @media (max-width:32rem){.day{grid-template-columns:1.6rem 1fr auto}.rain,.sky{display:none}}
 `;

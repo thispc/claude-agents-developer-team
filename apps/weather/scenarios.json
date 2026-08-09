@@ -1,0 +1,43 @@
+{
+  "_note": "The whole picture, run for real. Each step spawns the module the ledger says is LIVE and passes the previous step's actual output into the next — so this checks the system as it is configured right now, not a set of modules in principle. The static edge check cannot see a value that is the right shape and the wrong content; this can.",
+  "scenarios": [
+    {
+      "name": "London: a recorded provider response becomes advice and a page",
+      "given": {
+        "fixture": "fixtures/london.json",
+        "candidates": [
+          { "name": "London", "country": "Canada", "country_code": "CA", "admin1": "Ontario" },
+          { "name": "London", "country": "United Kingdom", "country_code": "GB", "admin1": "England" }
+        ]
+      },
+      "steps": [
+        { "node": "parse-place", "op": "parse", "in": { "query": "London, UK" }, "as": "place" },
+        { "node": "match-place", "op": "match", "in": { "candidates": { "$": "candidates" }, "region": { "$": "place.region" } }, "as": "chosen" },
+        { "node": "normalise-forecast", "op": "normalise", "in": { "name": { "$": "place.name" }, "payload": { "$": "fixture.payload" } }, "as": "canonical" },
+        { "node": "advise-clothing", "op": "advise", "in": { "forecast": { "$": "canonical" } }, "as": "advice" },
+        { "node": "render-forecast", "op": "page", "in": { "forecast": { "$": "canonical" }, "advice": { "$": "advice" } }, "as": "page" }
+      ],
+      "expect": {
+        "place.name": "London",
+        "place.region": "UK",
+        "chosen.index": 1,
+        "canonical.place.name": "London",
+        "canonical.days.0.date": "2026-08-09",
+        "canonical.days.0.highC": 31,
+        "canonical.days.0.sky": "cloud",
+        "advice.items": ["a sun hat"],
+        "advice.summary": "Over the next 5 days: 18° to 35°. Take a sun hat.",
+        "page.days": 5
+      }
+    },
+    {
+      "name": "a place nobody can find is refused by name, and the chain stops there",
+      "given": { "candidates": [{ "name": "London", "country": "United Kingdom", "country_code": "GB" }] },
+      "steps": [
+        { "node": "parse-place", "op": "parse", "in": { "query": "London, Narnia" }, "as": "place" },
+        { "node": "match-place", "op": "match", "in": { "candidates": { "$": "candidates" }, "region": { "$": "place.region" } }, "as": "chosen" }
+      ],
+      "expectFailure": "ENOMATCH"
+    }
+  ]
+}

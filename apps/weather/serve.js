@@ -2,9 +2,9 @@
 // The weather app's shell — the EDGE TIER, and the only part of this app that
 // touches the outside world.
 //
-//   node apps/weather/serve.js london            print the page to stdout
-//   node apps/weather/serve.js london --open     write it to a file and say where
-//   node apps/weather/serve.js --offline         use the recorded fixture, no network
+//   node apps/weather/serve.js --serve           open it in a browser (the usual way)
+//   node apps/weather/serve.js london --json      the structured answer, for a script
+//   node apps/weather/serve.js --offline --json   the recorded fixture, no network
 //
 // EVERYTHING BELOW THE FETCH IS A MODULE, and nothing above it is. That split is
 // the whole demonstration:
@@ -25,7 +25,7 @@
 // small is the only control available: if it grows, the honest response is to
 // move logic down into a module, not to write tests for the shell.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Store, Ledger, materialiseRunnable, openModule } from "../../kernel/index.js";
@@ -67,17 +67,24 @@ const adviseClothing = open("advise-clothing");
 const renderForecast = open("render-forecast");
 const all = [parsePlace, matchPlace, normaliseForecast, adviseClothing, renderForecast];
 
-// ── the edge: everything from here to the next comment is impure ────────────
+/**
+ * One request, start to finish. The only impure steps are the two fetches.
+ * @param {string} q
+ */
+async function lookup(q) {
+  const place = await parsePlace.call("parse", { query: q });
 
-const place = await parsePlace.call("parse", { query });
+  let geo, payload;
+  if (flags.has("--offline")) {
+    ({ geo, payload } = JSON.parse(readFileSync(join(HERE, "fixtures", "london.json"), "utf8")));
+  } else {
+    geo = await geocode(place.name, place.region);
+    payload = await forecast(geo.latitude, geo.longitude);
+  }
 
-let geo, payload;
-if (flags.has("--offline")) {
-  const fixture = JSON.parse(readFileSync(join(HERE, "fixtures", "london.json"), "utf8"));
-  ({ geo, payload } = fixture);
-} else {
-  geo = await geocode(place.name, place.region);
-  payload = await forecast(geo.latitude, geo.longitude);
+  const canonical = await normaliseForecast.call("normalise", { name: geo.name ?? place.name, payload });
+  const advice = await adviseClothing.call("advise", { forecast: canonical });
+  return { canonical, advice };
 }
 
 /**
@@ -122,27 +129,63 @@ async function forecast(lat, lon) {
   return r.json();
 }
 
-// ── back to pure. Four modules, each handed exactly what it needs ───────────
+if (flags.has("--serve")) {
+  const { createServer } = await import("node:http");
+  const port = Number(process.env["PORT"] ?? 7790);
 
-const canonical = await normaliseForecast.call("normalise", { name: geo.name ?? place.name, payload });
-const advice = await adviseClothing.call("advise", { forecast: canonical });
-const rendered = await renderForecast.call("page", { forecast: canonical, advice });
+  /** @type {import("node:http").RequestListener} */
+  const handler = (req, res) => {
+    (async () => {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      if (url.pathname === "/favicon.ico") { res.writeHead(204); return res.end(); }
+      const q = url.searchParams.get("q") ?? "";
 
-if (flags.has("--json")) {
-  console.log(JSON.stringify({ place: canonical.place, days: canonical.days, advice }, null, 2));
-} else if (flags.has("--open")) {
-  const out = join(REPO, ".runs", "weather.html");
-  writeFileSync(out, rendered.html);
-  console.log(`\n  ${advice.summary}\n`);
-  console.log(`  wrote ${out}`);
-  console.log(`  modules used:`);
-  for (const m of all) {
-    console.log(`    ${m.language.padEnd(3)}  ${m.artifact.slice(0, 16)}…`);
+      // An empty box, or a place nobody can find, are ordinary outcomes. The page
+      // renders them; nothing 500s and nothing goes blank.
+      let out;
+      if (q.trim() === "") {
+        out = await renderForecast.call("page", { query: q, forecast: { place: {}, days: [] } });
+      } else {
+        try {
+          const { canonical, advice } = await lookup(q);
+          out = await renderForecast.call("page", { query: q, forecast: canonical, advice });
+        } catch (e) {
+          out = await renderForecast.call("page", { query: q, error: /** @type {Error} */ (e).message, forecast: { place: {}, days: [] } });
+        }
+      }
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+      res.end(out.html);
+    })().catch((e) => {
+      res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+      res.end(`the weather app could not answer:\n\n${e instanceof Error ? e.message : String(e)}\n`);
+    });
+  };
+
+  // Both loopback families: macOS resolves `localhost` to ::1 first, and binding
+  // only IPv4 makes a browser try IPv6, get refused, and fall back — or not.
+  for (const host of ["127.0.0.1", "::1"]) {
+    const s = createServer(handler);
+    s.on("error", (/** @type {any} */ err) => {
+      if (err.code === "EADDRINUSE") {
+        console.error(`\n  Port ${port} is in use — the weather app may already be running.\n  Open http://localhost:${port} , or use PORT=7791.\n`);
+        process.exit(1);
+      }
+      if (host === "::1") return;   // a machine without IPv6 keeps the other listener
+      throw err;
+    });
+    s.listen(port, host);
   }
-  console.log("");
+  console.log(`\n  weather → http://localhost:${port}`);
+  console.log(`  ${all.length} modules: ${all.map((m) => m.language).join(", ")} — spawned, not imported.`);
+  console.log(`\n  This is a server: it holds the terminal until you press Ctrl-C.\n`);
 } else {
-  process.stdout.write(rendered.html);
-}
+  const { canonical, advice } = await lookup(query);
+  const rendered = await renderForecast.call("page", { query, forecast: canonical, advice });
 
-// Five child processes; nothing waits for them.
-for (const m of all) m.close();
+  if (flags.has("--json")) {
+    console.log(JSON.stringify({ place: canonical.place, days: canonical.days, advice }, null, 2));
+  } else {
+    process.stdout.write(rendered.html);
+  }
+  for (const m of all) m.close();
+}

@@ -67,6 +67,14 @@
                 "type": "string"
               }
             }
+          },
+          "query": {
+            "type": "string",
+            "description": "what the person typed, to prefill the search box. The form lives here rather than being wrapped around this page by the shell, because the shell has no tests and this module does."
+          },
+          "error": {
+            "type": "string",
+            "description": "a message to show instead of days \u2014 a place that was not found is a normal outcome, not a crash"
           }
         }
       },
