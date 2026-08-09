@@ -1,0 +1,23 @@
+# wiring.toml — the composition graph.
+#
+# A HUMAN WRITES THIS FILE. Agents write modules; they never write this.
+#
+# The reason is not caution, it is arithmetic about reversal. Replacing a
+# module's implementation is cheap to undo — every previous version is in the
+# store, pointing back is one appended line, and the blast radius is one
+# contract. So implementations are auto-admitted, unattended. Changing this file
+# is expensive to undo and reaches everything downstream, so it is not.
+#
+# It also means a module cannot create another module. A new module is a new node
+# and a new edge, both of which live here. An agent may PROPOSE a split — and the
+# proposal has real work behind it, since the pair has to reproduce the parent's
+# behaviour against the parent's own stored implementation — but you merge the
+# diff.
+#
+# The kernel refuses to load this file if a node names a module that does not
+# exist. v1 died of a graph that could assert an arrow the code did not have; a
+# picture of the system that can lie about the system is worse than no picture.
+
+[[node]]
+name = "run-tests"
+module = "modules/run-tests"

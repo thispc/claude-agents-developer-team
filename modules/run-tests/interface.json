@@ -1,0 +1,56 @@
+{
+  "name": "run-tests",
+  "version": 1,
+  "summary": "Run a test command in a directory and report what failed, in structure rather than in prose.",
+  "operations": {
+    "run": {
+      "in": {
+        "type": "object",
+        "required": ["dir", "command"],
+        "additionalProperties": false,
+        "properties": {
+          "dir": { "type": "string", "description": "working directory the command runs in" },
+          "command": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" },
+            "description": "argv. Not a shell string — no quoting rules, no injection surface."
+          },
+          "timeoutSec": { "type": "number", "minimum": 1, "maximum": 3600, "default": 120 },
+          "env": {
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "description": "Variables to ADD to the command's environment. The command never inherits this process's environment — it is built from PATH, HOME, TMPDIR, LANG and nothing else — so anything the command needs must be named here."
+          }
+        }
+      },
+      "out": {
+        "type": "object",
+        "required": ["ok", "code", "timedOut", "ms", "total", "failures", "summary"],
+        "additionalProperties": false,
+        "properties": {
+          "ok": { "type": "boolean", "description": "exit code was 0. This is the admission signal and nothing else is." },
+          "code": { "type": "integer" },
+          "timedOut": { "type": "boolean" },
+          "ms": { "type": "integer" },
+          "total": { "type": "integer", "description": "assertions seen, 0 if the output was not TAP" },
+          "failures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["test", "message"],
+              "additionalProperties": false,
+              "properties": {
+                "test": { "type": "string" },
+                "message": { "type": "string" },
+                "at": { "type": "string", "description": "file:line, when the runner reported one" }
+              }
+            }
+          },
+          "summary": { "type": "string", "description": "one line, for a human skimming a ledger" }
+        }
+      },
+      "errors": ["ESPAWN"]
+    }
+  }
+}

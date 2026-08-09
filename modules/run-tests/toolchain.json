@@ -1,0 +1,10 @@
+{
+  "image": "node:20-alpine",
+  "test": ["node", "--test", "tests/"],
+  "timeout_sec": 120,
+  "memory": "512m",
+  "pids": 256,
+
+  "_why_this_is_hashed": "The toolchain is part of contract_id because 'the tests passed' is not a fact on its own — it is a fact about a runtime. Change the image and the same artifact is a different claim, so it is re-judged rather than assumed.",
+  "_known_gap": "The image is pinned by tag, not by digest, so the same tag could drift under us. Every verdict records which runner actually ran, and pinning by sha256 digest is the fix once there is a registry to resolve against."
+}

@@ -1,0 +1,20 @@
+{
+  "_note": "Golden input/output pairs. Hashed as part of the contract, because an example that changes is a behaviour that changes. Fields that are timing-dependent (ms) are omitted rather than pinned.",
+  "examples": [
+    {
+      "name": "a passing command",
+      "in": { "dir": "/tmp", "command": ["node", "-e", "process.exit(0)"] },
+      "out": { "ok": true, "code": 0, "timedOut": false, "total": 0, "failures": [] }
+    },
+    {
+      "name": "a failing command with cheerful output",
+      "in": { "dir": "/tmp", "command": ["node", "-e", "console.log('ok 1 - fine'); process.exit(1)"] },
+      "out": { "ok": false, "code": 1, "timedOut": false, "total": 1, "failures": [] }
+    },
+    {
+      "name": "a hang, killed at the deadline",
+      "in": { "dir": "/tmp", "command": ["node", "-e", "setInterval(()=>{},1000)"], "timeoutSec": 1 },
+      "out": { "ok": false, "code": 124, "timedOut": true, "total": 0, "failures": [] }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "name": "devteam",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Modules as verified artifacts, agents as tactics. The verifier is the compiler.",
+  "workspaces": [
+    "kernel",
+    "modules/*"
+  ],
+  "engines": {
+    "node": ">=20.10"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "gate": "node bin/devteam.js gate",
+    "id": "node bin/devteam.js id",
+    "build": "node bin/devteam.js build",
+    "ledger": "node bin/devteam.js ledger",
+    "lookup": "node bin/devteam.js lookup",
+    "test": "node --test kernel/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.7.2"
+  }
+}

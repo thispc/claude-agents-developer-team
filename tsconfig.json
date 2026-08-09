@@ -1,0 +1,39 @@
+{
+  // No build step, and no TypeScript at runtime either. Sources are ES modules
+  // that Node runs directly; `tsc --noEmit` type-checks them through JSDoc.
+  //
+  // Node 24's native type stripping would let these be .ts files with no build
+  // step. This machine has Node 20.10, so the same guarantees are bought with
+  // checkJs instead: identical resolver, identical errors, identical red
+  // squiggle while typing, and nothing to compile. Switching to .ts later is a
+  // rename plus deleting `allowJs`/`checkJs` — no other file changes.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "nodenext",
+
+    // THE GATEWAY. With `nodenext`, TypeScript resolves imports through each
+    // package's `exports` map exactly as Node does at runtime. A deep import
+    // into another module's internals — `import x from "@devteam/run-tests/src/guts.js"`
+    // — is not a lint warning, it is TS2307 "Cannot find module": a red squiggle
+    // while typing, a failed `npm run check`, and a failed CI gate. Same resolver,
+    // three places, no custom tooling.
+    "moduleResolution": "nodenext",
+
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": false,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "include": ["kernel/**/*.js", "modules/**/*.js", "bin/**/*.js"],
+  "exclude": ["node_modules", "archive", ".store", ".runs", ".cache"]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "@devteam/run-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Run a test command and report what failed, in structure rather than in prose.",
+  "exports": {
+    ".": "./run.js"
+  },
+  "dependencies": {}
+}

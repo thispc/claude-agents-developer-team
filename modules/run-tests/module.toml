@@ -1,0 +1,39 @@
+# The manifest. It says which files ARE the contract and which are merely about
+# it, and that distinction is the whole economics of the system.
+#
+# Everything under [contract] is hashed into contract_id. Touch any of it and
+# this module — and only this module — is re-derived.
+#
+# Everything under [prose] is not hashed. It is what an agent reads to know what
+# to aim at, which makes it a search heuristic rather than an identity. Reword it
+# all day; nothing rebuilds.
+#
+# Everything under [impl] is what an agent is allowed to write, and it is hashed
+# separately as the ARTIFACT. Many artifacts may satisfy one contract, which is
+# why the ledger is a relation.
+#
+# Every file in this directory must appear in exactly one of the three. A file
+# claimed by none is refused, because a file nobody declared is a file whose role
+# nobody decided — and if that file were a test, the ledger would serve an
+# artifact that was never judged against it.
+
+[module]
+name = "run-tests"
+
+[contract]
+# package.json is interface, not incidental: its `exports` map IS the front door.
+# Nothing outside this module may reach past what it lists.
+interface = ["interface.json", "package.json"]
+tests     = ["tests/**/*.js", "examples.json"]
+toolchain = ["toolchain.json"]
+
+[prose]
+files = ["behavior.md"]
+
+[impl]
+files = ["run.js"]
+
+[limits]
+max_loc     = 2000
+mitosis_loc = 1500
+mitosis_ops = 7

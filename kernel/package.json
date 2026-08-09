@@ -1,0 +1,11 @@
+{
+  "name": "@devteam/kernel",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The trusted kernel: contract hashing, the ledger, the store, and verify. Hand-written, zero dependencies, never delegated to an agent.",
+  "exports": {
+    ".": "./index.js"
+  },
+  "dependencies": {}
+}
