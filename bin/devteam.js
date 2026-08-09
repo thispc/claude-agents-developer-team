@@ -311,7 +311,8 @@ async function cmdUi() {
   /** @type {any[]} */
   let lastRun = [];
 
-  const server = createServer((req, res) => {
+  /** @type {import("node:http").RequestListener} */
+  const handler = (req, res) => {
     /** @param {number} code @param {string} type @param {string} body */
     const send = (code, type, body) => {
       res.writeHead(code, { "content-type": type, "cache-control": "no-store" });
@@ -336,13 +337,43 @@ async function cmdUi() {
       // whole point of this screen is to tell you when something did not pass.
       send(500, "text/plain; charset=utf-8", `devteam ui could not render:\n\n${message}\n`);
     });
-  });
+  };
 
-  server.listen(port, "127.0.0.1", () => {
-    console.log(`\n  devteam inspector → http://127.0.0.1:${port}`);
-    console.log(`  The page is rendered by the inspect-ui module's admitted artifact.`);
-    console.log(`  "Verify all" runs the real gates in a network-denied container. Ctrl-C to stop.\n`);
-  });
+  // BOTH loopback addresses, and this is not belt-and-braces.
+  //
+  // On macOS `localhost` resolves to ::1 before 127.0.0.1. Binding IPv4 only
+  // means a browser sent to `localhost` tries IPv6 first and gets a refusal;
+  // whether it then falls back is up to the browser, and when it does the page
+  // is slow for no visible reason. Binding 0.0.0.0 would fix it and is the wrong
+  // fix — POST /api/verify starts containers, and loopback IS the access control
+  // here. So: two listeners, both loopback, neither reachable from the network.
+  const hosts = ["127.0.0.1", "::1"];
+  let listening = 0;
+  /** @type {string[]} */
+  const bound = [];
+
+  for (const host of hosts) {
+    const s = createServer(handler);
+    s.on("error", (/** @type {any} */ err) => {
+      if (err.code === "EADDRINUSE") {
+        console.error(`\n  Port ${port} is already in use — a devteam inspector is very likely already running.`);
+        console.error(`  Open http://127.0.0.1:${port} , or run with a different port:  PORT=7789 devteam ui\n`);
+        process.exit(1);
+      }
+      // A machine with IPv6 disabled is fine; one listener is enough.
+      if (host !== "127.0.0.1" && (err.code === "EAFNOSUPPORT" || err.code === "EADDRNOTAVAIL")) return;
+      throw err;
+    });
+    s.listen(port, host, () => {
+      bound.push(host === "::1" ? `[::1]:${port}` : `${host}:${port}`);
+      if (++listening === 1) {
+        console.log(`\n  devteam inspector → http://127.0.0.1:${port}`);
+        console.log(`  The page is rendered by the inspect-ui module's admitted artifact.`);
+        console.log(`  "Verify all" runs the real gates in a network-denied container.`);
+        console.log(`\n  This is a server: it holds the terminal until you press Ctrl-C.\n`);
+      }
+    });
+  }
 }
 
 /** Run every wired module through the real gates. @returns {Promise<any[]>} */
