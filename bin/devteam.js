@@ -206,9 +206,20 @@ async function cmdAtlas() {
  * @param {string} name @param {import("../kernel/index.js").Store} store @param {import("../kernel/index.js").Ledger} ledger
  * @returns {Promise<any>}
  */
+/**
+ * Load one of the PLATFORM's own modules — render-graph, inspect-ui.
+ *
+ * Always from the repo, never from the workspace being looked at. These are
+ * devteam's viewing tools; a project has no reason to ship its own copy, and
+ * looking for one inside `apps/weather/modules/` is how `devteam --in=apps/weather ui`
+ * came to report that the weather app was missing a module called render-graph.
+ *
+ * @param {string} name @param {import("../kernel/index.js").Store} store @param {import("../kernel/index.js").Ledger} ledger
+ */
 async function liveModule(name, store, ledger) {
-  const moduleDir = join(ROOT, "modules", name);
-  const live = resolveLive({ moduleDir, store, ledger, runsRoot: RUNS, ...(vaultFor(moduleDir) ? { heldoutDir: /** @type {string} */ (vaultFor(moduleDir)) } : {}) });
+  const moduleDir = join(REPO, "modules", name);
+  const vault = join(REPO, "heldout", name);
+  const live = resolveLive({ moduleDir, store, ledger, runsRoot: RUNS, ...(existsSync(vault) ? { heldoutDir: vault } : {}) });
   return import(pathToFileURL(live.path).href);
 }
 
@@ -339,7 +350,7 @@ async function cmdUi() {
       if (req.url !== "/") return send(404, "text/plain; charset=utf-8", "not found");
 
       const { page } = await liveModule("inspect-ui", store, ledger);
-      const { html } = page({ title: "devteam", ...graph, verdicts: lastRun });
+      const { html } = page({ title: relative(REPO, ROOT) || "devteam", ...graph, verdicts: lastRun });
       return send(200, "text/html; charset=utf-8", html);
     })().catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
