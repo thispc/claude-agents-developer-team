@@ -23,16 +23,30 @@ import { contractId, loadManifest, readToolchain } from "./contract.js";
  * @param {import("./ledger.js").Ledger} args.ledger
  * @param {string} args.runsRoot
  * @param {string} [args.heldoutDir]
+ * @param {string} [args.pinned] a specific admitted artifact, instead of whatever is live.
+ *   Used by the differential gate, which must run SEVERAL artifacts of one contract
+ *   side by side — "which is live" is meaningless there, since the whole point is
+ *   that they are all equally admitted.
  * @returns {{path: string, dir: string, artifact: string, via: "pin"|"admit", language: string, entry: string}}
  */
-export function resolveLive({ moduleDir, store, ledger, runsRoot, heldoutDir }) {
+export function resolveLive({ moduleDir, store, ledger, runsRoot, heldoutDir, pinned }) {
   const manifest = loadManifest(moduleDir);
   const c = contractId(moduleDir, heldoutDir);
-  const live = ledger.live(c.id);
+  const live = pinned
+    ? (ledger.admitted(c.id).some((r) => r.artifact === pinned)
+        ? { artifact: pinned, via: /** @type {"admit"} */ ("admit"), at: "" }
+        // Refusing here rather than materialising it anyway: running an artifact
+        // that was never admitted for this contract would make the comparison
+        // meaningless, since a disagreement would then say nothing about the
+        // contract.
+        : null)
+    : ledger.live(c.id);
   if (!live) {
     throw new Error(
-      `${manifest.name}: nothing is admitted for the current contract.\n` +
-      `  Run \`devteam build\` — and if it is refused, the refusal is the answer, not an obstacle to work around.`
+      pinned
+        ? `${manifest.name}: ${pinned.slice(0, 14)}… is not an admitted artifact for the current contract.`
+        : `${manifest.name}: nothing is admitted for the current contract.\n` +
+          `  Run \`devteam build\` — and if it is refused, the refusal is the answer, not an obstacle to work around.`
     );
   }
 
@@ -103,11 +117,12 @@ const SHIMS = {
  * @param {import("./ledger.js").Ledger} args.ledger
  * @param {string} args.runsRoot
  * @param {string} [args.heldoutDir]
+ * @param {string} [args.pinned] a specific admitted artifact instead of whatever is live
  * @returns {Runnable}
  */
-export function materialiseRunnable({ moduleDir, store, ledger, runsRoot, heldoutDir }) {
+export function materialiseRunnable({ moduleDir, store, ledger, runsRoot, heldoutDir, pinned }) {
   const manifest = loadManifest(moduleDir);
-  const live = resolveLive({ moduleDir, store, ledger, runsRoot, ...(heldoutDir ? { heldoutDir } : {}) });
+  const live = resolveLive({ moduleDir, store, ledger, runsRoot, ...(heldoutDir ? { heldoutDir } : {}), ...(pinned ? { pinned } : {}) });
 
   const iface = manifest.interface[0] ?? "interface.json";
   const target = join(live.dir, iface);

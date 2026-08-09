@@ -7,7 +7,7 @@ import { existsSync, readdirSync, statSync, readFileSync, mkdirSync, writeFileSy
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  contractId, artifactDigest, loadManifest, materialiseRunnable, openModule, checkFit, runScenarios, Store, Ledger, Names, buildModule, loadWiring, shortDigest,
+  contractId, artifactDigest, loadManifest, materialiseRunnable, openModule, checkFit, runScenarios, differ, Store, Ledger, Names, buildModule, loadWiring, shortDigest,
 } from "../kernel/index.js";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -57,6 +57,7 @@ async function main() {
     case "graph": return cmdGraph();
     case "atlas": return await cmdAtlas();
     case "fit": return await cmdFit();
+    case "differ": return await cmdDiffer();
     case "pin": return cmdPin();
     case "ui": return await cmdUi();
     default: return usage();
@@ -74,6 +75,8 @@ function usage() {
     devteam pin <contract> [artifact]   choose which artifact is live — e.g. which language
     devteam lookup <prefix>    what a digest refers to, in words
     devteam fit                do the modules actually fit together? (the composition gate)
+    devteam differ [module]    fire generated inputs at every implementation of one contract.
+                               Any disagreement is a hole in the CONTRACT, not in either of them.
     devteam graph              the wiring, as the kernel reads it
     devteam atlas              the system describing itself, via its own render-graph module
     devteam ui                 the same, in a browser, with a button that runs the real gates
@@ -591,6 +594,43 @@ function scenarios(wiring) {
     runsRoot: RUNS, vaultFor,
   });
 }
+
+/**
+ * The differential gate.
+ *
+ * A contract written by whoever also wrote the implementation encodes one
+ * understanding twice; its cases pass because both sides share the same blind
+ * spots. A second implementation, written FROM the contract rather than from the
+ * first one's code, does not share them — so every disagreement between them is
+ * a place the contract failed to say something.
+ */
+async function cmdDiffer() {
+  const store = new Store(STORE);
+  const ledger = new Ledger(join(STORE, "ledger.jsonl"));
+  const cases = Number(process.env["CASES"] ?? 200);
+  let holes = 0;
+
+  for (const dir of targets()) {
+    const vault = vaultFor(dir);
+    const r = await differ({ moduleDir: dir, store, ledger, runsRoot: RUNS, ...(vault ? { heldoutDir: vault } : {}), cases });
+    const mark = r.implementations < 2 ? "  · " : r.holes.length ? "  ✗ " : "  ok ";
+    console.log(`${mark}${r.module}: ${r.summary}`);
+    for (const h of r.holes.slice(0, 6)) {
+      console.log(`        ${h.operation}(${trim(JSON.stringify(h.input))})`);
+      console.log(`          ${h.says}`);
+      for (const [who, a] of Object.entries(h.answers)) {
+        console.log(`            ${who.padEnd(14)} ${a.error ? `refused ${a.error}` : trim(JSON.stringify(a.out))}`);
+      }
+    }
+    if (r.holes.length > 6) console.log(`        … and ${r.holes.length - 6} more`);
+    holes += r.holes.length;
+  }
+  console.log(holes === 0 ? "\n  No disagreements. That is evidence the contract is decided, not proof.\n" : "");
+  if (holes > 0) process.exit(1);
+}
+
+/** @param {string} s */
+function trim(s) { return s.length > 110 ? s.slice(0, 107) + "…" : s; }
 
 function cmdGraph() {
   const w = loadWiring(WIRING, ROOT);
