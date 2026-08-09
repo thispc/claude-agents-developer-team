@@ -1,0 +1,45 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+*.db
+# every service opens its db WAL (SERVICE_CONTRACT rule 1), and WAL leaves two
+# sidecar files beside it — untracked and unignored, they ride into the next
+# `git add -A` as binary noise
+*.db-wal
+*.db-shm
+*.sqlite3
+workspaces/
+previews/
+# what a project with no remote built, kept where the pruner cannot reach it.
+# Runtime state like the three above — the user's software, not ours.
+deliverables/
+.DS_Store
+node_modules/
+
+# local build/run artifacts of deployed projects
+deployments/
+.devteam-deploy.json
+
+# sandbox worktree + throwaway db for trying a self-repair build
+.sandbox/
+# self-repair v2 worktrees (disposable branches the IT crew builds in)
+.repair/
+
+# filled-in k8s secrets must never be committed
+deploy/k8s/secrets.yaml
+
+# the fleet's generated artifacts (tools/gen_fleet.py, from services.yaml) and
+# fetched binaries. Deliberately NOT the whole data/ dir: devteam.db lives at the
+# repo root, and future services keep their stores in data/*.db (already covered
+# by *.db above) — only env, minted tokens, logs and the derived topology are
+# generated/secret and must never be committed.
+process-compose.yaml
+data/env/
+data/tokens/
+data/logs/
+data/fleet_topology.json
+tools/bin/
+# hypothesis's example cache (the template's Schemathesis contract tests)
+.hypothesis/
