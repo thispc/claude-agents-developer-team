@@ -3,9 +3,9 @@
 // lines over kernel/, because anything that decides something belongs in the
 // kernel where it can be read in one sitting, not in an entry point.
 
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync, readdirSync, statSync, readFileSync, mkdirSync } from "node:fs";
+import { join, dirname, resolve, relative } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   contractId, artifactDigest, loadManifest, Store, Ledger, Names, buildModule, loadWiring, shortDigest,
 } from "../kernel/index.js";
@@ -35,6 +35,7 @@ async function main() {
     case "ledger": return cmdLedger();
     case "lookup": return cmdLookup();
     case "graph": return cmdGraph();
+    case "atlas": return await cmdAtlas();
     default: return usage();
   }
 }
@@ -49,6 +50,7 @@ function usage() {
     devteam ledger [contract]  what has satisfied which contract
     devteam lookup <prefix>    what a digest refers to, in words
     devteam graph              the wiring, as the kernel reads it
+    devteam atlas              the system describing itself, via its own render-graph module
 
   flags
     --force      re-judge even when the ledger already has this exact artifact
@@ -87,6 +89,85 @@ function cmdId() {
     console.log(`    not hashed: the prose. Reword it freely — the contract id does not move.`);
   }
   console.log("");
+}
+
+/**
+ * The Atlas — and the first place the platform composes one of its own modules
+ * rather than merely judging it.
+ *
+ * Note WHICH copy it runs. Not `modules/render-graph/run.js` on disk, but the
+ * artifact the ledger says is live, materialised out of the content-addressed
+ * store. That distinction is the whole design in one command: break the working
+ * copy and this keeps working, because the admitted artifact was never touched.
+ * A dev tool that imported the working copy would quietly make "passing means
+ * live" decorative.
+ *
+ * The kernel itself never imports a module. Only this shell does, so a broken
+ * module can never stop `devteam build` from being able to fix it.
+ */
+async function cmdAtlas() {
+  const store = new Store(STORE);
+  const ledger = new Ledger(join(STORE, "ledger.jsonl"));
+  const wiring = loadWiring(WIRING, ROOT);
+
+  /** @type {Record<string, {contract: string, loc: number, surface: number}>} */
+  const facts = {};
+  for (const n of wiring.nodes) {
+    const dir = join(ROOT, n.module);
+    const c = contractId(dir, vaultFor(dir));
+    const a = artifactDigest(dir);
+    const iface = JSON.parse(readFileSync(join(dir, /** @type {string} */ (c.files.interface.find((f) => f.path === "interface.json")?.path)), "utf8"));
+    const ops = Object.keys(iface.operations ?? {});
+    const errs = new Set(ops.flatMap((/** @type {string} */ o) => iface.operations[o].errors ?? []));
+    facts[n.name] = { contract: c.id, loc: a.loc, surface: ops.length + errs.size };
+  }
+
+  const { render } = await liveModule("render-graph", store, ledger);
+  const g = render({
+    wiringPath: relative(ROOT, WIRING),
+    wiringText: readFileSync(WIRING, "utf8"),
+    nodes: wiring.nodes,
+    edges: wiring.edges,
+    ledger: ledger.all(),
+    modules: facts,
+  });
+
+  console.log(`\n  ${g.summary}\n`);
+  for (const n of g.nodes) {
+    const dot = n.status === "live" ? "●" : n.status === "refused" ? "✗" : "○";
+    console.log(`  ${dot} ${n.label.padEnd(14)} ${String(n.status).padEnd(8)} ${n.loc ?? "?"} lines · surface ${n.surface ?? "?"}`);
+    if (n.proved?.length) console.log(`      proved   ${n.proved.join(", ")}`);
+    if (n.note) console.log(`      note     ${n.note}`);
+    for (const e of n.evidence) console.log(`      evidence ${e.file}:${e.line}`);
+  }
+  if (g.edges.length) console.log("");
+  for (const e of g.edges) {
+    console.log(`  ${e.from} → ${e.to}`);
+    if (e.why) console.log(`      ${e.why}`);
+    console.log(`      evidence ${e.evidence[0]?.file}:${e.evidence[0]?.line}`);
+  }
+  for (const d of g.dropped) console.log(`\n  DROPPED ${d.what} — ${d.why}`);
+  console.log("");
+}
+
+/**
+ * Import a module's LIVE artifact out of the store.
+ * @param {string} name @param {import("../kernel/index.js").Store} store @param {import("../kernel/index.js").Ledger} ledger
+ * @returns {Promise<any>}
+ */
+async function liveModule(name, store, ledger) {
+  const dir = join(ROOT, "modules", name);
+  const c = contractId(dir, vaultFor(dir));
+  const live = ledger.live(c.id);
+  if (!live) {
+    throw new Error(`${name}: nothing is admitted for the current contract.\n  Run \`node bin/devteam.js build\` — and if it is refused, that refusal is the answer, not an obstacle to work around.`);
+  }
+  const out = join(RUNS, "live", live.artifact);
+  if (!existsSync(join(out, "run.js"))) {
+    mkdirSync(out, { recursive: true });
+    store.materialise(live.artifact, out);
+  }
+  return import(pathToFileURL(join(out, "run.js")).href);
 }
 
 /** The vault for a module, if it has one. @param {string} moduleDir */
