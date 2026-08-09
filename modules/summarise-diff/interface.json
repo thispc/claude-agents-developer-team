@@ -1,0 +1,31 @@
+{
+  "name": "summarise-diff",
+  "version": 1,
+  "summary": "Given two texts, say how many lines were added, removed and left alone.",
+  "operations": {
+    "summarise": {
+      "in": {
+        "type": "object",
+        "required": ["before", "after"],
+        "additionalProperties": false,
+        "properties": {
+          "before": { "type": "string" },
+          "after": { "type": "string" }
+        }
+      },
+      "out": {
+        "type": "object",
+        "required": ["added", "removed", "unchanged", "changed", "summary"],
+        "additionalProperties": false,
+        "properties": {
+          "added": { "type": "integer", "minimum": 0 },
+          "removed": { "type": "integer", "minimum": 0 },
+          "unchanged": { "type": "integer", "minimum": 0, "description": "the length of the longest common subsequence of lines — unique even though the subsequence itself is not, which is why two implementations must agree on it" },
+          "changed": { "type": "boolean" },
+          "summary": { "type": "string", "description": "\"no change\", or \"+A -R\". Pinned exactly, because a summary that drifts between implementations is a contract that drifts." }
+        }
+      },
+      "errors": ["EBADINPUT", "ETOOBIG"]
+    }
+  }
+}

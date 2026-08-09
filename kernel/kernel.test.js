@@ -27,13 +27,12 @@ function fixture(over = {}) {
       `[module]`, `name = "fixture"`, ``,
       `[contract]`,
       `interface = ["interface.json"]`,
-      `tests = ["tests/**/*.js"]`,
-      `toolchain = ["toolchain.json"]`, ``,
+      `tests = ["tests/**/*.js"]`, ``,
       `[prose]`, `files = ["behavior.md"]`, ``,
-      `[impl]`, `files = ["run.js"]`,
+      `[impl]`, `files = ["run.js"]`, `toolchain = "toolchain.json"`,
     ].join("\n"),
     "interface.json": JSON.stringify({ name: "fixture", operations: { go: { errors: ["EBAD"] } } }),
-    "toolchain.json": JSON.stringify({ image: "node:20-alpine", test: ["node", "--test", "tests/"] }),
+    "toolchain.json": JSON.stringify({ image: "node:20-alpine", language: "js", entry: "run.js", test: ["node", "--test", "tests/"] }),
     "behavior.md": "# fixture\n\nProse. Not hashed.\n",
     "run.js": "export const go = () => 1;\n",
     "tests/go.test.js": "import assert from 'node:assert';\nassert.ok(true);\n",
@@ -64,11 +63,41 @@ test("changing one assertion in a test does move it", () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("changing the toolchain moves it — 'the tests passed' is a fact about a runtime", () => {
+test("the toolchain belongs to the ARTIFACT — which is what lets another language fill the same slot", () => {
+  // While the toolchain sat in the contract, a Python implementation of the same
+  // interface hashed to a DIFFERENT contract id, so it was not an alternative
+  // way to fill the slot — it was a different slot, and two implementations
+  // passing the identical suite had no way to say so.
+  //
+  // Nothing is lost by the move: the toolchain still changes the ARTIFACT
+  // digest, so swapping the image still forces a fresh verification and "it
+  // passed" remains a claim about a pinned runtime.
   const dir = fixture();
-  const before = contractId(dir).id;
-  writeFileSync(join(dir, "toolchain.json"), JSON.stringify({ image: "node:22-alpine", test: ["node", "--test", "tests/"] }));
-  assert.notEqual(contractId(dir).id, before);
+  const contractBefore = contractId(dir).id;
+  const artifactBefore = artifactDigest(dir).digest;
+
+  writeFileSync(join(dir, "toolchain.json"), JSON.stringify({ image: "node:22-alpine", language: "js", entry: "run.js", test: ["node", "--test", "tests/"] }));
+  assert.equal(contractId(dir).id, contractBefore, "the runtime describes an implementation, not what every implementation must satisfy");
+  assert.notEqual(artifactDigest(dir).digest, artifactBefore, "but it is still judged: a different runtime is a different claim");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a module judged only by language-neutral cases is portable; one carrying language-specific tests is not", () => {
+  const dir = fixture();
+  assert.equal(contractId(dir).portable, false, "the fixture has tests/**/*.js, which can only judge a JavaScript implementation");
+
+  // Move the same module to conformance-only and it becomes fillable by anything.
+  rmSync(join(dir, "tests"), { recursive: true, force: true });
+  writeFileSync(join(dir, "conformance.json"), JSON.stringify({ cases: [{ name: "one", op: "go", in: {}, expect: {} }] }));
+  writeFileSync(join(dir, "module.toml"), readFileSync(join(dir, "module.toml"), "utf8").replace(`tests = ["tests/**/*.js"]`, `conformance = ["conformance.json"]`));
+  assert.equal(contractId(dir).portable, true);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a language with no kernel shim is refused by name, not accepted and mishandled", () => {
+  const dir = fixture();
+  writeFileSync(join(dir, "toolchain.json"), JSON.stringify({ image: "ghcr.io/x", language: "brainfuck", entry: "run.js", test: ["x"] }));
+  assert.throws(() => artifactDigest(dir), /has no kernel shim/);
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -162,11 +191,12 @@ test("a file claimed by two sets is refused", () => {
   rmSync(base, { recursive: true, force: true });
 });
 
-test("a module with no tests cannot be declared at all", () => {
+test("a module with neither conformance cases nor tests cannot be declared at all", () => {
   const dir = fixture();
+  rmSync(join(dir, "tests"), { recursive: true, force: true });
   const toml = readFileSync(join(dir, "module.toml"), "utf8").replace(`tests = ["tests/**/*.js"]`, `tests = []`);
   writeFileSync(join(dir, "module.toml"), toml);
-  assert.throws(() => contractId(dir), /tests cannot be empty/);
+  assert.throws(() => contractId(dir), /conformance, \[contract\] tests, or both/);
   rmSync(dir, { recursive: true, force: true });
 });
 

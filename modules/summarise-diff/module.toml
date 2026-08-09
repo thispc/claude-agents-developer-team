@@ -1,0 +1,40 @@
+# A PORTABLE module. Nothing in this manifest names a language.
+#
+# [contract] holds only interface.json and conformance.json — the shape of the
+# front door, and cases stated as data rather than as code. Neither mentions
+# JavaScript or Python, so contract_id is the same whoever fills the slot.
+#
+# [impl] is a DIRECTORY, not a file, and that is what makes the swap possible.
+# A JavaScript implementation puts impl/run.js there; a Python one puts
+# impl/run.py. module.toml is byte-identical either way, so it hashes the same,
+# so both are alternative artifacts satisfying ONE contract rather than two
+# different contracts that happen to look alike.
+#
+# The toolchain sits under [impl] for the same reason. "Which image, which
+# language, which entry file" describes THIS implementation. It is hashed into
+# the artifact — change the image and this implementation is re-judged — but it
+# is not part of what every implementation must satisfy.
+#
+# Compare modules/run-tests, which also carries [contract] tests written in
+# JavaScript. Those tests can only judge a JavaScript implementation, so that
+# module is locked to its language. The kernel reports this as `portable`, and
+# it is a real property of a module, not a footnote.
+
+[module]
+name = "summarise-diff"
+
+[contract]
+interface   = ["interface.json"]
+conformance = ["conformance.json"]
+
+[prose]
+files = ["behavior.md"]
+
+[impl]
+files     = ["impl/**"]
+toolchain = "impl/toolchain.json"
+
+[limits]
+max_loc     = 400
+mitosis_loc = 300
+mitosis_ops = 4

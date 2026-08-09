@@ -28,7 +28,9 @@ import { join, relative, sep } from "node:path";
 import { parseToml } from "./toml.js";
 
 /** Files that are never part of any set — editor and OS litter. */
-const ALWAYS_IGNORED = [".DS_Store", ".git", "node_modules", ".store", ".runs", ".cache"];
+// `.kernel` is where the transport shims land inside a sandbox tree. A module
+// directory must never contain one, and never claim one.
+const ALWAYS_IGNORED = [".DS_Store", ".git", "node_modules", ".store", ".runs", ".cache", ".kernel"];
 
 /** The manifest. Always hashed, never declarable, never optional. */
 const MANIFEST = "module.toml";
@@ -44,8 +46,10 @@ const MANIFEST = "module.toml";
  * @typedef {object} Manifest
  * @property {string} name
  * @property {string[]} interface
- * @property {string[]} tests
- * @property {string[]} toolchain
+ * @property {string[]} conformance  language-neutral cases. A module judged ONLY by these is
+ *                                   replaceable by an implementation in any language.
+ * @property {string[]} tests        language-specific. Their presence locks the module to that language.
+ * @property {string} toolchain      ARTIFACT-side: the image, the language, how to start it
  * @property {string[]} prose
  * @property {string[]} impl
  * @property {{maxLoc: number, mitosisLoc: number, mitosisOps: number}} limits
@@ -71,15 +75,34 @@ export function loadManifest(moduleDir) {
 
   const contract = t["contract"] ?? {};
   const iface = strings(contract["interface"], `${file}: [contract] interface`);
+  const conformance = strings(contract["conformance"], `${file}: [contract] conformance`);
   const tests = strings(contract["tests"], `${file}: [contract] tests`);
-  const toolchain = strings(contract["toolchain"], `${file}: [contract] toolchain`);
   if (iface.length === 0) throw new Error(`${file}: [contract] interface cannot be empty — a module with no declared interface has no front door`);
-  if (tests.length === 0) throw new Error(`${file}: [contract] tests cannot be empty — "as long as tests pass" is the whole admission rule, so a module with no tests can never be admitted`);
-  if (toolchain.length === 0) throw new Error(`${file}: [contract] toolchain cannot be empty — without a pinned runtime, "it passed" is not reproducible`);
+  if (conformance.length === 0 && tests.length === 0) {
+    throw new Error(`${file}: declare [contract] conformance, [contract] tests, or both. "As long as tests pass" is the entire admission rule, so a module with neither can never be admitted.`);
+  }
 
   const prose = strings(t["prose"]?.["files"], `${file}: [prose] files`);
   const impl = strings(t["impl"]?.["files"], `${file}: [impl] files`);
   if (impl.length === 0) throw new Error(`${file}: [impl] files cannot be empty — declare what the agent is allowed to write`);
+
+  // THE TOOLCHAIN BELONGS TO THE ARTIFACT, NOT THE CONTRACT, and moving it here
+  // is what makes a module replaceable by one written in another language.
+  //
+  // While it sat in the contract, a Python implementation of the same interface
+  // hashed to a DIFFERENT contract_id — so it was not an alternative way to fill
+  // the same slot, it was a different slot. Two implementations that pass the
+  // identical conformance suite would have been unable to say so.
+  //
+  // Nothing is lost by the move. The toolchain is hashed into the ARTIFACT, so
+  // changing the image still produces a new digest and still forces a fresh
+  // verification; "it passed" remains a reproducible claim about a pinned
+  // runtime. What changes is only whose property the runtime is: it describes
+  // this implementation, not the thing every implementation must satisfy.
+  const toolchain = t["impl"]?.["toolchain"];
+  if (typeof toolchain !== "string" || toolchain === "") {
+    throw new Error(`${file}: [impl] toolchain must name one file (e.g. toolchain = "toolchain.json"). Without a pinned runtime and a declared language, "it passed" is not reproducible and nothing knows how to start this module.`);
+  }
 
   const lim = t["limits"] ?? {};
   const limits = {
@@ -91,7 +114,7 @@ export function loadManifest(moduleDir) {
     throw new Error(`${file}: [limits] mitosis_loc (${limits.mitosisLoc}) must be below max_loc (${limits.maxLoc}) — the split has to be proposed before the wall, not at it`);
   }
 
-  return { name, interface: iface, tests, toolchain, prose, impl, limits };
+  return { name, interface: iface, conformance, tests, toolchain, prose, impl, limits };
 }
 
 /**
@@ -107,7 +130,7 @@ export function loadManifest(moduleDir) {
  *
  * @param {string} moduleDir
  * @param {string} [heldoutDir]
- * @returns {{id: string, name: string, files: {interface: FileEntry[], tests: FileEntry[], toolchain: FileEntry[], heldout: FileEntry[]}, canonical: string}}
+ * @returns {{id: string, name: string, portable: boolean, files: {interface: FileEntry[], conformance: FileEntry[], tests: FileEntry[], heldout: FileEntry[]}, canonical: string}}
  */
 export function contractId(moduleDir, heldoutDir) {
   const m = loadManifest(moduleDir);
@@ -123,13 +146,15 @@ export function contractId(moduleDir, heldoutDir) {
   // downstream would catch that, because the whole point of a ledger hit is
   // that it is not re-verified.
   const iface = resolve(moduleDir, present, [MANIFEST, ...m.interface], "[contract] interface", claimed);
+  const conformance = resolve(moduleDir, present, m.conformance, "[contract] conformance", claimed);
   const tests = resolve(moduleDir, present, m.tests, "[contract] tests", claimed);
-  const toolchain = resolve(moduleDir, present, m.toolchain, "[contract] toolchain", claimed);
 
-  // These two sets are resolved for their side effect: proving every file in the
-  // module belongs to a declared set, and that nothing is in two sets at once.
+  // These are resolved for their side effect: proving every file in the module
+  // belongs to a declared set, and that nothing is in two sets at once. The
+  // toolchain is on the artifact side now, so it is claimed here but not hashed
+  // into the contract.
   const proseSet = new Set(resolve(moduleDir, present, m.prose, "[prose] files", claimed).map((f) => f.path));
-  const implSet = new Set(resolve(moduleDir, present, m.impl, "[impl] files", claimed).map((f) => f.path));
+  const implSet = new Set(resolve(moduleDir, present, [...m.impl, m.toolchain], "[impl] files", claimed).map((f) => f.path));
 
   // A file nobody declared is a file whose role nobody decided. It might be a
   // test that will never be hashed, or something an agent smuggled in. Either
@@ -152,17 +177,22 @@ export function contractId(moduleDir, heldoutDir) {
     : [];
 
   const canonical = canonicalise({
-    v: 1,
+    v: 2,
     name: m.name,
     interface: iface.map(tuple),
+    conformance: conformance.map(tuple),
     tests: tests.map(tuple),
-    toolchain: toolchain.map(tuple),
     heldout: heldout.map(tuple),
   });
   return {
     id: "c-" + sha256(Buffer.from(canonical, "utf8")),
     name: m.name,
-    files: { interface: iface, tests, toolchain, heldout },
+    files: { interface: iface, conformance, tests, heldout },
+    // A module judged only by language-neutral conformance cases can be filled by
+    // an implementation in any language. One that also carries language-specific
+    // tests is locked to that language, because those tests cannot judge anything
+    // else. That is a real, visible property of a module rather than a footnote.
+    portable: tests.length === 0,
     canonical,
   };
 }
@@ -172,17 +202,58 @@ export function contractId(moduleDir, heldoutDir) {
  * purpose: many artifacts may satisfy one contract, which is what makes the
  * ledger a relation rather than a function, and N-version programming free.
  * @param {string} moduleDir
- * @returns {{digest: string, files: FileEntry[], loc: number}}
+ * @returns {{digest: string, files: FileEntry[], loc: number, language: string, image: string}}
  */
 export function artifactDigest(moduleDir) {
   const m = loadManifest(moduleDir);
   const present = walk(moduleDir);
-  const files = resolve(moduleDir, present, m.impl, "[impl] files", new Set());
-  const canonical = canonicalise({ v: 1, name: m.name, impl: files.map(tuple) });
+  // The toolchain rides with the code it describes. An artifact is "this
+  // implementation, and the runtime it claims to work under" — judged as one
+  // thing, because either half changing makes "it passed" a different claim.
+  const files = resolve(moduleDir, present, [...m.impl, m.toolchain], "[impl] files", new Set());
+  const canonical = canonicalise({ v: 2, name: m.name, impl: files.map(tuple) });
+
+  const tool = readToolchain(moduleDir, m);
+  // Lines of the implementation only. The toolchain is configuration, and
+  // counting it against the size cap would penalise a module for declaring its
+  // runtime carefully.
   let loc = 0;
-  for (const f of files) loc += countLoc(join(moduleDir, f.path));
-  return { digest: "a-" + sha256(Buffer.from(canonical, "utf8")), files, loc };
+  for (const f of files) {
+    if (f.path === m.toolchain) continue;
+    loc += countLoc(join(moduleDir, f.path));
+  }
+  return { digest: "a-" + sha256(Buffer.from(canonical, "utf8")), files, loc, language: tool.language, image: tool.image };
 }
+
+/**
+ * The artifact's runtime declaration.
+ * @param {string} moduleDir
+ * @param {Manifest} m
+ * @returns {{image: string, language: string, entry: string, test?: string[], timeout_sec?: number, memory?: string, pids?: number}}
+ */
+export function readToolchain(moduleDir, m) {
+  const path = join(moduleDir, m.toolchain);
+  let t;
+  try {
+    t = JSON.parse(readFileSync(path, "utf8"));
+  } catch (err) {
+    throw new Error(`${path}: not readable JSON — ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (typeof t.image !== "string" || t.image === "") throw new Error(`${path}: needs an "image"`);
+  if (typeof t.language !== "string" || t.language === "") {
+    throw new Error(`${path}: needs a "language" — it selects the kernel shim that starts this module and speaks to it. Supported: ${SUPPORTED_LANGUAGES.join(", ")}.`);
+  }
+  if (!SUPPORTED_LANGUAGES.includes(t.language)) {
+    throw new Error(`${path}: language ${JSON.stringify(t.language)} has no kernel shim. Supported: ${SUPPORTED_LANGUAGES.join(", ")}. Adding one is two small files in kernel/transport/ — a serve shim and a drive shim.`);
+  }
+  if (typeof t.entry !== "string" || t.entry === "") {
+    throw new Error(`${path}: needs an "entry" — the file the kernel's serve shim loads to find this module's operations (e.g. "impl/run.js").`);
+  }
+  return t;
+}
+
+/** Languages the kernel can start and talk to. Each needs a serve + drive shim. */
+export const SUPPORTED_LANGUAGES = ["js", "py"];
 
 // ── the canonical encoding ───────────────────────────────────────────────────
 // Deterministic bytes for a structure: keys sorted, no whitespace, no numbers

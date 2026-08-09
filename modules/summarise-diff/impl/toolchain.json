@@ -1,0 +1,11 @@
+{
+  "image": "node:20-alpine",
+  "language": "js",
+  "entry": "impl/run.js",
+  "timeout_sec": 60,
+  "memory": "256m",
+  "pids": 128,
+
+  "_no_test_command": "There is none, and that absence is the point. This module is judged entirely by the language-neutral cases in conformance.json, driven over the wire, so nothing about how it is verified mentions JavaScript. That is what makes the slot fillable by another language.",
+  "_artifact_side": "This file is hashed into the ARTIFACT, not the contract. Change the image and this implementation is re-judged; but the Python implementation of the same interface fills the SAME contract slot rather than inventing a new one."
+}

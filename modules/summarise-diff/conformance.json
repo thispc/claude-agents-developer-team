@@ -1,0 +1,126 @@
+{
+  "_note": "The contract, stated as data rather than as code. Nothing here mentions a language, so any implementation that answers these over the wire fills the same slot. `expect` is a subset match: every field named must be right; fields not named are not constrained.",
+  "timeoutMs": 10000,
+  "cases": [
+    {
+      "name": "identical text has not changed",
+      "op": "summarise",
+      "in": { "before": "alpha\nbeta\ngamma", "after": "alpha\nbeta\ngamma" },
+      "expect": { "added": 0, "removed": 0, "unchanged": 3, "changed": false, "summary": "no change" }
+    },
+    {
+      "name": "one line appended",
+      "op": "summarise",
+      "in": { "before": "alpha\nbeta", "after": "alpha\nbeta\ngamma" },
+      "expect": { "added": 1, "removed": 0, "unchanged": 2, "changed": true, "summary": "+1 -0" }
+    },
+    {
+      "name": "one line deleted from the middle",
+      "op": "summarise",
+      "in": { "before": "alpha\nbeta\ngamma", "after": "alpha\ngamma" },
+      "expect": { "added": 0, "removed": 1, "unchanged": 2, "changed": true, "summary": "+0 -1" }
+    },
+    {
+      "name": "an edited line counts as one removed and one added, because nothing here knows what 'modified' means",
+      "op": "summarise",
+      "in": { "before": "alpha\nbeta\ngamma", "after": "alpha\nBETA\ngamma" },
+      "expect": { "added": 1, "removed": 1, "unchanged": 2, "changed": true, "summary": "+1 -1" }
+    },
+    {
+      "name": "reordering is not free — two lines swapped share only one common subsequence line",
+      "op": "summarise",
+      "in": { "before": "alpha\nbeta", "after": "beta\nalpha" },
+      "expect": { "added": 1, "removed": 1, "unchanged": 1, "changed": true, "summary": "+1 -1" }
+    },
+    {
+      "name": "a duplicate line removed leaves the other one alone",
+      "op": "summarise",
+      "in": { "before": "alpha\nalpha\nbeta", "after": "alpha\nbeta" },
+      "expect": { "added": 0, "removed": 1, "unchanged": 2, "changed": true, "summary": "+0 -1" }
+    },
+    {
+      "name": "an empty before means everything is new",
+      "op": "summarise",
+      "in": { "before": "", "after": "alpha\nbeta" },
+      "expect": { "added": 2, "removed": 0, "unchanged": 0, "changed": true, "summary": "+2 -0" }
+    },
+    {
+      "name": "an empty after means everything is gone",
+      "op": "summarise",
+      "in": { "before": "alpha\nbeta", "after": "" },
+      "expect": { "added": 0, "removed": 2, "unchanged": 0, "changed": true, "summary": "+0 -2" }
+    },
+    {
+      "name": "empty on both sides is zero lines, not one empty line",
+      "op": "summarise",
+      "in": { "before": "", "after": "" },
+      "expect": { "added": 0, "removed": 0, "unchanged": 0, "changed": false, "summary": "no change" }
+    },
+    {
+      "name": "a single trailing newline is dropped, so it is not a change",
+      "op": "summarise",
+      "in": { "before": "alpha", "after": "alpha\n" },
+      "expect": { "added": 0, "removed": 0, "unchanged": 1, "changed": false, "summary": "no change" }
+    },
+    {
+      "name": "a second trailing newline IS a blank line, and does count",
+      "op": "summarise",
+      "in": { "before": "alpha\n", "after": "alpha\n\n" },
+      "expect": { "added": 1, "removed": 0, "unchanged": 1, "changed": true, "summary": "+1 -0" }
+    },
+    {
+      "name": "a blank line in the middle is a line",
+      "op": "summarise",
+      "in": { "before": "alpha\nbeta", "after": "alpha\n\nbeta" },
+      "expect": { "added": 1, "removed": 0, "unchanged": 2, "changed": true, "summary": "+1 -0" }
+    },
+    {
+      "name": "carriage returns are ordinary characters, not something to normalise away",
+      "op": "summarise",
+      "in": { "before": "alpha\nbeta", "after": "alpha\r\nbeta" },
+      "expect": { "added": 1, "removed": 1, "unchanged": 1, "changed": true, "summary": "+1 -1" }
+    },
+    {
+      "name": "text outside ASCII is compared by content, not by byte length",
+      "op": "summarise",
+      "in": { "before": "日本語\nこんにちは", "after": "日本語\nさようなら" },
+      "expect": { "added": 1, "removed": 1, "unchanged": 1, "changed": true, "summary": "+1 -1" }
+    },
+    {
+      "name": "an emoji is one line whatever its code units",
+      "op": "summarise",
+      "in": { "before": "🐙\ntail", "after": "🐙\ntail" },
+      "expect": { "added": 0, "removed": 0, "unchanged": 2, "changed": false, "summary": "no change" }
+    },
+    {
+      "name": "a longest common subsequence is not unique, but its length is — a,c,b and a,b,a and a,c,a all have length 3, and every implementation must answer 3",
+      "op": "summarise",
+      "in": { "before": "a\nb\nc\na\nb\nc", "after": "a\nc\nb\na" },
+      "expect": { "unchanged": 3, "added": 1, "removed": 3, "changed": true, "summary": "+1 -3" }
+    },
+    {
+      "name": "a number where a string belongs is refused rather than coerced",
+      "op": "summarise",
+      "in": { "before": 42, "after": "alpha" },
+      "expectError": "EBADINPUT"
+    },
+    {
+      "name": "a missing field is refused",
+      "op": "summarise",
+      "in": { "before": "alpha" },
+      "expectError": "EBADINPUT"
+    },
+    {
+      "name": "null input is refused",
+      "op": "summarise",
+      "in": null,
+      "expectError": "EBADINPUT"
+    },
+    {
+      "name": "an operation the interface never declared is refused by name",
+      "op": "obliterate",
+      "in": {},
+      "expectError": "ENOOP"
+    }
+  ]
+}

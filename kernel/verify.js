@@ -30,9 +30,10 @@
 // place where a judgement call could creep back into the trusted base.
 
 import { spawn } from "node:child_process";
-import { mkdirSync, rmSync, copyFileSync, existsSync, readFileSync, chmodSync } from "node:fs";
+import { mkdirSync, rmSync, copyFileSync, existsSync, readFileSync, writeFileSync, chmodSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { contractId, artifactDigest, loadManifest, sha256, walk } from "./contract.js";
+import { fileURLToPath } from "node:url";
+import { contractId, artifactDigest, loadManifest, readToolchain, sha256, walk } from "./contract.js";
 import { sizeGate } from "./sizegate.js";
 
 /**
@@ -58,7 +59,9 @@ import { sizeGate } from "./sizegate.js";
 /**
  * @typedef {object} Toolchain
  * @property {string} image
- * @property {string[]} test
+ * @property {string} language  selects the kernel shim that starts this module and speaks to it
+ * @property {string} entry     the file the serve shim loads to find the operations
+ * @property {string[]} [test]  optional language-specific suite command
  * @property {number} [timeout_sec]
  * @property {string} [memory]
  * @property {number} [pids]
@@ -71,10 +74,13 @@ import { sizeGate } from "./sizegate.js";
  * @param {string} args.moduleDir
  * @param {string} args.runsRoot     where sandbox working trees are assembled
  * @param {string} [args.heldoutDir] the vault for this module, if one exists
- * @param {boolean} [args.requireHermetic] refuse to fall back to the host runner
+ * @param {boolean} [args.requireHermetic] refuse to fall back to the host runner.
+ *   Defaults to TRUE and fails closed: without docker the sandbox cannot deny the
+ *   network, and a gate that quietly weakens itself when its sandbox is missing is
+ *   not a gate.
  * @returns {Promise<Verdict>}
  */
-export async function verify({ moduleDir, runsRoot, heldoutDir, requireHermetic = false }) {
+export async function verify({ moduleDir, runsRoot, heldoutDir, requireHermetic = true }) {
   const started = Date.now();
   const c = contractId(moduleDir, heldoutDir);
   const a = artifactDigest(moduleDir);
@@ -105,49 +111,90 @@ export async function verify({ moduleDir, runsRoot, heldoutDir, requireHermetic 
   // mounted read-only, so naturalness costs nothing in safety.
   const runId = `${manifest.name}-${a.digest.slice(2, 12)}-${process.pid}`;
   const work = join(runsRoot, runId, "work");
-  const toolchain = readToolchain(moduleDir, c);
+  const toolchain = readToolchain(moduleDir, manifest);
+  let hermetic = true;
+  /** @type {"docker"|"host"} */
+  let runner = "host";
 
   try {
-    assemble(moduleDir, work, [...c.files.interface, ...c.files.tests, ...c.files.toolchain, ...a.files]);
+    assemble(moduleDir, work, [...c.files.interface, ...c.files.conformance, ...c.files.tests, ...a.files]);
+    installShims(work);
 
-    // ── gate 2: the visible suite.
-    const visible = await runSuite({ work, toolchain, requireHermetic });
-    gates.push({
-      name: "tests",
-      ok: visible.ok,
-      detail: visible.ok
-        ? `the suite passed (${visible.runner}${visible.hermetic ? ", hermetic" : ", NOT hermetic — host runner"}, ${visible.ms}ms)`
-        : `exit ${visible.code}${visible.timedOut ? " (timed out)" : ""} — ${firstUsefulLine(visible.output)}`,
-    });
-    if (!visible.ok) {
-      return done({ ok: false, gates, runner: visible.runner, hermetic: visible.hermetic, proposeSplit: size.proposeSplit });
+    // ── gate 2: CONFORMANCE. The gate that makes a module replaceable.
+    //
+    // It never imports the implementation. It starts it as a process and talks
+    // to it over a pipe, which means it has no opinion about what language wrote
+    // the answers — and that is the whole point. A module judged only by this
+    // gate can be filled by any implementation that gives the same output for
+    // the same input, which is exactly what "as long as tests pass I don't care
+    // if it is written in Mandarin" asks for.
+    if (c.files.conformance.length > 0) {
+      const conf = await runDriver({ work, toolchain, manifest, requireHermetic });
+      runner = conf.runner;
+      hermetic = hermetic && conf.hermetic;
+      gates.push({
+        name: "conformance",
+        ok: conf.ok,
+        detail: conf.ok
+          ? `${countCases(moduleDir, c)} case(s) passed over the wire against a ${toolchain.language} implementation (${conf.runner}${conf.hermetic ? ", hermetic" : ", NOT hermetic"}, ${conf.ms}ms)`
+          : `${firstUsefulLine(conf.output)}`,
+      });
+      if (!conf.ok) return done({ ok: false, gates, runner, hermetic, proposeSplit: size.proposeSplit });
     }
 
-    // ── gate 3: the held-out suite. Runs in a tree the implementer never saw and
+    // ── gate 3: the language-specific suite, if the module has one. Its presence
+    // is what makes a module NON-portable: these tests can only judge an
+    // implementation in their own language.
+    if (c.files.tests.length > 0) {
+      if (!toolchain.test) {
+        return done({ ok: false, gates: [...gates, { name: "tests", ok: false, detail: `${manifest.toolchain} declares no "test" command, but [contract] tests names ${c.files.tests.length} file(s). Either give it a command or move those cases into conformance.json, where any language can satisfy them.` }], proposeSplit: size.proposeSplit });
+      }
+      const visible = await runSuite({ work, toolchain, cmd: toolchain.test, requireHermetic });
+      runner = visible.runner;
+      hermetic = hermetic && visible.hermetic;
+      gates.push({
+        name: "tests",
+        ok: visible.ok,
+        detail: visible.ok
+          ? `the ${toolchain.language} suite passed (${visible.runner}${visible.hermetic ? ", hermetic" : ", NOT hermetic — host runner"}, ${visible.ms}ms)`
+          : `exit ${visible.code}${visible.timedOut ? " (timed out)" : ""} — ${firstUsefulLine(visible.output)}`,
+      });
+      if (!visible.ok) return done({ ok: false, gates, runner, hermetic, proposeSplit: size.proposeSplit });
+    }
+
+    // ── gate 4: the held-out suite. Runs in a tree the implementer never saw and
     // cannot have optimised against, which is the only unbiased signal available
     // once an agent has saturated the tests it can read.
     if (heldoutDir && existsSync(heldoutDir)) {
-      const vaultFiles = walk(heldoutDir).map((p) => ({ path: p, sha256: "", exec: false }));
+      const vaultFiles = walk(heldoutDir);
       const vaultWork = join(runsRoot, runId, "heldout");
-      assemble(moduleDir, vaultWork, [...c.files.interface, ...c.files.toolchain, ...a.files]);
-      for (const f of vaultFiles) {
-        const dest = join(vaultWork, "tests", f.path);
+      assemble(moduleDir, vaultWork, [...c.files.interface, ...c.files.conformance, ...a.files]);
+      installShims(vaultWork);
+      for (const rel of vaultFiles) {
+        const dest = join(vaultWork, "tests", rel);
         mkdirSync(dirname(dest), { recursive: true });
-        copyFileSync(join(heldoutDir, f.path), dest);
+        copyFileSync(join(heldoutDir, rel), dest);
         chmodSync(dest, 0o444);
       }
-      const held = await runSuite({ work: vaultWork, toolchain, requireHermetic });
+      // A language-specific module's vault holds tests in that language, run by
+      // the toolchain's own command. A portable module's vault holds more
+      // conformance cases, driven over the same wire — so a held-out test for a
+      // portable module is portable too, and swapping the language does not
+      // quietly discard the vault.
+      const held = toolchain.test
+        ? await runSuite({ work: vaultWork, toolchain, cmd: toolchain.test, requireHermetic })
+        : await runDriver({ work: vaultWork, toolchain, manifest, requireHermetic, conformancePath: "tests/conformance.json" });
+      runner = held.runner;
+      hermetic = hermetic && held.hermetic;
       gates.push({
         name: "heldout",
         ok: held.ok,
         detail: held.ok
-          ? `${vaultFiles.length} held-out test file(s) passed`
+          ? `${vaultFiles.length} held-out file(s) passed`
           : `exit ${held.code}${held.timedOut ? " (timed out)" : ""} — ${firstUsefulLine(held.output)}`,
       });
-      if (!held.ok) {
-        return done({ ok: false, gates, runner: held.runner, hermetic: held.hermetic, proposeSplit: size.proposeSplit });
-      }
-      return done({ ok: true, gates, runner: held.runner, hermetic: visible.hermetic && held.hermetic, proposeSplit: size.proposeSplit });
+      if (!held.ok) return done({ ok: false, gates, runner, hermetic, proposeSplit: size.proposeSplit });
+      return done({ ok: true, gates, runner, hermetic, proposeSplit: size.proposeSplit });
     }
 
     gates.push({
@@ -155,7 +202,7 @@ export async function verify({ moduleDir, runsRoot, heldoutDir, requireHermetic 
       ok: true,
       detail: "no vault for this module — nothing independent checked it, so a pass here is weaker than it looks",
     });
-    return done({ ok: true, gates, runner: visible.runner, hermetic: visible.hermetic, proposeSplit: size.proposeSplit });
+    return done({ ok: true, gates, runner, hermetic, proposeSplit: size.proposeSplit });
   } finally {
     rmSync(join(runsRoot, runId), { recursive: true, force: true });
   }
@@ -194,9 +241,9 @@ export async function verify({ moduleDir, runsRoot, heldoutDir, requireHermetic 
  * `hermetic`, and a run that fell back says so in the ledger for good — nobody
  * should be able to mistake one for the other later.
  *
- * @param {{work: string, toolchain: Toolchain, requireHermetic: boolean}} args
+ * @param {{work: string, toolchain: Toolchain, cmd: string[], requireHermetic: boolean}} args
  */
-async function runSuite({ work, toolchain, requireHermetic }) {
+async function runSuite({ work, toolchain, cmd: command, requireHermetic }) {
   const timeoutMs = (toolchain.timeout_sec ?? 120) * 1000;
   if (await dockerAvailable()) {
     const args = [
@@ -211,7 +258,7 @@ async function runSuite({ work, toolchain, requireHermetic }) {
       "-w", "/work",
       "-e", "HOME=/tmp",
       toolchain.image,
-      ...toolchain.test,
+      ...command,
     ];
     const r = await run("docker", args, { timeoutMs, cwd: work, env: minimalEnv() });
     return { ...r, ok: r.code === 0, runner: /** @type {"docker"} */ ("docker"), hermetic: true };
@@ -225,8 +272,8 @@ async function runSuite({ work, toolchain, requireHermetic }) {
     };
   }
 
-  const [cmd, ...rest] = toolchain.test;
-  if (!cmd) return { ok: false, code: -1, timedOut: false, ms: 0, output: "toolchain.test is empty", runner: /** @type {"host"} */ ("host"), hermetic: false };
+  const [cmd, ...rest] = command;
+  if (!cmd) return { ok: false, code: -1, timedOut: false, ms: 0, output: "no command to run", runner: /** @type {"host"} */ ("host"), hermetic: false };
   const r = await run(cmd, rest, { timeoutMs, cwd: work, env: minimalEnv() });
   return { ...r, ok: r.code === 0, runner: /** @type {"host"} */ ("host"), hermetic: false };
 }
@@ -321,18 +368,75 @@ function assemble(moduleDir, dest, files) {
 }
 
 /**
- * @param {string} moduleDir
- * @param {ReturnType<typeof contractId>} c
- * @returns {Toolchain}
+ * Put the kernel's transport shims inside the sandbox tree.
+ *
+ * They are kernel code, not module code: the same serve and drive shims judge
+ * every module of a given language, so a module cannot influence how it is
+ * spoken to or how its answers are compared. They land under `.kernel/`, which
+ * no manifest may claim, and the tree is mounted read-only anyway.
+ *
+ * @param {string} work
  */
-function readToolchain(moduleDir, c) {
-  const rel = c.files.toolchain[0]?.path;
-  if (!rel) throw new Error(`${moduleDir}: [contract] toolchain resolved to no file`);
-  const t = JSON.parse(readFileSync(join(moduleDir, rel), "utf8"));
-  if (typeof t.image !== "string" || !Array.isArray(t.test) || t.test.length === 0) {
-    throw new Error(`${join(moduleDir, rel)}: needs an "image" string and a non-empty "test" array. The test command's exit code is the entire admission signal, so it has to be stated, not guessed.`);
+function installShims(work) {
+  const src = join(dirname(fileURLToPath(import.meta.url)), "transport");
+  const dest = join(work, ".kernel");
+  mkdirSync(dest, { recursive: true });
+  for (const f of readdirSync(src)) {
+    if (f.endsWith(".md")) continue;
+    copyFileSync(join(src, f), join(dest, f));
   }
-  return t;
+
+  // Make `export` mean ESM regardless of which Node is in the image.
+  //
+  // Without this marker a `.js` file is CommonJS, and `export function` is a
+  // syntax error — except on Node versions new enough to guess from the syntax,
+  // which some of the images here are and some are not. That difference was
+  // real: the same module loaded inside node:20-alpine (20.20, which guesses)
+  // and failed on the host (20.10, which does not). A module whose correctness
+  // depends on a runtime's willingness to guess is a module that will break on
+  // an image bump for reasons nobody will connect to the bump.
+  //
+  // Only written when the module did not bring its own, so a module that
+  // declares itself CommonJS stays CommonJS.
+  const marker = join(work, "package.json");
+  if (!existsSync(marker)) writeFileSync(marker, JSON.stringify({ type: "module" }) + "\n");
+}
+
+/** How each language starts a module and drives the suite. @type {Record<string, {serve: string[], drive: string[]}>} */
+const SHIMS = {
+  js: { serve: ["node", ".kernel/serve.mjs"], drive: ["node", ".kernel/drive.mjs"] },
+  py: { serve: ["python3", ".kernel/serve.py"], drive: ["python3", ".kernel/drive.py"] },
+};
+
+/**
+ * Run the language-neutral conformance suite by spawning the module and talking
+ * to it over a pipe.
+ *
+ * @param {{work: string, toolchain: Toolchain, manifest: import("./contract.js").Manifest, requireHermetic: boolean, conformancePath?: string}} args
+ */
+async function runDriver({ work, toolchain, manifest, requireHermetic, conformancePath }) {
+  const shim = SHIMS[toolchain.language];
+  if (!shim) throw new Error(`no kernel shim for language ${JSON.stringify(toolchain.language)}`);
+  const conf = conformancePath ?? manifest.conformance[0] ?? "conformance.json";
+  const iface = manifest.interface[0] ?? "interface.json";
+  const cmd = [
+    ...shim.drive, conf, iface, manifest.name,
+    "--",
+    ...shim.serve, toolchain.entry, manifest.name,
+  ];
+  return runSuite({ work, toolchain, cmd, requireHermetic });
+}
+
+/** How many cases the suite declares, for a verdict that says something. */
+function countCases(/** @type {string} */ moduleDir, /** @type {ReturnType<typeof contractId>} */ c) {
+  try {
+    const rel = c.files.conformance[0]?.path;
+    if (!rel) return 0;
+    const suite = JSON.parse(readFileSync(join(moduleDir, rel), "utf8"));
+    return Array.isArray(suite.cases) ? suite.cases.length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 /** @param {unknown} err */

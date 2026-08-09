@@ -30,6 +30,10 @@ import { dirname } from "node:path";
  * @property {string} at        ISO timestamp
  * @property {string[]} proved  the gates this artifact had to pass, by name
  * @property {number} [loc]
+ * @property {string} [language] which language filled the slot — several may, for one contract
+ * @property {string} [image]    the runtime it was judged under
+ * @property {"docker"|"host"} [runner]
+ * @property {boolean} [hermetic] whether the network was actually denied while it was judged
  */
 
 /**

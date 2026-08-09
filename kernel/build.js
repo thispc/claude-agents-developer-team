@@ -39,6 +39,21 @@ import { now } from "./ledger.js";
  */
 
 /**
+ * `requireHermetic` DEFAULTS TO TRUE, and the default is the whole point.
+ *
+ * It was false, and false is a hole with a clean face on it: if the docker probe
+ * fails for any reason — daemon not running, image not pulled, a typo in the
+ * image name — verification silently falls back to the host runner. That means a
+ * live network, no read-only mount and no memory cap, and the artifact is
+ * admitted anyway. Nothing about the verdict said so, so the next ledger hit
+ * would serve an artifact that was never actually judged hermetically, and a hit
+ * is never re-verified.
+ *
+ * A gate that quietly weakens itself when its sandbox is unavailable is not a
+ * gate. So it fails closed, `--allow-host` is the explicit way to say "I know,
+ * do it anyway", and either way the admit record keeps `runner` and `hermetic`
+ * for good.
+ *
  * @param {object} args
  * @param {string} args.moduleDir
  * @param {import("./store.js").Store} args.store
@@ -49,7 +64,7 @@ import { now } from "./ledger.js";
  * @param {boolean} [args.force] re-judge even on a ledger hit
  * @returns {Promise<BuildResult>}
  */
-export async function buildModule({ moduleDir, store, ledger, runsRoot, heldoutRoot, requireHermetic = false, force = false }) {
+export async function buildModule({ moduleDir, store, ledger, runsRoot, heldoutRoot, requireHermetic = true, force = false }) {
   const manifestName = loadManifest(moduleDir).name;
   const vault = heldoutRoot ? join(heldoutRoot, manifestName) : undefined;
   const hasVault = Boolean(vault && existsSync(vault));
@@ -121,6 +136,17 @@ export async function buildModule({ moduleDir, store, ledger, runsRoot, heldoutR
     at: now(),
     proved: verdict.gates.filter((g) => g.ok).map((g) => g.name),
     loc: a.loc,
+    // Which language filled the slot, and under what runtime. Several languages
+    // may satisfy one contract, so without this the relation records that two
+    // artifacts passed and loses the only interesting thing about them.
+    language: a.language,
+    image: a.image,
+    // Whether the network was ACTUALLY denied while this was judged. Recorded
+    // permanently, because a host-runner pass and a hermetic pass are different
+    // claims and a ledger hit is never re-verified — so if the difference is not
+    // written down at admission time, it is not recoverable later.
+    runner: verdict.runner,
+    hermetic: verdict.hermetic,
   });
 
   return {

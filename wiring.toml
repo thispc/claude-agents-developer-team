@@ -30,3 +30,7 @@ module = "modules/render-graph"
 from = "run-tests"
 to = "render-graph"
 why = "the Atlas shows which suites are green, so it draws what run-tests reported"
+
+[[node]]
+name = "summarise-diff"
+module = "modules/summarise-diff"

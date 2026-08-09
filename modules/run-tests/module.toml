@@ -25,13 +25,13 @@ name = "run-tests"
 # Nothing outside this module may reach past what it lists.
 interface = ["interface.json", "package.json"]
 tests     = ["tests/**/*.js", "examples.json"]
-toolchain = ["toolchain.json"]
 
 [prose]
 files = ["behavior.md"]
 
 [impl]
-files = ["run.js"]
+files     = ["run.js"]
+toolchain = "toolchain.json"
 
 [limits]
 max_loc     = 2000
