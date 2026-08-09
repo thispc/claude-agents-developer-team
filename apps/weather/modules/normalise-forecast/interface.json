@@ -1,0 +1,52 @@
+{
+  "name": "normalise-forecast",
+  "version": 1,
+  "summary": "Turn one weather provider's payload into the canonical shape every other module in this app agrees on.",
+  "_why_this_exists": "So that exactly ONE module knows what open-meteo's JSON looks like. Every other module reads the canonical shape, which means switching provider is a new implementation of this contract and touches nothing else. Without this module, the provider's field names would be smeared across four modules and 'change provider' would be a rewrite.",
+  "operations": {
+    "normalise": {
+      "in": {
+        "type": "object",
+        "required": ["name", "payload"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "description": "the place name — the provider's forecast endpoint does not return one" },
+          "payload": { "type": "object", "description": "open-meteo's /v1/forecast response, verbatim" }
+        }
+      },
+      "out": {
+        "type": "object",
+        "required": ["place", "days"],
+        "additionalProperties": false,
+        "properties": {
+          "place": {
+            "type": "object",
+            "required": ["name", "lat", "lon"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "lat": { "type": "number" },
+              "lon": { "type": "number" }
+            }
+          },
+          "days": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["date", "highC", "lowC", "precipMm", "sky"],
+              "additionalProperties": false,
+              "properties": {
+                "date": { "type": "string", "description": "ISO yyyy-mm-dd, as the provider gave it — never re-derived from a clock" },
+                "highC": { "type": "integer", "description": "rounded HALF AWAY FROM ZERO. Pinned, because Python's round() is banker's rounding and JavaScript's Math.round is not, so two honest implementations disagree at exactly .5 unless the rule is stated." },
+                "lowC": { "type": "integer" },
+                "precipMm": { "type": "number", "description": "one decimal place, rounded half away from zero" },
+                "sky": { "type": "string", "enum": ["clear", "cloud", "fog", "rain", "snow", "storm", "unknown"] }
+              }
+            }
+          }
+        }
+      },
+      "errors": ["EBADPAYLOAD"]
+    }
+  }
+}

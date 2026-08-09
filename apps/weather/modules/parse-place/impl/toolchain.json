@@ -1,0 +1,8 @@
+{
+  "image": "node:20-alpine",
+  "language": "js",
+  "entry": "impl/run.js",
+  "timeout_sec": 60,
+  "memory": "256m",
+  "pids": 128
+}

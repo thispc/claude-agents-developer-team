@@ -1,0 +1,65 @@
+# The weather app's composition graph. A HUMAN WRITES THIS FILE.
+#
+# Read it as the shape of one request:
+#
+#     "london, uk"  →  parse-place  →  {name, region}
+#                                          ↓  (the shell asks the provider for
+#                                              candidates — see serve.js)
+#                          candidates + region  →  match-place  →  which one
+#                                          ↓  (the shell asks for that forecast)
+#                          raw provider JSON
+#                                       ↓
+#                              normalise-forecast  →  canonical forecast
+#                                       ↓                        ↓
+#                              advise-clothing              render-forecast
+#                                       └──────── advice ────────┘
+#
+# THE NETWORK CALL IS NOT A MODULE, and that is the most important thing this
+# app demonstrates. verify() runs every module in a container with the network
+# denied, so a module that fetched from an API could not be verified at all —
+# and a gate that has to be switched off for one module is not a gate.
+#
+# So the I/O sits in the app shell, at the edge, where a human reads it. Every
+# module is a pure function of what it is handed. That is not a workaround; it
+# is the arrangement that makes the other four modules swappable, cacheable and
+# checkable for determinism.
+
+[[node]]
+name = "parse-place"
+module = "modules/parse-place"
+
+[[node]]
+name = "match-place"
+module = "modules/match-place"
+
+[[node]]
+name = "normalise-forecast"
+module = "modules/normalise-forecast"
+
+[[node]]
+name = "advise-clothing"
+module = "modules/advise-clothing"
+
+[[node]]
+name = "render-forecast"
+module = "modules/render-forecast"
+
+[[edge]]
+from = "parse-place"
+to = "match-place"
+why = "the region a person typed decides which of the provider's candidates they meant"
+
+[[edge]]
+from = "normalise-forecast"
+to = "advise-clothing"
+why = "advice is drawn from the canonical forecast, never from the provider's own shape"
+
+[[edge]]
+from = "normalise-forecast"
+to = "render-forecast"
+why = "the page renders the canonical forecast"
+
+[[edge]]
+from = "advise-clothing"
+to = "render-forecast"
+why = "the page shows the advice alongside the days"

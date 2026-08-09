@@ -1,0 +1,36 @@
+{
+  "name": "advise-clothing",
+  "version": 1,
+  "summary": "Given a canonical forecast, say what to take out of the house.",
+  "operations": {
+    "advise": {
+      "in": {
+        "type": "object",
+        "required": ["forecast"],
+        "additionalProperties": false,
+        "properties": {
+          "forecast": {
+            "type": "object",
+            "required": ["days"],
+            "additionalProperties": true,
+            "properties": { "days": { "type": "array", "items": { "type": "object", "additionalProperties": true } } }
+          }
+        }
+      },
+      "out": {
+        "type": "object",
+        "required": ["items", "summary"],
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "sorted by codepoint, so two implementations cannot disagree about order. NOT locale-sorted: collation depends on LANG, which would make this module read its surroundings."
+          },
+          "summary": { "type": "string" }
+        }
+      },
+      "errors": ["EBADINPUT"]
+    }
+  }
+}

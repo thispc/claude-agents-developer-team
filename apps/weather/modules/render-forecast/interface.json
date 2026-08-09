@@ -1,0 +1,28 @@
+{
+  "name": "render-forecast",
+  "version": 1,
+  "summary": "Turn a canonical forecast and its advice into a page.",
+  "operations": {
+    "page": {
+      "in": {
+        "type": "object",
+        "required": ["forecast"],
+        "additionalProperties": false,
+        "properties": {
+          "forecast": { "type": "object", "additionalProperties": true },
+          "advice": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "out": {
+        "type": "object",
+        "required": ["html", "days"],
+        "additionalProperties": false,
+        "properties": {
+          "html": { "type": "string", "description": "a complete self-contained document — no external stylesheet, script or font" },
+          "days": { "type": "integer" }
+        }
+      },
+      "errors": ["EBADINPUT"]
+    }
+  }
+}

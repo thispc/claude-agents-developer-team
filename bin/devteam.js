@@ -7,18 +7,38 @@ import { existsSync, readdirSync, statSync, readFileSync, mkdirSync, writeFileSy
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  contractId, artifactDigest, loadManifest, readToolchain, Store, Ledger, Names, buildModule, loadWiring, shortDigest,
+  contractId, artifactDigest, loadManifest, resolveLive, Store, Ledger, Names, buildModule, loadWiring, shortDigest,
 } from "../kernel/index.js";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const STORE = join(ROOT, ".store");
-const RUNS = join(ROOT, ".runs");
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+// Flags are separated from positionals across the WHOLE argv, so `--in=x build`
+// and `build --in=x` mean the same thing. A tool where option order changes what
+// runs is a tool people learn to distrust.
+const argv = process.argv.slice(2);
+const flags = new Set(argv.filter((a) => a.startsWith("--") && !a.startsWith("--in=")));
+const positional = argv.filter((a) => !a.startsWith("--"));
+const cmd = positional[0];
+const args = positional.slice(1);
+
+// A WORKSPACE is a directory with a wiring.toml, its own modules/ and its own
+// heldout/. The repo root is one; `--in=apps/weather` is another.
+//
+// The STORE is deliberately NOT per-workspace. Artifacts are content-addressed,
+// so two workspaces that happen to build the same bytes share them for free, and
+// a module lifted from one project into another is already admitted. A store per
+// project would throw that away and duplicate every blob.
+const inFlag = argv.find((a) => a.startsWith("--in="));
+const ROOT = inFlag ? resolve(REPO, inFlag.slice("--in=".length)) : REPO;
+const STORE = join(REPO, ".store");
+const RUNS = join(REPO, ".runs");
 const HELDOUT = join(ROOT, "heldout");
 const WIRING = join(ROOT, "wiring.toml");
 
-const [, , cmd, ...rest] = process.argv;
-const flags = new Set(rest.filter((a) => a.startsWith("--")));
-const args = rest.filter((a) => !a.startsWith("--"));
+if (!existsSync(WIRING) && cmd && cmd !== "lookup") {
+  console.error(`\n  ${relative(REPO, WIRING) || WIRING} does not exist — that directory is not a workspace.\n  A workspace is a folder holding wiring.toml, modules/ and heldout/.\n`);
+  process.exit(1);
+}
 
 try {
   await main();
@@ -55,6 +75,12 @@ function usage() {
     devteam graph              the wiring, as the kernel reads it
     devteam atlas              the system describing itself, via its own render-graph module
     devteam ui                 the same, in a browser, with a button that runs the real gates
+
+  where
+    --in=<dir>     work in another workspace — a folder with its own wiring.toml,
+                   modules/ and heldout/. e.g. --in=apps/weather. The artifact
+                   store is shared across all of them, because artifacts are
+                   content-addressed and identical bytes are identical bytes.
 
   flags
     --force        re-judge even when the ledger already has this exact artifact
@@ -181,24 +207,9 @@ async function cmdAtlas() {
  * @returns {Promise<any>}
  */
 async function liveModule(name, store, ledger) {
-  const dir = join(ROOT, "modules", name);
-  const c = contractId(dir, vaultFor(dir));
-  const entry = readToolchain(dir, loadManifest(dir)).entry;
-  const live = ledger.live(c.id);
-  if (!live) {
-    throw new Error(`${name}: nothing is admitted for the current contract.\n  Run \`node bin/devteam.js build\` — and if it is refused, that refusal is the answer, not an obstacle to work around.`);
-  }
-  const out = join(RUNS, "live", live.artifact);
-  if (!existsSync(join(out, entry))) {
-    mkdirSync(out, { recursive: true });
-    store.materialise(live.artifact, out);
-    // The kernel writes this marker into every sandbox tree, so a module loaded
-    // here has to get the same treatment or `export` would mean something
-    // different at composition time than it did at verification time.
-    const marker = join(out, "package.json");
-    if (!existsSync(marker)) writeFileSync(marker, JSON.stringify({ type: "module" }) + "\n");
-  }
-  return import(pathToFileURL(join(out, entry)).href);
+  const moduleDir = join(ROOT, "modules", name);
+  const live = resolveLive({ moduleDir, store, ledger, runsRoot: RUNS, ...(vaultFor(moduleDir) ? { heldoutDir: /** @type {string} */ (vaultFor(moduleDir)) } : {}) });
+  return import(pathToFileURL(live.path).href);
 }
 
 /** The vault for a module, if it has one. @param {string} moduleDir */

@@ -18,6 +18,8 @@ export { Ledger, now } from "./ledger.js";
 export { verify } from "./verify.js";
 export { sizeGate, parsimony } from "./sizegate.js";
 export { buildModule } from "./build.js";
+export { resolveLive, materialiseRunnable } from "./compose.js";
+export { openModule } from "./client.js";
 export { parseToml, TomlError } from "./toml.js";
 export { loadWiring } from "./wiring.js";
 export { Names } from "./names.js";

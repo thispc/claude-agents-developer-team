@@ -1,0 +1,188 @@
+{
+  "_note": "Stated as data. Nothing here names a language, so any implementation answering these fills the same slot.",
+  "timeoutMs": 10000,
+  "cases": [
+    {
+      "name": "a real two-day payload becomes the canonical shape",
+      "op": "normalise",
+      "in": {
+        "name": "London",
+        "payload": {
+          "latitude": 51.5, "longitude": -0.12,
+          "daily": {
+            "time": ["2026-08-09", "2026-08-10"],
+            "weather_code": [61, 0],
+            "temperature_2m_max": [22.3, 26.8],
+            "temperature_2m_min": [13.8, 15.1],
+            "precipitation_sum": [3.24, 0.0]
+          }
+        }
+      },
+      "expect": {
+        "place": { "name": "London", "lat": 51.5, "lon": -0.12 },
+        "days": [
+          { "date": "2026-08-09", "highC": 22, "lowC": 14, "precipMm": 3.2, "sky": "rain" },
+          { "date": "2026-08-10", "highC": 27, "lowC": 15, "precipMm": 0, "sky": "clear" }
+        ]
+      }
+    },
+    {
+      "name": "rounding is HALF AWAY FROM ZERO — Python's round() would answer 2 here and be wrong",
+      "op": "normalise",
+      "in": {
+        "name": "X",
+        "payload": {
+          "latitude": 0, "longitude": 0,
+          "daily": { "time": ["2026-01-01"], "weather_code": [0], "temperature_2m_max": [2.5], "temperature_2m_min": [3.5], "precipitation_sum": [0] }
+        }
+      },
+      "expect": { "days": [{ "highC": 3, "lowC": 4, "precipMm": 0, "sky": "clear" }] }
+    },
+    {
+      "name": "and away from zero downward too — JavaScript's Math.round would answer -2 here and be wrong",
+      "op": "normalise",
+      "in": {
+        "name": "X",
+        "payload": {
+          "latitude": 0, "longitude": 0,
+          "daily": { "time": ["2026-01-01"], "weather_code": [0], "temperature_2m_max": [-2.5], "temperature_2m_min": [-3.5], "precipitation_sum": [0] }
+        }
+      },
+      "expect": { "days": [{ "highC": -3, "lowC": -4 }] }
+    },
+    {
+      "name": "precipitation keeps one decimal, rounded the same way",
+      "op": "normalise",
+      "in": {
+        "name": "X",
+        "payload": {
+          "latitude": 0, "longitude": 0,
+          "daily": { "time": ["2026-01-01"], "weather_code": [0], "temperature_2m_max": [0], "temperature_2m_min": [0], "precipitation_sum": [0.25] }
+        }
+      },
+      "expect": { "days": [{ "precipMm": 0.3 }] }
+    },
+    {
+      "name": "a temperature that rounds to zero from below is 0, never -0",
+      "op": "normalise",
+      "in": {
+        "name": "X",
+        "payload": {
+          "latitude": 0, "longitude": 0,
+          "daily": { "time": ["2026-01-01"], "weather_code": [0], "temperature_2m_max": [-0.4], "temperature_2m_min": [-0.2], "precipitation_sum": [0] }
+        }
+      },
+      "expect": { "days": [{ "highC": 0, "lowC": 0 }] }
+    },
+    {
+      "name": "WMO codes collapse to the seven words this app uses",
+      "op": "normalise",
+      "in": {
+        "name": "X",
+        "payload": {
+          "latitude": 0, "longitude": 0,
+          "daily": {
+            "time": ["d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8"],
+            "weather_code": [0, 2, 45, 55, 65, 73, 81, 86, 96],
+            "temperature_2m_max": [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            "temperature_2m_min": [0, 0, 0, 0, 0, 0, 0, 0, 0],
+            "precipitation_sum": [0, 0, 0, 0, 0, 0, 0, 0, 0]
+          }
+        }
+      },
+      "expect": {
+        "days": [
+          { "sky": "clear" }, { "sky": "cloud" }, { "sky": "fog" }, { "sky": "rain" }, { "sky": "rain" },
+          { "sky": "snow" }, { "sky": "rain" }, { "sky": "snow" }, { "sky": "storm" }
+        ]
+      }
+    },
+    {
+      "name": "a code outside the standard is 'unknown', not a guess",
+      "op": "normalise",
+      "in": {
+        "name": "X",
+        "payload": {
+          "latitude": 0, "longitude": 0,
+          "daily": { "time": ["d"], "weather_code": [200], "temperature_2m_max": [0], "temperature_2m_min": [0], "precipitation_sum": [0] }
+        }
+      },
+      "expect": { "days": [{ "sky": "unknown" }] }
+    },
+    {
+      "name": "the date is passed through, never re-derived from a clock",
+      "op": "normalise",
+      "in": {
+        "name": "X",
+        "payload": {
+          "latitude": 0, "longitude": 0,
+          "daily": { "time": ["1999-12-31"], "weather_code": [0], "temperature_2m_max": [0], "temperature_2m_min": [0], "precipitation_sum": [0] }
+        }
+      },
+      "expect": { "days": [{ "date": "1999-12-31" }] }
+    },
+    {
+      "name": "an empty forecast window is a valid answer, not an error",
+      "op": "normalise",
+      "in": {
+        "name": "X",
+        "payload": {
+          "latitude": 1, "longitude": 2,
+          "daily": { "time": [], "weather_code": [], "temperature_2m_max": [], "temperature_2m_min": [], "precipitation_sum": [] }
+        }
+      },
+      "expect": { "place": { "name": "X", "lat": 1, "lon": 2 }, "days": [] }
+    },
+    {
+      "name": "ragged columns are refused — half a forecast must not look like a whole one",
+      "op": "normalise",
+      "in": {
+        "name": "X",
+        "payload": {
+          "latitude": 0, "longitude": 0,
+          "daily": { "time": ["d0", "d1"], "weather_code": [0, 0], "temperature_2m_max": [1], "temperature_2m_min": [0, 0], "precipitation_sum": [0, 0] }
+        }
+      },
+      "expectError": "EBADPAYLOAD"
+    },
+    {
+      "name": "a missing daily block is refused",
+      "op": "normalise",
+      "in": { "name": "X", "payload": { "latitude": 0, "longitude": 0 } },
+      "expectError": "EBADPAYLOAD"
+    },
+    {
+      "name": "missing coordinates are refused rather than defaulted to null island",
+      "op": "normalise",
+      "in": {
+        "name": "X",
+        "payload": { "daily": { "time": [], "weather_code": [], "temperature_2m_max": [], "temperature_2m_min": [], "precipitation_sum": [] } }
+      },
+      "expectError": "EBADPAYLOAD"
+    },
+    {
+      "name": "a null temperature is refused, not silently read as zero degrees",
+      "op": "normalise",
+      "in": {
+        "name": "X",
+        "payload": {
+          "latitude": 0, "longitude": 0,
+          "daily": { "time": ["d"], "weather_code": [0], "temperature_2m_max": [null], "temperature_2m_min": [0], "precipitation_sum": [0] }
+        }
+      },
+      "expectError": "EBADPAYLOAD"
+    },
+    {
+      "name": "an empty place name is refused — the provider does not supply one, so the caller must",
+      "op": "normalise",
+      "in": {
+        "name": "   ",
+        "payload": {
+          "latitude": 0, "longitude": 0,
+          "daily": { "time": [], "weather_code": [], "temperature_2m_max": [], "temperature_2m_min": [], "precipitation_sum": [] }
+        }
+      },
+      "expectError": "EBADPAYLOAD"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "image": "python:3.12-alpine",
+  "language": "py",
+  "entry": "impl/run.py",
+  "timeout_sec": 60,
+  "memory": "256m",
+  "pids": 128
+}

@@ -1,0 +1,18 @@
+{
+  "timeoutMs": 10000,
+  "cases": [
+    { "name": "a bare name", "op": "parse", "in": { "query": "London" }, "expect": { "name": "London", "region": "" } },
+    { "name": "name and region", "op": "parse", "in": { "query": "London, UK" }, "expect": { "name": "London", "region": "UK" } },
+    { "name": "surrounding and internal whitespace is collapsed", "op": "parse", "in": { "query": "  New    York  ,  NY  " }, "expect": { "name": "New York", "region": "NY" } },
+    { "name": "only the FIRST comma splits — the rest belongs to the region", "op": "parse", "in": { "query": "Paris, Texas, USA" }, "expect": { "name": "Paris", "region": "Texas, USA" } },
+    { "name": "case is left exactly as typed, because case-folding is locale-sensitive", "op": "parse", "in": { "query": "iSTANBUL" }, "expect": { "name": "iSTANBUL", "region": "" } },
+    { "name": "non-latin names pass through unharmed", "op": "parse", "in": { "query": "東京, 日本" }, "expect": { "name": "東京", "region": "日本" } },
+    { "name": "an accent is not stripped", "op": "parse", "in": { "query": "Málaga" }, "expect": { "name": "Málaga", "region": "" } },
+    { "name": "a trailing comma leaves an empty region, not a missing one", "op": "parse", "in": { "query": "Berlin," }, "expect": { "name": "Berlin", "region": "" } },
+    { "name": "empty is refused", "op": "parse", "in": { "query": "" }, "expectError": "EEMPTY" },
+    { "name": "whitespace only is refused", "op": "parse", "in": { "query": "   " }, "expectError": "EEMPTY" },
+    { "name": "a leading comma leaves no name, which is refused", "op": "parse", "in": { "query": ", UK" }, "expectError": "EEMPTY" },
+    { "name": "something absurdly long is refused rather than sent to a provider", "op": "parse", "in": { "query": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, "expectError": "ETOOLONG" },
+    { "name": "a number is not a place", "op": "parse", "in": { "query": 42 }, "expectError": "EEMPTY" }
+  ]
+}

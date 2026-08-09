@@ -1,0 +1,42 @@
+{
+  "name": "match-place",
+  "version": 1,
+  "summary": "Given the places a search returned and the region a person typed, say which one they meant.",
+  "operations": {
+    "match": {
+      "in": {
+        "type": "object",
+        "required": ["candidates", "region"],
+        "additionalProperties": false,
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "description": "search results, in the provider's order",
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "name": { "type": "string" },
+                "country": { "type": "string" },
+                "country_code": { "type": "string" },
+                "admin1": { "type": "string" },
+                "admin2": { "type": "string" }
+              }
+            }
+          },
+          "region": { "type": "string", "description": "empty means the person did not say" }
+        }
+      },
+      "out": {
+        "type": "object",
+        "required": ["index", "why"],
+        "additionalProperties": false,
+        "properties": {
+          "index": { "type": "integer", "minimum": 0 },
+          "why": { "type": "string", "description": "which field matched, so a wrong pick is explainable" }
+        }
+      },
+      "errors": ["ENOCANDIDATES", "ENOMATCH"]
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "parse-place",
+  "version": 1,
+  "summary": "Turn what a person typed into a place query.",
+  "operations": {
+    "parse": {
+      "in": {
+        "type": "object",
+        "required": ["query"],
+        "additionalProperties": false,
+        "properties": { "query": { "type": "string" } }
+      },
+      "out": {
+        "type": "object",
+        "required": ["name", "region"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "region": { "type": "string", "description": "whatever followed the first comma, or empty" }
+        }
+      },
+      "errors": ["EEMPTY", "ETOOLONG"]
+    }
+  }
+}

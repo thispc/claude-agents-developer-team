@@ -7,7 +7,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, appendFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, appendFileSync, chmodSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +17,7 @@ import { Ledger, now } from "./ledger.js";
 import { Store } from "./store.js";
 import { sizeGate, parsimony } from "./sizegate.js";
 import { loadWiring } from "./wiring.js";
+import { resolveLive } from "./compose.js";
 
 /** A minimal well-formed module on disk. @param {Partial<Record<string,string>>} [over] */
 function fixture(over = {}) {
@@ -362,6 +363,48 @@ test("an edge may not reference an undeclared node, and nothing may wire to itse
   writeFileSync(file, `[[node]]\nname = "a"\nmodule = "modules/a"\n\n[[edge]]\nfrom = "a"\nto = "a"\n`);
   assert.throws(() => loadWiring(file, root), /cannot be wired to itself/);
   rmSync(root, { recursive: true, force: true });
+});
+
+test("composing reads the toolchain from the ARTIFACT, not from the working copy", () => {
+  // The bug this pins, found by swapping a real app's module to Python and then
+  // pinning the JavaScript one back: `resolveLive` materialises the ADMITTED
+  // artifact but was reading language and entry from the module directory. Pin an
+  // older artifact — or leave the working copy in another language — and the two
+  // disagree, so the composer tries to start a file the artifact does not
+  // contain. The failure is loud; the cause is not.
+  const dir = mkdtempSync(join(tmpdir(), "compose-"));
+  mkdirSync(join(dir, "impl"));
+  writeFileSync(join(dir, "module.toml"), [
+    `[module]`, `name = "swappable"`, ``,
+    `[contract]`, `interface = ["interface.json"]`, `conformance = ["conformance.json"]`, ``,
+    `[impl]`, `files = ["impl/**"]`, `toolchain = "impl/toolchain.json"`,
+  ].join("\n"));
+  writeFileSync(join(dir, "interface.json"), JSON.stringify({ name: "swappable", operations: { go: {} } }));
+  writeFileSync(join(dir, "conformance.json"), JSON.stringify({ cases: [] }));
+
+  // An admitted artifact in JavaScript.
+  writeFileSync(join(dir, "impl/run.js"), "export function go(){ return {}; }\n");
+  writeFileSync(join(dir, "impl/toolchain.json"), JSON.stringify({ image: "node:20-alpine", language: "js", entry: "impl/run.js" }));
+
+  const storeDir = mkdtempSync(join(tmpdir(), "compose-store-"));
+  const store = new Store(storeDir);
+  const ledger = new Ledger(join(storeDir, "ledger.jsonl"));
+  const c = contractId(dir).id;
+  const a = artifactDigest(dir);
+  store.put(dir, a.digest, a.files);
+  ledger.append({ t: "admit", contract: c, artifact: a.digest, module: "swappable", at: now(), proved: [], language: "js" });
+
+  // Now the working copy moves to Python, exactly as a language swap does.
+  rmSync(join(dir, "impl/run.js"));
+  writeFileSync(join(dir, "impl/run.py"), "def go(payload):\n    return {}\n");
+  writeFileSync(join(dir, "impl/toolchain.json"), JSON.stringify({ image: "python:3.12-alpine", language: "py", entry: "impl/run.py" }));
+
+  const live = resolveLive({ moduleDir: dir, store, ledger, runsRoot: join(storeDir, "runs") });
+  assert.equal(live.language, "js", "the admitted artifact is the JavaScript one, so composing it must start JavaScript");
+  assert.equal(live.entry, "impl/run.js");
+  assert.ok(existsSync(live.path), "the entry the composer names has to exist in the tree it materialised");
+
+  for (const d of [dir, storeDir]) rmSync(d, { recursive: true, force: true });
 });
 
 test("walk is deterministic and skips editor litter", () => {

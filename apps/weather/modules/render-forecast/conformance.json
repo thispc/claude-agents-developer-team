@@ -1,0 +1,71 @@
+{
+  "timeoutMs": 10000,
+  "cases": [
+    {
+      "name": "a two-day forecast renders both days",
+      "op": "page",
+      "in": { "forecast": { "place": { "name": "London", "lat": 51.5, "lon": -0.12 }, "days": [
+        { "date": "2026-08-09", "highC": 22, "lowC": 14, "precipMm": 3.2, "sky": "rain" },
+        { "date": "2026-08-10", "highC": 27, "lowC": 15, "precipMm": 0, "sky": "clear" }
+      ] } },
+      "expect": { "days": 2 },
+      "expectContains": { "html": ["London", "2026-08-09", "22°", "14°", "3.2mm", "rain", "clear"] }
+    },
+    {
+      "name": "one complete self-contained document, with nothing fetched from anywhere",
+      "op": "page",
+      "in": { "forecast": { "place": { "name": "X" }, "days": [] } },
+      "expectContains": { "html": ["<!doctype html>", "<style>", "</html>"] },
+      "expectNotContains": { "html": ["<link", "src=\"http", "href=\"http", "@import"] }
+    },
+    {
+      "name": "the advice is shown when it is given",
+      "op": "page",
+      "in": {
+        "forecast": { "place": { "name": "X" }, "days": [{ "date": "d", "highC": 18, "lowC": 12, "precipMm": 2, "sky": "rain" }] },
+        "advice": { "items": ["an umbrella"], "summary": "Today: 12° to 18°. Take an umbrella." }
+      },
+      "expectContains": { "html": ["Take an umbrella", "an umbrella"] }
+    },
+    {
+      "name": "a place named like a script tag renders as its own name",
+      "op": "page",
+      "in": { "forecast": { "place": { "name": "<script>alert(1)</script>" }, "days": [] } },
+      "expectContains": { "html": ["&lt;script&gt;alert(1)&lt;/script&gt;"] },
+      "expectNotContains": { "html": ["<script>alert(1)</script>"] }
+    },
+    {
+      "name": "a quote in a place name cannot break out of the title",
+      "op": "page",
+      "in": { "forecast": { "place": { "name": "\" onload=\"alert(1)" }, "days": [] } },
+      "expectNotContains": { "html": ["\" onload=\"alert(1)"] }
+    },
+    {
+      "name": "a missing temperature renders as a dash, not as NaN or undefined",
+      "op": "page",
+      "in": { "forecast": { "place": { "name": "X" }, "days": [{ "date": "d", "sky": "cloud" }] } },
+      "expect": { "days": 1 },
+      "expectNotContains": { "html": ["NaN", "undefined", "null"] }
+    },
+    {
+      "name": "an unrecognised sky still renders a row rather than an empty one",
+      "op": "page",
+      "in": { "forecast": { "place": { "name": "X" }, "days": [{ "date": "d", "highC": 1, "lowC": 0, "precipMm": 0, "sky": "banana" }] } },
+      "expect": { "days": 1 },
+      "expectContains": { "html": ["banana"] }
+    },
+    {
+      "name": "an empty forecast says so rather than rendering a blank page",
+      "op": "page",
+      "in": { "forecast": { "place": { "name": "X" }, "days": [] } },
+      "expect": { "days": 0 },
+      "expectContains": { "html": ["No days in this forecast"] }
+    },
+    {
+      "name": "no forecast at all is refused",
+      "op": "page",
+      "in": {},
+      "expectError": "EBADINPUT"
+    }
+  ]
+}

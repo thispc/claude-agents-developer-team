@@ -1,0 +1,72 @@
+{
+  "geo": {
+    "id": 2643743,
+    "name": "London",
+    "latitude": 51.50853,
+    "longitude": -0.12574,
+    "elevation": 25,
+    "feature_code": "PPLC",
+    "country_code": "GB",
+    "admin1_id": 6269131,
+    "admin2_id": 2648110,
+    "timezone": "Europe/London",
+    "population": 8961989,
+    "country_id": 2635167,
+    "country": "United Kingdom",
+    "admin1": "England",
+    "admin2": "Greater London"
+  },
+  "payload": {
+    "latitude": 51.51147,
+    "longitude": -0.13078308,
+    "generationtime_ms": 0.32913684844970703,
+    "utc_offset_seconds": 0,
+    "timezone": "GMT",
+    "timezone_abbreviation": "GMT",
+    "elevation": 23,
+    "daily_units": {
+      "time": "iso8601",
+      "weather_code": "wmo code",
+      "temperature_2m_max": "°C",
+      "temperature_2m_min": "°C",
+      "precipitation_sum": "mm"
+    },
+    "daily": {
+      "time": [
+        "2026-08-09",
+        "2026-08-10",
+        "2026-08-11",
+        "2026-08-12",
+        "2026-08-13"
+      ],
+      "weather_code": [
+        3,
+        3,
+        0,
+        0,
+        3
+      ],
+      "temperature_2m_max": [
+        31,
+        26.2,
+        24.5,
+        30.8,
+        34.8
+      ],
+      "temperature_2m_min": [
+        18.3,
+        19,
+        17.6,
+        18,
+        21.1
+      ],
+      "precipitation_sum": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  }
+}

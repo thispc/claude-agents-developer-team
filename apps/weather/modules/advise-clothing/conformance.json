@@ -1,0 +1,113 @@
+{
+  "timeoutMs": 10000,
+  "cases": [
+    {
+      "name": "a mild dry day needs nothing special",
+      "op": "advise",
+      "in": { "forecast": { "days": [{ "date": "d", "highC": 18, "lowC": 12, "precipMm": 0, "sky": "cloud" }] } },
+      "expect": { "items": [], "summary": "Today: 12° to 18°. Take nothing special." }
+    },
+    {
+      "name": "rain at the threshold means an umbrella — 1.0mm counts",
+      "op": "advise",
+      "in": { "forecast": { "days": [{ "date": "d", "highC": 18, "lowC": 12, "precipMm": 1, "sky": "rain" }] } },
+      "expect": { "items": ["an umbrella"], "summary": "Today: 12° to 18°. Take an umbrella." }
+    },
+    {
+      "name": "just under the rain threshold does not",
+      "op": "advise",
+      "in": { "forecast": { "days": [{ "date": "d", "highC": 18, "lowC": 12, "precipMm": 0.9, "sky": "rain" }] } },
+      "expect": { "items": [] }
+    },
+    {
+      "name": "5° exactly is not cold enough for a coat — the boundary is stated, not implied",
+      "op": "advise",
+      "in": { "forecast": { "days": [{ "date": "d", "highC": 10, "lowC": 5, "precipMm": 0, "sky": "clear" }] } },
+      "expect": { "items": [] }
+    },
+    {
+      "name": "4° is",
+      "op": "advise",
+      "in": { "forecast": { "days": [{ "date": "d", "highC": 10, "lowC": 4, "precipMm": 0, "sky": "clear" }] } },
+      "expect": { "items": ["a warm coat"] }
+    },
+    {
+      "name": "25° exactly is not hot enough for a hat",
+      "op": "advise",
+      "in": { "forecast": { "days": [{ "date": "d", "highC": 25, "lowC": 15, "precipMm": 0, "sky": "clear" }] } },
+      "expect": { "items": [] }
+    },
+    {
+      "name": "26° is",
+      "op": "advise",
+      "in": { "forecast": { "days": [{ "date": "d", "highC": 26, "lowC": 15, "precipMm": 0, "sky": "clear" }] } },
+      "expect": { "items": ["a sun hat"] }
+    },
+    {
+      "name": "snow means boots, storms mean staying in",
+      "op": "advise",
+      "in": { "forecast": { "days": [
+        { "date": "d0", "highC": 2, "lowC": -3, "precipMm": 4, "sky": "snow" },
+        { "date": "d1", "highC": 8, "lowC": 3, "precipMm": 12, "sky": "storm" }
+      ] } },
+      "expect": {
+        "items": ["a reason to stay in", "a warm coat", "an umbrella", "boots"],
+        "summary": "Over the next 2 days: -3° to 8°. Take a reason to stay in, a warm coat, an umbrella and boots."
+      }
+    },
+    {
+      "name": "advice is drawn from the WHOLE window, not just the first day",
+      "op": "advise",
+      "in": { "forecast": { "days": [
+        { "date": "d0", "highC": 18, "lowC": 12, "precipMm": 0, "sky": "clear" },
+        { "date": "d1", "highC": 30, "lowC": 20, "precipMm": 0, "sky": "clear" }
+      ] } },
+      "expect": { "items": ["a sun hat"], "summary": "Over the next 2 days: 12° to 30°. Take a sun hat." }
+    },
+    {
+      "name": "the same item asked for by two different days is listed once",
+      "op": "advise",
+      "in": { "forecast": { "days": [
+        { "date": "d0", "highC": 10, "lowC": 1, "precipMm": 0, "sky": "clear" },
+        { "date": "d1", "highC": 10, "lowC": 2, "precipMm": 0, "sky": "clear" }
+      ] } },
+      "expect": { "items": ["a warm coat"] }
+    },
+    {
+      "name": "items are ordered by codepoint, so two implementations cannot disagree",
+      "op": "advise",
+      "in": { "forecast": { "days": [{ "date": "d", "highC": 30, "lowC": 1, "precipMm": 5, "sky": "snow" }] } },
+      "expect": { "items": ["a sun hat", "a warm coat", "an umbrella", "boots"] }
+    },
+    {
+      "name": "a single item is not joined with 'and'",
+      "op": "advise",
+      "in": { "forecast": { "days": [{ "date": "d", "highC": 18, "lowC": 12, "precipMm": 2, "sky": "rain" }] } },
+      "expect": { "summary": "Today: 12° to 18°. Take an umbrella." }
+    },
+    {
+      "name": "two items are joined with 'and', with no comma before it",
+      "op": "advise",
+      "in": { "forecast": { "days": [{ "date": "d", "highC": 30, "lowC": 20, "precipMm": 2, "sky": "rain" }] } },
+      "expect": { "summary": "Today: 20° to 30°. Take a sun hat and an umbrella." }
+    },
+    {
+      "name": "an empty forecast says so rather than inventing advice",
+      "op": "advise",
+      "in": { "forecast": { "days": [] } },
+      "expect": { "items": [], "summary": "No forecast to advise on." }
+    },
+    {
+      "name": "a day missing a temperature is refused, not read as zero degrees",
+      "op": "advise",
+      "in": { "forecast": { "days": [{ "date": "d", "highC": 10, "precipMm": 0, "sky": "clear" }] } },
+      "expectError": "EBADINPUT"
+    },
+    {
+      "name": "no forecast at all is refused",
+      "op": "advise",
+      "in": {},
+      "expectError": "EBADINPUT"
+    }
+  ]
+}

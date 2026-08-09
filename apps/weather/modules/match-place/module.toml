@@ -1,0 +1,21 @@
+# Portable: nothing in [contract] names a language, so this slot can be filled
+# by an implementation in anything that speaks the wire.
+
+[module]
+name = "match-place"
+
+[contract]
+interface   = ["interface.json"]
+conformance = ["conformance.json"]
+
+[prose]
+files = ["behavior.md"]
+
+[impl]
+files     = ["impl/**"]
+toolchain = "impl/toolchain.json"
+
+[limits]
+max_loc     = 300
+mitosis_loc = 220
+mitosis_ops = 4

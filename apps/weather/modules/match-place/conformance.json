@@ -1,0 +1,77 @@
+{
+  "timeoutMs": 10000,
+  "cases": [
+    {
+      "name": "no region means the provider's own ranking stands",
+      "op": "match",
+      "in": { "region": "", "candidates": [{ "name": "London", "country": "United Kingdom" }, { "name": "London", "country": "Canada" }] },
+      "expect": { "index": 0 }
+    },
+    {
+      "name": "UK finds the United Kingdom, which is the bug this module was created for",
+      "op": "match",
+      "in": { "region": "UK", "candidates": [
+        { "name": "London", "country": "Canada", "country_code": "CA", "admin1": "Ontario" },
+        { "name": "London", "country": "United Kingdom", "country_code": "GB", "admin1": "England" }
+      ] },
+      "expect": { "index": 1 }
+    },
+    {
+      "name": "the country code matches directly",
+      "op": "match",
+      "in": { "region": "CA", "candidates": [
+        { "name": "London", "country": "United Kingdom", "country_code": "GB" },
+        { "name": "London", "country": "Canada", "country_code": "CA" }
+      ] },
+      "expect": { "index": 1, "why": "country_code is CA" }
+    },
+    {
+      "name": "case does not matter",
+      "op": "match",
+      "in": { "region": "united kingdom", "candidates": [{ "name": "L", "country": "United Kingdom" }] },
+      "expect": { "index": 0 }
+    },
+    {
+      "name": "a state or county matches too",
+      "op": "match",
+      "in": { "region": "Texas", "candidates": [
+        { "name": "Paris", "country": "France", "admin1": "Île-de-France" },
+        { "name": "Paris", "country": "United States", "admin1": "Texas" }
+      ] },
+      "expect": { "index": 1, "why": "admin1 is Texas" }
+    },
+    {
+      "name": "a country match on a LATER candidate beats a county match on an earlier one",
+      "op": "match",
+      "in": { "region": "GB", "candidates": [
+        { "name": "X", "country": "United States", "admin2": "GB" },
+        { "name": "X", "country": "United Kingdom", "country_code": "GB" }
+      ] },
+      "expect": { "index": 1, "why": "country_code is GB" }
+    },
+    {
+      "name": "USA and US both find the United States",
+      "op": "match",
+      "in": { "region": "USA", "candidates": [{ "name": "X", "country": "Canada" }, { "name": "X", "country": "United States" }] },
+      "expect": { "index": 1 }
+    },
+    {
+      "name": "an unmatched region is refused rather than silently returning the first result",
+      "op": "match",
+      "in": { "region": "Narnia", "candidates": [{ "name": "London", "country": "United Kingdom" }] },
+      "expectError": "ENOMATCH"
+    },
+    {
+      "name": "no candidates at all is its own error, distinct from no match",
+      "op": "match",
+      "in": { "region": "UK", "candidates": [] },
+      "expectError": "ENOCANDIDATES"
+    },
+    {
+      "name": "a candidate missing every field does not crash the search",
+      "op": "match",
+      "in": { "region": "UK", "candidates": [{}, { "name": "L", "country_code": "GB" }] },
+      "expect": { "index": 1 }
+    }
+  ]
+}
