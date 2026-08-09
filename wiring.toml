@@ -34,3 +34,12 @@ why = "the Atlas shows which suites are green, so it draws what run-tests report
 [[node]]
 name = "summarise-diff"
 module = "modules/summarise-diff"
+
+[[node]]
+name = "inspect-ui"
+module = "modules/inspect-ui"
+
+[[edge]]
+from = "render-graph"
+to = "inspect-ui"
+why = "the inspector draws exactly the payload render-graph produced, evidence and all"

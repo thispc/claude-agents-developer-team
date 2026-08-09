@@ -1,0 +1,145 @@
+{
+  "_note": "Stated as data, so nothing here names a language. `expect` pins the structured facts exactly; `expectContains` / `expectNotContains` pin what must and must not appear in the rendered text — which is the only form an escaping claim can take.",
+  "timeoutMs": 10000,
+  "cases": [
+    {
+      "name": "counts the states it was given",
+      "op": "page",
+      "in": {
+        "title": "devteam",
+        "nodes": [
+          { "id": "alpha", "status": "live", "evidence": [{ "file": "wiring.toml", "line": 3 }] },
+          { "id": "beta", "status": "refused", "evidence": [{ "file": "wiring.toml", "line": 7 }] },
+          { "id": "gamma", "status": "unbuilt", "evidence": [{ "file": "wiring.toml", "line": 11 }] }
+        ],
+        "edges": [{ "from": "alpha", "to": "beta" }],
+        "dropped": []
+      },
+      "expect": { "stats": { "nodes": 3, "live": 1, "refused": 1, "unbuilt": 1, "edges": 1, "dropped": 0 } }
+    },
+    {
+      "name": "produces one complete self-contained document, with no external stylesheet, script or font",
+      "op": "page",
+      "in": { "nodes": [{ "id": "alpha", "status": "live", "evidence": [{ "file": "w.toml", "line": 1 }] }] },
+      "expectContains": { "html": ["<!doctype html>", "<style>", "</html>"] },
+      "expectNotContains": { "html": ["<link", "src=\"http", "href=\"http", "@import"] }
+    },
+    {
+      "name": "a module named like a script tag renders as its own name",
+      "op": "page",
+      "in": {
+        "nodes": [{ "id": "x", "label": "<script>alert(1)</script>", "status": "live", "evidence": [{ "file": "w.toml", "line": 1 }] }]
+      },
+      "expectContains": { "html": ["&lt;script&gt;alert(1)&lt;/script&gt;"] },
+      "expectNotContains": { "html": ["<script>alert(1)</script>"] }
+    },
+    {
+      "name": "an image-onerror payload in a note is escaped too, not only in the name",
+      "op": "page",
+      "in": {
+        "nodes": [{ "id": "x", "status": "live", "note": "<img src=x onerror=alert(1)>", "evidence": [{ "file": "w.toml", "line": 1 }] }]
+      },
+      "expectNotContains": { "html": ["<img src=x onerror=alert(1)>"] },
+      "expectContains": { "html": ["&lt;img src=x onerror=alert(1)&gt;"] }
+    },
+    {
+      "name": "a quote in an edge reason cannot break out of an attribute",
+      "op": "page",
+      "in": {
+        "nodes": [
+          { "id": "a", "status": "live", "evidence": [{ "file": "w.toml", "line": 1 }] },
+          { "id": "b", "status": "live", "evidence": [{ "file": "w.toml", "line": 5 }] }
+        ],
+        "edges": [{ "from": "a", "to": "b", "why": "\" onmouseover=\"alert(1)" }]
+      },
+      "expectNotContains": { "html": ["\" onmouseover=\"alert(1)"] }
+    },
+    {
+      "name": "trouble is listed before health, so a glance finds the thing that needs attention",
+      "op": "page",
+      "in": {
+        "nodes": [
+          { "id": "aaa-healthy", "status": "live", "evidence": [{ "file": "w.toml", "line": 1 }] },
+          { "id": "zzz-broken", "status": "refused", "evidence": [{ "file": "w.toml", "line": 5 }] }
+        ]
+      },
+      "expectContains": { "html": ["zzz-broken"] },
+      "expect": { "stats": { "nodes": 2, "live": 1, "refused": 1, "unbuilt": 0, "edges": 0, "dropped": 0 } }
+    },
+    {
+      "name": "several artifacts for one contract are shown as the relation they are",
+      "op": "page",
+      "in": {
+        "nodes": [{
+          "id": "summarise-diff", "status": "live", "contract": "c-776c0a05", "artifact": "a-fe895876",
+          "evidence": [{ "file": "wiring.toml", "line": 34 }],
+          "alternatives": [
+            { "artifact": "a-cfa75cf5", "language": "js", "loc": 43, "live": false },
+            { "artifact": "a-fe895876", "language": "py", "loc": 63, "live": true }
+          ]
+        }]
+      },
+      "expectContains": { "html": ["2 artifacts satisfy this contract", "js", "py"] }
+    },
+    {
+      "name": "a dropped node is reported rather than silently omitted",
+      "op": "page",
+      "in": {
+        "nodes": [{ "id": "a", "status": "live", "evidence": [{ "file": "w.toml", "line": 1 }] }],
+        "dropped": [{ "what": "node ghost", "why": "no declaration found in wiring.toml" }]
+      },
+      "expect": { "stats": { "dropped": 1 } },
+      "expectContains": { "html": ["node ghost", "no declaration found"] }
+    },
+    {
+      "name": "a node that somehow arrives with no evidence is called out, not drawn as though it were complete",
+      "op": "page",
+      "in": { "nodes": [{ "id": "a", "status": "live" }] },
+      "expectContains": { "html": ["no evidence"] }
+    },
+    {
+      "name": "an empty system renders a page rather than throwing",
+      "op": "page",
+      "in": { "nodes": [] },
+      "expect": { "stats": { "nodes": 0, "live": 0, "refused": 0, "unbuilt": 0, "edges": 0, "dropped": 0 } },
+      "expectContains": { "html": ["<!doctype html>"] }
+    },
+    {
+      "name": "the verify control is present, because the page is meant to be operated",
+      "op": "page",
+      "in": { "nodes": [{ "id": "a", "status": "live", "evidence": [{ "file": "w.toml", "line": 1 }] }] },
+      "expectContains": { "html": ["Verify all", "/api/verify"] }
+    },
+    {
+      "name": "gate results from a run are shown with their detail",
+      "op": "page",
+      "in": {
+        "nodes": [{ "id": "a", "status": "live", "evidence": [{ "file": "w.toml", "line": 1 }] }],
+        "verdicts": [{
+          "module": "a", "status": "admitted", "summary": "admitted — passed size, conformance",
+          "gates": [{ "name": "conformance", "ok": true, "detail": "20 cases passed over the wire" }]
+        }]
+      },
+      "expectContains": { "html": ["Last run", "conformance", "20 cases passed over the wire"] }
+    },
+    {
+      "name": "input that is not an object is refused",
+      "op": "page",
+      "in": "not an object",
+      "expectError": "EBADINPUT"
+    },
+    {
+      "name": "missing nodes is refused rather than guessed at",
+      "op": "page",
+      "in": { "title": "devteam" },
+      "expectError": "EBADINPUT"
+    },
+    {
+      "name": "the same input twice gives the same bytes — the page holds no state and reads no clock",
+      "op": "page",
+      "in": { "title": "determinism", "nodes": [{ "id": "a", "status": "live", "evidence": [{ "file": "w.toml", "line": 1 }] }] },
+      "expectContains": { "html": ["determinism"] },
+      "expectNotContains": { "html": ["Date", "Math.random"] }
+    }
+  ]
+}

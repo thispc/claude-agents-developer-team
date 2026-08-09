@@ -3,11 +3,11 @@
 // lines over kernel/, because anything that decides something belongs in the
 // kernel where it can be read in one sitting, not in an entry point.
 
-import { existsSync, readdirSync, statSync, readFileSync, mkdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  contractId, artifactDigest, loadManifest, Store, Ledger, Names, buildModule, loadWiring, shortDigest,
+  contractId, artifactDigest, loadManifest, readToolchain, Store, Ledger, Names, buildModule, loadWiring, shortDigest,
 } from "../kernel/index.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -37,6 +37,7 @@ async function main() {
     case "graph": return cmdGraph();
     case "atlas": return await cmdAtlas();
     case "pin": return cmdPin();
+    case "ui": return await cmdUi();
     default: return usage();
   }
 }
@@ -53,6 +54,7 @@ function usage() {
     devteam lookup <prefix>    what a digest refers to, in words
     devteam graph              the wiring, as the kernel reads it
     devteam atlas              the system describing itself, via its own render-graph module
+    devteam ui                 the same, in a browser, with a button that runs the real gates
 
   flags
     --force        re-judge even when the ledger already has this exact artifact
@@ -95,38 +97,38 @@ function cmdId() {
 }
 
 /**
- * The Atlas — and the first place the platform composes one of its own modules
- * rather than merely judging it.
+ * Everything the Atlas and the UI both need: the wiring, the ledger, and each
+ * module's contract facts. Gathered once so the two views cannot disagree about
+ * what is true.
  *
- * Note WHICH copy it runs. Not `modules/render-graph/run.js` on disk, but the
+ * Note WHICH copy of render-graph it runs — not the file on disk, but the
  * artifact the ledger says is live, materialised out of the content-addressed
- * store. That distinction is the whole design in one command: break the working
- * copy and this keeps working, because the admitted artifact was never touched.
- * A dev tool that imported the working copy would quietly make "passing means
- * live" decorative.
+ * store. Break the working copy and both views keep working, because the
+ * admitted artifact was never touched. A tool that imported the working copy
+ * would quietly make "passing means live" decorative.
  *
  * The kernel itself never imports a module. Only this shell does, so a broken
  * module can never stop `devteam build` from being able to fix it.
  */
-async function cmdAtlas() {
+async function gatherState() {
   const store = new Store(STORE);
   const ledger = new Ledger(join(STORE, "ledger.jsonl"));
   const wiring = loadWiring(WIRING, ROOT);
 
-  /** @type {Record<string, {contract: string, loc: number, surface: number}>} */
+  /** @type {Record<string, any>} */
   const facts = {};
   for (const n of wiring.nodes) {
     const dir = join(ROOT, n.module);
     const c = contractId(dir, vaultFor(dir));
     const a = artifactDigest(dir);
-    const iface = JSON.parse(readFileSync(join(dir, /** @type {string} */ (c.files.interface.find((f) => f.path === "interface.json")?.path)), "utf8"));
+    const iface = JSON.parse(readFileSync(join(dir, "interface.json"), "utf8"));
     const ops = Object.keys(iface.operations ?? {});
     const errs = new Set(ops.flatMap((/** @type {string} */ o) => iface.operations[o].errors ?? []));
-    facts[n.name] = { contract: c.id, loc: a.loc, surface: ops.length + errs.size };
+    facts[n.name] = { contract: c.id, loc: a.loc, surface: ops.length + errs.size, language: a.language, portable: c.portable };
   }
 
   const { render } = await liveModule("render-graph", store, ledger);
-  const g = render({
+  const graph = render({
     wiringPath: relative(ROOT, WIRING),
     wiringText: readFileSync(WIRING, "utf8"),
     nodes: wiring.nodes,
@@ -135,6 +137,26 @@ async function cmdAtlas() {
     modules: facts,
   });
 
+  // The relation, per node: every artifact admitted for that contract, so the
+  // page can show that a slot has been filled more than once and in what.
+  for (const node of graph.nodes) {
+    const f = facts[node.id];
+    if (!f) continue;
+    node.language = f.language;
+    node.portable = f.portable;
+    const seen = new Map();
+    for (const r of ledger.admitted(f.contract)) seen.set(r.artifact, r);
+    if (seen.size > 1) {
+      node.alternatives = [...seen.values()].map((r) => ({
+        artifact: r.artifact, language: r.language, loc: r.loc, live: r.artifact === node.artifact,
+      }));
+    }
+  }
+  return { store, ledger, graph };
+}
+
+async function cmdAtlas() {
+  const { graph: g } = await gatherState();
   console.log(`\n  ${g.summary}\n`);
   for (const n of g.nodes) {
     const dot = n.status === "live" ? "●" : n.status === "refused" ? "✗" : "○";
@@ -161,16 +183,22 @@ async function cmdAtlas() {
 async function liveModule(name, store, ledger) {
   const dir = join(ROOT, "modules", name);
   const c = contractId(dir, vaultFor(dir));
+  const entry = readToolchain(dir, loadManifest(dir)).entry;
   const live = ledger.live(c.id);
   if (!live) {
     throw new Error(`${name}: nothing is admitted for the current contract.\n  Run \`node bin/devteam.js build\` — and if it is refused, that refusal is the answer, not an obstacle to work around.`);
   }
   const out = join(RUNS, "live", live.artifact);
-  if (!existsSync(join(out, "run.js"))) {
+  if (!existsSync(join(out, entry))) {
     mkdirSync(out, { recursive: true });
     store.materialise(live.artifact, out);
+    // The kernel writes this marker into every sandbox tree, so a module loaded
+    // here has to get the same treatment or `export` would mean something
+    // different at composition time than it did at verification time.
+    const marker = join(out, "package.json");
+    if (!existsSync(marker)) writeFileSync(marker, JSON.stringify({ type: "module" }) + "\n");
   }
-  return import(pathToFileURL(join(out, "run.js")).href);
+  return import(pathToFileURL(join(out, entry)).href);
 }
 
 /** The vault for a module, if it has one. @param {string} moduleDir */
@@ -260,6 +288,78 @@ function distinct(records) {
   const byArtifact = new Map();
   for (const r of records) byArtifact.set(r.artifact, r);
   return [...byArtifact.values()];
+}
+
+/**
+ * Serve the inspector.
+ *
+ * The page itself is rendered by `inspect-ui` — a module, with a contract, a
+ * conformance suite and a size cap, admitted like everything else. This command
+ * is only the plumbing around it: gather state, hand it over, put the bytes on a
+ * socket. That split is deliberate. A dashboard written outside the system would
+ * be the one piece of the platform nothing could verify, which is exactly the
+ * unaccountable code that made v1 unimprovable.
+ *
+ * Bound to 127.0.0.1 with no authentication, because POST /api/verify starts
+ * containers. Loopback IS the access control here; if this ever needs to listen
+ * on a real interface, it needs a real answer first.
+ */
+async function cmdUi() {
+  const { createServer } = await import("node:http");
+  const port = Number(process.env["PORT"] ?? 7788);
+
+  /** @type {any[]} */
+  let lastRun = [];
+
+  const server = createServer((req, res) => {
+    /** @param {number} code @param {string} type @param {string} body */
+    const send = (code, type, body) => {
+      res.writeHead(code, { "content-type": type, "cache-control": "no-store" });
+      res.end(body);
+    };
+    (async () => {
+      if (req.method === "POST" && req.url === "/api/verify") {
+        lastRun = await runAll();
+        return send(200, "application/json", JSON.stringify(lastRun));
+      }
+      const { store, ledger, graph } = await gatherState();
+      if (req.url === "/api/state") return send(200, "application/json", JSON.stringify({ ...graph, verdicts: lastRun }));
+      if (req.url !== "/") return send(404, "text/plain; charset=utf-8", "not found");
+
+      const { page } = await liveModule("inspect-ui", store, ledger);
+      const { html } = page({ title: "devteam", ...graph, verdicts: lastRun });
+      return send(200, "text/html; charset=utf-8", html);
+    })().catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      // The failure a person will actually hit is inspect-ui itself being
+      // refused. Say so in plain text rather than serving a blank page — the
+      // whole point of this screen is to tell you when something did not pass.
+      send(500, "text/plain; charset=utf-8", `devteam ui could not render:\n\n${message}\n`);
+    });
+  });
+
+  server.listen(port, "127.0.0.1", () => {
+    console.log(`\n  devteam inspector → http://127.0.0.1:${port}`);
+    console.log(`  The page is rendered by the inspect-ui module's admitted artifact.`);
+    console.log(`  "Verify all" runs the real gates in a network-denied container. Ctrl-C to stop.\n`);
+  });
+}
+
+/** Run every wired module through the real gates. @returns {Promise<any[]>} */
+async function runAll() {
+  const store = new Store(STORE);
+  const ledger = new Ledger(join(STORE, "ledger.jsonl"));
+  /** @type {any[]} */
+  const out = [];
+  for (const dir of targets()) {
+    const r = await buildModule({
+      moduleDir: dir, store, ledger, runsRoot: RUNS, heldoutRoot: HELDOUT,
+      requireHermetic: !flags.has("--allow-host"),
+      force: true,
+    });
+    out.push({ module: r.module, status: r.status, summary: r.summary, gates: r.verdict?.gates ?? [] });
+  }
+  return out;
 }
 
 /**

@@ -12,7 +12,7 @@
 // agent-built without circularity: it is the thing that decides whether
 // agent-built code is admitted.
 
-export { contractId, artifactDigest, loadManifest, canonicalise, sha256, walk, countLoc, globToRegExp } from "./contract.js";
+export { contractId, artifactDigest, loadManifest, readToolchain, canonicalise, sha256, walk, countLoc, globToRegExp } from "./contract.js";
 export { Store, writeAtomic, shortDigest } from "./store.js";
 export { Ledger, now } from "./ledger.js";
 export { verify } from "./verify.js";

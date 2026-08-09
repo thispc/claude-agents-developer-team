@@ -59,6 +59,37 @@ def mismatch(want, got, path=""):
     return None
 
 
+def contains(case, out):
+    """`expectContains` / `expectNotContains` — substring assertions on named
+    string fields, for modules whose output is text.
+
+    Exact matching is right for structured output and useless for a rendered
+    document: pinning a whole HTML page byte-for-byte makes every cosmetic edit a
+    contract change, and pinning nothing makes the contract vacuous. What is
+    worth stating about a page is that particular things appear in it and
+    particular things never do — which is also the only way to assert escaping,
+    since the interesting claim is the ABSENCE of a live tag.
+
+    Must match drive.mjs exactly.
+    """
+    out = out or {}
+    for field, needles in (case.get("expectContains") or {}).items():
+        value = out.get(field)
+        if not isinstance(value, str):
+            return f'expectContains names "{field}", which is {"missing" if value is None else "not a string"}'
+        for needle in needles:
+            if needle not in value:
+                return f'"{field}" does not contain {json.dumps(needle)}'
+    for field, needles in (case.get("expectNotContains") or {}).items():
+        value = out.get(field)
+        if not isinstance(value, str):
+            return f'expectNotContains names "{field}", which is {"missing" if value is None else "not a string"}'
+        for needle in needles:
+            if needle in value:
+                return f'"{field}" contains {json.dumps(needle)}, which it must not'
+    return None
+
+
 def main():
     argv = sys.argv[1:]
     if "--" in argv:
@@ -162,7 +193,10 @@ def main():
             failures.append(f"{label}: expected a result, got error {res['error'].get('code')}: {res['error'].get('message')}")
             continue
 
-        bad = mismatch(case.get("expect"), res.get("out"))
+        # A case may pin structure, or text, or both. An absent `expect`
+        # constrains nothing — it must not be read as "expected None".
+        structural = mismatch(case["expect"], res.get("out")) if "expect" in case else None
+        bad = structural or contains(case, res.get("out"))
         if bad:
             failures.append(f"{label}: {bad}")
         else:

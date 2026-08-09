@@ -102,7 +102,9 @@ for (const [i, c] of cases.entries()) {
     failures.push(`${label}: expected a result, got error ${res.error.code}: ${res.error.message}`);
     continue;
   }
-  const bad = mismatch(c.expect, res.out, "");
+  // A case may pin structure, or text, or both. An absent `expect` constrains
+  // nothing — it must not be read as "expected undefined".
+  const bad = (c.expect === undefined ? null : mismatch(c.expect, res.out, "")) ?? contains(c, res.out);
   if (bad) failures.push(`${label}: ${bad}`);
   else passed++;
 }
@@ -132,6 +134,38 @@ function send(req) {
     waiting.push(settle);
     child.stdin.write(JSON.stringify(req) + "\n");
   });
+}
+
+/**
+ * `expectContains` / `expectNotContains` — substring assertions on named string
+ * fields, for modules whose output is text.
+ *
+ * Exact matching is right for structured output and useless for a rendered
+ * document: pinning a whole HTML page byte-for-byte makes every cosmetic edit a
+ * contract change, and pinning nothing makes the contract vacuous. What is
+ * actually worth stating about a page is that particular things appear in it and
+ * particular things never do — which is also the only way to assert escaping,
+ * since the interesting claim is the ABSENCE of a live tag.
+ *
+ * @param {any} c the case @param {any} out the module's result
+ * @returns {string|null}
+ */
+function contains(c, out) {
+  for (const [field, needles] of Object.entries(c.expectContains ?? {})) {
+    const value = out?.[field];
+    if (typeof value !== "string") return `expectContains names "${field}", which is ${value === undefined ? "missing" : "not a string"}`;
+    for (const needle of /** @type {string[]} */ (needles)) {
+      if (!value.includes(needle)) return `"${field}" does not contain ${JSON.stringify(needle)}`;
+    }
+  }
+  for (const [field, needles] of Object.entries(c.expectNotContains ?? {})) {
+    const value = out?.[field];
+    if (typeof value !== "string") return `expectNotContains names "${field}", which is ${value === undefined ? "missing" : "not a string"}`;
+    for (const needle of /** @type {string[]} */ (needles)) {
+      if (value.includes(needle)) return `"${field}" contains ${JSON.stringify(needle)}, which it must not`;
+    }
+  }
+  return null;
 }
 
 /**

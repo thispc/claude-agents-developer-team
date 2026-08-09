@@ -1,0 +1,28 @@
+# The UI is a module, judged exactly like every other module.
+#
+# That is the point of it. A dashboard written outside this system would be the
+# one piece of the platform nobody could verify — which is precisely the
+# unaccountable code v1 died of. So it has a contract, it has conformance cases,
+# it is size-capped, and it is admitted or refused like anything else.
+#
+# It is PORTABLE: nothing in [contract] names a language, so the page could be
+# rendered by a Python implementation tomorrow and the contract id would not move.
+
+[module]
+name = "inspect-ui"
+
+[contract]
+interface   = ["interface.json"]
+conformance = ["conformance.json"]
+
+[prose]
+files = ["behavior.md"]
+
+[impl]
+files     = ["impl/**"]
+toolchain = "impl/toolchain.json"
+
+[limits]
+max_loc     = 600
+mitosis_loc = 450
+mitosis_ops = 4

@@ -1,0 +1,10 @@
+{
+  "image": "node:20-alpine",
+  "language": "js",
+  "entry": "impl/run.js",
+  "timeout_sec": 60,
+  "memory": "256m",
+  "pids": 128,
+
+  "_artifact_side": "The only file in this module that knows the implementation is JavaScript. Hashed into the artifact, not the contract, so another language could fill the same slot."
+}
