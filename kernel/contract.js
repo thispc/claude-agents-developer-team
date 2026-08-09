@@ -249,6 +249,24 @@ export function readToolchain(moduleDir, m) {
   if (typeof t.entry !== "string" || t.entry === "") {
     throw new Error(`${path}: needs an "entry" — the file the kernel's serve shim loads to find this module's operations (e.g. "impl/run.js").`);
   }
+
+  // THE IMAGE MUST BE PINNED BY DIGEST, not by tag.
+  //
+  // A tag is a moving target: `node:20-alpine` meant different bytes last month
+  // and will mean different bytes next month. This file is hashed into the
+  // ARTIFACT, so a tag lets two genuinely different runtimes share one artifact
+  // digest — and the ledger would then serve, unverified, an artifact that
+  // passed under a runtime nobody can reproduce. It is the same defect that
+  // disqualified Extism from this design, and it sat here unnoticed while the
+  // design claimed otherwise.
+  if (!/@sha256:[0-9a-f]{64}$/.test(t.image)) {
+    throw new Error(
+      `${path}: image "${t.image}" is pinned by tag, which moves.\n` +
+      `  Pin it by digest so "it passed" is a claim about a runtime that can be produced again:\n` +
+      `    docker image inspect ${t.image} --format '{{index .RepoDigests 0}}'\n` +
+      `  then write  "image": "${t.image}@sha256:…"`
+    );
+  }
   return t;
 }
 

@@ -20,6 +20,11 @@ import { loadWiring } from "./wiring.js";
 import { resolveLive } from "./compose.js";
 import { compatible } from "./compat.js";
 
+// Images are digest-pinned everywhere, including in fixtures — a test that used
+// a moving tag would be exercising a path the kernel now refuses.
+const DIGEST = "node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293";
+const PY_DIGEST = "python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df";
+
 /** A minimal well-formed module on disk. @param {Partial<Record<string,string>>} [over] */
 function fixture(over = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kernel-test-"));
@@ -34,7 +39,7 @@ function fixture(over = {}) {
       `[impl]`, `files = ["run.js"]`, `toolchain = "toolchain.json"`,
     ].join("\n"),
     "interface.json": JSON.stringify({ name: "fixture", operations: { go: { errors: ["EBAD"] } } }),
-    "toolchain.json": JSON.stringify({ image: "node:20-alpine", language: "js", entry: "run.js", test: ["node", "--test", "tests/"] }),
+    "toolchain.json": JSON.stringify({ image: DIGEST, language: "js", entry: "run.js", test: ["node", "--test", "tests/"] }),
     "behavior.md": "# fixture\n\nProse. Not hashed.\n",
     "run.js": "export const go = () => 1;\n",
     "tests/go.test.js": "import assert from 'node:assert';\nassert.ok(true);\n",
@@ -78,7 +83,7 @@ test("the toolchain belongs to the ARTIFACT — which is what lets another langu
   const contractBefore = contractId(dir).id;
   const artifactBefore = artifactDigest(dir).digest;
 
-  writeFileSync(join(dir, "toolchain.json"), JSON.stringify({ image: "node:22-alpine", language: "js", entry: "run.js", test: ["node", "--test", "tests/"] }));
+  writeFileSync(join(dir, "toolchain.json"), JSON.stringify({ image: DIGEST.replace("20-alpine", "22-alpine"), language: "js", entry: "run.js", test: ["node", "--test", "tests/"] }));
   assert.equal(contractId(dir).id, contractBefore, "the runtime describes an implementation, not what every implementation must satisfy");
   assert.notEqual(artifactDigest(dir).digest, artifactBefore, "but it is still judged: a different runtime is a different claim");
   rmSync(dir, { recursive: true, force: true });
@@ -98,7 +103,7 @@ test("a module judged only by language-neutral cases is portable; one carrying l
 
 test("a language with no kernel shim is refused by name, not accepted and mishandled", () => {
   const dir = fixture();
-  writeFileSync(join(dir, "toolchain.json"), JSON.stringify({ image: "ghcr.io/x", language: "brainfuck", entry: "run.js", test: ["x"] }));
+  writeFileSync(join(dir, "toolchain.json"), JSON.stringify({ image: `ghcr.io/x@sha256:${"0".repeat(64)}`, language: "brainfuck", entry: "run.js", test: ["x"] }));
   assert.throws(() => artifactDigest(dir), /has no kernel shim/);
   rmSync(dir, { recursive: true, force: true });
 });
@@ -385,7 +390,7 @@ test("composing reads the toolchain from the ARTIFACT, not from the working copy
 
   // An admitted artifact in JavaScript.
   writeFileSync(join(dir, "impl/run.js"), "export function go(){ return {}; }\n");
-  writeFileSync(join(dir, "impl/toolchain.json"), JSON.stringify({ image: "node:20-alpine", language: "js", entry: "impl/run.js" }));
+  writeFileSync(join(dir, "impl/toolchain.json"), JSON.stringify({ image: DIGEST, language: "js", entry: "impl/run.js" }));
 
   const storeDir = mkdtempSync(join(tmpdir(), "compose-store-"));
   const store = new Store(storeDir);
@@ -398,7 +403,7 @@ test("composing reads the toolchain from the ARTIFACT, not from the working copy
   // Now the working copy moves to Python, exactly as a language swap does.
   rmSync(join(dir, "impl/run.js"));
   writeFileSync(join(dir, "impl/run.py"), "def go(payload):\n    return {}\n");
-  writeFileSync(join(dir, "impl/toolchain.json"), JSON.stringify({ image: "python:3.12-alpine", language: "py", entry: "impl/run.py" }));
+  writeFileSync(join(dir, "impl/toolchain.json"), JSON.stringify({ image: PY_DIGEST, language: "py", entry: "impl/run.py" }));
 
   const live = resolveLive({ moduleDir: dir, store, ledger, runsRoot: join(storeDir, "runs") });
   assert.equal(live.language, "js", "the admitted artifact is the JavaScript one, so composing it must start JavaScript");
@@ -475,4 +480,22 @@ test("the check reaches inside arrays, which is where the weather app's break wa
 test("a schema that says nothing is reported as UNCHECKED, never as broken", () => {
   const found = compatible({ type: "object" }, { type: "object", properties: { a: { enum: [1, 2] } } });
   assert.equal(found.filter((f) => f.level === "error").length, 0, "nothing here can be proven wrong");
+});
+
+test("an image pinned by tag is refused — a tag is a moving target", () => {
+  // This sat unnoticed while the design claimed the opposite. toolchain.json is
+  // hashed into the ARTIFACT, so a tag lets two genuinely different runtimes
+  // share one artifact digest, and the ledger would then serve — unverified —
+  // an artifact that passed under a runtime nobody can reproduce. It is the same
+  // defect that disqualified Extism from this design.
+  const dir = fixture();
+  writeFileSync(join(dir, "toolchain.json"), JSON.stringify({ image: "node:20-alpine", language: "js", entry: "run.js", test: ["node", "--test", "tests/"] }));
+  assert.throws(() => artifactDigest(dir), /pinned by tag, which moves/);
+
+  writeFileSync(join(dir, "toolchain.json"), JSON.stringify({
+    image: "node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293",
+    language: "js", entry: "run.js", test: ["node", "--test", "tests/"],
+  }));
+  assert.equal(artifactDigest(dir).language, "js");
+  rmSync(dir, { recursive: true, force: true });
 });

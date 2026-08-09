@@ -1,8 +1,9 @@
 {
-  "image": "python:3.12-alpine",
+  "image": "python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df",
   "language": "py",
   "entry": "impl/run.py",
   "timeout_sec": 60,
   "memory": "256m",
-  "pids": 128
+  "pids": 128,
+  "_pinned_by_digest": "A tag is a moving target: `node:20-alpine` meant different bytes last month and will mean different bytes next month. Since this file is hashed into the ARTIFACT, a tag meant two different runtimes could share one artifact digest \u2014 the exact defect that disqualified Extism. The digest makes 'it passed' a claim about a runtime that can be produced again."
 }

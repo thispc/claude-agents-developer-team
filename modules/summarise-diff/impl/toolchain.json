@@ -1,11 +1,11 @@
 {
-  "image": "node:20-alpine",
+  "image": "node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293",
   "language": "js",
   "entry": "impl/run.js",
   "timeout_sec": 60,
   "memory": "256m",
   "pids": 128,
-
   "_no_test_command": "There is none, and that absence is the point. This module is judged entirely by the language-neutral cases in conformance.json, driven over the wire, so nothing about how it is verified mentions JavaScript. That is what makes the slot fillable by another language.",
-  "_artifact_side": "This file is hashed into the ARTIFACT, not the contract. Change the image and this implementation is re-judged; but the Python implementation of the same interface fills the SAME contract slot rather than inventing a new one."
+  "_artifact_side": "This file is hashed into the ARTIFACT, not the contract. Change the image and this implementation is re-judged; but the Python implementation of the same interface fills the SAME contract slot rather than inventing a new one.",
+  "_pinned_by_digest": "A tag is a moving target: `node:20-alpine` meant different bytes last month and will mean different bytes next month. Since this file is hashed into the ARTIFACT, a tag meant two different runtimes could share one artifact digest \u2014 the exact defect that disqualified Extism. The digest makes 'it passed' a claim about a runtime that can be produced again."
 }

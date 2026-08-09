@@ -1,5 +1,5 @@
 {
-  "image": "node:20-alpine",
+  "image": "node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293",
   "language": "js",
   "entry": "run.js",
   "test": [
@@ -11,5 +11,6 @@
   "memory": "512m",
   "pids": 256,
   "_language": "Selects the kernel shim that starts this module and talks to it. This module also carries language-specific tests, which is what makes it NON-portable: those tests can only judge a JavaScript implementation.",
-  "_why_artifact_side": "The toolchain is hashed into the ARTIFACT, not the contract. Change the image and this implementation is re-judged; but a Python implementation of the same interface fills the SAME contract slot rather than inventing a new one."
+  "_why_artifact_side": "The toolchain is hashed into the ARTIFACT, not the contract. Change the image and this implementation is re-judged; but a Python implementation of the same interface fills the SAME contract slot rather than inventing a new one.",
+  "_pinned_by_digest": "A tag is a moving target: `node:20-alpine` meant different bytes last month and will mean different bytes next month. Since this file is hashed into the ARTIFACT, a tag meant two different runtimes could share one artifact digest \u2014 the exact defect that disqualified Extism. The digest makes 'it passed' a claim about a runtime that can be produced again."
 }
