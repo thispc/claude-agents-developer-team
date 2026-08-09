@@ -91,6 +91,56 @@ def contains(case, out):
     return None
 
 
+def _at(obj, path):
+    node = obj
+    for step in str(path).split("."):
+        if not isinstance(node, (dict, list)):
+            return None
+        node = node[int(step)] if isinstance(node, list) else node.get(step)
+    return node
+
+
+def _fill(node, scope):
+    """Build a derived input, replacing {"$": "path"} with a value in scope."""
+    if isinstance(node, list):
+        return [_fill(n, scope) for n in node]
+    if not isinstance(node, dict):
+        return node
+    if isinstance(node.get("$"), str):
+        return _at(scope, node["$"])
+    return {k: _fill(v, scope) for k, v in node.items()}
+
+
+def _check(m, scope):
+    """One assertion. Data, not an expression language — a parser here would be
+    another place for the two drivers to drift apart. Must match drive.mjs."""
+    kind = next(iter(m))
+    args = m[kind]
+    a = _at(scope, args[0])
+    # A number on the right is a literal; a string is a path. Must match drive.mjs.
+    if kind == "is":
+        b = args[1]
+    elif isinstance(args[1], (int, float)) and not isinstance(args[1], bool):
+        b = args[1]
+    else:
+        b = _at(scope, args[1])
+    j = json.dumps
+    if kind in ("equal", "is"):
+        if j(a, sort_keys=True) == j(b, sort_keys=True):
+            return None
+        return f"{args[0]} is {j(a)}, expected " + (j(b) if kind == "is" else f"{args[1]} which is {j(b)}")
+    if kind == "notEqual":
+        return None if j(a, sort_keys=True) != j(b, sort_keys=True) else f"{args[0]} and {args[1]} are both {j(a)}, and must differ"
+    if kind == "atMost":
+        return None if float(a) <= float(b) else f"{args[0]} is {j(a)}, which is more than {j(b)}"
+    if kind == "atLeast":
+        return None if float(a) >= float(b) else f"{args[0]} is {j(a)}, which is less than {j(b)}"
+    if kind == "count":
+        n = len(a) if isinstance(a, (list, str)) else -1
+        return None if n == int(b) else f"{args[0]} has {n} item(s), expected {j(b)}"
+    return f"unknown comparator {j(kind)}"
+
+
 def main():
     argv = sys.argv[1:]
     if "--" in argv:
@@ -205,6 +255,62 @@ def main():
         bad = structural or contains(case, res.get("out"))
         if bad:
             failures.append(f"{label}: {bad}")
+        else:
+            passed += 1
+
+    # ── PROPERTIES: relations that must hold WITHOUT knowing the right answer.
+    #
+    # A case says "this input gives that output", which tests only what its
+    # author thought of. A property says "whatever the answer is, THIS must hold"
+    # — checked over hundreds of generated inputs, so it cannot be satisfied by
+    # luck the way a handful of examples can.
+    corpus = {}
+    try:
+        with open("corpus.json", encoding="utf-8") as fh:
+            corpus = json.load(fh)
+    except Exception:  # noqa: BLE001 — no corpus means properties skip, and say so
+        corpus = {}
+
+    next_id = [len(cases) + 1000]
+    for prop in suite.get("properties") or []:
+        inputs = corpus.get(prop.get("op")) or []
+        held = skipped = 0
+        broke = None
+
+        for value in inputs:
+            scope = {"in": value}
+            next_id[0] += 1
+            base = send({"id": next_id[0], "op": prop["op"], "in": value})
+            # An input the module refuses has nothing to relate. Skipped, and the
+            # skip is counted — a property that never ran is the quiet failure
+            # this design keeps running into.
+            if base.get("error"):
+                skipped += 1
+                continue
+            scope["out"] = base.get("out")
+
+            usable = True
+            for call in prop.get("calls") or []:
+                next_id[0] += 1
+                res = send({"id": next_id[0], "op": call.get("op", prop["op"]), "in": _fill(call.get("in"), scope)})
+                if res.get("error"):
+                    usable = False
+                    break
+                scope[call["as"]] = res.get("out")
+            if not usable:
+                skipped += 1
+                continue
+
+            bad = next((b for b in (_check(m, scope) for m in prop.get("must") or []) if b), None)
+            if bad:
+                broke = f"{bad}   with in={json.dumps(value)[:160]}"
+                break
+            held += 1
+
+        if broke:
+            failures.append(f'property "{prop["name"]}": {broke}')
+        elif held == 0:
+            failures.append(f'property "{prop["name"]}" never actually ran — all {len(inputs)} inputs were refused or unusable, so it proves nothing')
         else:
             passed += 1
 

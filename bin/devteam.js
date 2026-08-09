@@ -59,6 +59,7 @@ async function main() {
     case "fit": return await cmdFit();
     case "differ": return await cmdDiffer();
     case "pin": return cmdPin();
+    case "revoke": return cmdRevoke();
     case "ui": return await cmdUi();
     default: return usage();
   }
@@ -73,6 +74,8 @@ function usage() {
     devteam gate               the same, but exits non-zero on any refusal (for CI)
     devteam ledger [contract]  what has satisfied which contract
     devteam pin <contract> [artifact]   choose which artifact is live — e.g. which language
+    devteam revoke <contract> <artifact> --why="…"   withdraw an artifact admitted under a
+                               weaker gate. Append-only: the original admission stays.
     devteam lookup <prefix>    what a digest refers to, in words
     devteam fit                do the modules actually fit together? (the composition gate)
     devteam differ [module]    fire generated inputs at every implementation of one contract.
@@ -338,6 +341,7 @@ function cmdLedger() {
     }
     if (live) console.log(`    live via ${live.via}`);
     for (const r of rejected) console.log(`      ✗ ${shortDigest(r.artifact)}  ${r.at}  refused at ${r.gate}: ${r.why}`);
+    for (const r of ledger.revoked(c)) console.log(`      ⊘ ${shortDigest(r.artifact)}  ${r.at}  revoked: ${r.why}`);
   }
   console.log("");
 }
@@ -501,6 +505,40 @@ async function runAll() {
     out.push({ module: r.module, status: r.status, summary: r.summary, gates: r.verdict?.gates ?? [] });
   }
   return out;
+}
+
+/**
+ * Withdraw an artifact that should not have been admitted.
+ *
+ * Gates get stronger. An artifact admitted under a weaker one stays admitted —
+ * nothing rewrites history — but continuing to offer it as a valid filling of
+ * the contract would be a lie, and the differential gate would keep reporting
+ * its wrongness as a hole in the CONTRACT rather than as a bad artifact.
+ *
+ * So this appends. The original admission line stays exactly where it was, next
+ * to a line saying what was learned afterwards.
+ */
+function cmdRevoke() {
+  const [contractPrefix, artifactPrefix] = args;
+  const why = [...flags].find((f) => f.startsWith("--why="))?.slice("--why=".length);
+  if (!contractPrefix || !artifactPrefix) throw new Error(`devteam revoke <contract> <artifact> --why="what was learned"`);
+  if (!why) throw new Error(`revoke needs --why="…". An artifact withdrawn without a reason is indistinguishable from one lost by accident.`);
+
+  const ledger = new Ledger(join(STORE, "ledger.jsonl"));
+  const contracts = ledger.contracts().filter((c) => c.startsWith(contractPrefix));
+  if (contracts.length !== 1) throw new Error(`"${contractPrefix}" matches ${contracts.length} contracts`);
+  const contract = /** @type {string} */ (contracts[0]);
+  const matches = distinct(ledger.admitted(contract)).filter((r) => r.artifact.startsWith(artifactPrefix));
+  if (matches.length !== 1) throw new Error(`"${artifactPrefix}" matches ${matches.length} admitted artifacts for that contract`);
+  const chosen = matches[0];
+
+  ledger.append({
+    t: "revoke", contract, artifact: chosen.artifact, module: chosen.module,
+    at: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"), why,
+  });
+  console.log(`\n  revoked ${chosen.module} → ${shortDigest(chosen.artifact)}${chosen.language ? ` (${chosen.language})` : ""}`);
+  console.log(`  ${why}`);
+  console.log(`  The admission it withdraws is still in the ledger, one line above.\n`);
 }
 
 /**

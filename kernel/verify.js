@@ -35,6 +35,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { contractId, artifactDigest, loadManifest, readToolchain, sha256, walk } from "./contract.js";
 import { sizeGate } from "./sizegate.js";
+import { corpusFor } from "./generate.js";
 
 /**
  * @typedef {object} Gate
@@ -119,6 +120,11 @@ export async function verify({ moduleDir, runsRoot, heldoutDir, requireHermetic 
   try {
     assemble(moduleDir, work, [...c.files.interface, ...c.files.conformance, ...c.files.tests, ...a.files]);
     installShims(work);
+    // The corpus is generated HERE and written into the sandbox, so the drivers
+    // only execute it. Generation duplicated into two driver languages would be
+    // another place for them to disagree, and they already carry as much
+    // duplicated judgement as is safe.
+    writeCorpus(moduleDir, work, c, iface);
 
     // ── gate 2: CONFORMANCE. The gate that makes a module replaceable.
     //
@@ -136,7 +142,7 @@ export async function verify({ moduleDir, runsRoot, heldoutDir, requireHermetic 
         name: "conformance",
         ok: conf.ok,
         detail: conf.ok
-          ? `${countCases(moduleDir, c)} case(s) passed over the wire against a ${toolchain.language} implementation (${conf.runner}${conf.hermetic ? ", hermetic" : ", NOT hermetic"}, ${conf.ms}ms)`
+          ? `${countCases(moduleDir, c)} case(s) + ${countProperties(moduleDir, c)} propert(ies) passed over the wire against a ${toolchain.language} implementation (${conf.runner}${conf.hermetic ? ", hermetic" : ", NOT hermetic"}, ${conf.ms}ms)`
           : `${firstUsefulLine(conf.output)}`,
       });
       if (!conf.ok) return done({ ok: false, gates, runner, hermetic, proposeSplit: size.proposeSplit });
@@ -544,7 +550,47 @@ async function runDriver({ work, toolchain, manifest, requireHermetic, conforman
   return runSuite({ work, toolchain, cmd, requireHermetic, ...(ambient ? { ambient } : {}) });
 }
 
+/**
+ * Write the generated inputs the property gate runs over.
+ *
+ * Seeded from the conformance cases, because a schema alone cannot build a
+ * structurally valid input for any contract whose parts refer to each other —
+ * and agreement about garbage is not evidence.
+ *
+ * @param {string} moduleDir @param {string} work
+ * @param {ReturnType<typeof contractId>} c @param {any} iface
+ */
+function writeCorpus(moduleDir, work, c, iface) {
+  const rel = c.files.conformance[0]?.path;
+  if (!rel) return;
+  let suite;
+  try { suite = JSON.parse(readFileSync(join(moduleDir, rel), "utf8")); } catch { return; }
+  if (!Array.isArray(suite.properties) || suite.properties.length === 0) return;
+
+  /** @type {Record<string, any[]>} */
+  const seeds = {};
+  for (const cs of suite.cases ?? []) {
+    if (cs.expectError === undefined && cs.op) (seeds[cs.op] ??= []).push(cs.in);
+  }
+  /** @type {Record<string, any[]>} */
+  const corpus = {};
+  const size = Number(suite.propertyInputs ?? 150);
+  for (const op of new Set(suite.properties.map((/** @type {any} */ p) => p.op))) {
+    corpus[op] = corpusFor(seeds[op] ?? [], iface.operations?.[op] ?? {}, size, 7);
+  }
+  writeFileSync(join(work, "corpus.json"), JSON.stringify(corpus));
+}
+
 /** How many cases the suite declares, for a verdict that says something. */
+function countProperties(/** @type {string} */ moduleDir, /** @type {ReturnType<typeof contractId>} */ c) {
+  try {
+    const rel = c.files.conformance[0]?.path;
+    if (!rel) return 0;
+    const suite = JSON.parse(readFileSync(join(moduleDir, rel), "utf8"));
+    return Array.isArray(suite.properties) ? suite.properties.length : 0;
+  } catch { return 0; }
+}
+
 function countCases(/** @type {string} */ moduleDir, /** @type {ReturnType<typeof contractId>} */ c) {
   try {
     const rel = c.files.conformance[0]?.path;

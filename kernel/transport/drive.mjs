@@ -30,6 +30,11 @@ if (!conformancePath || !interfacePath || serveCmd.length === 0) {
 }
 
 const suite = JSON.parse(readFileSync(conformancePath, "utf8"));
+// The corpus is written by the kernel, not generated here. Generation logic
+// duplicated into two driver languages would be a second place for the two to
+// disagree, and the drivers already carry as much duplicated judgement as is safe.
+let corpus = {};
+try { corpus = JSON.parse(readFileSync("corpus.json", "utf8")); } catch { /* no corpus: properties are skipped and said to be */ }
 const iface = JSON.parse(readFileSync(interfacePath, "utf8"));
 const cases = Array.isArray(suite.cases) ? suite.cases : [];
 const CASE_TIMEOUT_MS = Number(suite.timeoutMs ?? 10000);
@@ -117,6 +122,50 @@ for (const [i, c] of cases.entries()) {
   else passed++;
 }
 
+// ── PROPERTIES: relations that must hold WITHOUT knowing the right answer.
+//
+// A case says "this input gives that output", which only tests what its author
+// thought of. A property says "whatever the answer is, THIS must be true of it"
+// — and it is checked over hundreds of generated inputs, so it cannot be
+// satisfied by luck the way fourteen examples can. Writing one is reasoning
+// work rather than enumeration work, which is why it is the part of a contract
+// worth spending a strong model on.
+// Ids continue past the cases so a late response can never be mistaken for a
+// case's answer.
+let nextId = 10000;
+for (const prop of suite.properties ?? []) {
+  const inputs = corpus[prop.op] ?? [];
+  let held = 0, skipped = 0;
+  /** @type {string|null} */
+  let broke = null;
+
+  for (const input of inputs) {
+    const scope = { in: input };
+    const base = await send({ id: nextId++, op: prop.op, in: input });
+    // A property relates answers to each other, so an input the module refuses
+    // has nothing to relate. Skipped, and the skip is counted — a property that
+    // never actually ran is the quiet failure this whole design keeps meeting.
+    if (base.error) { skipped++; continue; }
+    scope.out = base.out;
+
+    let usable = true;
+    for (const call of prop.calls ?? []) {
+      const res = await send({ id: nextId++, op: call.op ?? prop.op, in: fill(call.in, scope) });
+      if (res.error) { usable = false; break; }
+      scope[call.as] = res.out;
+    }
+    if (!usable) { skipped++; continue; }
+
+    const bad = (prop.must ?? []).map((m) => check(m, scope)).find(Boolean);
+    if (bad) { broke = `${bad}   with in=${JSON.stringify(input).slice(0, 160)}`; break; }
+    held++;
+  }
+
+  if (broke) failures.push(`property "${prop.name}": ${broke}`);
+  else if (held === 0) failures.push(`property "${prop.name}" never actually ran — all ${inputs.length} inputs were refused or unusable, so it proves nothing`);
+  else passed++;
+}
+
 if (junk.length) failures.push(`the module wrote ${junk.length} non-JSON line(s) to stdout, which corrupts the wire. First: ${JSON.stringify(junk[0]?.slice(0, 120))}`);
 
 child.stdin.end();
@@ -143,6 +192,61 @@ function send(req) {
     waiting.push(settle);
     child.stdin.write(JSON.stringify(req) + "\n");
   });
+}
+
+/**
+ * Build a derived input, replacing {"$": "path"} with a value already in scope.
+ * @param {any} node @param {Record<string, any>} scope @returns {any}
+ */
+function fill(node, scope) {
+  if (Array.isArray(node)) return node.map((n) => fill(n, scope));
+  if (node === null || typeof node !== "object") return node;
+  if (typeof node["$"] === "string") return at(scope, node["$"]);
+  /** @type {Record<string, any>} */
+  const out = {};
+  for (const [k, v] of Object.entries(node)) out[k] = fill(v, scope);
+  return out;
+}
+
+/**
+ * One assertion. Data, not an expression language — six comparators cover what
+ * a metamorphic relation needs, and a parser here would be a place for the two
+ * drivers to drift apart.
+ * @param {any} m @param {Record<string, any>} scope @returns {string|null}
+ */
+function check(m, scope) {
+  const [kind] = Object.keys(m);
+  const args = m[/** @type {string} */ (kind)];
+  const A = at(scope, args[0]);
+  // A number on the right is a literal; a string is a path. Unambiguous, because
+  // a path is always a string and a bound is almost always a number — and it
+  // keeps the comparator set free of a type annotation nobody would enjoy writing.
+  const B = kind === "is" ? args[1] : typeof args[1] === "number" ? args[1] : at(scope, args[1]);
+  const j = (/** @type {any} */ v) => JSON.stringify(v);
+  switch (kind) {
+    case "equal": case "is":
+      return j(A) === j(B) ? null : `${args[0]} is ${j(A)}, expected ${kind === "is" ? j(B) : `${args[1]} which is ${j(B)}`}`;
+    case "notEqual":
+      return j(A) !== j(B) ? null : `${args[0]} and ${args[1]} are both ${j(A)}, and must differ`;
+    case "atMost":
+      return Number(A) <= Number(B) ? null : `${args[0]} is ${j(A)}, which is more than ${j(B)}`;
+    case "atLeast":
+      return Number(A) >= Number(B) ? null : `${args[0]} is ${j(A)}, which is less than ${j(B)}`;
+    case "count":
+      return (A?.length ?? -1) === Number(B) ? null : `${args[0]} has ${A?.length} item(s), expected ${j(B)}`;
+    default:
+      return `unknown comparator ${j(kind)}`;
+  }
+}
+
+/** @param {any} obj @param {string} path */
+function at(obj, path) {
+  let node = obj;
+  for (const step of String(path).split(".")) {
+    if (node === null || typeof node !== "object") return undefined;
+    node = Array.isArray(node) ? node[Number(step)] : node[step];
+  }
+  return node;
 }
 
 /**

@@ -58,7 +58,17 @@ import { dirname } from "node:path";
  * @property {string} [why]
  */
 
-/** @typedef {AdmitRecord | RejectRecord | PinRecord} Record */
+/**
+ * @typedef {object} RevokeRecord
+ * @property {"revoke"} t
+ * @property {string} contract
+ * @property {string} artifact
+ * @property {string} module
+ * @property {string} at
+ * @property {string} why   what was learned that the original admission did not know
+ */
+
+/** @typedef {AdmitRecord | RejectRecord | PinRecord | RevokeRecord} LedgerRecord */
 
 export class Ledger {
   /** @param {string} path the ledger.jsonl file */
@@ -69,12 +79,12 @@ export class Ledger {
 
   /**
    * Every well-formed record, in the order it was written.
-   * @returns {Record[]}
+   * @returns {LedgerRecord[]}
    */
   all() {
     if (!existsSync(this.path)) return [];
     const text = readFileSync(this.path, "utf8");
-    /** @type {Record[]} */
+    /** @type {LedgerRecord[]} */
     const out = [];
     const lines = text.split("\n");
     for (let i = 0; i < lines.length; i++) {
@@ -93,7 +103,7 @@ export class Ledger {
     return out;
   }
 
-  /** @param {Record} rec */
+  /** @param {LedgerRecord} rec */
   append(rec) {
     appendFileSync(this.path, JSON.stringify(rec) + "\n");
     return rec;
@@ -105,7 +115,21 @@ export class Ledger {
    * @returns {AdmitRecord[]}
    */
   admitted(contract) {
-    return /** @type {AdmitRecord[]} */ (this.all().filter((r) => r.t === "admit" && r.contract === contract));
+    // REVOKED artifacts are excluded, and revocation exists because gates get
+    // stronger over time. An artifact admitted under a weaker gate stays admitted
+    // — the store is append-only and nothing rewrites history — but continuing to
+    // offer it as a valid filling of the contract would be a lie. So a revoke is
+    // another appended line saying what was learned afterwards, and the record of
+    // the original admission stays exactly where it was.
+    const revoked = new Set(this.all().filter((r) => r.t === "revoke" && r.contract === contract).map((r) => r.artifact));
+    return /** @type {AdmitRecord[]} */ (
+      this.all().filter((r) => r.t === "admit" && r.contract === contract && !revoked.has(r.artifact))
+    );
+  }
+
+  /** Every revocation for a contract, so a viewer can show what was withdrawn and why. */
+  revoked(/** @type {string} */ contract) {
+    return /** @type {RevokeRecord[]} */ (this.all().filter((r) => r.t === "revoke" && r.contract === contract));
   }
 
   /**
@@ -119,10 +143,11 @@ export class Ledger {
    * @returns {{artifact: string, via: "pin"|"admit", at: string} | null}
    */
   live(contract) {
+    const revoked = new Set(this.all().filter((r) => r.t === "revoke" && r.contract === contract).map((r) => r.artifact));
     let admitted = null;
     let pinned = null;
     for (const r of this.all()) {
-      if (r.contract !== contract) continue;
+      if (r.contract !== contract || revoked.has(r.artifact)) continue;
       if (r.t === "admit") admitted = r;
       if (r.t === "pin") pinned = r;
     }

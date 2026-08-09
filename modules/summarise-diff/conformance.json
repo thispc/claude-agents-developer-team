@@ -5,109 +5,258 @@
     {
       "name": "identical text has not changed",
       "op": "summarise",
-      "in": { "before": "alpha\nbeta\ngamma", "after": "alpha\nbeta\ngamma" },
-      "expect": { "added": 0, "removed": 0, "unchanged": 3, "changed": false, "summary": "no change" }
+      "in": {
+        "before": "alpha\nbeta\ngamma",
+        "after": "alpha\nbeta\ngamma"
+      },
+      "expect": {
+        "added": 0,
+        "removed": 0,
+        "unchanged": 3,
+        "changed": false,
+        "summary": "no change"
+      }
     },
     {
       "name": "one line appended",
       "op": "summarise",
-      "in": { "before": "alpha\nbeta", "after": "alpha\nbeta\ngamma" },
-      "expect": { "added": 1, "removed": 0, "unchanged": 2, "changed": true, "summary": "+1 -0" }
+      "in": {
+        "before": "alpha\nbeta",
+        "after": "alpha\nbeta\ngamma"
+      },
+      "expect": {
+        "added": 1,
+        "removed": 0,
+        "unchanged": 2,
+        "changed": true,
+        "summary": "+1 -0"
+      }
     },
     {
       "name": "one line deleted from the middle",
       "op": "summarise",
-      "in": { "before": "alpha\nbeta\ngamma", "after": "alpha\ngamma" },
-      "expect": { "added": 0, "removed": 1, "unchanged": 2, "changed": true, "summary": "+0 -1" }
+      "in": {
+        "before": "alpha\nbeta\ngamma",
+        "after": "alpha\ngamma"
+      },
+      "expect": {
+        "added": 0,
+        "removed": 1,
+        "unchanged": 2,
+        "changed": true,
+        "summary": "+0 -1"
+      }
     },
     {
       "name": "an edited line counts as one removed and one added, because nothing here knows what 'modified' means",
       "op": "summarise",
-      "in": { "before": "alpha\nbeta\ngamma", "after": "alpha\nBETA\ngamma" },
-      "expect": { "added": 1, "removed": 1, "unchanged": 2, "changed": true, "summary": "+1 -1" }
+      "in": {
+        "before": "alpha\nbeta\ngamma",
+        "after": "alpha\nBETA\ngamma"
+      },
+      "expect": {
+        "added": 1,
+        "removed": 1,
+        "unchanged": 2,
+        "changed": true,
+        "summary": "+1 -1"
+      }
     },
     {
-      "name": "reordering is not free — two lines swapped share only one common subsequence line",
+      "name": "reordering is not free \u2014 two lines swapped share only one common subsequence line",
       "op": "summarise",
-      "in": { "before": "alpha\nbeta", "after": "beta\nalpha" },
-      "expect": { "added": 1, "removed": 1, "unchanged": 1, "changed": true, "summary": "+1 -1" }
+      "in": {
+        "before": "alpha\nbeta",
+        "after": "beta\nalpha"
+      },
+      "expect": {
+        "added": 1,
+        "removed": 1,
+        "unchanged": 1,
+        "changed": true,
+        "summary": "+1 -1"
+      }
     },
     {
       "name": "a duplicate line removed leaves the other one alone",
       "op": "summarise",
-      "in": { "before": "alpha\nalpha\nbeta", "after": "alpha\nbeta" },
-      "expect": { "added": 0, "removed": 1, "unchanged": 2, "changed": true, "summary": "+0 -1" }
+      "in": {
+        "before": "alpha\nalpha\nbeta",
+        "after": "alpha\nbeta"
+      },
+      "expect": {
+        "added": 0,
+        "removed": 1,
+        "unchanged": 2,
+        "changed": true,
+        "summary": "+0 -1"
+      }
     },
     {
       "name": "an empty before means everything is new",
       "op": "summarise",
-      "in": { "before": "", "after": "alpha\nbeta" },
-      "expect": { "added": 2, "removed": 0, "unchanged": 0, "changed": true, "summary": "+2 -0" }
+      "in": {
+        "before": "",
+        "after": "alpha\nbeta"
+      },
+      "expect": {
+        "added": 2,
+        "removed": 0,
+        "unchanged": 0,
+        "changed": true,
+        "summary": "+2 -0"
+      }
     },
     {
       "name": "an empty after means everything is gone",
       "op": "summarise",
-      "in": { "before": "alpha\nbeta", "after": "" },
-      "expect": { "added": 0, "removed": 2, "unchanged": 0, "changed": true, "summary": "+0 -2" }
+      "in": {
+        "before": "alpha\nbeta",
+        "after": ""
+      },
+      "expect": {
+        "added": 0,
+        "removed": 2,
+        "unchanged": 0,
+        "changed": true,
+        "summary": "+0 -2"
+      }
     },
     {
       "name": "empty on both sides is zero lines, not one empty line",
       "op": "summarise",
-      "in": { "before": "", "after": "" },
-      "expect": { "added": 0, "removed": 0, "unchanged": 0, "changed": false, "summary": "no change" }
+      "in": {
+        "before": "",
+        "after": ""
+      },
+      "expect": {
+        "added": 0,
+        "removed": 0,
+        "unchanged": 0,
+        "changed": false,
+        "summary": "no change"
+      }
     },
     {
       "name": "a single trailing newline is dropped, so it is not a change",
       "op": "summarise",
-      "in": { "before": "alpha", "after": "alpha\n" },
-      "expect": { "added": 0, "removed": 0, "unchanged": 1, "changed": false, "summary": "no change" }
+      "in": {
+        "before": "alpha",
+        "after": "alpha\n"
+      },
+      "expect": {
+        "added": 0,
+        "removed": 0,
+        "unchanged": 1,
+        "changed": false,
+        "summary": "no change"
+      }
     },
     {
       "name": "a second trailing newline IS a blank line, and does count",
       "op": "summarise",
-      "in": { "before": "alpha\n", "after": "alpha\n\n" },
-      "expect": { "added": 1, "removed": 0, "unchanged": 1, "changed": true, "summary": "+1 -0" }
+      "in": {
+        "before": "alpha\n",
+        "after": "alpha\n\n"
+      },
+      "expect": {
+        "added": 1,
+        "removed": 0,
+        "unchanged": 1,
+        "changed": true,
+        "summary": "+1 -0"
+      }
     },
     {
       "name": "a blank line in the middle is a line",
       "op": "summarise",
-      "in": { "before": "alpha\nbeta", "after": "alpha\n\nbeta" },
-      "expect": { "added": 1, "removed": 0, "unchanged": 2, "changed": true, "summary": "+1 -0" }
+      "in": {
+        "before": "alpha\nbeta",
+        "after": "alpha\n\nbeta"
+      },
+      "expect": {
+        "added": 1,
+        "removed": 0,
+        "unchanged": 2,
+        "changed": true,
+        "summary": "+1 -0"
+      }
     },
     {
       "name": "carriage returns are ordinary characters, not something to normalise away",
       "op": "summarise",
-      "in": { "before": "alpha\nbeta", "after": "alpha\r\nbeta" },
-      "expect": { "added": 1, "removed": 1, "unchanged": 1, "changed": true, "summary": "+1 -1" }
+      "in": {
+        "before": "alpha\nbeta",
+        "after": "alpha\r\nbeta"
+      },
+      "expect": {
+        "added": 1,
+        "removed": 1,
+        "unchanged": 1,
+        "changed": true,
+        "summary": "+1 -1"
+      }
     },
     {
       "name": "text outside ASCII is compared by content, not by byte length",
       "op": "summarise",
-      "in": { "before": "日本語\nこんにちは", "after": "日本語\nさようなら" },
-      "expect": { "added": 1, "removed": 1, "unchanged": 1, "changed": true, "summary": "+1 -1" }
+      "in": {
+        "before": "\u65e5\u672c\u8a9e\n\u3053\u3093\u306b\u3061\u306f",
+        "after": "\u65e5\u672c\u8a9e\n\u3055\u3088\u3046\u306a\u3089"
+      },
+      "expect": {
+        "added": 1,
+        "removed": 1,
+        "unchanged": 1,
+        "changed": true,
+        "summary": "+1 -1"
+      }
     },
     {
       "name": "an emoji is one line whatever its code units",
       "op": "summarise",
-      "in": { "before": "🐙\ntail", "after": "🐙\ntail" },
-      "expect": { "added": 0, "removed": 0, "unchanged": 2, "changed": false, "summary": "no change" }
+      "in": {
+        "before": "\ud83d\udc19\ntail",
+        "after": "\ud83d\udc19\ntail"
+      },
+      "expect": {
+        "added": 0,
+        "removed": 0,
+        "unchanged": 2,
+        "changed": false,
+        "summary": "no change"
+      }
     },
     {
-      "name": "a longest common subsequence is not unique, but its length is — a,c,b and a,b,a and a,c,a all have length 3, and every implementation must answer 3",
+      "name": "a longest common subsequence is not unique, but its length is \u2014 a,c,b and a,b,a and a,c,a all have length 3, and every implementation must answer 3",
       "op": "summarise",
-      "in": { "before": "a\nb\nc\na\nb\nc", "after": "a\nc\nb\na" },
-      "expect": { "unchanged": 3, "added": 1, "removed": 3, "changed": true, "summary": "+1 -3" }
+      "in": {
+        "before": "a\nb\nc\na\nb\nc",
+        "after": "a\nc\nb\na"
+      },
+      "expect": {
+        "unchanged": 3,
+        "added": 1,
+        "removed": 3,
+        "changed": true,
+        "summary": "+1 -3"
+      }
     },
     {
       "name": "a number where a string belongs is refused rather than coerced",
       "op": "summarise",
-      "in": { "before": 42, "after": "alpha" },
+      "in": {
+        "before": 42,
+        "after": "alpha"
+      },
       "expectError": "EBADINPUT"
     },
     {
       "name": "a missing field is refused",
       "op": "summarise",
-      "in": { "before": "alpha" },
+      "in": {
+        "before": "alpha"
+      },
       "expectError": "EBADINPUT"
     },
     {
@@ -121,6 +270,185 @@
       "op": "obliterate",
       "in": {},
       "expectError": "ENOOP"
+    }
+  ],
+  "propertyInputs": 150,
+  "_properties_note": "A case says 'this input gives that output', which tests only what its author thought of. A property says 'whatever the answer is, THIS must hold about it' \u2014 checked over 150 generated inputs, so it cannot be satisfied by luck the way twenty examples can. Writing one is reasoning work rather than enumeration work.",
+  "properties": [
+    {
+      "name": "swapping the two texts swaps added and removed",
+      "op": "summarise",
+      "calls": [
+        {
+          "as": "swapped",
+          "in": {
+            "before": {
+              "$": "in.after"
+            },
+            "after": {
+              "$": "in.before"
+            }
+          }
+        }
+      ],
+      "must": [
+        {
+          "equal": [
+            "out.added",
+            "swapped.removed"
+          ]
+        },
+        {
+          "equal": [
+            "out.removed",
+            "swapped.added"
+          ]
+        },
+        {
+          "equal": [
+            "out.unchanged",
+            "swapped.unchanged"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "comparing a text with itself is never a change",
+      "op": "summarise",
+      "calls": [
+        {
+          "as": "self",
+          "in": {
+            "before": {
+              "$": "in.before"
+            },
+            "after": {
+              "$": "in.before"
+            }
+          }
+        }
+      ],
+      "must": [
+        {
+          "is": [
+            "self.changed",
+            false
+          ]
+        },
+        {
+          "is": [
+            "self.added",
+            0
+          ]
+        },
+        {
+          "is": [
+            "self.removed",
+            0
+          ]
+        },
+        {
+          "is": [
+            "self.summary",
+            "no change"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "the same input twice gives the same answer",
+      "op": "summarise",
+      "calls": [
+        {
+          "as": "again",
+          "in": {
+            "$": "in"
+          }
+        }
+      ],
+      "must": [
+        {
+          "equal": [
+            "out",
+            "again"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "unchanged lines can never exceed what either side has",
+      "op": "summarise",
+      "calls": [
+        {
+          "as": "self",
+          "in": {
+            "before": {
+              "$": "in.before"
+            },
+            "after": {
+              "$": "in.before"
+            }
+          }
+        }
+      ],
+      "must": [
+        {
+          "atMost": [
+            "out.unchanged",
+            "self.unchanged"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "nothing is ever negative",
+      "op": "summarise",
+      "calls": [],
+      "must": [
+        {
+          "atLeast": [
+            "out.added",
+            0
+          ]
+        },
+        {
+          "atLeast": [
+            "out.removed",
+            0
+          ]
+        },
+        {
+          "atLeast": [
+            "out.unchanged",
+            0
+          ]
+        }
+      ]
+    },
+    {
+      "name": "changed is true exactly when something moved",
+      "op": "summarise",
+      "calls": [
+        {
+          "as": "self",
+          "in": {
+            "before": {
+              "$": "in.before"
+            },
+            "after": {
+              "$": "in.before"
+            }
+          }
+        }
+      ],
+      "must": [
+        {
+          "is": [
+            "self.changed",
+            false
+          ]
+        }
+      ]
     }
   ]
 }
